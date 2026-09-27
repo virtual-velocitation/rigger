@@ -42,9 +42,12 @@
 //! that fix holds: independently re-run against the round-2 diff, it PASSES - a live process
 //! under a relocated scratch root is reaped exactly as it always was for the default case.
 
+mod common;
+
 use std::path::Path;
 use std::process::{Child, Command};
 
+use common::git::init_repo;
 use rigger::reap::processes_rooted_under;
 use rigger::worktree::Worktree;
 
@@ -71,23 +74,6 @@ fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     false
-}
-
-fn init_repo(path: &Path) {
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
-    }
 }
 
 #[test]

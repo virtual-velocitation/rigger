@@ -683,12 +683,9 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::Direction;
 
-    fn agent(id: &str) -> AgentDef {
-        AgentDef {
-            id: id.to_string(),
-            ..Default::default()
-        }
-    }
+    use crate::test_support::cfg_for;
+    use crate::test_support::item;
+    use crate::test_support::panel_with_lenses;
 
     fn panel() -> ReviewPanel {
         ReviewPanel {
@@ -750,13 +747,8 @@ mod tests {
         assert!(opts.reviews.is_empty());
     }
 
-    fn cfg() -> Config {
-        let mut c = Config::default();
-        for id in ["sdet", "adv", "adj"] {
-            c.agents.insert(id.to_string(), agent(id));
-        }
-        c
-    }
+    /// The agents every panel in this file names.
+    const PANEL_AGENTS: &[&str] = &["sdet", "adv", "adj"];
 
     /// A scripted driver modelling a review panel. A lens/adversary raises a CRITICAL
     /// finding ABOUT the anchor only when its own tier is the `catching_tier` AND the item
@@ -829,18 +821,6 @@ mod tests {
 
     fn any_finding_is_critical(prompt: &str) -> bool {
         prompt.contains("CRIT defect here")
-    }
-
-    fn item(id: &str, class: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
-        CanaryItem {
-            id: id.into(),
-            defect_class: class.into(),
-            planted,
-            anchor: format!("{id}.rs"),
-            expected_verdict: verdict.into(),
-            expected_tier: tier.into(),
-            review: format!("fn {id}() {{}}"),
-        }
     }
 
     fn with_anchor(anchor: &str) -> CanaryItem {
@@ -926,7 +906,8 @@ mod tests {
             resolved_model: String::new(),
         };
         let it = item("leak", "resource-leak", true, "reject", "adversary");
-        let (outcome, _resolved) = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
+        let (outcome, _resolved) =
+            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
         assert_eq!(outcome.caught_by, vec![TIER_ADVERSARY.to_string()]);
         assert!(
             !outcome.verdict_approved,
@@ -950,7 +931,8 @@ mod tests {
             resolved_model: String::new(),
         };
         let it = item("clean", "none", false, "approve", "");
-        let (outcome, _resolved) = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
+        let (outcome, _resolved) =
+            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
         assert!(
             outcome.caught_by.is_empty(),
             "a known-good unit catches nothing"
@@ -975,7 +957,8 @@ mod tests {
             resolved_model: String::new(),
         };
         let it = item("offbyone", "off-by-one", true, "reject", "adversary");
-        let (outcome, _resolved) = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
+        let (outcome, _resolved) =
+            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
         assert!(
             !outcome.stable,
             "a verdict that flips on finding order must be scored unstable"
@@ -1021,7 +1004,8 @@ mod tests {
             ..Default::default()
         };
         let it = item("nothing", "none", false, "approve", "");
-        let (outcome, _resolved) = score_item(&driver, &cfg(), &panel, &it, 1).unwrap();
+        let (outcome, _resolved) =
+            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel, &it, 1).unwrap();
         assert!(outcome.stable, "zero findings are trivially stable");
         assert_eq!(
             driver.calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -1057,23 +1041,6 @@ mod tests {
                 self.barrier.wait();
             }
             self.inner.spawn(a, prompt, opts, emit)
-        }
-    }
-
-    fn cfg_for(ids: &[&str]) -> Config {
-        let mut c = Config::default();
-        for id in ids {
-            c.agents.insert((*id).to_string(), agent(id));
-        }
-        c
-    }
-
-    fn panel_with_lenses(lenses: &[&str]) -> ReviewPanel {
-        ReviewPanel {
-            lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
-            adversary: "adv".into(),
-            adjudicator: "adj".into(),
-            tiers: None,
         }
     }
 
@@ -1185,7 +1152,7 @@ mod tests {
             resolved_model: String::new(),
         };
         let it = item("quiet", "off-by-one", true, "reject", "lens");
-        let (outcome, _resolved) = score_item(&driver, &cfg(), &p, &it, 1).unwrap();
+        let (outcome, _resolved) = score_item(&driver, &cfg_for(PANEL_AGENTS), &p, &it, 1).unwrap();
         assert_eq!(
             outcome.findings_raised.get(TIER_ADVERSARY),
             Some(&0),
@@ -1207,7 +1174,16 @@ mod tests {
             item("leak", "resource-leak", true, "reject", "adversary"),
             item("clean", "none", false, "approve", ""),
         ];
-        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 2, &|_, _| {}).unwrap();
+        let report = run_canary(
+            &store,
+            &driver,
+            &cfg_for(PANEL_AGENTS),
+            &panel(),
+            &corpus,
+            2,
+            &|_, _| {},
+        )
+        .unwrap();
         assert_eq!(report.outcomes.len(), 2);
 
         // The canary stream carries the batch marker + one outcome per item.
@@ -1247,7 +1223,16 @@ mod tests {
         let mut p = panel();
         p.adjudicator = String::new();
         let corpus = vec![item("x", "off-by-one", true, "reject", "lens")];
-        assert!(run_canary(&store, &driver, &cfg(), &p, &corpus, 1, &|_, _| {}).is_err());
+        assert!(run_canary(
+            &store,
+            &driver,
+            &cfg_for(PANEL_AGENTS),
+            &p,
+            &corpus,
+            1,
+            &|_, _| {}
+        )
+        .is_err());
     }
 
     #[test]
@@ -1711,7 +1696,7 @@ mod tests {
 
     #[test]
     fn apply_model_pins_with_no_pins_changes_nothing() {
-        let c = cfg();
+        let c = cfg_for(PANEL_AGENTS);
         let pinned = apply_model_pins(&c, &panel(), &ModelPins::new());
         assert_eq!(pinned.agents["sdet"].model, c.agents["sdet"].model);
         assert_eq!(
@@ -1726,7 +1711,7 @@ mod tests {
         // pins the function's OWN defensive behavior should it ever be reached anyway - an
         // unknown tier must resolve NO agent, not spuriously fall into the adversary or
         // adjudicator branch through a flipped tier-name comparison.
-        let c = cfg();
+        let c = cfg_for(PANEL_AGENTS);
         let mut pins = ModelPins::new();
         pins.insert("bogus-tier".to_string(), "x".to_string());
         let pinned = apply_model_pins(&c, &panel(), &pins);
@@ -1804,7 +1789,8 @@ mod tests {
             resolved_model: String::new(),
         };
         let it = item("unmeasured", "off-by-one", true, "reject", "lens");
-        let (_outcome, resolved) = score_item(&driver, &cfg(), &panel(), &it, 1).unwrap();
+        let (_outcome, resolved) =
+            score_item(&driver, &cfg_for(PANEL_AGENTS), &panel(), &it, 1).unwrap();
         assert!(
             resolved.is_empty(),
             "an empty AgentResult::resolved_model must not be recorded as any tier's id: {resolved:?}"
@@ -1824,7 +1810,16 @@ mod tests {
             item("leak", "resource-leak", true, "reject", "adversary"),
             item("clean", "none", false, "approve", ""),
         ];
-        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 2, &|_, _| {}).unwrap();
+        let report = run_canary(
+            &store,
+            &driver,
+            &cfg_for(PANEL_AGENTS),
+            &panel(),
+            &corpus,
+            2,
+            &|_, _| {},
+        )
+        .unwrap();
         assert_eq!(
             report.resolved_models.get(TIER_LENS),
             Some(&"run-wide-id".to_string())
@@ -1849,7 +1844,16 @@ mod tests {
             resolved_model: "resolved-y".to_string(),
         };
         let corpus = vec![item("leak", "resource-leak", true, "reject", "adversary")];
-        let report = run_canary(&store, &driver, &cfg(), &panel(), &corpus, 1, &|_, _| {}).unwrap();
+        let report = run_canary(
+            &store,
+            &driver,
+            &cfg_for(PANEL_AGENTS),
+            &panel(),
+            &corpus,
+            1,
+            &|_, _| {},
+        )
+        .unwrap();
 
         let mut resolved_models = BTreeMap::new();
         resolved_models.insert(TIER_LENS.to_string(), "resolved-y".to_string());

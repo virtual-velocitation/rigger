@@ -237,10 +237,7 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::run::{current_run_base, current_run_base_tip, current_run_id};
-
-    fn ev(type_: &str, data: &str) -> Event {
-        Event::new(type_, data.as_bytes().to_vec())
-    }
+    use crate::test_support::ev;
 
     #[test]
     fn the_resolved_base_is_persisted_on_the_run_start_and_survives_adopt() {

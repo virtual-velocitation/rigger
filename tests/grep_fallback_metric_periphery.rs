@@ -35,8 +35,11 @@
 //! `progress`, `metrics`, `dash`, and `eventstore::sqlite` are not feature-gated, so this guards
 //! the counted-fallback contract on BOTH the default and the `--no-default-features` lane.
 
+mod common;
+
 use std::collections::HashMap;
 
+use common::fixtures::ev;
 use rigger::contextgraph::Graph;
 use rigger::dash::{build_state, state_json};
 use rigger::eventstore::sqlite::Store;
@@ -46,11 +49,6 @@ use rigger::progress::{self, AgentProgress, GREP_FALLBACK_PREFIX};
 use rigger::progress_store;
 
 // --- helpers -------------------------------------------------------------------------------------
-
-/// A run-stream event with JSON `data` (the shape the ledger fold reads).
-fn run_ev(type_: &str, json: &str) -> Event {
-    Event::new(type_, json.as_bytes().to_vec())
-}
 
 /// An `AgentProgress` event as it lives in the progress store, built through the PUBLIC
 /// `AgentProgress` type + `serde_json` (the counter reads exactly this typed slice).
@@ -202,9 +200,9 @@ fn metrics_without_fallbacks(m: &rigger::dash::MetricsView) -> serde_json::Value
 fn build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchanged() {
     // A run-stream slice that yields units_started=1 and review_approve=1 (a `reviewed` UnitStatus).
     let events = positioned(vec![
-        run_ev("UnitStarted", r#"{"id":"u1"}"#),
-        run_ev("UnitStatus", r#"{"id":"u1","status":"green"}"#),
-        run_ev("UnitStatus", r#"{"id":"u1","status":"reviewed"}"#),
+        ev("UnitStarted", r#"{"id":"u1"}"#),
+        ev("UnitStatus", r#"{"id":"u1","status":"green"}"#),
+        ev("UnitStatus", r#"{"id":"u1","status":"reviewed"}"#),
     ]);
 
     // A progress slice with two `grep-fallback:` lines and one ordinary line.
@@ -274,7 +272,7 @@ fn build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchange
 /// panel's `metrics.grep_fallbacks || 0` always reads a number, never `undefined`.
 #[test]
 fn the_state_json_body_always_carries_the_grep_fallbacks_key_even_at_zero() {
-    let events = positioned(vec![run_ev("UnitStarted", r#"{"id":"u1"}"#)]);
+    let events = positioned(vec![ev("UnitStarted", r#"{"id":"u1"}"#)]);
     let empty: Vec<Event> = Vec::new();
     let liveness = HashMap::new();
 

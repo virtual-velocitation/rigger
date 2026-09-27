@@ -33,9 +33,10 @@ mod common;
 use rigger::spawn::SpawnEvent;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::time::Duration;
+use std::net::TcpListener;
 
+use common::fixtures::ev;
+use common::served::connect_with_retry;
 use rigger::conductor::META_REPLAY_KEY;
 use rigger::contextgraph::{Graph, TYPE_GATE_VERDICT};
 use rigger::dash::{self, DashInputs};
@@ -49,11 +50,6 @@ use serde_json::Value;
 // ---------------------------------------------------------------------------
 // Fixtures: build the exact serialized events a real run folds, over the public API only.
 // ---------------------------------------------------------------------------
-
-/// One event of `type_` with a JSON body, positioned by the caller via [`positioned`].
-fn ev(type_: &str, json: &str) -> Event {
-    Event::new(type_, json.as_bytes().to_vec())
-}
 
 /// Stamp 1-based stream positions the way the store would, so the snapshot's cursor and any
 /// position-ordered fold see a realistic monotonic stream.
@@ -277,19 +273,6 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
         a_agent.get("doing").is_none(),
         "a finished agent omits the doing field entirely over the wire, got: {a_agent}"
     );
-}
-
-/// Connect to `addr`, retrying briefly while the detached `serve_on` thread reaches its first
-/// accept. The port is already bound when this is called, so the retry only covers a scheduler
-/// stall, never a lost port.
-fn connect_with_retry(addr: SocketAddr) -> TcpStream {
-    for _ in 0..200 {
-        if let Ok(s) = TcpStream::connect(addr) {
-            return s;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("the dash server never became reachable on {addr}");
 }
 
 // ---------------------------------------------------------------------------

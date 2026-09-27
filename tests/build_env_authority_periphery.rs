@@ -137,11 +137,14 @@
 //! Nothing here is feature-gated: `BuildEnv`, `ExecRunner`, `cli::Driver`, and
 //! `config::load` are all compiled and exercised in both feature lanes.
 
+mod common;
+
 use std::path::Path;
-use std::sync::Mutex;
 
 use serde_json::Value;
 
+use common::cli::write_workflow;
+use common::env_test_lock;
 use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{AgentDef, BuildConfig, Config, Gate, Stage};
 use rigger::config_store;
@@ -154,66 +157,36 @@ use rigger::gate::{BuildEnv, ExecRunner};
 mod real_driver_spy;
 use real_driver_spy::RealDriverSpy;
 
-/// Write a minimal but real `.rigger/agents/worker.md` + `.rigger/workflow.yml` at
-/// `root`, so `config::load` reaches all the way through agent parsing and
-/// `Config::validate` - the real on-disk boundary, not a struct literal built in
-/// memory. `build_block` is appended to the workflow verbatim: `""` omits the `build:`
-/// section entirely (the back-compat case - defaults must apply), a `build:\n  ...\n`
-/// block pins an explicit wrapper/cache_dir.
-fn write_workflow(root: &Path, build_block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
-    let workflow = format!(
-        "name: buildenvtest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
-         stages:\n  a:\n    agent: worker\n    on_pass: none\n\
-         {build_block}"
-    );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
-}
-
 /// The public `BuildEnv::vars()` result as a plain map, so an assertion states "these
 /// exact pairs" without caring about the resolver's internal ordering.
 fn as_map(env: &BuildEnv) -> std::collections::BTreeMap<String, String> {
     env.vars().iter().cloned().collect()
 }
 
-/// Serializes every test in this file that touches the REAL process environment:
-/// `build_env_resolve_falls_back_to_the_default_cache_dir_when_unset` transitively
-/// READS `XDG_STATE_HOME`/`HOME` through `BuildEnv::resolve`'s empty-`cache_dir`
-/// fallback (`gate::default_cache_dir`); `one_build_environment_authority_reaches_a_
-/// real_gate_subprocess_and_a_real_agent_subprocess` WRITES via `std::env::remove_var`;
-/// and, as of spec 65 unit 2 (NO SILENT DEGRADE),
-/// `build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolver`
-/// BOTH READS AND WRITES PATH too - `config::load` now calls `Config::validate`, which
-/// (since unit 2) calls `gate::resolve_build_layer`, an ambient-PATH read that did not
-/// exist when this lock's original two holders were written; that test now also stages a
-/// fake wrapper binary onto PATH so its hardcoded `wrapper: sccache` config resolves
-/// deterministically regardless of what the real machine running the suite has installed
-/// (see its own doc comment - this is not merely a race fix, a real machine without
-/// `sccache` on PATH would otherwise fail this test unconditionally, lock or no lock).
-/// `run_propagates_a_named_but_absent_wrappers_error_at_the_library_entry_point` (unit 2)
-/// READS PATH too, transitively through the same `gate::resolve_build_layer` edge, reached
-/// this time via `conductor::run` directly rather than `config::load` - same hazard, same
-/// lock. `cargo test` runs every
-/// test in this one binary as concurrent threads by default; a concurrent env read racing
-/// a concurrent env write is a genuine hazard at the POSIX `setenv`/`getenv` level
-/// regardless of which keys either side touches (the same hazard `registry::
-/// state_home_from`'s own doc comment names as the reason it takes explicit values
-/// instead of reading ambient env itself). Held for the duration of each test that
-/// touches env, so none of them can ever interleave.
-static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+// `env_test_lock()` serializes every test in this file that touches the REAL process environment:
+// `build_env_resolve_falls_back_to_the_default_cache_dir_when_unset` transitively
+// READS `XDG_STATE_HOME`/`HOME` through `BuildEnv::resolve`'s empty-`cache_dir`
+// fallback (`gate::default_cache_dir`); `one_build_environment_authority_reaches_a_
+// real_gate_subprocess_and_a_real_agent_subprocess` WRITES via `std::env::remove_var`;
+// and, as of spec 65 unit 2 (NO SILENT DEGRADE),
+// `build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolver`
+// BOTH READS AND WRITES PATH too - `config::load` now calls `Config::validate`, which
+// (since unit 2) calls `gate::resolve_build_layer`, an ambient-PATH read that did not
+// exist when this lock's original two holders were written; that test now also stages a
+// fake wrapper binary onto PATH so its hardcoded `wrapper: sccache` config resolves
+// deterministically regardless of what the real machine running the suite has installed
+// (see its own doc comment - this is not merely a race fix, a real machine without
+// `sccache` on PATH would otherwise fail this test unconditionally, lock or no lock).
+// `run_propagates_a_named_but_absent_wrappers_error_at_the_library_entry_point` (unit 2)
+// READS PATH too, transitively through the same `gate::resolve_build_layer` edge, reached
+// this time via `conductor::run` directly rather than `config::load` - same hazard, same
+// lock. `cargo test` runs every
+// test in this one binary as concurrent threads by default; a concurrent env read racing
+// a concurrent env write is a genuine hazard at the POSIX `setenv`/`getenv` level
+// regardless of which keys either side touches (the same hazard `registry::
+// state_home_from`'s own doc comment names as the reason it takes explicit values
+// instead of reading ambient env itself). Held for the duration of each test that
+// touches env, so none of them can ever interleave.
 
 #[test]
 fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolver() {
@@ -223,7 +196,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     // reachable on PATH regardless of what the machine actually running this suite has
     // installed. Staging a fake one (the same fixture the auto-wrapper tests below use)
     // makes this deterministic instead of an accidental pass tied to this developer's own
-    // machine happening to have the real tool - see ENV_TEST_LOCK's own doc comment for
+    // machine happening to have the real tool - see `env_test_lock`'s own doc comment for
     // why this also needs the lock now.
     let _guard = env_test_lock();
     let _bindir = stage_fake_sccache_on_path();
@@ -239,6 +212,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     let cache_dir = project.path().join("shared-build-cache");
     write_workflow(
         project.path(),
+        "buildenvtest",
         &format!(
             "build:\n  wrapper: sccache\n  cache_dir: {}\n",
             cache_dir.display()
@@ -271,7 +245,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     // resolve to nothing at all, so today's ambient-environment behavior is genuinely
     // unchanged for every pre-existing project.
     let legacy = tempfile::tempdir().expect("create temp project");
-    write_workflow(legacy.path(), "");
+    write_workflow(legacy.path(), "buildenvtest", "");
     let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no build: section must still load");
     assert_eq!(cfg.workflow.build.wrapper, "");
@@ -295,7 +269,7 @@ fn build_config_round_trips_an_explicit_jobs_value_through_the_real_on_disk_load
     // `serde_yaml::from_str` literal, never through the real `config::load` entry point
     // (agent parsing + `Config::validate` included).
     let project = tempfile::tempdir().expect("create temp project");
-    write_workflow(project.path(), "build:\n  jobs: 6\n");
+    write_workflow(project.path(), "buildenvtest", "build:\n  jobs: 6\n");
     let cfg = config_store::load(project.path().to_str().unwrap())
         .expect("load a valid workflow.yml with an explicit build.jobs value");
     assert_eq!(cfg.workflow.build.jobs, 6);
@@ -326,7 +300,7 @@ fn build_env_resolve_falls_back_to_the_default_cache_dir_when_unset() {
     // `<WRAPPER>_DIR` (the documented `<state home>/rigger/build-cache` default, or the
     // documented bare-relative-name fallback in a truly homeless environment) rather
     // than pointing the wrapper at nothing. This branch reads `XDG_STATE_HOME`/`HOME`
-    // (real ambient env), so it holds `ENV_TEST_LOCK` for the same reason the
+    // (real ambient env), so it holds `env_test_lock` for the same reason the
     // `remove_var` test below does - see that lock's doc comment.
     let _guard = env_test_lock();
     let resolved = as_map(&BuildEnv::resolve("sccache", "", 0));
@@ -463,7 +437,7 @@ fn one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_age
     // inherited ambient value, not the authority correctly injecting nothing. Removed
     // from THIS process only, before either real subprocess is spawned, so every child
     // this test spawns starts from a deterministic baseline regardless of the
-    // operator's own shell. Guarded by ENV_TEST_LOCK (see its doc comment) so this
+    // operator's own shell. Guarded by `env_test_lock` (see its doc comment) so this
     // mutation never races the OTHER test in this file that reads ambient env.
     let _guard = env_test_lock();
     std::env::remove_var("RUSTC_WRAPPER");
@@ -676,7 +650,7 @@ fn stage_fake_sccache_on_path() -> tempfile::TempDir {
 
 #[test]
 fn auto_wrapper_resolves_to_a_real_probed_binary_and_reaches_both_real_subprocesses() {
-    // Same rationale as the ENV_TEST_LOCK doc comment: this test both READS PATH
+    // Same rationale as the `env_test_lock` doc comment: this test both READS PATH
     // (transitively, through `gate::resolve_build_layer`'s ambient edge) and WRITES it
     // (staging the fake `sccache`), so it must never interleave with the other tests in
     // this binary that touch ambient env.
@@ -805,7 +779,7 @@ fn auto_wrapper_finding_nothing_injects_into_neither_real_subprocess() {
 #[test]
 fn run_propagates_a_named_but_absent_wrappers_error_at_the_library_entry_point() {
     // Reads ambient PATH transitively (conductor::run -> RunCtx::build_env ->
-    // gate::resolve_build_layer -> std::env::var_os("PATH")) - guarded by ENV_TEST_LOCK
+    // gate::resolve_build_layer -> std::env::var_os("PATH")) - guarded by `env_test_lock`
     // for the same reason every other PATH-touching test in this file is (see the lock's
     // own doc comment): a concurrent env::set_var/remove_var in a sibling test racing this
     // read is a real POSIX getenv/setenv hazard regardless of which keys either side names.

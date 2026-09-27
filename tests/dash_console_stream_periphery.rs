@@ -29,6 +29,8 @@
 //! other's timing assumptions, so this file trades a little wall-clock time for that
 //! guarantee rather than risk a flaky cross-test interaction.
 
+mod common;
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -37,6 +39,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serial_test::serial;
 
+use common::fixtures::ev;
 use rigger::contextgraph::{CallGraph, Direction, Graph};
 use rigger::dash::{self, DashInputs, InstanceView};
 use rigger::eventstore::Event;
@@ -101,10 +104,6 @@ fn append_at_next_position(log: &Mutex<Vec<Event>>, mut e: Event) {
     let mut log = log.lock().unwrap();
     e.position = log.len() as u64 + 1;
     log.push(e);
-}
-
-fn ev(type_: &str, json: &str) -> Event {
-    Event::new(type_, json.as_bytes().to_vec())
 }
 
 /// Bind an ephemeral loopback listener and serve `dash::serve_on` over it with the given

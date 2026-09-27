@@ -26,13 +26,17 @@
 //! public boundary a same-crate `super::` test is structurally blind to, and drive the served
 //! `route` end-to-end through the `seed=` / `lens=` / `resolution=` query parsing the browser hits.
 
-use std::collections::HashMap;
+mod common;
 
+use common::fixtures::edge;
+use common::fixtures::plain;
+use common::lens::lens;
+use common::served::served_json;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
+    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
     REL_REALIZES, TIER_EXTRACTED, TIER_INFERRED,
 };
-use rigger::dash::{reproject, route, Cluster, ClusterEdge, Lens, UnresolvedMember};
+use rigger::dash::{reproject, Cluster, ClusterEdge, Lens, UnresolvedMember};
 
 // The fixture concept the whole test re-grains, and its two coupling communities.
 const CONCEPT: &str = "concept/1/0";
@@ -68,16 +72,6 @@ fn def(id: &str, name: &str) -> Node {
     n
 }
 
-/// A BARE cross-file placeholder code-entity: NO `name` attr, so cross-grain file resolution must
-/// resolve it by name-suffix to its defining file rather than trust its (referencing-file) id.
-fn bare(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    }
-}
-
 /// A derived super-node (`KIND_CONCEPT` / `KIND_COMMUNITY`) carrying its deterministic display
 /// `label`. It is a BUCKET, never a member, so it is excluded from every count.
 fn super_node(id: &str, kind: &str, label: &str) -> Node {
@@ -88,19 +82,6 @@ fn super_node(id: &str, kind: &str, label: &str) -> Node {
     };
     n.attrs.insert("label".to_string(), label.to_string());
     n
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel` at `tier`.
-fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: tier.to_string(),
-    }
 }
 
 /// The re-projection fixture. The concept `concept/1/0` REALIZES five members: three definitions
@@ -118,8 +99,8 @@ fn reproj_graph() -> Graph {
             def(FOO, "foo"),
             def(BAR, "bar"),
             def(BAZ, "baz"),
-            bare(HELPER_BARE),
-            bare(RUN_BARE),
+            plain(HELPER_BARE, KIND_CODE_ENTITY),
+            plain(RUN_BARE, KIND_CODE_ENTITY),
             // Standalone definitions the bare members resolve against (not concept members).
             def(HELPER_DEF, "helper"),
             def(RUN_DEF_ONE, "run"),
@@ -151,7 +132,7 @@ fn reproj_graph() -> Graph {
 /// the whole graph.
 #[test]
 fn concept_recodegrains_its_members_by_coupling_community() {
-    let re = reproject(&reproj_graph(), CONCEPT, &code_lens());
+    let re = reproject(&reproj_graph(), CONCEPT, &lens("code"));
 
     assert_eq!(re.subject, CONCEPT, "the re-projection echoes its subject");
     assert_eq!(
@@ -255,7 +236,10 @@ fn concept_files_regrain_resolves_bare_members_to_their_defining_files() {
 #[test]
 fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
     // --- seed + lens=code via the route: the concept's community re-grain ---
-    let code = served_json("/api/graph?seed=concept%2F1%2F0&lens=code&resolution=1");
+    let code = served_json(
+        &reproj_graph(),
+        "/api/graph?seed=concept%2F1%2F0&lens=code&resolution=1",
+    );
     let keys: Vec<&str> = code["clusters"]
         .as_array()
         .expect("clusters array")
@@ -274,7 +258,10 @@ fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
     );
 
     // --- seed + lens=files via the route: distinct defining files + the unresolved sidecar ---
-    let files = served_json("/api/graph?seed=concept%2F1%2F0&lens=files");
+    let files = served_json(
+        &reproj_graph(),
+        "/api/graph?seed=concept%2F1%2F0&lens=files",
+    );
     let file_keys: Vec<&str> = files["clusters"]
         .as_array()
         .expect("clusters array")
@@ -293,7 +280,7 @@ fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
     );
 
     // --- COMPOSITION ABSENT: a seed with NO lens is the seeded neighborhood, not a re-projection ---
-    let neighborhood = served_json("/api/graph?seed=concept%2F1%2F0");
+    let neighborhood = served_json(&reproj_graph(), "/api/graph?seed=concept%2F1%2F0");
     assert_eq!(
         neighborhood["seed"].as_str(),
         Some(CONCEPT),
@@ -311,11 +298,6 @@ fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
 
 // --- helpers ------------------------------------------------------------------------------------
 
-/// The default code lens (`resolution = 1`).
-fn code_lens() -> Lens {
-    Lens::from_query(Some("code"), Some("1"))
-}
-
 /// A single-definition file bucket (one code-entity member, dominant kind code-entity, no label).
 fn file_bucket(file: &str) -> Cluster {
     Cluster {
@@ -324,28 +306,4 @@ fn file_bucket(file: &str) -> Cluster {
         kind: KIND_CODE_ENTITY.to_string(),
         label: None,
     }
-}
-
-/// Drive the public `route` for `GET <target>` over the fixture and parse the body as JSON.
-fn served_json(target: &str) -> serde_json::Value {
-    let graph = reproj_graph();
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        &graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the re-projection route never errors on a live graph)"
-    );
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }

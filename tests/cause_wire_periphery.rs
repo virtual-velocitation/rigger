@@ -45,6 +45,8 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
+use common::cli::run_rigger;
+use common::cli::seed_store;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -58,14 +60,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Seed an initialized, empty `.rigger/events.db` under `root` - stands in for the store a
-/// prior `rigger run`/`step` would have created. Mirrors `tests/cli.rs`'s `seed_store`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
 }
 
 /// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s
@@ -113,22 +107,6 @@ fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
             )
             .unwrap();
     }
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/cli.rs`'s `run_rigger`.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// The headline boundary proof: all four members of the closed vocabulary

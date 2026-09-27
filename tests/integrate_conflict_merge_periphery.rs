@@ -264,14 +264,19 @@
 //! documented recovery folds the mover in, never discards it), and the repo ends up clean -
 //! `land`'s own "the repo is untouched" half of its contract, checked at the whole-run level.
 
+mod common;
+
+use common::cli::write_workflow;
+use common::fixtures::agent;
+use common::fixtures::gate_def;
+use common::fixtures::mk_stage;
+use common::fixtures::review_or_adjudicate;
+use common::git::git_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
-use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
+use rigger::config::{AgentDef, Config, RegenerateRule};
 use rigger::config_store;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{
-    Appended, Direction, Error as EsError, EventStore, ExpectedRevision, Filter, Position,
-    Revision, Subscription,
-};
+use rigger::eventstore::{Appended, Direction, Error as EsError, EventStore, ExpectedRevision};
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
@@ -298,16 +303,6 @@ fn init_repo() -> tempfile::TempDir {
             .unwrap();
     }
     dir
-}
-
-fn git_out(dir: &str, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} in {dir}: {e}"));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn git_commit_all(dir: &str, msg: &str) {
@@ -346,86 +341,10 @@ fn git_commit_paths(dir: &str, paths: &[&str], msg: &str) {
     }
 }
 
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
-}
-
-fn review_panel() -> config::ReviewPanel {
-    config::ReviewPanel {
-        lenses: vec!["lens".into()],
-        adjudicator: "judge".into(),
-        ..Default::default()
-    }
-}
-
-/// The shared review-tier response every fake `AgentDriver` in this file returns for a
-/// non-implementer spawn: the adjudicator approves outright, any other reviewer role's own
-/// output is unread by the tests below (only its APPROVE verdict matters). One function, not a
-/// third copy of the same two-armed match hand-duplicated across driver structs.
-fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
-    if opts.id.contains("/adjudicator#") {
-        return AgentResult {
-            output: r#"{"verdict":"approve"}"#.into(),
-            resolved_model: String::new(),
-        };
-    }
-    AgentResult {
-        output: "reviewed the diff".into(),
-        resolved_model: String::new(),
-    }
-}
-
-fn mk_stage(name: &str, gate: &str) -> Stage {
-    Stage {
-        name: name.into(),
-        agent: "worker".into(),
-        gates: vec![gate.into()],
-        on_pass: "merge".into(),
-        needs: vec![],
-        review: review_panel(),
-        ..Default::default()
-    }
-}
-
 // ============================================================================================
 // Gap 1: the `regenerate:` YAML surface never round-trips through the real on-disk loader
 // anywhere in the diff.
 // ============================================================================================
-
-/// Write a minimal but real `.rigger/agents/worker.md` + `.rigger/workflow.yml` at `root`, so
-/// `config::load` reaches all the way through agent parsing and `Config::validate` - the real
-/// on-disk boundary, not a struct literal built in memory. Mirrors
-/// `tests/build_budget_slots_periphery.rs::write_workflow`'s identical technique for
-/// `build.max_concurrent` (spec 65), now for `regenerate:` (spec 88, criterion 1).
-/// `regenerate_block` is appended verbatim: `""` omits the section entirely (the back-compat
-/// case).
-fn write_workflow(root: &Path, regenerate_block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
-    let workflow = format!(
-        "name: regeneratetest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
-         stages:\n  a:\n    agent: worker\n    on_pass: none\n\
-         {regenerate_block}"
-    );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
-}
 
 #[test]
 fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compat() {
@@ -435,6 +354,7 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     let configured = tempfile::tempdir().expect("create temp project");
     write_workflow(
         configured.path(),
+        "regeneratetest",
         "regenerate:\n\
          - paths: [\"docs/audit/*\", \"docs/other/*\"]\n\
          \u{20}\u{20}run: \"echo one\"\n\
@@ -466,7 +386,7 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     // otherwise, per Workflow::regenerate's own doc comment), never an error and never a
     // silently-defaulted rule.
     let legacy = tempfile::tempdir().expect("create temp project");
-    write_workflow(legacy.path(), "");
+    write_workflow(legacy.path(), "regeneratetest", "");
     let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no regenerate: section must still load");
     assert!(
@@ -721,7 +641,7 @@ fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regene
     // commit. Read off the REPO's own current branch (not the unit's `rigger/u/*` ref, which
     // an integrated unit's branch/worktree may already have been reclaimed by the time this
     // assertion runs) - it carries the full landed history regardless.
-    let log = git_out(&repo_path, &["log", "--format=%s"]);
+    let log = git_stdout(&repo_path, &["log", "--format=%s"]);
     assert!(
         log.contains("regenerate conflicting artifacts for"),
         "the conductor's own regeneration commit must land as a distinct commit after the \
@@ -804,8 +724,8 @@ impl AgentDriver for BranchResetDriver {
                 } else {
                     // The retry: snapshot BEFORE writing anything - this is the state the
                     // conductor's post-merge-red rollback left the worktree in.
-                    let head = git_out(&opts.dir, &["rev-parse", "HEAD"]);
-                    let parents = git_out(&opts.dir, &["log", "-1", "--format=%P", &head]);
+                    let head = git_stdout(&opts.dir, &["rev-parse", "HEAD"]);
+                    let parents = git_stdout(&opts.dir, &["log", "-1", "--format=%P", &head]);
                     let parent_count = if parents.trim().is_empty() {
                         0
                     } else {
@@ -1687,7 +1607,7 @@ fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resum
          accept_incoming placeholder call 1's crash left frozen in place"
     );
 
-    let log = git_out(&repo_path, &["log", "--format=%s"]);
+    let log = git_stdout(&repo_path, &["log", "--format=%s"]);
     assert!(
         log.contains("regenerate conflicting artifacts for"),
         "the resumed call's own regeneration commit must land as a distinct commit; log:\n{log}"
@@ -1841,14 +1761,14 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
     // (an ordinary terminal teardown, matching every other non-parked terminal exit), but the
     // branch itself is untouched - a single-parent commit carrying exactly unit-a's own real
     // work, never a partially-applied or corrupted merge.
-    let branch_log = git_out(&repo_path, &["log", "--oneline", "rigger/u/unit-a"]);
+    let branch_log = git_stdout(&repo_path, &["log", "--oneline", "rigger/u/unit-a"]);
     assert_eq!(
         branch_log.lines().count(),
         2,
         "unit-a's branch must carry exactly its base commit plus its own one real commit, no \
          partial merge state; got:\n{branch_log}"
     );
-    let a_content = git_out(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
+    let a_content = git_stdout(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
     assert_eq!(
         a_content, "A_WORK",
         "unit-a's own real work must survive on its branch untouched by the failed merge"
@@ -2087,35 +2007,6 @@ struct FailAppendContaining<'a> {
     needle: &'static str,
 }
 
-/// Implements `EventStore`'s read and subscribe methods for a fault-injecting wrapper store by
-/// delegating each to its `inner` store unchanged - the wrappers below differ only in `append`.
-macro_rules! delegate_event_store_reads {
-    () => {
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: Revision,
-            dir: Direction,
-        ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-            self.inner.read_stream(stream, from, dir)
-        }
-        fn read_all(
-            &self,
-            from: Position,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-            self.inner.read_all(from, dir, filter)
-        }
-        fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
-            self.inner.subscribe_all(from, filter)
-        }
-        fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
-            self.inner.subscribe_stream(stream, from)
-        }
-    };
-}
-
 impl EventStore for FailAppendContaining<'_> {
     fn append(
         &self,
@@ -2134,7 +2025,7 @@ impl EventStore for FailAppendContaining<'_> {
         }
         self.inner.append(stream, expected, events)
     }
-    delegate_event_store_reads!();
+    crate::delegate_event_store_reads!();
 }
 
 /// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status` -
@@ -2870,7 +2761,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
         // keep the transient worktree DIRECTORY around (`Worktree::remove`'s own doc: "the
         // BRANCH is the checkpoint" - the dir is not), so the decisive proof that the mutation
         // ran for real independent of the failed log append is the branch itself, not the dir.
-        let branch_gen = git_out(&repo_path, &["show", "rigger/u/unit-a:gen.txt"]);
+        let branch_gen = git_stdout(&repo_path, &["show", "rigger/u/unit-a:gen.txt"]);
         assert_eq!(
             branch_gen, "REGENERATED",
             "the regeneration command's own real commit must already be on the unit's branch, \
@@ -2991,7 +2882,7 @@ fn a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_reco
     }
     // The merge's own real commit already landed on the UNIT'S OWN branch (durable, git-level)
     // before this crash, independent of the log append that failed right after it.
-    let branch_a = git_out(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
+    let branch_a = git_stdout(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
     assert_eq!(
         branch_a, "A_WORK",
         "the merge commit must already be on the unit's own branch, independent of the log \
@@ -3500,7 +3391,7 @@ impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
         }
         self.inner.append(stream, expected, events)
     }
-    delegate_event_store_reads!();
+    crate::delegate_event_store_reads!();
 }
 
 /// Drives `land`'s newly-typed race-detection contract, and the whole conductor retry loop

@@ -5,6 +5,9 @@
 //! same composition path (`Store::open(.rigger/events.db)` namespaced, the
 //! `graph.db` projector, `conductor::STREAM`) the `serve` path uses.
 
+use common::git::git_ok;
+use common::repo::repo_text;
+use rigger::conductor::normalize_ws;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
@@ -13,6 +16,14 @@ use std::process::Command;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+
+use common::cli::plant_stale_marker;
+use common::cli::run_rigger;
+use common::cli::run_rigger_envs;
+use common::cli::run_stream_identity;
+use common::cli::seed_run_events;
+use common::cli::seed_store;
+use common::fixtures::pgid_of;
 use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` (which
@@ -27,77 +38,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Seed an initialized `.rigger/events.db` under `root`, standing in for the store a
-/// prior `rigger run`/`step` would have created. The store-opening couriers
-/// (`emit`/`result`/`peers`) now REFUSE to fabricate a fresh store from the wrong cwd
-/// (spec 05), so a round-trip test must first establish one, exactly as a real run does
-/// before any courier appends to it. An empty file is a valid empty SQLite database;
-/// `Store::open` adds the schema on first open - so this models "the run created the
-/// store" without needing a full workflow.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
-}
-
-/// The project identity the binary resolves for `root`, mirrored here for seeding: the
-/// tracked `.rigger/project.id` at the git top-level when present, else the git top-level
-/// basename, else `root`'s own basename (never empty) - the precedence
-/// `project_identity_at` uses. A seed appended under this identity lands in the exact
-/// `proj-<id>-run` stream the compiled binary reads back.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Seed run-lifecycle events (`RunStarted`, `SpawnRequested`, `SpawnResult`, `UnitStarted`,
-/// `UnitIntegrated`, `UnitEscalated`, ...) directly into the namespaced run stream, standing
-/// in for the conductor minting them (and for a courier's `rigger result` `SpawnResult`).
-/// The `rigger emit` surface refuses these conductor-owned boundary types (spec 22), so a
-/// test that must seed prior-run residue or a spawn's recorded outcome appends through the
-/// store, not the guarded courier. Each event is byte-identical to what the pre-guard
-/// `rigger emit <type> <json>` seed produced (same type, `data` bytes, and `run` stream,
-/// no metadata), and it binds to the SAME identity the binary resolves for `root`, so every
-/// downstream `rigger step` / `stats` / `validate` reads it back exactly as before.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
 }
 
 /// A throwaway git project with a real commit, so a base ref like `HEAD` resolves.
@@ -136,42 +76,6 @@ fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    run_rigger_envs(cwd, args, &[])
-}
-
-/// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
-/// (stdout, stderr, success). Used by the `rigger validate` advisory tests to stub
-/// `RIGGER_NPM` (so `rigger setup` installs the workflow without a real npm).
-fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    // The step path auto-starts a persistent, detached run dashboard (spec 39, criterion 1);
-    // opt out so these short-lived integration invocations never spawn a real dashboard
-    // process that would outlive the test. Set before the caller's envs so a test could still
-    // override it.
-    cmd.env("RIGGER_NO_DASH", "1");
-    // The step/run/serve paths register this instance in the machine-global registry under
-    // XDG_STATE_HOME (spec 50, criterion 2). Default it to a per-invocation temp dir so the
-    // many tests that drive those paths never seed a phantom into the operator's real
-    // ~/.local/state/rigger/instances - a live discovery entry, rooted at a since-deleted test
-    // tempdir, that a running dash would otherwise pick up. Bound to `state` so the dir lives
-    // until after the command runs; set before the caller's envs so the registry tests that pass
-    // an explicit XDG_STATE_HOME (to read the registry back) still override it.
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
 /// Extract a JSON string field's value from a one-line JSON object `line` - a tiny reader
 /// for asserting on `rigger step`'s printed wave without a JSON dependency in the test crate.
 /// Finds `"key":"` and returns everything up to the next `"`. Sufficient for the values these
@@ -183,18 +87,6 @@ fn json_string_field(line: &str, key: &str) -> Option<String> {
     let rest = &line[start..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
-}
-
-/// Run `git <args...>` in `cwd` and assert it succeeds (for seeding a repo state in a
-/// test - staging and committing scaffolded files so `.rigger/` is tracked+clean).
-fn git_ok(cwd: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git {args:?} must succeed");
 }
 
 /// Append `line` (plus a newline) to the file at `path`, standing in for a hand edit that a
@@ -3616,18 +3508,6 @@ fn emit_spawn_flag_stamps_the_emitting_spawn_id() {
     );
 }
 
-/// The `main.rs` source text, read at test time from the crate manifest dir. `main.rs` is
-/// a BINARY, not part of the `rigger` library, so its comments are not reachable through
-/// the crate API - we assert on the file's bytes instead. `CARGO_MANIFEST_DIR` is stable
-/// for both `cargo test` and the integration-test binary, so this resolves regardless of
-/// the process cwd.
-fn main_rs_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("main.rs");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
 /// Spec 51, criterion 5 (SWEEP-BEFORE-ADD ORDERING): within one `rigger step`, no worktree ADD
 /// begins until the terminal-worktree SWEEP has completed, and both worktree mutations happen
 /// UNDER the step's serialization (the step lock). This pins the lifecycle SEAM where `cmd_step`'s
@@ -3646,7 +3526,7 @@ fn main_rs_source() -> String {
 /// in the order lock -> sweep -> add.
 #[test]
 fn worktree_sweep_completes_before_any_add_within_one_step() {
-    let src = main_rs_source();
+    let src = repo_text("src/main.rs");
 
     // Isolate cmd_step's body (its declaration up to the next top-level `fn`) so the ordering
     // assertions stay pointed at the step lifecycle and are immune to the OTHER
@@ -4153,18 +4033,6 @@ fn step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree(
     );
 }
 
-/// The `workflows/rigger.js` native-driver source, read at test time from the crate manifest
-/// dir. The driver is embedded into the binary via `include_str!` (not reachable through the
-/// crate API) and runs only under the workflow harness (top-level await, the injected
-/// `agent`/`parallel`/`log` globals), so it cannot execute in the Rust test harness - we assert
-/// on the file's bytes, the same convention the sibling driver fixtures use.
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
 /// Spec 89, criterion 4: the driver's step-courier command must carry the MAIN tree as an
 /// ABSOLUTE path, not the raw `A.repo || '.'` relative default. A relative `cd .` is a no-op
 /// that leaves the courier's Bash tool call wherever its OWN cwd happens to already be - which
@@ -4182,7 +4050,7 @@ fn rigger_js_source() -> String {
 /// driver, the same convention `native_driver_enforces_an_outer_wall_clock...` uses.
 #[test]
 fn native_driver_couriers_the_step_against_an_absolute_repo_path() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // The caller's raw `repo` arg must no longer be used directly as REPO: it is captured
     // under its own name and resolved through an agent() round-trip before REPO is bound.
@@ -4247,7 +4115,7 @@ fn native_driver_couriers_the_step_against_an_absolute_repo_path() {
 /// other driver-shaped proof in this file - this is a source fixture over the embedded script.
 #[test]
 fn native_driver_schema_and_runtime_both_reject_a_non_absolute_resolved_repo() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // The schema constrains `path` at the source: a leading-slash pattern, not a bare
     // `{ type: 'string' }` with no shape constraint at all.
@@ -4316,7 +4184,7 @@ fn native_driver_schema_and_runtime_both_reject_a_non_absolute_resolved_repo() {
 /// `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`.
 #[test]
 fn native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // (1) The outer total-runtime ceiling constant and the helper that races against it exist.
     assert!(
@@ -4417,7 +4285,7 @@ fn native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn()
 /// future edit cannot silently regress it back to a hardcoded, unbucketed literal.
 #[test]
 fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_container() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     let policy_at = src
         .find("SCRATCH POLICY (hard rule):")
@@ -4491,7 +4359,7 @@ fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_contai
 /// cannot pass.
 #[test]
 fn native_driver_couriers_ride_the_drive_lane_and_the_global_plan_marker_is_retired() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // No global `phase(...)` marker call - or its now-stale explaining comment (which itself
     // names a second hypothetical `phase('Build')` marker) - survives anywhere in the file.
@@ -4565,7 +4433,7 @@ fn native_driver_couriers_ride_the_drive_lane_and_the_global_plan_marker_is_reti
 /// file - this is a source fixture over the embedded script.
 #[test]
 fn native_driver_pipelines_wave_items_instead_of_awaiting_the_whole_wave_as_one_batch() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // The old monolithic per-wave await is gone entirely.
     assert!(
@@ -4630,7 +4498,7 @@ fn native_driver_pipelines_wave_items_instead_of_awaiting_the_whole_wave_as_one_
 /// before returning - both halves of the guard, not just the read.
 #[test]
 fn native_driver_never_spawns_an_in_flight_item_twice() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     let filter_at = src
         .find("inFlight.has(req.id)")
@@ -4666,7 +4534,7 @@ fn native_driver_never_spawns_an_in_flight_item_twice() {
 /// rather than misclassifying it as the same anomaly.
 #[test]
 fn native_driver_fixpoint_requires_done_and_an_empty_in_flight_set() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     assert!(
         src.contains("step.done && inFlight.size === 0"),
@@ -4697,7 +4565,7 @@ fn native_driver_fixpoint_requires_done_and_an_empty_in_flight_set() {
 /// after draining the current wave, treats a present step.halted as a LOUD stop").
 #[test]
 fn native_driver_drains_in_flight_workers_before_a_loud_stop() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     assert!(
         src.contains("if (fatal.length > 0) {\n    await drainInFlight()"),
@@ -8584,21 +8452,6 @@ fn write_liveness_workflow(root: &Path) {
     .unwrap();
 }
 
-/// Plant a SYNTHETIC STALE MARKER at exactly `marker` (the path the wave carried), touched
-/// an hour ago - far past the 60s bound. Backdating the mtime removes any dependence on the
-/// test's own wall clock; the sweep reads that mtime.
-fn plant_stale_marker(marker: &Path) {
-    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    std::fs::write(marker, b"heartbeat").unwrap();
-    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-    std::fs::File::options()
-        .write(true)
-        .open(marker)
-        .unwrap()
-        .set_modified(stale)
-        .unwrap();
-}
-
 /// Agent liveness end-to-end (spec 10, unit 3): a spawn carries a `max_wall_clock` bound;
 /// when its per-spawn heartbeat marker goes STALE beyond that bound, `rigger step`
 /// classifies it as an infrastructure fault (a HUNG agent) and SURFACES it as a loud halt -
@@ -9154,7 +9007,7 @@ fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
 /// text, at a bar a no-op cannot pass.
 #[test]
 fn the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed() {
-    let src = main_rs_source();
+    let src = repo_text("src/main.rs");
 
     let step_at = src
         .find("fn cmd_step(args: &[String]) -> Res {")
@@ -24959,26 +24812,6 @@ fn read_all_public_contract_holds_at_the_crate_boundary() {
 // DIRECTLY; only driving the real `rigger step` binary proves the production wiring end-to-end:
 // that the dash the actual step binary spawns lands OUTSIDE the step command's process group.
 
-/// Read the process-group id (`pgrp`) of `pid` from `/proc/<pid>/stat` - pure std, no signal
-/// delivery, so it is reliable and race-free (a not-yet-reaped process, even a zombie, still has
-/// a readable `stat`). `/proc/<pid>/stat` is `pid (comm) state ppid pgrp ...`; `comm` may itself
-/// contain spaces and parens, so split AFTER the last `)` and take the third whitespace token.
-#[cfg(target_os = "linux")]
-fn proc_pgid_of(pid: u32) -> u32 {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .unwrap_or_else(|e| panic!("read /proc/{pid}/stat: {e}"));
-    let after_comm = stat
-        .rsplit_once(')')
-        .expect("/proc stat has a parenthesised comm field")
-        .1;
-    after_comm
-        .split_whitespace()
-        .nth(2)
-        .expect("/proc stat has a pgrp field after comm")
-        .parse()
-        .expect("pgrp is a base-10 integer")
-}
-
 /// Spec 44, criterion 3 end-to-end, through the BUILT binary: a `rigger step` run as its OWN
 /// process-group leader (mirroring the courier running `rigger step` as a foreground command in
 /// its own group) spawns the always-on dash into a DIFFERENT process group - the dash's own
@@ -25043,7 +24876,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     }
 
     // Observe the dash's process group directly from `/proc` - no signal sent.
-    let dash_pgid = proc_pgid_of(dash_pid);
+    let dash_pgid = pgid_of(dash_pid);
 
     // Reap the detached dash BEFORE asserting, so a failed assertion never leaves it orphaned.
     common::terminate_pid(dash_pid);
@@ -26273,22 +26106,6 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     );
 }
 
-/// Collapse all whitespace runs (including newlines) to a single space, so a phrase that
-/// wraps across physical lines in the committed Markdown still matches a one-line needle.
-fn normalize_ws(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The committed `.rigger/workflow.yml` text, read fresh each call (mirrors
-/// `rust_engineer_persona_text`'s own shape) - so a pin against it fails loudly the moment
-/// the checked-in workflow definition drifts, rather than against a stale in-memory copy.
-fn rigger_workflow_yml_text() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".rigger")
-        .join("workflow.yml");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
-
 /// Spec 91 (THE CHECK-IN STAGE IS DEFINITION, criterion 2): the committed `.rigger/
 /// workflow.yml` must define the `checkin` stage and its `mutation` gate, and must NAME
 /// this spec in the definition's own prose - superseding
@@ -26299,7 +26116,7 @@ fn rigger_workflow_yml_text() -> String {
 /// implementer round.
 #[test]
 fn rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91() {
-    let text = normalize_ws(&rigger_workflow_yml_text());
+    let text = normalize_ws(&repo_text(".rigger/workflow.yml"));
 
     assert!(
         text.contains("checkin:"),

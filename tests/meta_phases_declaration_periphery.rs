@@ -44,47 +44,11 @@
 //! courier spawn sites still pass `phase: 'Plan'` and the global `phase('Plan')` marker
 //! still exists, both untouched by this criterion and out of scope here).
 
-use std::path::Path;
+mod common;
+
+use common::fixtures::js_declaration;
+use common::repo::repo_text;
 use std::process::Command;
-
-/// Read `workflows/rigger.js` at test time from the crate manifest dir - the same
-/// `rigger_js_source` helper `tests/phase_of_role_mapping_periphery.rs` and `tests/cli.rs`
-/// each keep their own copy of (the established per-file duplication convention for this
-/// small fixture).
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// Extract a top-level brace-delimited declaration VERBATIM from `start_marker` (which must
-/// end at the declaration's opening brace) through its brace-matched close, inclusive. This
-/// file's own copy of the same brace-counting `tests/phase_of_role_mapping_periphery.rs` and
-/// `tests/step_attention_periphery.rs` each keep, per that convention.
-fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
-    let start = src
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
-    let open = start
-        + src[start..]
-            .find('{')
-            .expect("declaration must open a brace");
-    let mut depth = 0usize;
-    for (i, c) in src[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &src[start..=open + i];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{start_marker}` is not brace-balanced");
-}
 
 /// One declared phase, as `meta.phases` ACTUALLY parses under node - never re-derived from
 /// source text.
@@ -101,7 +65,7 @@ struct Phase {
 /// `src/main.rs`'s own `node --check` test already establish for this crate (missing node is
 /// an environment fact, never a test failure).
 fn run_meta_phases() -> Option<Vec<Phase>> {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let meta_decl = js_declaration(&src, "export const meta = {");
     // Drop the ESM `export` keyword so the extracted literal runs as a plain top-level
     // `const` under a script invoked directly by `node` (no --input-type=module, no other

@@ -197,6 +197,7 @@
 
 mod common;
 
+use common::fixtures::agent;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
     META_COMPENSATE_TARGET, REVIEW_ONLY_NO_ARTIFACT, STREAM,
@@ -204,10 +205,7 @@ use rigger::conductor::{
 use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{
-    Appended, Direction, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription,
-};
+use rigger::eventstore::{Appended, Direction, Event, EventStore, ExpectedRevision, Filter};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use rigger::worktree::{CherryPickOutcome, Worktree};
@@ -262,13 +260,6 @@ fn run_git(dir: &str, args: &[&str]) -> String {
         );
     }
     String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
 }
 
 /// Drives a `produces` (planner) stage that commits its own paths directly with its OWN git
@@ -2145,36 +2136,7 @@ impl EventStore for FailingExternalStore<'_> {
         }
         self.inner.append(stream, expected, events)
     }
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<Event>, rigger::eventstore::Error> {
-        self.inner.read_stream(stream, from, dir)
-    }
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<Event>, rigger::eventstore::Error> {
-        self.inner.read_all(from, dir, filter)
-    }
-    fn subscribe_all(
-        &self,
-        from: Position,
-        filter: &Filter,
-    ) -> Result<Subscription, rigger::eventstore::Error> {
-        self.inner.subscribe_all(from, filter)
-    }
-    fn subscribe_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-    ) -> Result<Subscription, rigger::eventstore::Error> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    crate::delegate_event_store_reads!();
 }
 
 /// Criterion 4, gap 14 (round 8, new cross-module seam `is_plan_landing_failed` / `run_wave`):

@@ -22,31 +22,10 @@
 //! compiles on BOTH the default and the `--no-default-features` lane (the seam is not feature-gated),
 //! so this guards the client seam in both lanes.
 
-use std::process::Command;
+mod common;
 
-use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page (the slice the runtime harness drives).
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+use common::fixtures::tool_available;
+use common::served::run_node_harness;
 
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
 /// surfaces the client seam touches (innerHTML / textContent / dataset / .hidden / .className /
@@ -94,36 +73,6 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
     TEMPLATE
         .replace("__CLIENT_ARM_SHIM__", &shim)
         .replace("__CLIENT_ARM_DRIVER__", driver)
-}
-
-/// Spawn `node` on a self-contained vm harness (a complete node program that reads the served page
-/// script from `argv[2]` and drives it under the DOM shim), asserting it exits 0 and prints `ok_token`.
-fn run_node_harness(harness_src: &str, ok_token: &str) {
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, harness_src).expect("write the runtime harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served client seam");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the runtime harness must drive the client seam, but node failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains(ok_token),
-        "the runtime harness must confirm '{ok_token}':\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
 }
 
 /// A `fetch` + fixtures prelude whose EVERY `/api/graph` view resolves: the whole-graph overview (the
@@ -288,7 +237,7 @@ const REPROJECT_FAILURE_DRIVER: &str = r#"
 /// drives. Dropping the `else loadKgOverview()` branch reddens it.
 #[test]
 fn a_lens_flip_with_no_subject_reloads_the_whole_graph_overview() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP a_lens_flip_with_no_subject_reloads_the_whole_graph_overview: no `node` runtime on \
              PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
@@ -308,7 +257,7 @@ fn a_lens_flip_with_no_subject_reloads_the_whole_graph_overview() {
 /// (`!LIVE` static-export degrade) reaches. Dropping reprojectSubject's try/catch reddens it.
 #[test]
 fn a_failed_live_reprojection_fetch_degrades_to_a_message() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP a_failed_live_reprojection_fetch_degrades_to_a_message: no `node` runtime on PATH. \
              This runtime guard needs node (present on dev machines and on ubuntu-latest CI); install \

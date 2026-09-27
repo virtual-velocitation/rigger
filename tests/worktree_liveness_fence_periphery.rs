@@ -86,6 +86,9 @@
 
 mod common;
 
+use common::cli::run_rigger;
+use common::git::git_ok;
+use common::git::init_repo;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
@@ -113,37 +116,6 @@ fn temp_git_project_with_commit() -> tempfile::TempDir {
         assert!(ok, "git {args:?} must succeed while seeding the repo");
     }
     dir
-}
-
-/// A bare (no commit-required) git repo for the pure library-boundary test: `git init` plus
-/// identity config and one empty commit, so `HEAD` resolves for `Worktree::create`'s
-/// branch-from-HEAD path.
-fn init_repo(path: &Path) {
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
-    }
-}
-
-/// Run `git <args...>` in `cwd` and assert it succeeds.
-fn git_ok(cwd: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git {args:?} must succeed");
 }
 
 /// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success.
@@ -206,24 +178,6 @@ fn seed_events(root: &Path, events: Vec<rigger::eventstore::Event>) {
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[event])
             .unwrap();
     }
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success) - mirrors
-/// `tests/cli.rs`'s identical `run_rigger` helper (opts out of the auto-started dashboard and
-/// the machine-global instance registry, exactly as every other periphery suite that spawns the
-/// product does).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// A single reviewless git-backed unit stage - mirrors `tests/cli.rs`'s identical

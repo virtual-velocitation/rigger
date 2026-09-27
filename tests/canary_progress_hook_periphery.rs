@@ -30,44 +30,25 @@
 //! built to fail exactly that regression, driven through the public entry rather than
 //! canary.rs's internals.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use common::fixtures::anchor_of;
+use common::fixtures::cfg_for;
+use common::fixtures::panel_with_lenses;
 use rigger::canary::{CanaryOutcome, TIER_LENS};
 use rigger::canary_store::{run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 
 const CRITICAL_SUMMARY: &str = "CRIT defect here";
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg(ids: &[&str]) -> Config {
-    let mut c = Config::default();
-    for id in ids {
-        c.agents.insert((*id).to_string(), agent(id));
-    }
-    c
-}
-
-fn panel(lenses: &[&str]) -> ReviewPanel {
-    ReviewPanel {
-        lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
-        adversary: "adv".into(),
-        adjudicator: "adj".into(),
-        tiers: None,
-    }
-}
 
 fn item(id: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
     CanaryItem {
@@ -83,18 +64,6 @@ fn item(id: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
         expected_tier: tier.into(),
         review: format!("fn {id}() {{}}"),
     }
-}
-
-/// Extract the anchor a reviewer prompt names - the file between the FIRST pair of
-/// backticks `review_header` wraps it in. Re-derived here rather than shared, since this
-/// file cannot see canary.rs's private helper either (the same re-derivation every sibling
-/// periphery file in this directory already performs independently).
-fn anchor_of(prompt: &str) -> String {
-    prompt
-        .split_once('`')
-        .and_then(|(_, rest)| rest.split_once('`'))
-        .map(|(anchor, _)| anchor.to_string())
-        .unwrap_or_default()
 }
 
 /// A scripted driver written fresh for this file: `lens-a` raises a critical finding about
@@ -151,8 +120,8 @@ impl AgentDriver for Catches {
 fn run_canary_calls_on_item_exactly_once_per_item_with_content_matching_the_report_through_the_public_entry(
 ) {
     let ids = ["lens-a", "adv", "adj"];
-    let c = cfg(&ids);
-    let p = panel(&["lens-a"]);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&["lens-a"]);
     let corpus = vec![
         item("hit", true, "reject", "lens"), // lens-a catches it: correct reject
         item("miss", true, "reject", "lens"), // nobody catches it: WRONG (expected reject)
@@ -281,8 +250,8 @@ fn on_item_streams_a_fast_items_score_while_a_slower_sibling_is_still_scoring_th
     }
 
     let ids = ["lens-a", "adv", "adj"];
-    let c = cfg(&ids);
-    let p = panel(&["lens-a"]);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&["lens-a"]);
     let corpus = vec![
         item("fast", false, "approve", ""),
         item("slow", false, "approve", ""),

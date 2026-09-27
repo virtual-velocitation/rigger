@@ -16,6 +16,7 @@
 
 mod common;
 
+use common::cli::run_rigger;
 use std::path::Path;
 use std::process::Command;
 
@@ -27,23 +28,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success). Mirrors
-/// `tests/cli.rs::run_rigger`'s conventions (opt out of the auto-dashboard, isolate the
-/// instance registry) so this suite behaves identically to the rest of the CLI periphery.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// The Done-when-c3 acceptance test: a fixture carrying all four defect kinds - a

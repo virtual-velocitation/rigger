@@ -67,6 +67,8 @@
 //! an accidental drop of `pub` (or of `pub mod liveness` in `lib.rs`) fails HERE, at the
 //! crate boundary, rather than only inside the module that would silently stop exporting it.
 
+use common::repo::repo_text;
+
 /// Spec 69, criterion 5 (review u69c5 round 4, cause genuine-defect): `liveness::
 /// hung_cursor_path`, `read_hung_cursor`, and `write_hung_cursor` are the three new PUBLIC
 /// functions the round-4 fix added - called EXACTLY as an external crate consumer would
@@ -134,6 +136,11 @@ fn hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary
 
 mod common;
 
+use common::cli::plant_stale_marker;
+use common::cli::run_rigger;
+use common::cli::seed_run_events;
+use common::fixtures::js_declaration;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -142,75 +149,6 @@ use std::process::Command;
 /// touches git, so a repo-less offline project is the faithful, minimal fixture.
 fn temp_repoless_project() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
-}
-
-/// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s identical
-/// `run_stream_identity` helper (a repo-less project has no git top-level, so this always
-/// falls through to `root`'s own basename, never empty).
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Seed run-lifecycle events directly into the namespaced run stream on a REAL on-disk
-/// store - mirrors `tests/cli.rs`'s identical `seed_run_events` helper. Standing in for a
-/// courier's `rigger result <id> --error <why>`, which the driver runs when a worker's
-/// spawn errors.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success) - mirrors
-/// `tests/cli.rs`'s identical `run_rigger_envs` helper (opts out of the auto-started
-/// dashboard and the machine-global instance registry, exactly as every other periphery
-/// suite that spawns the product does).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// A single-unit workflow whose gate always PASSES and whose remediation bound
@@ -408,21 +346,6 @@ fn attention_kind_rank_orders_the_five_known_kinds_and_sorts_an_unknown_kind_las
         "sorting a scrambled kind list by attention_kind_rank must reproduce the canonical \
          order - the exact use main.rs::merge_hung_attention makes of it"
     );
-}
-
-/// Plant a SYNTHETIC STALE MARKER at exactly `marker`, touched an hour ago - mirrors
-/// `tests/cli.rs`'s identical `plant_stale_marker` helper (this crate's own established
-/// per-file duplication convention - see this file's other helpers' doc comments above).
-fn plant_stale_marker(marker: &Path) {
-    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    std::fs::write(marker, b"heartbeat").unwrap();
-    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-    std::fs::File::options()
-        .write(true)
-        .open(marker)
-        .unwrap()
-        .set_modified(stale)
-        .unwrap();
 }
 
 /// Extract the `marker_path` field carried by the wave item whose `id` is exactly `id` -
@@ -646,36 +569,6 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
 // enumeration) turned up: a new call from the Rust-emitted wire (criterion 5, proven end to end
 // above) into this JS consumer (criterion 6).
 
-/// Extract a top-level declaration - `function <name>(...) { ... }` or `const <NAME> = { ... }` -
-/// VERBATIM from `start_marker` through its brace-matched close, inclusive. The same brace-
-/// counting `src/main.rs::mod tests::js_function_body` uses (this file's own copy, per the
-/// established per-file duplication convention documented at the top of this file), but keeps
-/// the marker text itself too, so the result is a directly-executable standalone JS statement
-/// rather than a bare function body.
-fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
-    let start = src
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
-    let open = start
-        + src[start..]
-            .find('{')
-            .expect("declaration must open a brace");
-    let mut depth = 0usize;
-    for (i, c) in src[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &src[start..=open + i];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{start_marker}` is not brace-balanced");
-}
-
 /// Run the REAL `relayAttention` - extracted verbatim from the shipped `workflows/rigger.js`,
 /// never hand-copied - against `step_json` (a `{"attention": [...]}` object, or `{}`/`{"attention":
 /// []}` for the two shapes a clean step can send) under a real `node` subprocess. `log` is
@@ -685,7 +578,7 @@ fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
 /// same graceful-absence contract `src/main.rs`'s own `node --check` test already established
 /// for this crate (missing node is an environment fact, never a test failure).
 fn run_relay_attention(step_json: &str) -> Option<Vec<String>> {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let response_table = js_declaration(&src, "const ATTENTION_RESPONSE = {");
     let relay_fn = js_declaration(&src, "function relayAttention(step) {");
 
@@ -936,7 +829,7 @@ fn relay_attention_maps_the_remaining_three_known_kinds_to_their_documented_resp
 fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_skill() {
     use rigger::watch::Signal;
 
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let table = js_declaration(&src, "const ATTENTION_RESPONSE = {");
 
     for (js_kind, signal) in [
@@ -956,14 +849,4 @@ fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_ski
              ATTENTION_RESPONSE table: {table}"
         );
     }
-}
-
-/// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors `tests/
-/// cli.rs`'s identical `rigger_js_source` helper (this file's own established per-file
-/// duplication convention, documented at the top of this file).
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }

@@ -626,6 +626,7 @@ pub fn write_hung_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::run_log;
 
     #[test]
     fn decode_marker_filename_inverts_the_encoding_and_refuses_a_name_the_encoder_never_makes() {
@@ -930,9 +931,8 @@ mod tests {
 
     // --- Sweep / hung-spawns tests (a synthetic stale marker, the done-when pin) ---
 
-    use crate::conductor::STREAM;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::{Direction, EventStore};
+
     use crate::spawn::{self, SpawnRequest, ROLE_IMPLEMENTER};
     use crate::spawn_store::park_in_run;
 
@@ -949,10 +949,6 @@ mod tests {
         req.max_wall_clock = Some(secs);
         park_in_run(store, &req, "").unwrap();
         req
-    }
-
-    fn read(store: &Store) -> Vec<Event> {
-        store.read_stream(STREAM, 0, Direction::Forward).unwrap()
     }
 
     /// The run id every sweep test scopes its markers under (the run-identity subdir).
@@ -978,7 +974,7 @@ mod tests {
         let hung = park_bounded(&store, "hung-unit", 300);
         plant_marker(root, &hung.id);
 
-        let events = read(&store);
+        let events = run_log(&store);
         let taxonomy = Taxonomy::default();
         let now = SystemTime::now() + Duration::from_secs(400);
         let stale = sweep(&store, &events, root, TEST_RUN, &taxonomy, now).unwrap();
@@ -989,7 +985,7 @@ mod tests {
         assert_eq!(stale[0].class, FailureClass::Infra);
 
         // Recorded on the spawn's id as a liveness fault (existing SpawnResult type).
-        let after = read(&store);
+        let after = run_log(&store);
         let res = spawn::result_of(&after, &hung.id).unwrap().unwrap();
         assert!(
             res.is_liveness_fault(),
@@ -1031,7 +1027,7 @@ mod tests {
         // No marker at all (never started touching): left alone, conservative.
         let _no_marker = park_bounded(&store, "no-marker-unit", 300);
 
-        let events = read(&store);
+        let events = run_log(&store);
         let now = SystemTime::now() + Duration::from_secs(10);
         let stale = sweep(&store, &events, root, TEST_RUN, &Taxonomy::default(), now).unwrap();
         assert!(
@@ -1039,7 +1035,7 @@ mod tests {
             "a fresh marker and a missing marker are not hung"
         );
         assert!(
-            spawn::result_of(&read(&store), &alive.id)
+            spawn::result_of(&run_log(&store), &alive.id)
                 .unwrap()
                 .is_none(),
             "no fault is recorded for a live spawn"
@@ -1058,7 +1054,7 @@ mod tests {
         park_in_run(&store, &unbounded, "").unwrap();
         plant_marker(root, &unbounded.id);
 
-        let events = read(&store);
+        let events = run_log(&store);
         let now = SystemTime::now() + Duration::from_secs(99_999);
         let stale = sweep(&store, &events, root, TEST_RUN, &Taxonomy::default(), now).unwrap();
         assert!(
@@ -1075,7 +1071,7 @@ mod tests {
         // Record a liveness fault directly (as the sweep would).
         let fault = SpawnResult::liveness_fault(&hung.id, "hung", "infra");
         spawn_store::record_result(&store, &fault).unwrap();
-        let surfaced = hung_spawns(&read(&store)).unwrap();
+        let surfaced = hung_spawns(&run_log(&store)).unwrap();
         assert_eq!(surfaced.len(), 1);
         assert_eq!(surfaced[0].id, hung.id);
         assert_eq!(surfaced[0].unit, "u");
@@ -1084,7 +1080,7 @@ mod tests {
         // A real result recorded LATER (last-write-wins) supersedes the fault - recovered.
         spawn_store::record_result(&store, &SpawnResult::ok(&hung.id, "recovered output")).unwrap();
         assert!(
-            hung_spawns(&read(&store)).unwrap().is_empty(),
+            hung_spawns(&run_log(&store)).unwrap().is_empty(),
             "a real result supersedes the liveness fault; the spawn is no longer hung"
         );
     }
@@ -1252,7 +1248,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path().to_str().unwrap();
         let store = Store::open(":memory:").unwrap();
-        let events = read(&store);
+        let events = run_log(&store);
         // The store is empty: the named spawn has no SpawnRequested at all - nothing has
         // halted, so the checkpoint must not fire.
         assert!(!spawn_is_halted(
@@ -1273,7 +1269,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let req = park_bounded(&store, "u", 300);
         // No marker was ever planted for this spawn - genuinely silent, the classic halt.
-        let events = read(&store);
+        let events = run_log(&store);
         assert!(
             spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, SystemTime::now(),).unwrap()
         );
@@ -1286,7 +1282,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let req = park_bounded(&store, "u", 300);
         plant_marker(root, &req.id);
-        let events = read(&store);
+        let events = run_log(&store);
         // Evaluated 400s later, 100s past the 300s bound: the marker is stale, so the
         // spawn is halted.
         let now = SystemTime::now() + Duration::from_secs(400);
@@ -1300,7 +1296,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let req = park_bounded(&store, "u", 300);
         plant_marker(root, &req.id);
-        let events = read(&store);
+        let events = run_log(&store);
         // Evaluated only 10s later, well inside the 300s bound: still actively working.
         let now = SystemTime::now() + Duration::from_secs(10);
         assert!(!spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, now).unwrap());
@@ -1313,7 +1309,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let req = park_bounded(&store, "u", 300);
         spawn_store::record_result(&store, &SpawnResult::ok(&req.id, "done")).unwrap();
-        let events = read(&store);
+        let events = run_log(&store);
         // A real result means the spawn ended normally - the tree's dirt (if any) belongs
         // to whatever runs next, never a halt this spawn left behind.
         assert!(
@@ -1334,7 +1330,7 @@ mod tests {
             &SpawnResult::liveness_fault(&req.id, "hung", "infra"),
         )
         .unwrap();
-        let events = read(&store);
+        let events = run_log(&store);
         assert!(
             spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, SystemTime::now(),).unwrap()
         );
@@ -1354,7 +1350,7 @@ mod tests {
             "two attempts of the same unit have distinct ids"
         );
         plant_marker(root, &live.id);
-        let events = read(&store);
+        let events = run_log(&store);
         let now = SystemTime::now() + Duration::from_secs(10);
         assert!(
             !spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap(),
@@ -1370,7 +1366,7 @@ mod tests {
         let named = park_bounded(&store, "u", 300);
         let other_unit = park_bounded(&store, "v", 300);
         plant_marker(root, &other_unit.id);
-        let events = read(&store);
+        let events = run_log(&store);
         let now = SystemTime::now() + Duration::from_secs(10);
         // The other unit's spawn is live, but it is not THIS unit's - must not block.
         assert!(spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap());
@@ -1398,7 +1394,7 @@ mod tests {
         plant_marker(root, &unbounded.id);
         spawn_store::record_result(&store, &SpawnResult::ok(&unbounded.id, "done long ago"))
             .unwrap();
-        let events = read(&store);
+        let events = run_log(&store);
         // Evaluated a full day later - the finished sibling's stale marker must not matter;
         // only its REAL result does.
         let now = SystemTime::now() + Duration::from_secs(86_400);
@@ -1422,7 +1418,7 @@ mod tests {
         let finished = park_bounded_attempt(&store, "u", 1, 300);
         plant_marker(root, &finished.id);
         spawn_store::record_result(&store, &SpawnResult::ok(&finished.id, "done")).unwrap();
-        let events = read(&store);
+        let events = run_log(&store);
         // Only 10s later - well inside the 300s bound, so the marker alone reads "fresh".
         let now = SystemTime::now() + Duration::from_secs(10);
         assert!(

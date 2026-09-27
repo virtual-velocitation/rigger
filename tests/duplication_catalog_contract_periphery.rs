@@ -54,8 +54,12 @@
 //! citation shape (same real sites, a different purpose) and would otherwise be misread as
 //! belonging to whichever cluster happens to render last.
 
+mod common;
+
+use common::repo::committed_json;
+use common::repo::repo_root;
+use common::repo::repo_text;
 use serde::Deserialize;
-use std::path::PathBuf;
 
 /// Mirrors `tests/simplification_audit.rs`'s private `DupSiteWire` shape field-for-field, from
 /// the outside - see the module doc comment for why this is a deliberate re-declaration, not an
@@ -84,6 +88,9 @@ struct ConsumedDupCluster {
 }
 
 const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
+/// The documented contract a downstream consumer decodes [`CATALOG_PATH`] as.
+const CATALOG_CONTRACT: &str =
+    "DupCluster contract (id/classification/sites/proposed_home/note, sites as file/name/content_hash)";
 
 /// The five mandatory sweeps, in the fixed order spec 85 Design names them - mirrors the
 /// producer's private `MANDATORY_SWEEPS` constant (`tests/simplification_audit.rs:2309-2315`).
@@ -97,37 +104,13 @@ const MANDATORY_SWEEPS: [&str; 5] = [
     "error-shaping helper functions",
 ];
 
-/// The repo root this test binary was compiled from - never the process CWD (same convention
-/// as `tests/simplification_audit.rs::repo_root`, `tests/responsibility_map_contract_periphery.rs`,
-/// and `tests/no_os_kill_audit.rs`).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn read_committed_catalog_raw() -> String {
-    let path = repo_root().join(CATALOG_PATH);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{CATALOG_PATH} is missing or unreadable ({e})"))
-}
-
-fn deserialize_committed_catalog() -> Vec<ConsumedDupCluster> {
-    let raw = read_committed_catalog_raw();
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!(
-            "{CATALOG_PATH} does not deserialize as the documented DupCluster contract \
-             (id/classification/sites/proposed_home/note, sites as \
-             file/name/content_hash): {e}"
-        )
-    })
-}
-
 /// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 85's documented field shape
 /// (not the producer's private Rust type) can actually parse the committed artifact. This is
 /// the specific gap the boundary probe found - `Deserialize` is derived but the unit's own
 /// tests only ever exercise it against a synthetic fixture, never the real committed file.
 #[test]
 fn the_committed_duplication_catalog_deserializes_as_a_downstream_consumer_would() {
-    let clusters = deserialize_committed_catalog();
+    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
     assert!(
         !clusters.is_empty(),
         "{CATALOG_PATH} deserialized to zero clusters - a downstream consumer pinning counts \
@@ -142,7 +125,7 @@ fn the_committed_duplication_catalog_deserializes_as_a_downstream_consumer_would
 #[test]
 fn every_deserialized_cluster_has_two_or_more_sites_a_recognized_classification_and_a_non_empty_home(
 ) {
-    let clusters = deserialize_committed_catalog();
+    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
     for c in &clusters {
         assert!(
             c.sites.len() >= 2,
@@ -172,7 +155,7 @@ fn every_deserialized_cluster_has_two_or_more_sites_a_recognized_classification_
 /// absence; this test pins presence and non-emptiness of what DOES remain).
 #[test]
 fn every_deserialized_site_has_a_non_empty_file_name_and_content_hash() {
-    let clusters = deserialize_committed_catalog();
+    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
     for c in &clusters {
         for s in &c.sites {
             assert!(
@@ -204,7 +187,7 @@ fn every_deserialized_site_has_a_non_empty_file_name_and_content_hash() {
 /// the same cluster until that cluster itself changes.
 #[test]
 fn cluster_ids_in_the_committed_catalog_are_unique_and_content_hash_formatted() {
-    let clusters = deserialize_committed_catalog();
+    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
     let ids: Vec<&str> = clusters.iter().map(|c| c.id.as_str()).collect();
     let distinct: std::collections::HashSet<&str> = ids.iter().copied().collect();
     assert_eq!(
@@ -239,7 +222,7 @@ fn cluster_ids_in_the_committed_catalog_are_unique_and_content_hash_formatted() 
 /// never be told a stale count.
 #[test]
 fn every_mandatory_sweep_appears_as_exactly_one_semantic_cluster_in_the_committed_catalog() {
-    let clusters = deserialize_committed_catalog();
+    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
     for name in MANDATORY_SWEEPS {
         let prefix = format!("mandatory sweep: {name} - ");
         let matches: Vec<&ConsumedDupCluster> = clusters
@@ -297,8 +280,8 @@ fn every_mandatory_sweep_appears_as_exactly_one_semantic_cluster_in_the_committe
 /// consumer will be in).
 #[test]
 fn deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly() {
-    let committed = read_committed_catalog_raw();
-    let clusters = deserialize_committed_catalog();
+    let committed = repo_text(CATALOG_PATH);
+    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
     let mut reencoded =
         serde_json::to_string_pretty(&clusters).expect("ConsumedDupCluster re-serializes");
     reencoded.push('\n');
@@ -339,23 +322,15 @@ struct ConsumedDupClusterLines {
     sites: Vec<ConsumedDupSiteLines>,
 }
 
-fn deserialize_committed_catalog_lines() -> Vec<ConsumedDupClusterLines> {
-    let path = repo_root().join(CATALOG_LINES_PATH);
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{CATALOG_LINES_PATH} is missing or unreadable ({e})"));
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!("{CATALOG_LINES_PATH} does not deserialize as the documented lines contract: {e}")
-    })
-}
-
 /// Spec 90 criterion 2: the join holds - every cluster `id` in [`CATALOG_PATH`] has a
 /// same-`id` cluster in [`CATALOG_LINES_PATH`] carrying exactly as many sites, in the same
 /// per-cluster order (both come from the SAME `Vec<DupCluster>` in the same pass, per the
 /// producer's own doc comment - never independently re-sorted).
 #[test]
 fn the_committed_catalog_and_its_lines_sibling_are_position_joined_by_id_and_site_count() {
-    let clusters = deserialize_committed_catalog();
-    let lines = deserialize_committed_catalog_lines();
+    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
+    let lines =
+        committed_json::<Vec<ConsumedDupClusterLines>>(CATALOG_LINES_PATH, "lines contract");
     assert_eq!(
         clusters.len(),
         lines.len(),
@@ -454,7 +429,8 @@ fn the_committed_report_section_2_cites_file_line_exactly_as_the_lines_sibling_r
         "found zero section 2 cluster citations in {REPORT_PATH} - the extraction regex or the \
          section boundary is broken"
     );
-    let lines = deserialize_committed_catalog_lines();
+    let lines =
+        committed_json::<Vec<ConsumedDupClusterLines>>(CATALOG_LINES_PATH, "lines contract");
     assert_eq!(
         cited.len(),
         lines.len(),

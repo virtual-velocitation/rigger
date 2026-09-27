@@ -39,6 +39,10 @@
 //! that criterion - a locally modified tracked file in the operator's checkout - this
 //! file's own scope never reached.
 
+mod common;
+
+use common::git::git_ok;
+use common::git::git_out;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -84,34 +88,6 @@ fn diff_computation_prefix(full: &str) -> String {
         .trim_end_matches("&&")
         .trim_end()
         .to_string()
-}
-
-fn run_git(dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"))
-}
-
-fn git_ok(dir: &Path, args: &[&str]) {
-    let out = run_git(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = run_git(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn init_repo(dir: &Path) {

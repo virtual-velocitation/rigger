@@ -21,31 +21,13 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// The SERVED root page SHIPS the whole-graph exploration viz (spec 42 c5): the deterministic
 /// force layout, the SVG emit (`<circle>`/`<line>`/`<text>`), the overview + drill renderers, the
@@ -356,7 +338,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// dispatch, or a non-finite layout, makes it go red.
 #[test]
 fn the_exploration_viz_lays_out_and_dispatches_overview_drill_and_back() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_exploration_viz_lays_out_and_dispatches_overview_drill_and_back: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \

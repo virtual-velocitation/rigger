@@ -29,31 +29,13 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// absent on the shim-only lane); the runtime harness SKIPs rather than fails when it is missing.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// STRUCTURAL: the served page SHIPS the density-spread lever AND wires the radius/label accessors
 /// into the force layout, so the scaling governs the actual force-laid views. Bound to the c2
@@ -217,7 +199,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// least the sum of their node radii apart - deterministically across two runs.
 #[test]
 fn the_layout_extent_scales_with_density_and_edges_are_drawable() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_layout_extent_scales_with_density_and_edges_are_drawable: no `node` runtime on \
              PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \

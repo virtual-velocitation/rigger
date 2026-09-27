@@ -21,10 +21,14 @@
 //! exactly like a live reviewer's, proving both boundary cases neither the implementer's
 //! own unit tests nor the periphery layer previously covered.
 
+mod common;
+
+use common::fixtures::cfg_for;
+use common::fixtures::lens_only_panel;
 use rigger::canary::TIER_LENS;
 use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use serde_json::{json, Value};
@@ -86,29 +90,8 @@ impl AgentDriver for AttributionDriver {
     }
 }
 
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg() -> Config {
-    let mut c = Config::default();
-    for id in ["lens", "adv", "adj"] {
-        c.agents.insert(id.to_string(), agent(id));
-    }
-    c
-}
-
-fn panel() -> ReviewPanel {
-    ReviewPanel {
-        lenses: vec!["lens".into()],
-        adversary: String::new(),
-        adjudicator: "adj".into(),
-        tiers: None,
-    }
-}
+/// The agents every panel in this file names.
+const PANEL_AGENTS: &[&str] = &["lens", "adv", "adj"];
 
 fn item(id: &str, anchor: &str) -> CanaryItem {
     CanaryItem {
@@ -135,8 +118,8 @@ fn a_tolerant_match_in_a_later_about_entry_still_scores_the_catch() {
     let report = run_canary(
         &store,
         &AttributionDriver,
-        &cfg(),
-        &panel(),
+        &cfg_for(PANEL_AGENTS),
+        &lens_only_panel(),
         &corpus,
         default_jobs(),
         &|_, _| {},
@@ -171,8 +154,8 @@ fn an_empty_about_entry_never_scores_a_catch_even_against_a_trailing_slash_ancho
     let report = run_canary(
         &store,
         &AttributionDriver,
-        &cfg(),
-        &panel(),
+        &cfg_for(PANEL_AGENTS),
+        &lens_only_panel(),
         &corpus,
         default_jobs(),
         &|_, _| {},

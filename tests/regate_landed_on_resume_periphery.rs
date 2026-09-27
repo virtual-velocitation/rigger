@@ -44,13 +44,19 @@
 //! recording no post-merge-gate verdict and reporting `UnitIntegrated` with the same empty
 //! `commit` sentinel a pre-fix binary always reported for this shape.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
+use common::fixtures::mk_stage;
+use common::fixtures::review_or_adjudicate;
+use common::git::git_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
-use rigger::config::{self, AgentDef, Config, Stage};
+use rigger::config::{AgentDef, Config};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{
-    Appended, Direction, Error as EsError, Event, EventStore, ExpectedRevision, Filter, Position,
-    Revision, Subscription,
+    Appended, Direction, Error as EsError, Event, EventStore, ExpectedRevision,
 };
 use rigger::ledger;
 use serde_json::{json, Value};
@@ -80,16 +86,6 @@ fn init_repo() -> tempfile::TempDir {
     dir
 }
 
-fn git_out(dir: &str, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} in {dir}: {e}"));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
 fn git_commit_all(dir: &str, msg: &str) {
     for args in [&["add", "-A"][..], &["commit", "-q", "-m", msg]] {
         let out = Command::new("git")
@@ -106,63 +102,11 @@ fn git_commit_all(dir: &str, msg: &str) {
     }
 }
 
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
-}
-
-fn review_panel() -> config::ReviewPanel {
-    config::ReviewPanel {
-        lenses: vec!["lens".into()],
-        adjudicator: "judge".into(),
-        ..Default::default()
-    }
-}
-
-fn mk_stage(name: &str, gate: &str) -> Stage {
-    Stage {
-        name: name.into(),
-        agent: "worker".into(),
-        gates: vec![gate.into()],
-        on_pass: "merge".into(),
-        needs: vec![],
-        review: review_panel(),
-        ..Default::default()
-    }
-}
-
 /// `rigger::conductor::unit_branch`'s exact convention (`rigger/u/<unit-id>`, the crate's own
 /// public authority) reproduced by name rather than imported, so this file states plainly which
 /// branch it seeds without depending on the crate leaking its own worktree-dir layout too.
 fn unit_branch(unit_id: &str) -> String {
     format!("rigger/u/{unit_id}")
-}
-
-/// The shared review-tier response every fake `AgentDriver` in this file returns for a
-/// non-implementer spawn: the adjudicator approves outright; any other reviewer role's own
-/// output is unread (only its APPROVE verdict matters). Mirrors
-/// `tests/integrate_conflict_merge_periphery.rs::review_or_adjudicate`.
-fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
-    if opts.id.contains("/adjudicator#") {
-        return AgentResult {
-            output: r#"{"verdict":"approve"}"#.into(),
-            resolved_model: String::new(),
-        };
-    }
-    AgentResult {
-        output: "reviewed the diff".into(),
-        resolved_model: String::new(),
-    }
 }
 
 /// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else. Mirrors
@@ -247,28 +191,7 @@ impl EventStore for FailAfterContaining<'_> {
         }
         Ok(out)
     }
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<Event>, EsError> {
-        self.inner.read_stream(stream, from, dir)
-    }
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<Event>, EsError> {
-        self.inner.read_all(from, dir, filter)
-    }
-    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
-        self.inner.subscribe_all(from, filter)
-    }
-    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    crate::delegate_event_store_reads!();
 }
 
 /// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status`.
@@ -367,7 +290,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
     // row 4's after-record (`integrate-landed`, now carrying `pre_merge`) made it into the log
     // before the simulated crash - exactly the state a genuine process death in that window
     // leaves behind.
-    let unit_sha = git_out(&repo_path, &["rev-parse", "HEAD"]);
+    let unit_sha = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
     let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
     assert!(
         has_status_marker(&events_after_call_1, "integrate-landed"),
@@ -460,7 +383,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
     );
     std::fs::write(Path::new(&seed_dir).join("feature.rs"), "fn feature() {}\n").unwrap();
     git_commit_all(&seed_dir, "rigger: prior window work");
-    let unit_sha = git_out(&seed_dir, &["rev-parse", "HEAD"]);
+    let unit_sha = git_stdout(&seed_dir, &["rev-parse", "HEAD"]);
     let out = Command::new("git")
         .arg("-C")
         .arg(&repo_path)
@@ -485,7 +408,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
         "test setup: the fast-forward must succeed: {out:?}"
     );
     assert_eq!(
-        git_out(&repo_path, &["rev-parse", "HEAD"]),
+        git_stdout(&repo_path, &["rev-parse", "HEAD"]),
         unit_sha,
         "test setup premise: the run branch must already carry the unit's landed tip"
     );

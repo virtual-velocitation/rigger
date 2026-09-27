@@ -37,12 +37,14 @@
 //! through, that EVERY inherited `CARGO_FEATURE_*` is scrubbed, the success return path's
 //! artifact path, and that a nonzero exit returns `Err` rather than panicking.
 
+mod common;
+
 #[path = "../build/console_wasm.rs"]
 #[allow(dead_code)]
 mod console_wasm;
 
+use common::env_test_lock;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 const CARGO_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -148,19 +150,11 @@ fn core_module_paths_reads_the_real_committed_audit_record() {
 // recording fixture standing in for `cargo` - never a real cross-compile - so this runs on
 // every `cargo test`, always. Every test here mutates real process env (the exact leak
 // surface this function exists to close) so all of them share one lock, the same
-// discipline `tests/build_env_authority_periphery.rs`'s `ENV_TEST_LOCK` uses and documents:
+// discipline `tests/build_env_authority_periphery.rs`'s `env_test_lock` uses and documents:
 // `cargo test` runs a binary's tests as concurrent threads by default, and a concurrent
 // env read racing a concurrent env write is a genuine POSIX getenv/setenv hazard regardless
 // of which keys either side touches.
 // ---------------------------------------------------------------------------
-
-static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 fn recording_cargo_fixture() -> PathBuf {
     PathBuf::from(CARGO_MANIFEST_DIR).join("tests/fixtures/recording-cargo.sh")

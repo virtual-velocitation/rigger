@@ -98,6 +98,8 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
+use common::cli::run_rigger;
+use common::cli::seed_run_events;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
@@ -133,75 +135,6 @@ fn temp_git_project_with_commit() -> tempfile::TempDir {
 /// scenarios below, which never touch git. Mirrors `tests/cli.rs`'s `temp_repoless_project`.
 fn temp_repoless_project() -> tempfile::TempDir {
     tempfile::tempdir().expect("create temp project")
-}
-
-/// Append `events` directly to `root`'s namespaced run stream through a real `Store::open`
-/// round trip - standing in for the `rigger result` courier's own `SpawnResult` append, so
-/// a retry/escalation loop can be driven one attempt at a time without a real agent
-/// subprocess. Mirrors `tests/escalation_resume_periphery.rs`'s identically-named helper.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
-
-/// The project identity the binary resolves for `root` - mirrors
-/// `tests/escalation_resume_periphery.rs`'s identically-named helper, itself mirroring
-/// `StoreLocation::identity`'s precedence.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/cli.rs`'s identically-named helper: opts out of the auto-started dashboard and
-/// scopes the machine-global instance registry to a throwaway `XDG_STATE_HOME`, so these
-/// short-lived invocations never leak a live process or a phantom registry entry.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// Write the `worker` agent file with `isolation` frontmatter lines (each ending in `\n`):

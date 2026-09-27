@@ -23,6 +23,7 @@ use crate::grounder::{BlastRadius, Grounder};
 use crate::instructions::Instruction;
 use crate::ledger::{self, RunState};
 use crate::liveness;
+use crate::playbooks::fnv1a_64;
 use crate::safety;
 use crate::spawn::{
     self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
@@ -592,17 +593,9 @@ fn input_digest(command: &str, tree_sha: &str) -> String {
     if tree_sha.is_empty() {
         return String::new();
     }
-    // FNV-1a over the command bytes - the SAME fixed constants `main::fnv1a_64` uses, so
-    // the crate has one stable-hash idiom. The collision-sensitive input (the tree) rides
-    // verbatim, so this 64-bit fold covers
-    // only the short, config-authored command string.
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for &b in command.as_bytes() {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
+    // The collision-sensitive input (the tree) rides verbatim, so the 64-bit hash covers only
+    // the short, config-authored command string.
+    let hash = fnv1a_64(command.as_bytes());
     format!("{hash:016x}:{tree_sha}")
 }
 
@@ -11758,7 +11751,7 @@ fn union_gates(base: &[String], additional: &[String]) -> Vec<String> {
 /// reflowing/indentation differences without loosening into fuzzy matching (a planner
 /// that PARAPHRASES a criterion deliberately will not match, and is correctly treated
 /// as a genuinely new sub-unit added on top of the surviving baseline).
-fn normalize_ws(s: &str) -> String {
+pub fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -11799,20 +11792,6 @@ fn criterion_stable_id(position: usize, criterion: &str) -> String {
         "c{position}-{:016x}",
         fnv1a_64(normalize_ws(criterion).as_bytes())
     )
-}
-
-/// FNV-1a 64-bit hash of `bytes`: a tiny, dependency-free, stable-across-releases hash
-/// used only to derive the [`criterion_stable_id`] content digest (never for security).
-/// Chosen over `std`'s `DefaultHasher`, whose output is explicitly not guaranteed
-/// stable across toolchain versions - the criterion id must reproduce identically so
-/// the planner's echoed id keeps matching its baseline.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
 }
 
 /// The evidence map folded into a unit's `verified` status (item 4): the gates that
@@ -14033,6 +14012,9 @@ mod tests {
     use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
     use crate::spawn::SpawnEvent;
+    use crate::test_support::agent;
+    use crate::test_support::gate_def;
+    use crate::test_support::gate_def_inputs;
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -14095,43 +14077,6 @@ mod tests {
         }
     }
     use support::*;
-
-    /// Implements `EventStore`'s read and subscribe methods for a wrapper store by delegating
-    /// each to its `inner` store unchanged - the wrappers below differ only in `append`.
-    macro_rules! delegate_event_store_reads {
-        () => {
-            fn read_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                dir: Direction,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_stream(stream, from, dir)
-            }
-            fn read_all(
-                &self,
-                from: crate::eventstore::Position,
-                dir: Direction,
-                filter: &Filter,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_all(from, dir, filter)
-            }
-            fn subscribe_all(
-                &self,
-                from: crate::eventstore::Position,
-                filter: &Filter,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_all(from, filter)
-            }
-            fn subscribe_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_stream(stream, from)
-            }
-        };
-    }
 
     // ---- FAILURE CLASS (spec 104 criterion 5): pure functions, moved here with the code
     // they test (adj-u104c5 REQUIRED FIX 3) ----
@@ -15864,13 +15809,6 @@ mod tests {
         }
     }
 
-    fn agent(id: &str) -> AgentDef {
-        AgentDef {
-            id: id.to_string(),
-            ..Default::default()
-        }
-    }
-
     /// An agent with a persona (the markdown body of its definition) - its role
     /// instructions, which the conductor must thread to the driver as the system
     /// prompt.
@@ -15879,25 +15817,6 @@ mod tests {
             id: id.to_string(),
             prompt: prompt.to_string(),
             ..Default::default()
-        }
-    }
-
-    fn gate_def(run: &str) -> config::Gate {
-        config::Gate {
-            run: run.to_string(),
-            kind: "core".to_string(),
-            inputs: Vec::new(),
-        }
-    }
-
-    /// A `core` gate over `run` scoped to the given blast-radius `inputs` globs (spec 12,
-    /// unit 3): the inner loop runs it only when its globs intersect the unit's grounded
-    /// blast radius.
-    fn gate_def_inputs(run: &str, inputs: &[&str]) -> config::Gate {
-        config::Gate {
-            run: run.to_string(),
-            kind: "core".to_string(),
-            inputs: inputs.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -21591,7 +21510,7 @@ mod tests {
                 self.appends.lock().unwrap().push(events.len());
                 self.inner.append(stream, expected, events)
             }
-            delegate_event_store_reads!();
+            crate::delegate_event_store_reads!();
         }
 
         // K source files, each a MULTI-EVENT batch: `defN` (a CodeEntityExtracted) and `useN` which
@@ -28701,7 +28620,7 @@ mod tests {
             }
             self.inner.append(stream, expected, events)
         }
-        delegate_event_store_reads!();
+        crate::delegate_event_store_reads!();
     }
 
     #[test]
@@ -41180,7 +41099,7 @@ mod tests {
             }
             self.inner.append(stream, expected, events)
         }
-        delegate_event_store_reads!();
+        crate::delegate_event_store_reads!();
     }
 
     #[test]

@@ -23,10 +23,13 @@
 //! periphery.rs` and `spawn_scratch_reap_authorized_root_periphery.rs` already close for their
 //! own call chains.
 
+mod common;
+
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::{Child, Command};
 
+use common::git::init_repo;
 use rigger::gate::STORE_FENCE_SUFFIX;
 use rigger::reap::processes_rooted_under;
 use rigger::worktree::{
@@ -57,23 +60,6 @@ fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     false
-}
-
-fn init_repo(path: &Path) {
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
-    }
 }
 
 #[test]

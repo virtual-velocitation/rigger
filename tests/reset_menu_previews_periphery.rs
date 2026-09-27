@@ -36,6 +36,11 @@
 //!      like a pattern (mirrors the same concern `tests/reset_derived_compaction_periphery.rs`
 //!      already proves for the delete path, now proven for this new read path independently).
 
+mod common;
+
+use common::cli::code_entity;
+use common::cli::keyed;
+use common::cli::nanos;
 use rigger::contextgraph::sqlite::{Projector, PruneStats};
 use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
@@ -64,25 +69,6 @@ fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: 
     .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
     e.position = pos;
     p.apply(&e).unwrap();
-}
-
-/// The nanosecond boundary an edge carries for a fact retired `secs` after the epoch - the same
-/// time base `valid_to` is stored in.
-fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
-}
-
-fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
-    Event::new(type_, data)
-        .with_meta(rigger::ingest::META_REPLAY_KEY, key)
-        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
-}
-
-fn code_entity() -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "file": "src/a.rs", "name": "alpha", "kind": "function", "line": 1, "lang": "rust",
-    }))
-    .unwrap()
 }
 
 fn edge_inferred() -> Vec<u8> {

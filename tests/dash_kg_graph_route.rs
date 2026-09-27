@@ -20,12 +20,19 @@
 //! `dash`, `contextgraph` are compiled on BOTH the default and the `--no-default-features` lane (none
 //! feature-gated), so this guards the served boundary in both lanes.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use common::fixtures::chain_graph;
+use common::fixtures::star_graph;
+use common::fixtures::tool_available;
+use common::served::body_of;
+use common::served::page_script;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
     REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
@@ -66,32 +73,6 @@ fn fixture_graph() -> Graph {
             edge("d1", "c1", REL_REFERENCES, TIER_INFERRED),
         ],
     }
-}
-
-/// A linear chain `n0 -> n1 -> ... -> n{len-1}` of BARE nodes (no summary / title / name), each edge
-/// `extracted`. A depth-`d` walk from `n0` reaches exactly {n0..nd}, so the served neighborhood's node
-/// count reads the EFFECTIVE (defaulted / clamped) depth straight off the wire; and a bare node's
-/// served `label` is its own id (`node_label`'s final fallback), pinned here at the boundary.
-fn chain_graph(len: usize) -> Graph {
-    let nodes = (0..len)
-        .map(|i| Node {
-            id: format!("n{i}"),
-            kind: KIND_UNIT.to_string(),
-            attrs: BTreeMap::new(),
-        })
-        .collect();
-    let edges = (0..len.saturating_sub(1))
-        .map(|i| Edge {
-            from: format!("n{i}"),
-            to: format!("n{}", i + 1),
-            rel: REL_REFERENCES.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: TIER_EXTRACTED.to_string(),
-        })
-        .collect();
-    Graph { nodes, edges }
 }
 
 /// Start `serve` on a FRESH ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
@@ -176,13 +157,6 @@ fn fetch_served(path: &str, graph: &Graph) -> String {
     panic!(
         "the dash server never served {path} over the real socket after many fresh-port attempts"
     );
-}
-
-/// Split a raw HTTP response into its body (everything past the header terminator).
-fn body_of(resp: &str) -> &str {
-    resp.split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .expect("a served response body")
 }
 
 /// The SERVED `/api/graph` route returns the seeded neighborhood as tier-tagged JSON over the real
@@ -320,28 +294,6 @@ fn the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring() {
     );
 }
 
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN select-to-seed path: it
 /// dispatches a click carrying `data-seed` through the tree's delegated listener, lets `seedGraph`
 /// fetch a fixture neighborhood, and asserts (a) the click SET the seed and fetched `/api/graph` for
@@ -441,7 +393,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// dropping the delegated listener, or letting `render()` clobber the panel, makes it go red.
 #[test]
 fn selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \
@@ -624,36 +576,6 @@ fn the_served_graph_route_percent_decodes_a_special_char_seed_over_the_socket() 
         ids.contains(raw_id) && ids.contains("src/conductor.rs"),
         "the decoded seed reaches its own node and its neighbor: {json}"
     );
-}
-
-/// A star graph: one `hub` wired to `spokes` bare leaf nodes (each edge `extracted`). A depth-1 walk
-/// from the hub carries every hub-spoke edge, so the hub's in-neighborhood degree is exactly `spokes`
-/// - the fixture the served GOD-NODE flag reads off the wire.
-fn star_graph(hub: &str, spokes: usize) -> Graph {
-    let mut nodes = vec![Node {
-        id: hub.to_string(),
-        kind: KIND_UNIT.to_string(),
-        attrs: BTreeMap::new(),
-    }];
-    let mut edges = Vec::new();
-    for i in 0..spokes {
-        let spoke = format!("{hub}-s{i}");
-        nodes.push(Node {
-            id: spoke.clone(),
-            kind: "code-entity".to_string(),
-            attrs: BTreeMap::new(),
-        });
-        edges.push(Edge {
-            from: hub.to_string(),
-            to: spoke,
-            rel: REL_REFERENCES.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: TIER_EXTRACTED.to_string(),
-        });
-    }
-    Graph { nodes, edges }
 }
 
 /// The SERVED `/api/graph` route carries the c6 QUERY-PATH + GOD-NODE analysis over the real socket:
@@ -882,7 +804,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// the grep test cannot make.
 #[test]
 fn a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \
@@ -1306,7 +1228,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// test cannot make.
 #[test]
 fn toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders: no \
              `node` runtime on PATH. This runtime guard needs node (present on dev machines and on \

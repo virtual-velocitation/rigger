@@ -16,9 +16,10 @@
 
 mod common;
 
+use common::fixtures::cleanup;
+use common::wait_until;
 use std::path::Path;
 use std::process::{Child, Command};
-use std::time::Duration;
 
 /// Spawn a real, long-lived `sleep` - the test signals it ONLY by its bare pid through
 /// [`common::terminate_pid`], never through this returned `Child`'s own `kill`, mirroring how
@@ -58,32 +59,6 @@ fn spawn_sigterm_ignorer(ready_marker: &Path) -> Child {
 /// fixture correct even if the temp-path format ever changes).
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
-}
-
-/// Poll `pred` until it holds or a generous timeout elapses; returns whether it held.
-fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if pred() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    false
-}
-
-/// Kill-and-wait a fixture child unconditionally, ignoring errors - through the `Child` handle
-/// this file spawned it with, never a computed pid. Deliberately NOT a bare `child.wait()`: a
-/// test that already confirmed `terminate_pid` ended the target can still reach this after a
-/// genuine regression where it did NOT, and a bare `wait()` on a still-living child blocks
-/// FOREVER (empirically hit while proving `terminate_pid_uses_sigkill_not_sigterm` fails for
-/// the right reason: a still-alive fixture hung the whole test binary past any bounded
-/// timeout). Calling `kill()` first guarantees `wait()` afterward returns promptly regardless
-/// of whether the code under test worked, so a real regression fails FAST with a clear
-/// assertion message instead of hanging the suite. Mirrors the identical helper in
-/// `tests/mutation_scratch_reap_base_guard_periphery.rs` and its siblings.
-fn cleanup(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[test]

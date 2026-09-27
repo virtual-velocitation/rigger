@@ -42,12 +42,17 @@
 //! assertion is load-bearing; restoring the fix verbatim (`git diff` on `src/` clean) returns it
 //! to green.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
+use common::fixtures::review_panel;
+use common::git::install_refusing_hook;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{self, AgentDef, Config, Stage};
+use rigger::config::{AgentDef, Config, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::ledger;
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -71,42 +76,6 @@ fn init_repo() -> tempfile::TempDir {
             .unwrap();
     }
     dir
-}
-
-/// Installs an ALWAYS-REFUSING `pre-commit` hook into `repo_path`'s `.git/hooks` - git worktrees
-/// created off this repo share its hooks directory (proven directly by
-/// `src/worktree.rs::tests::commit_checkpoint_commits_through_a_refusing_hook_while_commit_is_refused`),
-/// and `revert_on_base` (`repo`, not a linked worktree) runs `git commit` in that SAME
-/// repository, so it inherits this same refusal.
-fn install_refusing_hook(repo_path: &str) {
-    let hooks = Path::new(repo_path).join(".git").join("hooks");
-    std::fs::create_dir_all(&hooks).unwrap();
-    let hook = hooks.join("pre-commit");
-    std::fs::write(&hook, "#!/bin/sh\necho 'hook: refusing' >&2\nexit 1\n").unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
-}
-
-fn review_panel() -> config::ReviewPanel {
-    config::ReviewPanel {
-        lenses: vec!["lens".into()],
-        adjudicator: "judge".into(),
-        ..Default::default()
-    }
 }
 
 fn mk_stage(name: &str, needs: Vec<String>) -> Stage {

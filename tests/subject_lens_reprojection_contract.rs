@@ -22,15 +22,19 @@
 //! Reprojection, route, Cluster, Lens}`), so they guard the exact public boundary a same-crate
 //! `super::` test is structurally blind to, and drive the served `route` end-to-end.
 
-use std::collections::HashMap;
+mod common;
 
+use common::fixtures::labelled_node as node;
+use common::fixtures::plain;
+use common::lens::lens;
+use common::served::served_json;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
     REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
-    reproject, route, Cluster, Lens, UnresolvedMember, REPROJECT_FILES_UNRESOLVED,
-    REPROJECT_NO_COMMUNITY, REPROJECT_NO_CONCEPT,
+    reproject, Cluster, Lens, UnresolvedMember, REPROJECT_FILES_UNRESOLVED, REPROJECT_NO_COMMUNITY,
+    REPROJECT_NO_CONCEPT,
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
@@ -45,30 +49,6 @@ fn def(id: &str, name: &str) -> Node {
         attrs: Default::default(),
     };
     n.attrs.insert("name".to_string(), name.to_string());
-    n
-}
-
-/// A BARE cross-file placeholder code-entity: NO `name` attr, so a files re-grain resolves it by
-/// name-suffix to its defining file(s) rather than trusting its referencing-file id.
-fn bare(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A plain node of a given kind (a `file` subject, or a `community` / `concept` super-node). A
-/// super-node optionally carries its deterministic display `label`.
-fn node(id: &str, kind: &str, label: Option<&str>) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    };
-    if let Some(l) = label {
-        n.attrs.insert("label".to_string(), l.to_string());
-    }
     n
 }
 
@@ -97,16 +77,6 @@ fn edge(from: &str, to: &str, rel: &str) -> Edge {
     }
 }
 
-/// The default concepts lens (`resolution = 1`).
-fn concepts_lens() -> Lens {
-    Lens::from_query(Some("concepts"), Some("1"))
-}
-
-/// The default code lens (`resolution = 1`).
-fn code_lens() -> Lens {
-    Lens::from_query(Some("code"), Some("1"))
-}
-
 /// A code-entity file bucket (dominant kind code-entity), sized `count`, with an optional super-node
 /// `label`.
 fn bucket(key: &str, count: usize, label: Option<&str>) -> Cluster {
@@ -116,29 +86,6 @@ fn bucket(key: &str, count: usize, label: Option<&str>) -> Cluster {
         kind: KIND_CODE_ENTITY.to_string(),
         label: label.map(str::to_string),
     }
-}
-
-/// Drive the public `route` for `GET <target>` over `graph` and parse the body as JSON.
-fn served_json(graph: &Graph, target: &str) -> serde_json::Value {
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the re-projection route never errors on a live graph)"
-    );
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }
 
 // --- the LENS axis: the Concepts fold, on a COMMUNITY subject --------------------------------------
@@ -191,7 +138,7 @@ fn community_subject_regrains_its_members_by_concept_under_the_concepts_lens() {
     let re = reproject(
         &community_over_concepts_graph(),
         COMMUNITY,
-        &concepts_lens(),
+        &lens("concepts"),
     );
 
     assert_eq!(
@@ -265,7 +212,7 @@ fn reprojection_admits_a_realizing_member_of_any_kind_under_the_concepts_lens() 
         ],
     };
 
-    let re = reproject(&graph, NOKIND_COMMUNITY, &concepts_lens());
+    let re = reproject(&graph, NOKIND_COMMUNITY, &lens("concepts"));
     assert_eq!(
         re.total, 2,
         "the member-set size counts both realizers: {re:?}"
@@ -309,7 +256,7 @@ fn reprojection_carries_empty_state_when_no_member_realizes_any_concept_under_th
         ],
     };
 
-    let re = reproject(&graph, BLANK_COMMUNITY, &concepts_lens());
+    let re = reproject(&graph, BLANK_COMMUNITY, &lens("concepts"));
     assert_eq!(
         re.total, 2,
         "the member-set size still counts both members: {re:?}"
@@ -406,7 +353,7 @@ fn file_over_code_graph() -> Graph {
 /// subject's OWN kind, not only a concept.
 #[test]
 fn file_subject_regrains_its_contained_entities_by_community_under_the_code_lens() {
-    let re = reproject(&file_over_code_graph(), FILE_SUBJECT, &code_lens());
+    let re = reproject(&file_over_code_graph(), FILE_SUBJECT, &lens("code"));
 
     assert_eq!(
         re.subject, FILE_SUBJECT,
@@ -465,7 +412,7 @@ fn single_entity_subject_is_its_own_member_set() {
     );
 
     // Under a DERIVED lens the membership-less lone entity keeps its KIND bucket (never dropped).
-    let code = reproject(&graph, SOLO, &code_lens());
+    let code = reproject(&graph, SOLO, &lens("code"));
     assert_eq!(
         code.clusters,
         vec![bucket(KIND_CODE_ENTITY, 1, None)],
@@ -507,7 +454,7 @@ fn reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens()
         ],
     };
 
-    let re = reproject(&graph, PURITY_CONCEPT, &code_lens());
+    let re = reproject(&graph, PURITY_CONCEPT, &lens("code"));
     assert_eq!(
         re.total, 2,
         "the member-set size still counts the decision realizer, even though it folds into nothing"
@@ -559,7 +506,7 @@ fn reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community
         ],
     };
 
-    let re = reproject(&graph, INFLATE_CONCEPT, &code_lens());
+    let re = reproject(&graph, INFLATE_CONCEPT, &lens("code"));
     assert_eq!(
         re.total, 2,
         "the member-set size still counts the decision realizer"
@@ -602,7 +549,7 @@ fn reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded() 
         ],
     };
 
-    let re = reproject(&graph, SOLE_CONCEPT, &code_lens());
+    let re = reproject(&graph, SOLE_CONCEPT, &lens("code"));
     assert_eq!(
         re.total, 1,
         "the member-set size still counts the decision realizer: {re:?}"
@@ -643,7 +590,7 @@ fn reprojection_keeps_the_empty_state_caption_for_a_membership_less_code_entitys
         edges: vec![],
     };
 
-    let re = reproject(&graph, FALLBACK_ENTITY, &code_lens());
+    let re = reproject(&graph, FALLBACK_ENTITY, &lens("code"));
     assert_eq!(
         re.clusters,
         vec![bucket(KIND_CODE_ENTITY, 1, None)],
@@ -677,7 +624,7 @@ fn reprojection_clears_the_empty_state_caption_when_a_real_membership_lands_a_bu
         edges: vec![edge(LANDED_ENTITY, LANDED_COMMUNITY, REL_IN_COMMUNITY)],
     };
 
-    let re = reproject(&graph, LANDED_ENTITY, &code_lens());
+    let re = reproject(&graph, LANDED_ENTITY, &lens("code"));
     assert_eq!(
         re.clusters,
         vec![bucket(LANDED_COMMUNITY, 1, Some("delta"))],
@@ -700,7 +647,7 @@ fn unknown_subject_yields_an_empty_reprojection() {
     // graph.
     let graph = file_over_code_graph();
 
-    for lens in [Lens::Files, code_lens(), concepts_lens()] {
+    for lens in [Lens::Files, lens("code"), lens("concepts")] {
         let re = reproject(&graph, "no/such/subject", &lens);
         assert_eq!(
             re.subject, "no/such/subject",
@@ -733,7 +680,7 @@ fn ambiguous_files_graph() -> Graph {
     Graph {
         nodes: vec![
             node("concept/9/0", KIND_CONCEPT, Some("the idea")),
-            bare("src/caller.rs::amb"),
+            plain("src/caller.rs::amb", KIND_CODE_ENTITY),
             def("src/p/x.rs::amb", "amb"),
             def("src/q/y.rs::amb", "amb"),
         ],
@@ -749,7 +696,7 @@ fn ambiguous_files_graph() -> Graph {
 #[test]
 fn reprojection_json_omits_unresolved_when_empty_and_carries_it_when_present() {
     // --- EMPTY: a fully-resolvable code re-grain drops the `unresolved` key entirely ---
-    let resolvable = reproject(&file_over_code_graph(), FILE_SUBJECT, &code_lens());
+    let resolvable = reproject(&file_over_code_graph(), FILE_SUBJECT, &lens("code"));
     let body = serde_json::to_value(&resolvable).expect("Reprojection serializes to JSON");
     let obj = body
         .as_object()
@@ -766,7 +713,7 @@ fn reprojection_json_omits_unresolved_when_empty_and_carries_it_when_present() {
     }
 
     // Determinism: two independent folds of the same input serialize to byte-identical bodies.
-    let again = reproject(&file_over_code_graph(), FILE_SUBJECT, &code_lens());
+    let again = reproject(&file_over_code_graph(), FILE_SUBJECT, &lens("code"));
     assert_eq!(
         serde_json::to_string(&resolvable).unwrap(),
         serde_json::to_string(&again).unwrap(),
@@ -879,7 +826,7 @@ fn unmatched_bare_graph() -> Graph {
     Graph {
         nodes: vec![
             node(UNMATCHED_CONCEPT, KIND_CONCEPT, Some("the idea")),
-            bare(EXTERNAL_BARE),
+            plain(EXTERNAL_BARE, KIND_CODE_ENTITY),
         ],
         edges: vec![edge(EXTERNAL_BARE, UNMATCHED_CONCEPT, REL_REALIZES)],
     }

@@ -34,6 +34,8 @@ use std::process::Command;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
+use common::cli::run_rigger;
+
 /// A throwaway project dir that is its own git repo, mirroring `tests/cli.rs::temp_project`
 /// (private to that file, unreachable from this separate integration-test binary).
 fn temp_project() -> tempfile::TempDir {
@@ -43,25 +45,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success), through the same
-/// store-fence-clearing `Command` builder every courier-spawning suite uses.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    // Opt out of the persistent auto-dash (spec 39) so a short-lived CLI invocation never
-    // leaves a dashboard process running past the test.
-    cmd.env("RIGGER_NO_DASH", "1");
-    // Isolate the machine-global instance registry (spec 50) from the operator's real one.
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// Seed `<root>/.rigger/events.db` under `project` with TWO runs (`r1`, `r2`) on the

@@ -36,8 +36,11 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use common::fixtures::plain;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
     REL_REFERENCES, TIER_EXTRACTED,
@@ -59,40 +62,6 @@ fn ce(id: &str) -> Node {
         id: id.to_string(),
         kind: KIND_CODE_ENTITY.to_string(),
         attrs: BTreeMap::from([("name".to_string(), name.to_string())]),
-    }
-}
-
-/// A BARE cross-file code-entity PLACEHOLDER under `<referencing-file>::<name>` (spec 52's documented
-/// shape): no `name` attr, so the files-lens honesty gate (spec 63 c3) cannot take [`file_of`] of its
-/// own id directly - that would misattribute it to the REFERENCING file, not its true definition
-/// file - and instead resolves it by unique entity-name suffix over the [`ce`] DEFINITIONS in the same
-/// graph.
-fn bare_ce(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::new(),
-    }
-}
-
-/// A `KIND_FILE` node - the file's OWN node, distinct from the entities it defines. Purity-excluded
-/// from every files-lens cluster (spec 63 c3): it never inflates its own file's count nor renders as
-/// a second peer node beside its entities.
-fn file_node(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_FILE.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A node of an arbitrary non-code-entity kind (a dev-loop decision, a design-doc): purity-excluded
-/// from the files lens entirely - not even its own kind bucket.
-fn plain(id: &str, kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
     }
 }
 
@@ -134,8 +103,8 @@ fn lens_graph() -> Graph {
             ce(BAR),
             ce(BAZ),
             ce(QUX),
-            file_node(FILE_A),
-            file_node(FILE_B),
+            plain(FILE_A, KIND_FILE),
+            plain(FILE_B, KIND_FILE),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -229,7 +198,7 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
     // `KIND_CODE_ENTITY`, so `whole_graph_lens_key` returns `None` for all of them.
     let all_non_code_entities = Graph {
         nodes: vec![
-            file_node(FILE_A),
+            plain(FILE_A, KIND_FILE),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -252,15 +221,15 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
     );
 
     // Every code entity here IS a bare cross-file placeholder with ZERO matching definitions
-    // anywhere in the graph (no `ce(...)` real definition exists at all) - unresolvable honestly, so
+    // anywhere in the graph (no real code-entity definition exists at all) - unresolvable honestly, so
     // the fold still admits nothing even though `KIND_CODE_ENTITY` nodes exist. (A real definition
     // would fold under its own file regardless of whether it also candidates for some OTHER bare
     // placeholder's ambiguous resolution - that shape is a different, already-covered test:
     // `clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffix`.)
     let only_unresolvable_placeholders = Graph {
         nodes: vec![
-            bare_ce("src/caller.rs::ghost_one"),
-            bare_ce("src/caller.rs::ghost_two"),
+            plain("src/caller.rs::ghost_one", KIND_CODE_ENTITY),
+            plain("src/caller.rs::ghost_two", KIND_CODE_ENTITY),
         ],
         edges: vec![],
     };
@@ -304,7 +273,7 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
 fn the_served_graph_route_carries_the_accurate_empty_state_when_the_files_fold_admits_nothing() {
     let graph = Graph {
         nodes: vec![
-            file_node(FILE_A),
+            plain(FILE_A, KIND_FILE),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -416,10 +385,10 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffi
     let graph = Graph {
         nodes: vec![
             ce(CALLER_FOO),
-            bare_ce(HELPER_BARE),
+            plain(HELPER_BARE, KIND_CODE_ENTITY),
             ce(HELPER_DEF),
-            bare_ce(GHOST_BARE),
-            bare_ce(AMBIGUOUS_BARE),
+            plain(GHOST_BARE, KIND_CODE_ENTITY),
+            plain(AMBIGUOUS_BARE, KIND_CODE_ENTITY),
             ce(AMBIGUOUS_DEF_ONE),
             ce(AMBIGUOUS_DEF_TWO),
         ],
@@ -517,7 +486,7 @@ fn files_lens_drill_is_unconditionally_empty_at_the_public_boundary() {
 #[test]
 fn a_files_contained_entities_are_still_reachable_via_neighborhood_the_cards_own_seam() {
     let graph = Graph {
-        nodes: vec![file_node(FILE_A), ce(FOO), ce(BAR)],
+        nodes: vec![plain(FILE_A, KIND_FILE), ce(FOO), ce(BAR)],
         edges: vec![
             edge(FILE_A, FOO, REL_CONTAINS),
             edge(FILE_A, BAR, REL_CONTAINS),

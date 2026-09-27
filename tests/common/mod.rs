@@ -13,6 +13,13 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod cli;
+pub mod fixtures;
+pub mod git;
+pub mod lens;
+pub mod repo;
+pub mod served;
+
 /// The product binary that belongs to the target dir a test executable is running out of, or
 /// `None` when `test_exe` is not a cargo-run integration suite.
 ///
@@ -358,6 +365,18 @@ pub fn is_alive(pid: u32) -> bool {
         return false;
     };
     rustix::process::test_kill_process(rpid).is_ok()
+}
+
+/// Serializes the tests of one suite that read or write the process environment (or spawn a
+/// subprocess, whose `Command` captures it): `cargo test` runs a binary's tests as concurrent
+/// threads, and a concurrent env read racing a concurrent env write is a genuine POSIX
+/// getenv/setenv hazard regardless of which keys either side touches. Hold the guard for the
+/// whole test. A poisoned lock (a holder panicked) is recovered, never propagated.
+pub fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ENV_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// RAII guard restoring a set of environment variables to their PRIOR value on drop -

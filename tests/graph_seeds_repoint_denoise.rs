@@ -11,6 +11,9 @@
 //! neighborhood). The inside-out unit test exercises `graph_seeds` through in-crate helpers; this
 //! layer pins the observable contract at the module boundary the dash inspector consumes.
 
+mod common;
+
+use common::fixtures::ev_at;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Projection, KIND_UNIT, TYPE_DECISION_MADE, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING,
@@ -19,38 +22,31 @@ use rigger::contextgraph::{
 use rigger::dash::graph_seeds;
 use rigger::eventstore::Event;
 
-/// Build one event from its raw on-log JSON at `pos` - the shape the loop actually records.
-fn ev(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
-    let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    e
-}
-
 /// A whole run's events: a unit, a decision it made (governing two files), a finding it drew (about
 /// one file), a gate verdict, and the unit's integration - each in its raw production shape.
 fn a_run() -> Vec<Event> {
     vec![
-        ev(
+        ev_at(
             1,
             TYPE_UNIT_STARTED,
             serde_json::json!({ "unit": "u1", "criterion": "c", "agent": "impl", "needs": ["u0"] }),
         ),
-        ev(
+        ev_at(
             2,
             TYPE_DECISION_MADE,
             serde_json::json!({ "id": "d1", "summary": "use the shared authority", "governs": ["a.rs", "b.rs"], "supersedes": "" }),
         ),
-        ev(
+        ev_at(
             3,
             TYPE_REVIEW_FINDING,
             serde_json::json!({ "id": "f1", "by": "sdet", "unit": "u1", "summary": "y", "about": ["c.rs"] }),
         ),
-        ev(
+        ev_at(
             4,
             TYPE_GATE_VERDICT,
             serde_json::json!({ "gate": "fmt", "pass": true }),
         ),
-        ev(
+        ev_at(
             5,
             TYPE_UNIT_INTEGRATED,
             serde_json::json!({ "id": "u1", "commit": "abc1234" }),

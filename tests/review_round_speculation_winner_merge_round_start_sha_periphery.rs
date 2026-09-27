@@ -34,6 +34,11 @@
 //! the sha the round actually judged. Restoring the field verbatim (`git diff` on `src/`
 //! clean) returns it to green.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
+use common::fixtures::gate_def_inputs;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_WORKTREE_SHA, STREAM,
 };
@@ -67,34 +72,6 @@ fn init_repo() -> tempfile::TempDir {
             .unwrap();
     }
     dir
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
-}
-
-/// A `core` gate over `run` scoped to the given blast-radius `inputs` globs (spec 12,
-/// unit 3): the inner (narrowed) pass runs it only when its globs intersect the unit's
-/// grounded blast radius - never, here, since no grounder is configured (an always-empty
-/// radius), so this gate fires for the first time at the exhaustive pass, strictly after
-/// `review_unit` already captured `round_start_sha` and returned.
-fn gate_def_inputs(run: &str, inputs: &[&str]) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: inputs.iter().map(|s| s.to_string()).collect(),
-    }
 }
 
 /// The implementer writes real work on every lane; the sole adjudicator approves every lane

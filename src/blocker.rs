@@ -310,10 +310,7 @@ pub fn lines(blockers: &[Blocker]) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::eventstore::Event;
-
-    fn ev(type_: &str, json: &str) -> Event {
-        Event::new(type_, json.as_bytes().to_vec())
-    }
+    use crate::test_support::ev;
 
     fn positioned(mut events: Vec<Event>) -> Vec<Event> {
         for (i, e) in events.iter_mut().enumerate() {

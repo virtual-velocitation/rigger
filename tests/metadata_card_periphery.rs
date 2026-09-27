@@ -29,25 +29,17 @@
 //! (neither the route nor these DTOs is feature-gated), so this guards the served contract in both
 //! lanes.
 
+mod common;
+
 use std::collections::HashMap;
 
+use common::fixtures::node_with_attrs as node;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
+    Edge, Graph, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
     KIND_FINDING, REL_ABOUT, REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
     TIER_INFERRED,
 };
 use rigger::dash::{card, route, Card, CardRef, CardResponse};
-
-fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: attrs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    }
-}
 
 fn edge(from: &str, to: &str, rel: &str) -> Edge {
     Edge {

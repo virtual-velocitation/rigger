@@ -25,43 +25,24 @@
 //! erroring one (in corpus order) are ever appended to the store, matching this crate's own
 //! "a canary score the store did not write is not a score" discipline.
 
+mod common;
+
 use std::sync::{Barrier, Mutex};
 
 use serde_json::{json, Value};
 
+use common::fixtures::anchor_of;
+use common::fixtures::cfg_for;
+use common::fixtures::panel_with_lenses;
 use rigger::canary::{CanaryOutcome, STREAM, TIER_LENS};
 use rigger::canary_store::{run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 
 const CRITICAL_SUMMARY: &str = "CRIT defect here";
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg(ids: &[&str]) -> Config {
-    let mut c = Config::default();
-    for id in ids {
-        c.agents.insert((*id).to_string(), agent(id));
-    }
-    c
-}
-
-fn panel(lenses: &[&str]) -> ReviewPanel {
-    ReviewPanel {
-        lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
-        adversary: "adv".into(),
-        adjudicator: "adj".into(),
-        tiers: None,
-    }
-}
 
 fn item(id: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
     CanaryItem {
@@ -77,17 +58,6 @@ fn item(id: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
         expected_tier: tier.into(),
         review: format!("fn {id}() {{}}"),
     }
-}
-
-/// Extract the anchor a reviewer prompt names - the file between the FIRST pair of
-/// backticks `review_header` wraps it in. Re-derived here rather than shared, since this
-/// file cannot see canary.rs's private helper either.
-fn anchor_of(prompt: &str) -> String {
-    prompt
-        .split_once('`')
-        .and_then(|(_, rest)| rest.split_once('`'))
-        .map(|(anchor, _)| anchor.to_string())
-        .unwrap_or_default()
 }
 
 /// `default_jobs()` is not merely "greater than one" (already pinned in
@@ -114,8 +84,8 @@ fn default_jobs_equals_default_workers_floored_at_two() {
 #[test]
 fn run_canary_with_a_zero_jobs_budget_degrades_to_a_serial_width_without_panicking() {
     let ids = ["lens-a", "adv", "adj"];
-    let c = cfg(&ids);
-    let p = panel(&["lens-a"]);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&["lens-a"]);
     let corpus = vec![item("only", true, "reject", "lens")];
 
     struct Catches;
@@ -188,8 +158,8 @@ fn run_canary_jobs_budget_bounds_total_concurrent_spawns_through_the_public_entr
     let lenses = ["lens-a", "lens-b"];
     let mut ids: Vec<&str> = lenses.to_vec();
     ids.extend(["adv", "adj"]);
-    let c = cfg(&ids);
-    let p = panel(&lenses);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&lenses);
     let corpus = vec![
         item("i1", false, "approve", ""),
         item("i2", true, "reject", "lens"),
@@ -275,8 +245,8 @@ fn run_canary_scores_identically_regardless_of_jobs_width_through_the_public_ent
     let lenses = ["lens-a", "lens-b", "lens-c"];
     let mut ids: Vec<&str> = lenses.to_vec();
     ids.extend(["adv", "adj"]);
-    let c = cfg(&ids);
-    let p = panel(&lenses);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&lenses);
     let corpus = vec![
         item("i1", true, "reject", "lens"),
         item("i2", true, "reject", "adversary"),
@@ -352,8 +322,8 @@ fn run_canary_scores_identically_regardless_of_jobs_width_through_the_public_ent
 #[test]
 fn run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors() {
     let ids = ["lens-a", "adv", "adj"];
-    let c = cfg(&ids);
-    let p = panel(&["lens-a"]);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&["lens-a"]);
     let corpus = vec![
         item("i1", false, "approve", ""),
         item("i2", true, "reject", "lens"),

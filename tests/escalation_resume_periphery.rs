@@ -68,6 +68,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+use common::cli::read_run_events;
+use common::cli::run_rigger;
+use common::cli::seed_store;
 use rigger::contextgraph::Graph;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -83,14 +86,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Seed an initialized, empty `.rigger/events.db` under `root` - stands in for the store a
-/// prior `rigger run`/`step` would have created. Mirrors `tests/cause_wire_periphery.rs`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
 }
 
 /// The project identity the binary resolves for `root` - mirrors
@@ -136,38 +131,6 @@ fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
             )
             .unwrap();
     }
-}
-
-/// Read `root`'s namespaced run stream back through a REAL `Store::open` round trip, for
-/// the dashboard-consistency test below to feed into `dash::build_state` exactly as the
-/// serving path would.
-fn read_run_events(root: &Path) -> Vec<Event> {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(
-            rigger::conductor::STREAM,
-            0,
-            rigger::eventstore::Direction::Forward,
-        )
-        .unwrap()
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/cause_wire_periphery.rs`'s identically-named helper.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 // ---------------------------------------------------------------------------------------

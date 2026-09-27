@@ -54,6 +54,8 @@
 
 mod common;
 
+use common::cli::run_rigger;
+use common::fixtures::tool_available;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -71,22 +73,6 @@ fn temp_project() -> tempfile::TempDir {
         .status();
     std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
     dir
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success) - mirrors
-/// `tests/validate_advisories.rs`'s identical helper.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// `git <args>` in `root` with a fixed committer identity, panicking with stderr on failure -
@@ -131,17 +117,6 @@ fn git_output(root: &Path, args: &[&str]) -> String {
         .unwrap_or_else(|e| panic!("git {args:?} produced non-utf8 output: {e}"))
         .trim()
         .to_string()
-}
-
-/// Same availability gate as `tests/gitsemver_derivation.rs` and `tests/gitsemver_worktree_
-/// periphery.rs`: provisioning the environment with `go-gitsemver` on PATH is criterion 3's,
-/// not this test's.
-fn gitsemver_available() -> bool {
-    Command::new("go-gitsemver")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// The `objects` dir of the git repository THIS test binary was compiled from - the same
@@ -244,7 +219,7 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
 
 #[test]
 fn validate_names_the_behind_the_tree_advisory_through_the_real_binary() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }

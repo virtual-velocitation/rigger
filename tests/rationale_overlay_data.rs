@@ -15,11 +15,14 @@
 //! `dash`, `contextgraph` are compiled on BOTH the default and the `--no-default-features` lane (none
 //! feature-gated), so this guards the served boundary in both lanes.
 
+mod common;
+
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
+use common::served::body_of;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, KIND_FINDING,
     KIND_HANDBOOK_RULE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, REL_SUPERSEDES, TIER_INFERRED,
@@ -164,13 +167,6 @@ fn fetch_served(path: &str, graph: &Graph) -> String {
     panic!(
         "the dash server never served {path} over the real socket after many fresh-port attempts"
     );
-}
-
-/// Split a raw HTTP response into its body (everything past the header terminator).
-fn body_of(resp: &str) -> &str {
-    resp.split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .expect("a served response body")
 }
 
 /// The SERVED `/api/graph?explain=` endpoint returns the rationale batch over the real `serve` socket:

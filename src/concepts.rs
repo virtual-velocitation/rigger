@@ -292,6 +292,7 @@ mod tests {
     use crate::contextgraph::{Edge, KIND_DECISION, KIND_FILE, TIER_EXTRACTED};
     #[cfg(any(feature = "store", not(feature = "core")))]
     use crate::contextgraph::{Projection, REL_IN_COMMUNITY, REL_REALIZES};
+    use crate::test_support::pair_map;
     use std::collections::BTreeMap as Map;
 
     /// One graph [`Node`] of a kind, with optional `title` / `name` attrs.
@@ -382,11 +383,6 @@ mod tests {
         Graph { nodes, edges }
     }
 
-    /// The member -> concept map, for clear asserts.
-    fn membership(d: &Derivation) -> BTreeMap<String, String> {
-        d.members.iter().cloned().collect()
-    }
-
     #[test]
     fn derives_concepts_grouping_docs_with_the_code_they_govern_across_directories() {
         // The core criterion-1 claim: the pass derives ONE concept per connected intent region, each
@@ -395,7 +391,7 @@ mod tests {
         let g = intent_fixture();
         let layer = intent_layer(&g);
         let d = derive(&g, &layer, DEFAULT_RESOLUTION);
-        let m = membership(&d);
+        let m = pair_map(&d.members);
 
         // Two design docs governing disjoint regions, plus a rationale on a doc-less file, yield three
         // connected intent regions - three concepts.
@@ -471,7 +467,7 @@ mod tests {
         // No concept mixes region A's nodes with region B's - the disjoint doc regions stay disjoint.
         let g = intent_fixture();
         let d = derive(&g, &intent_layer(&g), DEFAULT_RESOLUTION);
-        let m = membership(&d);
+        let m = pair_map(&d.members);
         let region_a: BTreeMap<String, ()> = [
             "docs/kg.md",
             "src/graph/store.rs",
@@ -551,7 +547,7 @@ mod tests {
         let d = derive(&g, &intent_layer(&g), DEFAULT_RESOLUTION);
         let labels: BTreeMap<String, String> = d.concepts.iter().cloned().collect();
         // The concept holding docs/kg.md is labelled from that doc; likewise for docs/review.md.
-        let m = membership(&d);
+        let m = pair_map(&d.members);
         assert_eq!(labels[&m["docs/kg.md"]], "The knowledge graph");
         assert_eq!(labels[&m["docs/review.md"]], "Review adjudication");
     }

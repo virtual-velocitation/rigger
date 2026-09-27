@@ -117,12 +117,6 @@ pub struct RunStarted {
 }
 
 impl RunStarted {
-    /// Decode a [`TYPE_RUN_STARTED`] body, or `None` if it is malformed (so a corrupt
-    /// event is simply ignored, like every other fold here).
-    fn from_event(e: &Event) -> Option<RunStarted> {
-        serde_json::from_slice(&e.data).ok()
-    }
-
     /// Build the appendable event for this run start, with the run id stamped in
     /// [`META_RUN_ID`] so the RunStarted itself belongs to its own run's slice, and the
     /// resolved run-branch base stamped in [`META_BASE`] (only when non-empty) so status/dash
@@ -145,7 +139,7 @@ fn latest(events: &[Event]) -> Option<RunStarted> {
         .iter()
         .rev()
         .find(|e| e.type_ == TYPE_RUN_STARTED)
-        .and_then(RunStarted::from_event)
+        .and_then(Event::decode::<RunStarted>)
 }
 
 /// The current run's slice of `events`: the contiguous suffix from the LAST
@@ -268,7 +262,7 @@ pub fn run_attribution(events: &[Event]) -> BTreeMap<usize, RunOf> {
                 // Advance the window: every event after this boundary (until the next
                 // RunStarted) belongs to this run. Decoded from the body, the same source
                 // `current_run_id` reads, never the event's own metadata.
-                if let Some(rs) = RunStarted::from_event(e) {
+                if let Some(rs) = e.decode::<RunStarted>() {
                     current = Some(rs.run);
                 }
             }
@@ -302,7 +296,7 @@ pub fn effective_definition(run_slice: &[Event]) -> String {
     let mut pinned = String::new();
     for e in run_slice {
         if e.type_ == TYPE_RUN_STARTED {
-            if let Some(rs) = RunStarted::from_event(e) {
+            if let Some(rs) = e.decode::<RunStarted>() {
                 pinned = rs.definition;
             }
         } else if let Some(rebased) = e.meta.get(META_DEFINITION) {
@@ -349,10 +343,7 @@ impl RunStart {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ev(type_: &str, data: &str) -> Event {
-        Event::new(type_, data.as_bytes().to_vec())
-    }
+    use crate::test_support::ev;
 
     fn run_started(run: &str, criteria: &[&str]) -> Event {
         RunStarted {

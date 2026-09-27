@@ -35,20 +35,12 @@
 //! two steps that courier while it is still running - exactly what makes the in-flight guard
 //! load-bearing rather than a no-op.
 
+mod common;
+
+use common::fixtures::tool_available;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub
-/// `ubuntu-latest`, which ships Node.js on PATH, so this runtime guard runs in CI) - mirrors the
-/// identical guard the sibling `dash`/`code_lens` node-`vm` periphery tests use.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// The driver BODY: `workflows/rigger.js`, read fresh at test time (never copied inline, so an
 /// edit to the shipped driver is exercised without touching this file), sliced from the `args`
@@ -356,7 +348,7 @@ fn run_pipelining_harness() -> (bool, String, String) {
 /// pattern-matching its source text.
 #[test]
 fn fast_units_review_runs_while_the_slow_sibling_still_builds() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP fast_units_review_runs_while_the_slow_sibling_still_builds: no `node` runtime \
              on PATH. This runtime guard needs node (present on dev machines and on \

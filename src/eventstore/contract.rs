@@ -796,7 +796,7 @@ fn drain_until(sub: &super::Subscription, want_type: &str, msg: &str) {
 mod falsifiability {
     use super::*;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::{Appended, Revision, Subscription};
+    use crate::eventstore::Appended;
 
     /// A store that appends honestly and then reports positions arithmetically - the
     /// shape an adapter falls into when it can only learn the LAST position and fills
@@ -822,28 +822,7 @@ mod falsifiability {
                 (0..n).map(|i| last + 1 - n + i + 100).collect(),
             ))
         }
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: Revision,
-            dir: Direction,
-        ) -> Result<Vec<Event>, Error> {
-            self.inner.read_stream(stream, from, dir)
-        }
-        fn read_all(
-            &self,
-            from: u64,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<Event>, Error> {
-            self.inner.read_all(from, dir, filter)
-        }
-        fn subscribe_all(&self, from: u64, filter: &Filter) -> Result<Subscription, Error> {
-            self.inner.subscribe_all(from, filter)
-        }
-        fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error> {
-            self.inner.subscribe_stream(stream, from)
-        }
+        crate::delegate_event_store_reads!();
     }
 
     #[test]

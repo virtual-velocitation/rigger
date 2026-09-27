@@ -1425,7 +1425,7 @@ pub struct NeighborhoodNode {
     /// The SHARED-MEMBERSHIP marker (spec 54 c3): true when this node realizes MORE THAN ONE derived
     /// concept, so a [`Lens::Concepts`] drill flags it. `false` (and omitted from the JSON) for a
     /// single-concept or membership-less node and for every non-concepts view.
-    #[serde(skip_serializing_if = "is_not_shared", default)]
+    #[serde(skip_serializing_if = "crate::contextgraph::is_false", default)]
     pub shared: bool,
 }
 
@@ -1442,22 +1442,8 @@ pub struct NeighborhoodEdge {
     /// points at a node whose layer is NOT deeper than its source - a recursion / mutual call the
     /// walk marked rather than followed a second time. Always `false` for a neighborhood / drill
     /// edge (and omitted from the JSON), so those views are byte-identical.
-    #[serde(skip_serializing_if = "is_not_back", default)]
+    #[serde(skip_serializing_if = "crate::contextgraph::is_false", default)]
     pub back: bool,
-}
-
-/// Serde `skip_serializing_if` predicate for [`NeighborhoodEdge::back`]: keep the recursion marker
-/// off the wire for the common forward edge, so a plain neighborhood / drill edge (which is never a
-/// back edge) serializes byte-identically to before the call views existed.
-fn is_not_back(back: &bool) -> bool {
-    !*back
-}
-
-/// Serde `skip_serializing_if` predicate for [`NeighborhoodNode::shared`]: keep the shared-membership
-/// marker off the wire for the common single-concept / membership-less node, so a plain neighborhood /
-/// drill / call node serializes byte-identically to before the concepts lens existed.
-fn is_not_shared(shared: &bool) -> bool {
-    !*shared
 }
 
 /// The `/api/graph` body (spec 30 c5): the seeded neighborhood of a selected node as
@@ -1800,17 +1786,7 @@ pub fn graph_query(graph: &Graph, kind: &str, params: &[u8]) -> Result<serde_jso
 mod search_tests {
     use super::*;
     use crate::contextgraph::KIND_FILE;
-
-    fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
-        Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs: attrs
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-        }
-    }
+    use crate::test_support::node_with_attrs as node;
 
     fn graph() -> Graph {
         Graph {
@@ -1923,17 +1899,7 @@ mod search_tests {
 mod graph_ops_tests {
     use super::*;
     use crate::contextgraph::KIND_FILE;
-
-    fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
-        Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs: attrs
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-        }
-    }
+    use crate::test_support::node_with_attrs as node;
 
     fn sample_graph() -> Graph {
         Graph {
@@ -2035,14 +2001,7 @@ mod graph_ops_tests {
 #[cfg(test)]
 mod path_tests {
     use super::*;
-
-    fn node(id: &str) -> Node {
-        Node {
-            id: id.to_string(),
-            kind: KIND_FILE.to_string(),
-            attrs: BTreeMap::new(),
-        }
-    }
+    use crate::test_support::plain;
 
     fn edge(from: &str, to: &str) -> Edge {
         Edge {
@@ -2065,7 +2024,7 @@ mod path_tests {
     #[test]
     fn an_absent_to_endpoint_yields_no_path_even_via_a_dangling_edge() {
         let g = Graph {
-            nodes: vec![node("src/a.rs")],
+            nodes: vec![plain("src/a.rs", KIND_FILE)],
             // "ghost" is never a node, only an edge endpoint.
             edges: vec![edge("src/a.rs", "ghost")],
         };
@@ -2086,7 +2045,7 @@ mod path_tests {
     #[test]
     fn neither_endpoint_a_real_node_yields_no_path_even_when_they_are_equal() {
         let g = Graph {
-            nodes: vec![node("src/a.rs"), node("src/b.rs")],
+            nodes: vec![plain("src/a.rs", KIND_FILE), plain("src/b.rs", KIND_FILE)],
             edges: vec![edge("src/a.rs", "src/b.rs")],
         };
         assert_eq!(
@@ -2101,14 +2060,7 @@ mod path_tests {
 #[cfg(test)]
 mod member_set_tests {
     use super::*;
-
-    fn node(id: &str, kind: &str) -> Node {
-        Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs: BTreeMap::new(),
-        }
-    }
+    use crate::test_support::plain;
 
     fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
         Edge {
@@ -2133,12 +2085,12 @@ mod member_set_tests {
         let com2 = "community/1/1";
         let g = Graph {
             nodes: vec![
-                node(com1, KIND_COMMUNITY),
-                node(com2, KIND_COMMUNITY),
-                node("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
-                node("src/x.rs::x", KIND_CODE_ENTITY), // live IN_COMMUNITY, wrong community
-                node("src/y.rs::y", KIND_CODE_ENTITY), // right rel+target, but superseded
-                node("src/z.rs::z", KIND_CODE_ENTITY), // right target, wrong rel
+                plain(com1, KIND_COMMUNITY),
+                plain(com2, KIND_COMMUNITY),
+                plain("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
+                plain("src/x.rs::x", KIND_CODE_ENTITY), // live IN_COMMUNITY, wrong community
+                plain("src/y.rs::y", KIND_CODE_ENTITY), // right rel+target, but superseded
+                plain("src/z.rs::z", KIND_CODE_ENTITY), // right target, wrong rel
             ],
             edges: vec![
                 edge("src/w.rs::w", com1, REL_IN_COMMUNITY, None),
@@ -2167,12 +2119,12 @@ mod member_set_tests {
         let file2 = "src/x.rs";
         let g = Graph {
             nodes: vec![
-                node(file1, KIND_FILE),
-                node(file2, KIND_FILE),
-                node("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
-                node("src/x.rs::x", KIND_CODE_ENTITY), // live CONTAINS, wrong file
-                node("src/w.rs::y", KIND_CODE_ENTITY), // right rel+source, but superseded
-                node("src/w.rs::z", KIND_CODE_ENTITY), // right source, wrong rel
+                plain(file1, KIND_FILE),
+                plain(file2, KIND_FILE),
+                plain("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
+                plain("src/x.rs::x", KIND_CODE_ENTITY), // live CONTAINS, wrong file
+                plain("src/w.rs::y", KIND_CODE_ENTITY), // right rel+source, but superseded
+                plain("src/w.rs::z", KIND_CODE_ENTITY), // right source, wrong rel
             ],
             edges: vec![
                 edge(file1, "src/w.rs::w", REL_CONTAINS, None),
@@ -2239,14 +2191,7 @@ mod bucket_fold_edge_case_tests {
 #[cfg(test)]
 mod cluster_detail_budget_ranking_tests {
     use super::*;
-
-    fn member(id: &str) -> Node {
-        Node {
-            id: id.to_string(),
-            kind: KIND_CODE_ENTITY.to_string(),
-            attrs: BTreeMap::new(),
-        }
-    }
+    use crate::test_support::plain;
 
     fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
         Edge {
@@ -2287,12 +2232,12 @@ mod cluster_detail_budget_ranking_tests {
 
         // The anchor: sends one VALID edge to the receiver (real degree for both ends) and one
         // SUPERSEDED edge to the victim (must contribute nothing to either end).
-        nodes.push(member("a0-anchor"));
+        nodes.push(plain("a0-anchor", KIND_CODE_ENTITY));
         edges.push(edge("a0-anchor", COM, REL_IN_COMMUNITY, None));
-        nodes.push(member("zzz-receiver"));
+        nodes.push(plain("zzz-receiver", KIND_CODE_ENTITY));
         edges.push(edge("zzz-receiver", COM, REL_IN_COMMUNITY, None));
         edges.push(edge("a0-anchor", "zzz-receiver", REL_ABOUT, None));
-        nodes.push(member("zzz-victim"));
+        nodes.push(plain("zzz-victim", KIND_CODE_ENTITY));
         edges.push(edge("zzz-victim", COM, REL_IN_COMMUNITY, None));
         edges.push(edge("a0-anchor", "zzz-victim", REL_ABOUT, Some(1)));
         // 59 filler members with no degree-bearing edge at all (degree 0, tied with the
@@ -2300,7 +2245,7 @@ mod cluster_detail_budget_ranking_tests {
         for i in 0..59 {
             let id = format!("f{i:05}");
             edges.push(edge(&id, COM, REL_IN_COMMUNITY, None));
-            nodes.push(member(&id));
+            nodes.push(plain(&id, KIND_CODE_ENTITY));
         }
         // total members = anchor + receiver + victim + 59 fillers = 62, over the 60 budget by
         // exactly 2.

@@ -123,3 +123,15 @@ mod test_cases;
 /// safe-superset partitioning retains parallelism and a non-collapsed tier split.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod blast_radius_eval;
+
+/// The fixtures an inline `#[cfg(test)]` module shares with the integration suites: ONE source
+/// tree, `tests/common/fixtures/`, compiled into each test crate that needs it (the integration
+/// suites through `tests/common/`, this library's and the binary's unit tests through a
+/// `#[path]` module), so a fixture both sides use is defined exactly once. The fixtures name the
+/// library as `rigger::...` - the dependency's name in every other test crate - which
+/// `extern crate self as rigger` makes resolve here too.
+#[cfg(test)]
+extern crate self as rigger;
+#[cfg(test)]
+#[path = "../tests/common/fixtures/mod.rs"]
+mod test_support;

@@ -21,31 +21,10 @@
 //! and the `--no-default-features` lane (the seam is not feature-gated), so this guards the client
 //! seam in both lanes.
 
-use std::process::Command;
+mod common;
 
-use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page (the slice the runtime harness drives).
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+use common::fixtures::tool_available;
+use common::served::run_node_harness;
 
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
 /// dataset / .hidden / addEventListener). Mirrors `subject_view_memory_rail_client.rs`'s shim
@@ -135,36 +114,6 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
     TEMPLATE
         .replace("__CARD_SHIM__", &shim)
         .replace("__CARD_DRIVER__", driver)
-}
-
-/// Spawn `node` on a self-contained vm harness, asserting it exits 0 and prints `ok_token`.
-fn run_node_harness(harness_src: &str, ok_token: &str) {
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, harness_src).expect("write the runtime harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served client seam");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the runtime harness must drive the metadata-card client seam, but node failed:\n\
-         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains(ok_token),
-        "the runtime harness must confirm '{ok_token}':\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
 }
 
 /// Driver: (1) `renderCard` draws each of the three card taxonomies with their documented rows and
@@ -295,7 +244,7 @@ const CARD_DRIVER: &str = r#"
 /// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
 #[test]
 fn metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens: no \
              `node` runtime on PATH. This runtime guard needs node (present on dev machines and \
@@ -381,7 +330,7 @@ const WIRING_DRIVER: &str = r#"
 /// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
 #[test]
 fn metadata_card_wiring_fires_at_every_render_and_drill_call_site() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP metadata_card_wiring_fires_at_every_render_and_drill_call_site: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \

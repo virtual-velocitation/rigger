@@ -31,10 +31,13 @@
 //! `--no-repair-worktree-config`, an undocumented on-disk mutation with no place in what
 //! the Design calls compile-time derivation.
 
+mod common;
+
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;
 
+use common::fixtures::tool_available;
 use std::path::Path;
 use std::process::Command;
 
@@ -75,23 +78,10 @@ fn fixture_repo(root: &Path, second_commit_message: &str) {
     git(root, &["commit", "-q", "-m", second_commit_message]);
 }
 
-/// Skip (rather than fail) the success-path scenarios when `go-gitsemver` is not on
-/// PATH in this environment: criterion 3 (both feature lanes green) owns provisioning
-/// CI with the binary the spec's Notes section documents as installed; this test proves
-/// the derivation logic is correct GIVEN the tool, which the fallback scenarios below
-/// prove independently of the tool's presence.
-fn gitsemver_available() -> bool {
-    Command::new("go-gitsemver")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// A repo tagged v1.0.0 with one further commit titled `subject` derives a version starting
 /// `prefix` under Mainline mode (`why` is the assertion's reason), never the fallback marker.
 fn assert_derives_after_the_tag(subject: &str, prefix: &str, why: &str) {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
@@ -122,7 +112,7 @@ rigger::test_cases! {
 
 #[test]
 fn a_successful_derivation_folds_the_short_sha_into_build_metadata() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
@@ -177,7 +167,7 @@ fn tool_not_found_falls_back_to_the_crate_semver_with_an_unversioned_marker() {
 
 #[test]
 fn a_successful_derivation_never_mutates_the_repositorys_git_config() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
@@ -205,7 +195,7 @@ fn a_successful_derivation_never_mutates_the_repositorys_git_config() {
 
 #[test]
 fn worktree_config_extension_never_mutated_even_though_it_defeats_derivation() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }

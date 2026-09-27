@@ -4164,21 +4164,6 @@ fn render_section_4() -> String {
 // the prose can never cite a stale count. Closing or changing a cited cluster makes the render
 // panic with the id, which is the prompt to re-cite that sentence.
 
-const PAGE_SCRIPT: &str = "dup-da582945f2af";
-const NODE_AVAILABLE: &str = "dup-609de45fc19c";
-const AVAILABILITY_CHECKS: &str = "dup-293e693c9ec7";
-const TEMP_PROJECT: &str = "dup-2634e1abc409";
-const TEMP_PROJECT_VARIANT: &str = "dup-0792f3c788b4";
-const RUN_RIGGER: &str = "dup-0a35fd6b5871";
-const RUN_STREAM_IDENTITY: &str = "dup-2301697e0c93";
-const RUN_STREAM_IDENTITY_VARIANT: &str = "dup-f96c562f4b14";
-const SOURCE_TEXT_LOADERS: &str = "dup-cedec06c004c";
-const WORKFLOW_YAML_BUILDERS: &str = "dup-78d667c5e5e3";
-const SEED_RUN_EVENTS_VARIANT: &str = "dup-15bd83077e06";
-const SEED_RUN_EVENTS: &str = "dup-bb528516e036";
-const FOLD_APPLICATION_HELPERS: &str = "dup-00d97505e566";
-const SINGLE_FIELD_CONSTRUCTORS: &str = "dup-f31664ca8a0a";
-const LENS_ACCESSORS: &str = "dup-001010e90812";
 const SPEC_LINT_DEFECT_TESTS: &str = "dup-7fb3b2dc01eb";
 const NO_OS_KILL_PATTERN_TESTS: &str = "dup-a76bc2af4d4b";
 const NO_OS_KILL_SEPARATOR_TESTS: &str = "dup-7f174d1fe10b";
@@ -4249,6 +4234,36 @@ fn test_only_clusters() -> TestOnlyClusters {
         tests,
     }
 }
+
+/// `clusters` ordered widest first - by distinct files, then sites, then id - the order sections
+/// 5.2 and 5.4 name the headline helper clusters in.
+fn widest_first<'a>(clusters: &[&'a DupCluster]) -> Vec<&'a DupCluster> {
+    let mut v = clusters.to_vec();
+    v.sort_by(|a, b| {
+        (file_count(b), b.sites.len(), &a.id).cmp(&(file_count(a), a.sites.len(), &b.id))
+    });
+    v
+}
+
+/// One bullet naming cluster `c`: its distinct function names, how widely it is redefined, its
+/// id and classification.
+fn cluster_bullet(c: &DupCluster) -> String {
+    let names: BTreeSet<&str> = c.sites.iter().map(|s| s.name.as_str()).collect();
+    let names: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+    format!(
+        "- {} - {} sites across {} files (`{}`, {}).\n",
+        names.join(" / "),
+        c.sites.len(),
+        file_count(c),
+        c.id,
+        c.classification
+    )
+}
+
+/// How many headline helper clusters section 5.2 names.
+const HEADLINE_HELPER_CLUSTERS: usize = 4;
+/// How many further helper clusters section 5.4 names beyond 5.2's headline ones.
+const FURTHER_HELPER_CLUSTERS: usize = 6;
 
 /// How many of `ids` name a cluster in `clusters`.
 fn count_cited_in(ids: &[&str], clusters: &[&DupCluster]) -> usize {
@@ -4368,56 +4383,25 @@ pub(crate) fn render_section_5() -> String {
         no-new-generator-code scope.\n\n",
     );
     out.push_str("### 5.2 Shared fixtures to extract into `tests/common`\n\n");
-    let page_script = cited(PAGE_SCRIPT);
-    let node_available = cited(NODE_AVAILABLE);
-    let availability = cited(AVAILABILITY_CHECKS);
-    let temp_project = cited(TEMP_PROJECT);
-    let run_stream_identity = cited(RUN_STREAM_IDENTITY);
-    let headline_sites = page_script.sites.len()
-        + availability.sites.len()
-        + temp_project.sites.len()
-        + run_stream_identity.sites.len();
+    let widest_helpers = widest_first(&test_only.helpers);
+    let headline = &widest_helpers[..HEADLINE_HELPER_CLUSTERS.min(widest_helpers.len())];
+    let headline_sites: usize = headline.iter().map(|c| c.sites.len()).sum();
     out.push_str(&format!(
-        "`tests/common/mod.rs` already exists (`product_binary_from`, `rigger_bin`, \
-        `rigger_courier`, `terminate_pid`, `stop_pid`, `is_alive`, `RestoreEnvVars`) \
-        - the gap is everything duplicated OUTSIDE it. The catalog's all-helper-function \
+        "`tests/common/mod.rs` and `tests/common/fixtures/` already hold the shared fixtures - \
+        the gap is everything still duplicated OUTSIDE them. The catalog's all-helper-function \
         test-only clusters ({helpers_n} of the {test_only_n} test-only clusters) are the \
-        evidence; the four widest are the headline case for extraction:\n\n",
+        evidence; the {} widest, by distinct files, are the headline case for extraction:\n\n",
+        headline.len(),
     ));
+    for c in headline {
+        out.push_str(&cluster_bullet(c));
+    }
     out.push_str(&format!(
-        "- `page_script` - a small JS snippet fixture - independently redefined in {} \
-        different files (`{PAGE_SCRIPT}`, exact), all inside the Dashboard/viz subsystem \
-        (5.1) - cross-validates that grouping.\n",
-        file_count(page_script),
-    ));
-    out.push_str(&format!(
-        "- `node_available` - a viz-fixture predicate - independently redefined in {} files \
-        (`{NODE_AVAILABLE}`, semantic); the mechanical pass also clusters it together with the \
-        `gitsemver_available`/`npm_available` availability-check helpers (including a \
-        `src/main.rs` site) into one {}-site cluster (`{AVAILABILITY_CHECKS}`, exact).\n",
-        file_count(node_available),
-        availability.sites.len(),
-    ));
-    out.push_str(&format!(
-        "- `temp_project` - a scratch-project-directory fixture - independently \
-        redefined in {} files (`{TEMP_PROJECT}`, semantic), plus a near-identical {}-site \
-        variant (`{TEMP_PROJECT_VARIANT}`) and a {}-site `run_rigger` companion helper that \
-        drives it (`{RUN_RIGGER}`).\n",
-        file_count(temp_project),
-        cited(TEMP_PROJECT_VARIANT).sites.len(),
-        cited(RUN_RIGGER).sites.len(),
-    ));
-    out.push_str(&format!(
-        "- `run_stream_identity` - a store-identity fixture - independently redefined \
-        in {} files (`{RUN_STREAM_IDENTITY}`, semantic).\n\n",
-        file_count(run_stream_identity),
-    ));
-    out.push_str(&format!(
-        "Proposed home for all four: `tests/common` (the catalog's own \
-        `proposed_home` field already says so verbatim for each). Consolidating just \
-        these four collapses roughly {headline_sites} duplicate definitions into 4 shared \
-        ones - the single largest mechanical simplification this audit identifies anywhere \
-        in the test suite.\n\n",
+        "\nProposed home for each: `tests/common` (the catalog's own `proposed_home` field \
+        says so for each). Consolidating just these collapses roughly {headline_sites} \
+        duplicate definitions into {} shared ones - the single largest mechanical \
+        simplification this audit identifies anywhere in the test suite.\n\n",
+        headline.len(),
     ));
     out.push_str("### 5.3 `tests/cli.rs` split plan\n\n");
     out.push_str(
@@ -4465,45 +4449,30 @@ pub(crate) fn render_section_5() -> String {
         `tests/watchdog_cli_periphery.rs`, paired in 2 clusters) - the split is \
         expected to shrink, not grow, the duplication surface.\n\n",
     );
-    out.push_str(
-        "### 5.4 Duplicated helpers across test files (beyond 5.2's four headline \
-        cases)\n\n",
-    );
-    let source_text_loaders = cited(SOURCE_TEXT_LOADERS);
-    let workflow_yaml_builders = cited(WORKFLOW_YAML_BUILDERS);
-    let spec_lint = cited(SPEC_LINT_DEFECT_TESTS);
+    out.push_str("### 5.4 Duplicated helpers across test files (beyond 5.2's headline cases)\n\n");
+    let further: Vec<&DupCluster> = widest_helpers
+        .iter()
+        .skip(headline.len())
+        .take(FURTHER_HELPER_CLUSTERS)
+        .copied()
+        .collect();
     out.push_str(&format!(
         "{helpers_n} test-only clusters in the committed catalog have every site as an \
-        ordinary (non-`#[test]`) helper function - the shared-fixture-extraction \
-        candidate class. Beyond the four in 5.2, the widest are: `{SOURCE_TEXT_LOADERS}` \
-        (`architecture_text` / `main_rs_source` - source-text-loading helpers for \
-        doc/architecture-integrity checks, {} files, {} sites); \
-        `{RUN_STREAM_IDENTITY_VARIANT}` (a companion, {}-file variant of 5.2's \
-        `run_stream_identity` fixture); `{WORKFLOW_YAML_BUILDERS}` \
-        (`write_two_stage_workflow` / `write_budget_one_two_stage_workflow` / \
-        `write_standalone_review_workflow` - workflow-YAML-literal builders duplicated across \
-        `tests/cli.rs` and `tests/step_attention_periphery.rs`, {} files, {} sites); \
-        `{SEED_RUN_EVENTS_VARIANT}`/`{SEED_RUN_EVENTS}` (`seed_run_events`, an \
-        event-seeding helper, {}-{} files); `{FOLD_APPLICATION_HELPERS}` (`apply_def_json` / \
-        `apply_ref_fresh`-shaped fold-application helpers, {} files); \
-        `{SINGLE_FIELD_CONSTRUCTORS}` (`community` / `concept` / `def`-named single-field \
-        constructor helpers, {} files); `{LENS_ACCESSORS}` (`code_lens` / `concepts_lens` \
-        two-line accessor helpers, {} files). Every one of these {helpers_n} clusters, with \
-        its full site list and the catalog's own `proposed_home`, is already \
-        machine-readable in the committed `docs/audit/duplication-catalog.json` for a \
-        follow-up consolidation spec to consume directly - not re-enumerated exhaustively \
-        here to keep this section a report, not a second copy of the catalog.\n\n",
-        file_count(source_text_loaders),
-        source_text_loaders.sites.len(),
-        file_count(cited(RUN_STREAM_IDENTITY_VARIANT)),
-        file_count(workflow_yaml_builders),
-        workflow_yaml_builders.sites.len(),
-        file_count(cited(SEED_RUN_EVENTS_VARIANT)),
-        file_count(cited(SEED_RUN_EVENTS)),
-        file_count(cited(FOLD_APPLICATION_HELPERS)),
-        file_count(cited(SINGLE_FIELD_CONSTRUCTORS)),
-        file_count(cited(LENS_ACCESSORS)),
+        ordinary (non-`#[test]`) helper function - the shared-fixture-extraction candidate \
+        class. Beyond the {} in 5.2, the widest are:\n\n",
+        headline.len(),
     ));
+    for c in &further {
+        out.push_str(&cluster_bullet(c));
+    }
+    out.push_str(&format!(
+        "\nEvery one of these {helpers_n} clusters, with its full site list and the catalog's \
+        own `proposed_home`, is already machine-readable in the committed \
+        `docs/audit/duplication-catalog.json` for a follow-up consolidation spec to consume \
+        directly - not re-enumerated exhaustively here to keep this section a report, not a \
+        second copy of the catalog.\n\n",
+    ));
+    let spec_lint = cited(SPEC_LINT_DEFECT_TESTS);
     out.push_str("### 5.5 Table-driven test families\n\n");
     out.push_str(&format!(
         "{tests_n} test-only clusters have every site as a `#[test]` function - a \
@@ -5046,33 +5015,29 @@ fn render_section_6() -> String {
         "Every entry cites section 5's own already-catalogued test-only duplication; none \
         of it carries production-correctness risk.\n\n",
     );
-    out.push_str("#### 14. Extract the four headline shared test fixtures into `tests/common` (section 5.2)\n\n");
-    let item_14 = [
-        PAGE_SCRIPT,
-        AVAILABILITY_CHECKS,
-        TEMP_PROJECT,
-        RUN_STREAM_IDENTITY,
-    ];
-    let item_14_sites: usize = item_14.iter().map(|id| cited(id).sites.len()).sum();
+    out.push_str(
+        "#### 14. Extract the headline shared test fixtures into `tests/common` (section 5.2)\n\n",
+    );
+    let widest_helpers = widest_first(&test_only.helpers);
+    let item_14 = &widest_helpers[..HEADLINE_HELPER_CLUSTERS.min(widest_helpers.len())];
+    let item_14_sites: usize = item_14.iter().map(|c| c.sites.len()).sum();
+    let item_14_scope: Vec<String> = item_14
+        .iter()
+        .map(|c| format!("`{}` ({} files)", c.id, file_count(c)))
+        .collect();
     out.push_str(&format!(
-        "- Scope: `page_script` (`{PAGE_SCRIPT}`, {} files), `node_available` \
-        (`{AVAILABILITY_CHECKS}`, {} files - merged with two related availability-check \
-        helpers), `temp_project` (`{TEMP_PROJECT}`, {} files) and `run_stream_identity` \
-        (`{RUN_STREAM_IDENTITY}`, {} files) - roughly {item_14_sites} duplicate definitions \
-        collapsing into four shared ones, the single largest mechanical simplification \
-        section 5 identifies anywhere in the test suite.\n\
-        - Files: the dashboard/viz test files section 5.1 already groups together, plus \
-        `tests/common/mod.rs`.\n\
+        "- Scope: {} - roughly {item_14_sites} duplicate definitions collapsing into {} shared \
+        ones, the single largest mechanical simplification section 5 identifies anywhere in \
+        the test suite.\n\
+        - Files: per-cluster, from the committed catalog, plus `tests/common/`.\n\
         - Expected line delta: negative - each fixture's small body survives once instead of \
         once per file.\n\
-        - Risk: low - test-only, and `tests/common/mod.rs` already exists with the same \
-        shape of helper (`product_binary_from`, `rigger_bin`, ...).\n\
+        - Risk: low - test-only, and `tests/common/` already holds the same shape of shared \
+        fixture.\n\
         - Unblocks: item 17 below (the remaining test-helper clusters) reuses the same \
         `tests/common` home this item establishes.\n\n",
-        file_count(cited(PAGE_SCRIPT)),
-        file_count(cited(AVAILABILITY_CHECKS)),
-        file_count(cited(TEMP_PROJECT)),
-        file_count(cited(RUN_STREAM_IDENTITY)),
+        item_14_scope.join(", "),
+        item_14.len(),
     ));
     out.push_str(
         "#### 15. Split `tests/cli.rs` by CLI subcommand surface (section 5.3's plan)\n\n",
@@ -5120,7 +5085,7 @@ fn render_section_6() -> String {
         item_16.len(),
     ));
     let (helpers_n, tests_n) = (test_only.helpers.len(), test_only.tests.len());
-    let helpers_left = helpers_n - count_cited_in(&item_14, &test_only.helpers);
+    let helpers_left = helpers_n - item_14.len();
     let tests_left = tests_n - count_cited_in(&item_16, &test_only.tests);
     out.push_str(&format!(
         "#### 17. Sweep the remaining {helpers_left} test-only helper-duplication clusters \
@@ -5130,9 +5095,7 @@ fn render_section_6() -> String {
         "- Scope: the {helpers_n} test-only, all-helper-function clusters section 5.4 names, \
         minus the ones item 14 already covers - consumed directly from \
         `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own \
-        stated approach). Includes the `{TEMP_PROJECT_VARIANT}`/`{RUN_RIGGER}` \
-        `temp_project` companion and variant clusters section 5.2 names beside its headline \
-        four.\n\
+        stated approach).\n\
         - Files: per-cluster, from the committed catalog.\n\
         - Expected line delta: negative, cumulative across {helpers_left} clusters.\n\
         - Risk: low - test-only.\n\

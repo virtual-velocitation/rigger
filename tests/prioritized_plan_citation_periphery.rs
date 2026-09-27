@@ -51,20 +51,16 @@
 //! than importing `DupCluster` - the same position a real downstream reader of both committed
 //! artifacts is in.
 
+mod common;
+
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 
+use common::repo::repo_root;
 use regex::Regex;
 
 const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
-
-/// The repo root this test binary was compiled from - never the process CWD (same convention
-/// as `tests/simplification_audit.rs::repo_root` and its sibling periphery files).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
 
 fn read_report() -> String {
     fs::read_to_string(repo_root().join(REPORT_PATH))

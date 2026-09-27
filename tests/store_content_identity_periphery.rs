@@ -34,7 +34,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use rigger::contextgraph::{Error as CgError, Graph, Projection, TYPE_DECISION_MADE};
+use rigger::contextgraph::{Error as CgError, Projection, TYPE_DECISION_MADE};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{
@@ -91,12 +91,7 @@ impl Projection for CapturingProjection {
             .push(events.iter().map(|e| e.position).collect());
         Ok(())
     }
-    fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, CgError> {
-        Ok(Graph::default())
-    }
-    fn resolve(&self, _mention: &str) -> Result<Option<String>, CgError> {
-        Ok(None)
-    }
+    crate::projection_reads_nothing!();
 }
 
 /// A consumer-implemented `EventStore` that reports EXACTLY the placements it was built

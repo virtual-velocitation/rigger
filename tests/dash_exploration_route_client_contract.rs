@@ -36,40 +36,23 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+mod common;
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use common::fixtures::plain;
+use common::fixtures::spoke_id;
+use common::served::served_json;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, REL_IN_COMMUNITY, REL_REFERENCES,
     TIER_EXTRACTED, TIER_INFERRED,
 };
-use rigger::dash::{route, CLUSTER_RENDER_BUDGET, GOD_NODE_DEGREE_THRESHOLD};
+use rigger::dash::{CLUSTER_RENDER_BUDGET, GOD_NODE_DEGREE_THRESHOLD};
 
 /// The two coupling communities the fixture folds into at the default resolution grain (`"1"`), so a
 /// `?lens=code` request needs no explicit `resolution=` parameter.
 const BIG: &str = "community/1/0";
 const SMALL: &str = "community/1/1";
-
-/// A code-entity node (carries no membership by itself - `membership` below wires it into a
-/// community).
-fn ce(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::new(),
-    }
-}
-
-/// A dev-loop decision node (no path id, no community membership): under the already-merged spec 63
-/// c1 CODE-LENS PURITY, a non-code-entity never folds into a cluster of its own - not even its own
-/// kind bucket - so it stays in the fixture only to prove `total` still counts it while contributing
-/// NO cluster at all.
-fn dec(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_DECISION.to_string(),
-        attrs: BTreeMap::new(),
-    }
-}
 
 /// A currently-valid REFERENCES edge (`extracted` tier, `valid_to = None`).
 fn refs(from: &str, to: &str) -> Edge {
@@ -98,12 +81,6 @@ fn membership(id: &str, community: &str) -> Edge {
     }
 }
 
-/// A zero-padded spoke id under the [`BIG`] community (padding makes ASCII order match numeric
-/// order, which the drill cap's smallest-id tie-break relies on).
-fn spoke(i: usize) -> String {
-    format!("src/big/mod.rs::s{i:05}")
-}
-
 /// The exploration fixture. It folds into TWO communities that exercise every overview + drill field.
 /// [`BIG`] is a hub wired to `CLUSTER_RENDER_BUDGET + 1` spokes (`CLUSTER_RENDER_BUDGET + 2`
 /// members, ONE over the render budget), so a drill on it CAPS and reports `truncated`, and the
@@ -115,60 +92,34 @@ fn spoke(i: usize) -> String {
 /// for the overview and then the drill.
 fn exploration_graph() -> Graph {
     let hub = "src/big/mod.rs::hub";
-    let mut nodes: Vec<Node> = vec![ce(hub)];
+    let mut nodes: Vec<Node> = vec![plain(hub, KIND_CODE_ENTITY)];
     let mut edges: Vec<Edge> = vec![membership(hub, BIG)];
 
     // BIG: hub -> every spoke (all intra-community). One over budget so the drill caps.
     let spokes = CLUSTER_RENDER_BUDGET + 1;
     for i in 0..spokes {
-        nodes.push(ce(&spoke(i)));
-        edges.push(membership(&spoke(i), BIG));
-        edges.push(refs(hub, &spoke(i)));
+        nodes.push(plain(&spoke_id("src/big/mod.rs", i), KIND_CODE_ENTITY));
+        edges.push(membership(&spoke_id("src/big/mod.rs", i), BIG));
+        edges.push(refs(hub, &spoke_id("src/big/mod.rs", i)));
     }
 
     // SMALL: three members.
     for m in ["a", "b", "c"] {
         let id = format!("src/small/mod.rs::{m}");
-        nodes.push(ce(&id));
+        nodes.push(plain(&id, KIND_CODE_ENTITY));
         edges.push(membership(&id, SMALL));
     }
 
     // decision: one dev-loop node, no membership - a distinct kind that folds into no cluster at all.
-    nodes.push(dec("d0"));
+    nodes.push(plain("d0", KIND_DECISION));
 
     // Two cross edges BIG -> SMALL, so the ONE overview cluster edge has weight 2. They dangle out of
     // the BIG drill (their SMALL endpoint is not a BIG member) and so must be dropped from the drill
     // body, never dangled.
     edges.push(refs(hub, "src/small/mod.rs::a"));
-    edges.push(refs(&spoke(0), "src/small/mod.rs::b"));
+    edges.push(refs(&spoke_id("src/big/mod.rs", 0), "src/small/mod.rs::b"));
 
     Graph { nodes, edges }
-}
-
-/// Drive the public `route` for a `GET <path>` over the fixture graph and parse the JSON body. `route`
-/// is the exact body-builder `serve` ships (serve delegates to it), so the field contract this pins is
-/// byte-identical to what the browser receives; the c4 socket test already covers the framing seam.
-fn served_body(path: &str) -> serde_json::Value {
-    let graph = exploration_graph();
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        path,
-        &[],
-        &graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {path} must be served 200 (the exploration route never errors on a live graph)"
-    );
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {path} body must be valid JSON: {e}"))
 }
 
 /// The served OVERVIEW body (`GET /api/graph?lens=code`) carries EVERY field `renderKgOverview` reads:
@@ -177,7 +128,7 @@ fn served_body(path: &str) -> serde_json::Value {
 /// concrete value bound to the fixture, so a renamed / dropped key reddens here.
 #[test]
 fn the_served_overview_route_carries_every_field_the_c5_overview_viz_reads() {
-    let ov = served_body("/api/graph?lens=code");
+    let ov = served_json(&exploration_graph(), "/api/graph?lens=code");
 
     // It is the OVERVIEW shape, not a neighborhood: no `nodes` key (the drill / seed views carry that).
     assert!(
@@ -277,7 +228,10 @@ fn the_served_overview_route_carries_every_field_the_c5_overview_viz_reads() {
 fn the_served_drill_route_carries_every_field_the_c5_drill_viz_reads() {
     // The `/` in the community key arrives percent-encoded, exactly as the page's
     // encodeURIComponent emits it; the route decodes it back to the fold key.
-    let nb = served_body("/api/graph?cluster=community%2F1%2F0&lens=code");
+    let nb = served_json(
+        &exploration_graph(),
+        "/api/graph?cluster=community%2F1%2F0&lens=code",
+    );
 
     // `seed`: the drill echoes the decoded cluster key (the panel titles "cluster <key>").
     assert_eq!(
@@ -351,7 +305,7 @@ fn the_served_drill_route_carries_every_field_the_c5_drill_viz_reads() {
 
     let spoke0 = nodes
         .iter()
-        .find(|n| n["id"].as_str() == Some(spoke(0).as_str()))
+        .find(|n| n["id"].as_str() == Some(spoke_id("src/big/mod.rs", 0).as_str()))
         .unwrap_or_else(|| panic!("the smallest-id spoke survives the cap: {nb}"));
     assert_eq!(
         spoke0["degree"].as_u64(),

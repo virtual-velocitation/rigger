@@ -40,8 +40,9 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use common::cli::now_nanos;
+use common::cli::seed_store;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -112,15 +113,6 @@ fn nested_worktree(root: &Path, name: &str) -> PathBuf {
     nested
 }
 
-/// Seed an initialized, empty `.rigger/events.db` under `root` - stands in for the store a
-/// prior `rigger run`/`step` would have created. Mirrors `tests/cause_wire_periphery.rs`'s
-/// `seed_store`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
-}
-
 /// The project identity the binary resolves for `root` - mirrors
 /// `tests/cause_wire_periphery.rs`'s `run_stream_identity`, itself mirroring
 /// `StoreLocation::identity`'s precedence: the tracked `.rigger/project.id` at the git
@@ -181,16 +173,6 @@ fn seed_in_flight_spawn(root: &Path) {
             ),
         ],
     );
-}
-
-/// Nanosecond wall-clock timestamp, matching exactly what a real
-/// [`rigger::eventstore::sqlite::Store::append`] stamps - mirrors
-/// `tests/watchdog_cli_periphery.rs`'s own `now_nanos`.
-fn now_nanos() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as i64
 }
 
 /// Seed a run with exactly one in-flight spawn (`SPAWN_ID`, no recorded result), IDENTICAL to

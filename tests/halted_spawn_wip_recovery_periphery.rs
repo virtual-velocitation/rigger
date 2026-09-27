@@ -83,36 +83,12 @@
 
 mod common;
 
+use common::cli::run_rigger;
+use common::cli::run_rigger_envs;
+use common::git::git_ok;
+use common::git::git_out;
 use std::path::Path;
 use std::process::Command;
-
-fn run_git(dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"))
-}
-
-fn git_ok(dir: &Path, args: &[&str]) {
-    let out = run_git(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = run_git(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
 
 /// A throwaway git project with a real commit, so `HEAD` resolves for `git worktree add`
 /// and the run's base ref is real. Mirrors `tests/cli.rs`'s `temp_git_project_with_commit`.
@@ -155,34 +131,6 @@ stages:
 "#,
     )
     .unwrap();
-}
-
-/// Run `rigger <args...>` in `cwd`, with `envs` layered on top of the same baseline every
-/// call needs (`RIGGER_NO_DASH`, a per-invocation `XDG_STATE_HOME`) - the caller's own entries
-/// win on a name collision (e.g. round 3's `PATH` shim below). Mirrors `tests/cli.rs`'s
-/// identically-named helper. [`run_rigger`] is this with an empty `envs` slice - the common
-/// case every call site up to round 3 needs.
-fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/escalation_resume_periphery.rs`'s identically-named helper.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    run_rigger_envs(cwd, args, &[])
 }
 
 /// The DETERMINISTIC dir/branch `stage_worktree`'s `Worktree::create` would derive for a

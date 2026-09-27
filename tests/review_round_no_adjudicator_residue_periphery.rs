@@ -35,6 +35,10 @@
 //! survives into the integrated tree); restoring the call verbatim (`git diff` on `src/`
 //! clean) returns it to green.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, Stage};
 use rigger::contextgraph;
@@ -67,21 +71,6 @@ fn init_repo() -> tempfile::TempDir {
             .unwrap();
     }
     dir
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
 }
 
 /// The implementer writes real work; the lone review LENS breaks the review protocol on

@@ -10,76 +10,9 @@
 //! feature-gated), so these tests run in both. No reference to any external tool or
 //! project; hyphens, never em dashes.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, Instant};
+mod common;
 
-use rigger::contextgraph::{CallGraph, Direction, Graph};
-use rigger::dash::{self, DashInputs, InstanceView};
-
-fn get_raw(target: &str) -> Vec<u8> {
-    let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-        panic!("the console shell reads no run-scoped store input")
-    };
-    let graph_provider = |_instance: Option<&str>| -> Graph {
-        panic!("the console shell opens no whole-graph projection")
-    };
-    let calls_provider =
-        |_instance: Option<&str>,
-         _seeds: &[String],
-         _dir: Direction,
-         _depth: i64,
-         _floor: &str|
-         -> CallGraph { panic!("the console shell opens no calls projection") };
-    let instances_provider =
-        || -> Vec<InstanceView> { panic!("the console shell reads no instance registry") };
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
-    let addr = listener.local_addr().expect("learn the bound port");
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            Err(e) => panic!("never connected to the served dash on {addr}: {e}"),
-        }
-    };
-    client
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("set a read timeout on the client");
-    let req = format!("GET {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-    client.write_all(req.as_bytes()).expect("write the request");
-    let mut raw = Vec::new();
-    client
-        .read_to_end(&mut raw)
-        .expect("read the served response to EOF (Connection: close)");
-    raw
-}
-
-fn served_console_body() -> String {
-    let raw = get_raw("/console");
-    let sep = b"\r\n\r\n";
-    let idx = raw
-        .windows(sep.len())
-        .position(|w| w == sep)
-        .expect("a served HTTP response has a header/body terminator");
-    std::str::from_utf8(&raw[idx + sep.len()..])
-        .expect("the console shell is UTF-8 HTML")
-        .to_string()
-}
+use common::served::served_console_body;
 
 /// THE PALETTE's own markup: a dialog carrying a filter input and a results list, hidden
 /// until opened, wired to the header's existing palette button (`src/console.html`'s own

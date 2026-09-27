@@ -39,99 +39,17 @@
 //! feature-gated), so these tests run in both. No reference to any external tool or
 //! project; hyphens, never em dashes.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, Instant};
+mod common;
 
-use rigger::contextgraph::{CallGraph, Direction, Graph};
-use rigger::dash::{self, DashInputs, InstanceView};
+use common::served::get_raw;
+use common::served::header_value;
+use common::served::split_response;
 
 /// The WASM magic header every validator and runtime checks first: the four bytes `\0asm`.
 const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
 
 /// Spec 93 criterion 3's own size budget.
 const THREE_MB: usize = 3 * 1024 * 1024;
-
-/// Serve one real request against a fresh `dash::serve_on` and return the raw response
-/// bytes exactly as received over the socket - never `read_to_string`, which would panic on
-/// (or silently mangle) a non-UTF-8 binary body. Every provider panics if consulted: this
-/// route reads no store, graph, calls, or instance-registry input at all, so a provider
-/// call would itself be a dispatch-wiring regression.
-fn get_raw(target: &str) -> Vec<u8> {
-    let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-        panic!("the console-core wasm route reads no run-scoped store input")
-    };
-    let graph_provider = |_instance: Option<&str>| -> Graph {
-        panic!("the console-core wasm route opens no whole-graph projection")
-    };
-    let calls_provider =
-        |_instance: Option<&str>,
-         _seeds: &[String],
-         _dir: Direction,
-         _depth: i64,
-         _floor: &str|
-         -> CallGraph { panic!("the console-core wasm route opens no calls projection") };
-    let instances_provider = || -> Vec<InstanceView> {
-        panic!("the console-core wasm route reads no instance registry")
-    };
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
-    let addr = listener.local_addr().expect("learn the bound port");
-    // Never joined: `serve_on` loops over `listener.incoming()` for the life of the
-    // process, exactly like every other real-socket dash test in this tree drives it.
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            Err(e) => panic!("never connected to the served dash on {addr}: {e}"),
-        }
-    };
-    client
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("set a read timeout on the client");
-    let req = format!("GET {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-    client.write_all(req.as_bytes()).expect("write the request");
-    let mut raw = Vec::new();
-    client
-        .read_to_end(&mut raw)
-        .expect("read the served response to EOF (Connection: close)");
-    raw
-}
-
-/// Split a raw HTTP/1.1 response into (header text, body bytes) at the blank-line
-/// terminator, WITHOUT ever decoding the body as UTF-8 - it is binary. Headers themselves
-/// are always plain ASCII, so only that prefix is decoded.
-fn split_response(raw: &[u8]) -> (&str, &[u8]) {
-    let sep = b"\r\n\r\n";
-    let idx = raw
-        .windows(sep.len())
-        .position(|w| w == sep)
-        .expect("a served HTTP response has a header/body terminator");
-    let header = std::str::from_utf8(&raw[..idx]).expect("HTTP headers are ASCII/UTF-8");
-    let body = &raw[idx + sep.len()..];
-    (header, body)
-}
-
-fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
-    headers.lines().find_map(|line| {
-        let (k, v) = line.split_once(':')?;
-        k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
-    })
-}
 
 /// Just the (owned) body bytes of one real request - a thin wrapper so a caller that needs
 /// only the body (not the headers) never has to hold `split_response`'s borrow of the raw

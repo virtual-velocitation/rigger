@@ -41,9 +41,12 @@
 //! against the round-2 diff, confirming the fix closed the boundary bug without weakening
 //! either assertion.
 
+mod common;
+
 use std::path::Path;
 use std::process::{Child, Command};
 
+use common::fixtures::cleanup;
 use rigger::driver::replay::{mutation_scratch_path, reclaim_unit_mutation_scratch};
 use rigger::reap::processes_rooted_under;
 
@@ -70,13 +73,6 @@ fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     false
-}
-
-/// Kill-and-wait a fixture child unconditionally, ignoring errors - test cleanup only, via
-/// the `Child` handle it was spawned with (never a computed pid).
-fn cleanup(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[test]

@@ -49,6 +49,9 @@
 //! pin the JSON contract the fold reads, exactly as the sibling graph-fold periphery tests do. No
 //! reference to any external tool or project; hyphens, never em dashes.
 
+mod common;
+
+use common::fixtures::apply_ref;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     CallGraph, Direction, Projection, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
@@ -86,18 +89,6 @@ fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
     p.apply(&e).unwrap();
 }
 
-/// Fold a FILE-LEVEL reference (a top-level `use` / import): `file` references `name` with NO
-/// enclosing caller, exactly the event the emit pass produces for a use outside every function body.
-/// The fold turns it into `<file> --REFERENCES--> <file>::<name>` with NO caller-attributed `CALLS`
-/// twin (the caller arm is purely additive), so the referencing file is a "referenced but not called"
-/// site. Built from raw JSON so the test pins the on-log contract, not the Rust payload type.
-fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
-    let payload = serde_json::json!({ "file": file, "name": name, "lang": "rust" });
-    let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
 /// The reached node ids of a `CallGraph`, sorted, for a stable membership assertion.
 fn node_ids(cg: &CallGraph) -> Vec<String> {
     let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
@@ -128,28 +119,11 @@ fn layer_of(cg: &CallGraph, id: &str) -> Option<i64> {
 /// implementor.
 mod contract {
     use super::*;
-    use rigger::contextgraph::{Error, Graph};
-
-    /// A minimal `Projection` that answers the three required methods trivially and deliberately does
-    /// NOT override `calls` - the stand-in for "a projection with no directed-walk support" the
-    /// trait's own doc comment names. Leaving `calls` to the trait default is the whole point.
-    struct NoDirectedWalk;
-
-    impl Projection for NoDirectedWalk {
-        fn apply(&self, _e: &Event) -> Result<(), Error> {
-            Ok(())
-        }
-        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
-            Ok(Graph::default())
-        }
-        fn resolve(&self, _mention: &str) -> Result<Option<String>, Error> {
-            Ok(None)
-        }
-    }
+    use common::fixtures::MinimalProjection;
 
     #[test]
     fn a_projection_without_directed_walk_support_yields_an_empty_call_graph_in_either_direction() {
-        let p = NoDirectedWalk;
+        let p = MinimalProjection;
         for dir in [Direction::Down, Direction::Up] {
             let cg = p
                 .calls(&["any/file.rs::thing".to_string()], dir, 5, TIER_INFERRED)

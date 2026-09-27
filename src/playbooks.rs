@@ -28,12 +28,12 @@ use crate::eventstore::Event;
 /// The subdirectory (under a project's `.rigger/`) the playbook pool lives in.
 pub const POOL_SUBDIR: &str = "playbooks";
 
-/// FNV-1a/64 over `bytes` with the SAME fixed constants as `main::fnv1a_64` and
-/// `conductor::input_digest`, so the crate keeps ONE stable-hash idiom: a playbook's slug
-/// is identical across processes, machines, and builds (unlike `DefaultHasher`), which is
-/// what makes the pool a reproducible projection - the same lesson text always rebuilds to
-/// the same file name.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
+/// FNV-1a/64 over `bytes`: the crate's ONE stable, dependency-free hash (never for security).
+/// Its output is identical across processes, machines, builds and releases, unlike `std`'s
+/// `DefaultHasher`, so every id derived through it reproduces: a playbook's slug (the pool is a
+/// reproducible projection - the same lesson text always rebuilds to the same file name), a
+/// criterion's stable id, a gate's input digest, and a project id derived from its remote.
+pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET;

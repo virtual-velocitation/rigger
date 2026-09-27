@@ -11,32 +11,10 @@
 //! integration test compiles as its own independent crate, so the harness plumbing cannot be shared
 //! via a plain `use`).
 
-use std::process::Command;
+mod common;
 
-use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page (the slice the runtime harness
-/// drives). Mirrors `metadata_card_handoff_viz.rs::page_script` verbatim.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+use common::fixtures::tool_available;
+use common::served::run_node_harness;
 
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
 /// dataset / .hidden / addEventListener). Mirrors `metadata_card_handoff_viz.rs::DOM_SHIM` verbatim
@@ -88,36 +66,6 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
     TEMPLATE
         .replace("__CARD_SHIM__", &shim)
         .replace("__CARD_DRIVER__", driver)
-}
-
-/// Spawn `node` on a self-contained vm harness, asserting it exits 0 and prints `ok_token`.
-fn run_node_harness(harness_src: &str, ok_token: &str) {
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, harness_src).expect("write the runtime harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served client seam");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the runtime harness must drive the PROOF-row client seam, but node failed:\n\
-         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains(ok_token),
-        "the runtime harness must confirm '{ok_token}':\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
 }
 
 /// Driver: (1) a proven code entity's card names its count and both evidence `file:line`s inside an
@@ -179,7 +127,7 @@ const PROOF_DRIVER: &str = r#"
 /// entity" state (amber, not silent).
 #[test]
 fn proof_row_renders_count_evidence_and_the_explicit_empty_state() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP proof_row_renders_count_evidence_and_the_explicit_empty_state: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \

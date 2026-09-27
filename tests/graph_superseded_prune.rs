@@ -20,6 +20,9 @@
 //! are owned by sibling in-crate units; this file's role is to guard the changed PUBLIC prune
 //! surface, not to re-derive those criteria.
 
+mod common;
+
+use common::cli::nanos;
 use rigger::contextgraph::sqlite::{Projector, PruneStats};
 use rigger::contextgraph::{Graph, Projection, REL_CONTAINS, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::Event;
@@ -45,13 +48,6 @@ fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: 
     .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
     e.position = pos;
     p.apply(&e).unwrap();
-}
-
-/// The nanosecond boundary an edge carries for a fact retired `secs` after the epoch - the public
-/// mirror of the crate-private `to_nanos`, computed here so the external test never reaches into the
-/// crate for it. This is the same time base an edge's `valid_to` is stored in.
-fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
 }
 
 /// The file's live CONTAINS targets in a public `subgraph` result, sorted - the exact live structure

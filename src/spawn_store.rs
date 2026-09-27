@@ -137,7 +137,7 @@ pub fn record_result_if_absent(
 mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::{Filter, Revision, Subscription};
+
     use crate::spawn::{
         is_recorded, recorded, result_of, step_result, ROLE_IMPLEMENTER, TYPE_SPAWN_RESULT,
     };
@@ -269,31 +269,7 @@ mod tests {
             self.inner.append(stream, expected, events)
         }
 
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: Revision,
-            dir: Direction,
-        ) -> Result<Vec<Event>, Error> {
-            self.inner.read_stream(stream, from, dir)
-        }
-
-        fn read_all(
-            &self,
-            from: Position,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<Event>, Error> {
-            self.inner.read_all(from, dir, filter)
-        }
-
-        fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
-            self.inner.subscribe_all(from, filter)
-        }
-
-        fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error> {
-            self.inner.subscribe_stream(stream, from)
-        }
+        crate::delegate_event_store_reads!();
     }
 
     #[test]

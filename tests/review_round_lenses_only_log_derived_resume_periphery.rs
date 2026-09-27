@@ -47,6 +47,10 @@
 //! names `a-residue.rs` and the residue file survives into the integrated tree). Restoring
 //! the call verbatim (`git diff` on `src/` clean) returns it to green.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
 use rigger::conductor::{
     parked_spawn, run, unit_branch, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM,
 };
@@ -99,21 +103,6 @@ fn git_ok(dir: &str, args: &[&str]) {
         "git {args:?} in {dir} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
 }
 
 /// WINDOW 1's driver. The implementer writes real work. Of the two lenses in the SAME

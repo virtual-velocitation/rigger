@@ -25,8 +25,12 @@
 //! not exercise. It leans on (but does not own) the upsert-live `add_edge` fold arm that landed in
 //! criterion 1.
 
+mod common;
+
+use common::cli::nanos;
+use common::fixtures::governs;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Edge, Graph, Projection, REL_GOVERNS, TYPE_DECISION_MADE};
+use rigger::contextgraph::{Graph, Projection, TYPE_DECISION_MADE};
 use rigger::eventstore::Event;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -45,25 +49,6 @@ fn apply_governs(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
         .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
     e.position = pos;
     p.apply(&e).unwrap();
-}
-
-/// The nanosecond `valid_from` an edge carries for a fact that became true `secs` after the epoch -
-/// the public mirror of the crate-private `to_nanos`, computed here so the external test never
-/// reaches into the crate for it.
-fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
-}
-
-/// Every live `GOVERNS` edge in a public `subgraph` result as `(from, to, source, valid_from)`,
-/// sorted, so a test can COUNT the rows the public projection exposes and read their provenance.
-fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
-    let mut out: Vec<_> = graph_edges
-        .iter()
-        .filter(|e| e.rel == REL_GOVERNS)
-        .map(|e| (e.from.clone(), e.to.clone(), e.source, e.valid_from))
-        .collect();
-    out.sort();
-    out
 }
 
 /// A REBUILD: fold the canonical criterion-3 log from scratch into a FRESH, empty projection and

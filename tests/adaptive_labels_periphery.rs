@@ -44,31 +44,13 @@
 //! coincidence or importance reddens the contract harness; and a layered render that leaks `data-nid`
 //! or an auto `<title>` reddens the regression harness.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on the `ubuntu-latest` CI
-/// image, absent on the shim-only lane); the runtime guards SKIP rather than fail when it is missing.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// Wrap a DOM shim + a driver into a hermetic node program: it reads the served page script from
 /// `argv[2]`, then runs the shim, the page, and the driver in one `vm` context (so the driver reaches
@@ -464,7 +446,7 @@ fn assert_ok(driver_program: &str, marker: &str) {
 /// The overview script plus `driver` runs under the minimal shim and confirms its seam with
 /// `marker`; skipped (named `test` in the skip line) when there is no `node` runtime.
 fn assert_overview_driver_passes(test: &str, driver: &str, marker: &str) {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP {test}: no `node` runtime on PATH (present on dev machines and ubuntu-latest \
              CI); install node to run it."
@@ -512,7 +494,7 @@ rigger::test_cases! {
 /// open (a name-containing or titleless fixture passes vacuously against the pre-fix name-dropping hover).
 #[test]
 fn the_real_concepts_drill_names_its_decluttered_shared_member_on_hover() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_real_concepts_drill_names_its_decluttered_shared_member_on_hover: no `node` runtime \
              on PATH (present on dev machines and ubuntu-latest CI); install node to run it."

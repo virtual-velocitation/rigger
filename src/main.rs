@@ -41,6 +41,7 @@ use rigger::grounder::Grounder;
 use rigger::instructions;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
+use rigger::playbooks::fnv1a_64;
 use rigger::run as runscope;
 use rigger::run_store as runscope_store;
 use rigger::sidecar::{PeerDecision, Sidecar};
@@ -64,6 +65,9 @@ use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, wa
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;
+#[cfg(test)]
+#[path = "../tests/common/fixtures/mod.rs"]
+mod test_support;
 
 const RIGGER_DIR: &str = ".rigger";
 
@@ -1004,21 +1008,6 @@ fn has_tracked_project_id(root: &Path) -> bool {
         Path::new(&toplevel)
     };
     read_project_id(base).is_some()
-}
-
-/// A stable, deterministic 64-bit FNV-1a hash. The project id derived from a remote must
-/// be the SAME on every clone, machine, and rigger version, so this uses the fixed FNV
-/// constants rather than `std::collections::hash_map::DefaultHasher` (whose output is
-/// explicitly NOT guaranteed stable across builds).
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
 }
 
 /// Canonicalize definition text for hashing (spec 13, unit 1): normalize CRLF -> LF and
@@ -14662,6 +14651,12 @@ blocks integration no matter what the static gates say.\n",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ev;
+    use crate::test_support::js_declaration;
+    use crate::test_support::pgid_of;
+    use crate::test_support::tool_available;
+    use crate::test_support::write_file;
+    use crate::test_support::CwdGuard;
 
     /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt`
     /// (so it cannot drift from the labels), every optional field empty.
@@ -16059,9 +16054,6 @@ mod tests {
     #[test]
     fn superseded_graph_nodes_drops_dead_runs_and_preboundary_keeping_lessons_active_and_reused_ids(
     ) {
-        fn ev(type_: &str, data: &str) -> Event {
-            Event::new(type_, data.as_bytes().to_vec())
-        }
         fn run_started(run: &str) -> Event {
             ev(
                 runscope::TYPE_RUN_STARTED,
@@ -16173,99 +16165,95 @@ mod tests {
         // One positioned event in raw on-log JSON. Distinct positions are required: the graph fold
         // dedups on position (`INSERT OR IGNORE INTO applied`), and metrics / attribution key by
         // index, so a monotonic position per event models the real append order.
-        fn ev(pos: u64, type_: &str, json: serde_json::Value) -> Event {
-            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-            e.position = pos;
-            e
-        }
+        use crate::test_support::ev_at;
 
         // A whole run stream spanning a DEAD run r1 and the ACTIVE run r2, each interleaving the
         // machinery the de-noise dropped (FileTouched / UnitStarted / GateVerdict / UnitIntegrated)
         // with the content (DecisionMade / ReviewFinding) and the unit lifecycle metrics folds.
         let stream = vec![
             // --- Dead run r1 ---
-            ev(
+            ev_at(
                 1,
                 runscope::TYPE_RUN_STARTED,
                 serde_json::json!({ "run": "r1", "criteria": ["c"] }),
             ),
-            ev(
+            ev_at(
                 2,
                 contextgraph::TYPE_FILE_TOUCHED,
                 serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
             ),
-            ev(
+            ev_at(
                 3,
                 ledger::TYPE_UNIT_STARTED,
                 serde_json::json!({ "id": "u_r1", "unit": "u_r1", "criterion": "c1", "agent": "rust-engineer", "needs": [] }),
             ),
-            ev(
+            ev_at(
                 4,
                 contextgraph::TYPE_GATE_VERDICT,
                 serde_json::json!({ "gate": "build", "pass": true }),
             ),
-            ev(
+            ev_at(
                 5,
                 contextgraph::TYPE_DECISION_MADE,
                 serde_json::json!({ "id": "d_r1", "summary": "dead-run decision", "governs": ["src/combat.rs"], "supersedes": "" }),
             ),
-            ev(
+            ev_at(
                 6,
                 contextgraph::TYPE_REVIEW_FINDING,
                 serde_json::json!({ "id": "f_r1", "by": "tech-lens", "unit": "u_r1", "summary": "dead-run finding", "about": ["src/combat.rs"] }),
             ),
-            ev(
+            ev_at(
                 7,
                 ledger::TYPE_UNIT_STATUS,
                 serde_json::json!({ "id": "u_r1", "status": "verified" }),
             ),
-            ev(
+            ev_at(
                 8,
                 ledger::TYPE_UNIT_STATUS,
                 serde_json::json!({ "id": "u_r1", "status": "reviewed" }),
             ),
-            ev(
+            ev_at(
                 9,
                 ledger::TYPE_UNIT_INTEGRATED,
                 serde_json::json!({ "id": "u_r1", "commit": "abc1" }),
             ),
             // --- Active run r2 ---
-            ev(
+            ev_at(
                 10,
                 runscope::TYPE_RUN_STARTED,
                 serde_json::json!({ "run": "r2", "criteria": ["c"] }),
             ),
-            ev(
+            ev_at(
                 11,
                 contextgraph::TYPE_FILE_TOUCHED,
                 serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
             ),
-            ev(
+            ev_at(
                 12,
                 ledger::TYPE_UNIT_STARTED,
                 serde_json::json!({ "id": "u_r2", "unit": "u_r2", "criterion": "c1", "agent": "rust-engineer", "needs": [] }),
             ),
-            ev(
+            ev_at(
                 13,
                 contextgraph::TYPE_GATE_VERDICT,
                 serde_json::json!({ "gate": "clippy", "pass": true }),
             ),
-            ev(
+            ev_at(
                 14,
                 contextgraph::TYPE_DECISION_MADE,
                 serde_json::json!({ "id": "d_r2", "summary": "active-run decision", "governs": ["src/combat.rs"], "supersedes": "" }),
             ),
-            ev(
+            ev_at(
                 15,
                 ledger::TYPE_UNIT_STATUS,
                 serde_json::json!({ "id": "u_r2", "status": "verified" }),
             ),
-            ev(
+            ev_at(
                 16,
                 ledger::TYPE_UNIT_STATUS,
                 serde_json::json!({ "id": "u_r2", "status": "reviewed" }),
             ),
-            ev(
+            ev_at(
                 17,
                 ledger::TYPE_UNIT_INTEGRATED,
                 serde_json::json!({ "id": "u_r2", "commit": "abc2" }),
@@ -17437,19 +17425,6 @@ mod tests {
         );
     }
 
-    /// Skip (rather than fail) when `go-gitsemver` is not on PATH in this environment -
-    /// mirrors `tests/gitsemver_derivation.rs`'s own `gitsemver_available` guard: these
-    /// tests prove `behind_the_tree_advisory`'s WIRING to the real derivation seam given
-    /// the tool, which the pure `behind_the_tree_message` tests above already prove
-    /// independently of it.
-    fn gitsemver_available() -> bool {
-        Command::new("go-gitsemver")
-            .arg("version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-
     /// `git <args>` in `root` with a fixed committer identity, panicking with stderr on
     /// failure - mirrors `tests/gitsemver_derivation.rs`'s own `git` fixture helper.
     fn behind_the_tree_git(root: &Path, args: &[&str]) {
@@ -17485,7 +17460,7 @@ mod tests {
 
     #[test]
     fn behind_the_tree_advisory_names_the_real_derived_version_ahead_of_the_installed_commit() {
-        if !gitsemver_available() {
+        if !tool_available("go-gitsemver", "version") {
             eprintln!("skipping: go-gitsemver not on PATH");
             return;
         }
@@ -17526,7 +17501,7 @@ mod tests {
 
     #[test]
     fn behind_the_tree_advisory_is_silent_when_the_checkout_has_not_moved() {
-        if !gitsemver_available() {
+        if !tool_available("go-gitsemver", "version") {
             eprintln!("skipping: go-gitsemver not on PATH");
             return;
         }
@@ -17589,11 +17564,6 @@ mod tests {
 
     fn slugs<const N: usize>(xs: [&str; N]) -> HashSet<String> {
         xs.iter().map(|s| s.to_string()).collect()
-    }
-
-    fn write_file(path: &Path, bytes: &[u8]) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, bytes).unwrap();
     }
 
     /// `git init` a repo at `root` and commit a single file `rel` with `contents`, so a
@@ -19863,14 +19833,8 @@ mod tests {
         // Additive, defaulted off (spec 70 Notes): with STORE_FENCE_ENV unset, an
         // unfenced courier's resolution is byte-identical to before the fence existed -
         // a plain store at the cwd resolves normally.
-        struct Restore(std::path::PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
         let prev = std::env::current_dir().unwrap();
-        let _restore = Restore(prev);
+        let _restore = CwdGuard(prev);
         std::env::remove_var(STORE_FENCE_ENV);
 
         let dir = tempfile::tempdir().unwrap();
@@ -23270,34 +23234,6 @@ mod tests {
         );
     }
 
-    /// Extract a top-level `function <name>(...) { ... }` body (from the opening brace after
-    /// `signature` to its matching closing brace) from JS source. The same brace-counting as
-    /// [`meta_object_body`], generalized to a named function so a test can pin what that
-    /// function's body does (or does not) contain, rather than the whole embedded file.
-    fn js_function_body<'a>(src: &'a str, signature: &str) -> &'a str {
-        let start = src
-            .find(signature)
-            .unwrap_or_else(|| panic!("workflow must define `{signature}`"));
-        let open = start
-            + src[start..]
-                .find('{')
-                .expect("function signature must open a brace");
-        let mut depth = 0usize;
-        for (i, c) in src[open..].char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return &src[open..=open + i];
-                    }
-                }
-                _ => {}
-            }
-        }
-        panic!("`{signature}` body is not brace-balanced");
-    }
-
     /// Spec 67, criterion 1 (THIS unit OWNS phase derivation; courier placement - the Drive
     /// lane call sites - is criterion 3's, a separate function, not this one's). `phaseOf`
     /// must map every wave item to one of the fixed `meta.phases` groups by role, with the
@@ -23318,7 +23254,8 @@ mod tests {
             code.contains("function phaseOf(req)"),
             "the driver must define a phaseOf(req) function"
         );
-        let body = js_function_body(&code, "function phaseOf(req) {");
+        let decl = js_declaration(&code, "function phaseOf(req) {");
+        let body = &decl[decl.find('{').unwrap()..];
 
         // The two run-wide meta-stages are special-cased on the UNIT, ahead of any role
         // read, and resolve straight to Plan.
@@ -23454,7 +23391,8 @@ mod tests {
              one call site that actually invokes it"
         );
 
-        let body = js_function_body(&code, "function relayAttention(step) {");
+        let decl = js_declaration(&code, "function relayAttention(step) {");
+        let body = &decl[decl.find('{').unwrap()..];
 
         // Renders ONLY what the wire says: iterates the wire's own `attention` array (omitted
         // entirely on a clean step - criterion 5's `skip_serializing_if`), never a second,
@@ -23934,7 +23872,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shim = write_shim_files(dir.path()).unwrap();
 
-        if npm_available() {
+        if tool_available("npm", "--version") {
             // npm is on PATH: provisioning must run it for real and leave node_modules.
             provision_shim(dir.path()).expect("provision_shim must succeed when npm is available");
             assert!(
@@ -23985,14 +23923,6 @@ mod tests {
         if let Some(v) = prior {
             std::env::set_var("RIGGER_SHIM", v);
         }
-    }
-
-    fn npm_available() -> bool {
-        Command::new("npm")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
     }
 
     use rigger::metrics::{GateCounts, SpawnTiming};
@@ -25331,13 +25261,7 @@ mod tests {
         let prev = std::env::current_dir().unwrap();
         // current_dir is process-global; serialize against the other cwd-sensitive
         // path via a guard that always restores it even on a failed assertion.
-        struct Restore(std::path::PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
-        let _restore = Restore(prev);
+        let _restore = CwdGuard(prev);
         std::env::set_current_dir(dir.path()).unwrap();
 
         cmd_stats(&[]).expect("stats on a never-run project must succeed");
@@ -25358,13 +25282,7 @@ mod tests {
     fn a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release() {
         let dir = tempfile::tempdir().unwrap();
         let prev = std::env::current_dir().unwrap();
-        struct Restore(std::path::PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
-        let _restore = Restore(prev);
+        let _restore = CwdGuard(prev);
         std::env::set_current_dir(dir.path()).unwrap();
         std::fs::create_dir_all(RIGGER_DIR).unwrap();
 
@@ -25767,28 +25685,6 @@ mod tests {
     }
 
     // --- Spec 44, criterion 3: the always-on dash is SESSION-DETACHED from `rigger step` ---
-
-    /// Read the process-group id (PGID / `pgrp`) of `pid` from `/proc/<pid>/stat`. Pure std, so
-    /// it holds on BOTH feature lanes. `/proc/<pid>/stat` is `pid (comm) state ppid pgrp ...`;
-    /// `comm` may itself contain spaces and parens, so we split AFTER the last `)` - the tokens
-    /// that follow are then `state ppid pgrp ...`, making `pgrp` the third whitespace token. A
-    /// zombie (an exited-but-unreaped child) still has a readable `stat`, so this is race-free
-    /// against the child having already exited; only a fully reaped pid is gone.
-    #[cfg(target_os = "linux")]
-    fn pgid_of(pid: u32) -> u32 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .unwrap_or_else(|e| panic!("read /proc/{pid}/stat: {e}"));
-        let after_comm = stat
-            .rsplit_once(')')
-            .expect("/proc stat has a parenthesised comm field")
-            .1;
-        after_comm
-            .split_whitespace()
-            .nth(2)
-            .expect("/proc stat has a pgrp field after comm")
-            .parse()
-            .expect("pgrp is a base-10 integer")
-    }
 
     /// The load-bearing detachment proof: `detach_process_group` puts a spawned child in its OWN
     /// process group - a group whose PGID equals the child's own PID (it is the group leader) and

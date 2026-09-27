@@ -41,6 +41,10 @@
 //! before `round_start_sha`, where `work.rs` never existed either. Restoring the `DiffMode::Direct`
 //! call verbatim (`git diff` on `src/` clean) returns it to green.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
 use rigger::conductor::{
     run, unit_branch, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM,
 };
@@ -92,21 +96,6 @@ fn git_ok(dir: &str, args: &[&str]) {
         "git {args:?} in {dir} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
 }
 
 /// The implementer writes real work; the lone adjudicator breaks the review protocol by

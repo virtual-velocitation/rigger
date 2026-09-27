@@ -28,31 +28,13 @@
 //! the other's test - proving the overview alone would leave the re-projection panel's directory hulls
 //! (spec 55's subject x lens surface, e.g. a concept re-grained by files) structurally unguarded.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN renderers under node's built-in
 /// `vm` (no npm, hermetic). It drives `renderKgOverview` directly against a fixture `ClusterOverview` (no
@@ -154,7 +136,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// is the behavioral proof a structural grep on the served bytes cannot make.
 #[test]
 fn the_files_lens_draws_directory_hulls_behind_its_file_nodes() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_files_lens_draws_directory_hulls_behind_its_file_nodes: no `node` runtime on \
              PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
@@ -288,7 +270,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// redden [`the_files_lens_draws_directory_hulls_behind_its_file_nodes`] above, which never calls it.
 #[test]
 fn the_reprojection_view_draws_directory_hulls_behind_its_file_clusters() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_reprojection_view_draws_directory_hulls_behind_its_file_clusters: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \

@@ -599,10 +599,11 @@ fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
-/// Serde `skip_serializing_if` predicate: keep the `fresh` boundary marker off the wire for the
-/// common non-boundary event, so only the FIRST event of each extraction batch serializes it and
-/// every other code event's payload is byte-identical to a pre-criterion-3 log.
-fn is_false(b: &bool) -> bool {
+/// Serde `skip_serializing_if` predicate: keep a flag off the wire while it is false, so a payload
+/// that never sets it serializes byte-identically to one from before the flag existed - the
+/// `fresh` extraction-batch boundary marker (only the FIRST event of each batch serializes it),
+/// and the neighborhood view's `back` recursion marker and `shared` concept-membership marker.
+pub(crate) fn is_false(b: &bool) -> bool {
     !*b
 }
 
@@ -933,22 +934,8 @@ mod caller_wire_contract {
 /// re-declaring it.
 #[cfg(test)]
 mod locate_default {
-    use super::{Error, Graph, Located, Projection};
-    use crate::eventstore::Event;
-
-    struct NoLocate;
-
-    impl Projection for NoLocate {
-        fn apply(&self, _e: &Event) -> Result<(), Error> {
-            Ok(())
-        }
-        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
-            Ok(Graph::default())
-        }
-        fn resolve(&self, _mention: &str) -> Result<Option<String>, Error> {
-            Ok(None)
-        }
-    }
+    use super::{Located, Projection};
+    use crate::test_support::MinimalProjection;
 
     /// A projection with no locate support degrades HONESTLY to `Located::None` rather than
     /// erroring or panicking - the same honesty the [`crate::contextgraph::sqlite::Projector`]
@@ -956,6 +943,6 @@ mod locate_default {
     /// that never indexed definitions at all.
     #[test]
     fn a_projection_with_no_override_reports_none_never_errors() {
-        assert_eq!(NoLocate.locate("anything").unwrap(), Located::None);
+        assert_eq!(MinimalProjection.locate("anything").unwrap(), Located::None);
     }
 }
