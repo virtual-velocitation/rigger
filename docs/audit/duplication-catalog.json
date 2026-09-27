@@ -15,7 +15,8 @@
       }
     ],
     "proposed_home": "blast_radius_eval::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-097bb5af6d73",
@@ -2037,22 +2038,23 @@
     "note": "mandatory sweep: Command::new call sites - 392 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-15530d0e8b19",
+    "id": "dup-fda029aaf8ec",
     "classification": "near",
     "sites": [
       {
         "file": "src/canary.rs",
         "name": "to_event",
-        "content_hash": "0be5e50870d7f0aa"
+        "content_hash": "e52ec60f6a62d20a"
       },
       {
         "file": "src/canary.rs",
         "name": "to_event",
-        "content_hash": "0d30fb5da09b2118"
+        "content_hash": "4569e66c3fc67e2c"
       }
     ],
     "proposed_home": "canary::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-37f6bddf866b",
@@ -2072,60 +2074,6 @@
     "proposed_home": "a new shared module (sites span 2 files: src/canary_store.rs, src/grounder/design/extract.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-53188abd6299",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/canary_store.rs",
-        "name": "with_anchor",
-        "content_hash": "1d66c6aaff08a482"
-      },
-      {
-        "file": "tests/common/fixtures/config.rs",
-        "name": "agent",
-        "content_hash": "9ebb8f9f811f7e90"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/canary_store.rs, tests/common/fixtures/config.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-ce5e360ed6f9",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/canary_store.rs",
-        "name": "catches_matches_an_absolute_path_spelling_of_a_repo_relative_anchor",
-        "content_hash": "db84717eb4827d25"
-      },
-      {
-        "file": "src/canary_store.rs",
-        "name": "catches_matches_a_segment_boundary_path_suffix_in_either_direction",
-        "content_hash": "93b69d38e59148e3"
-      }
-    ],
-    "proposed_home": "canary_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-9d7ea1906fb1",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/canary_store.rs",
-        "name": "run_canary_shards_independent_items_concurrently_at_the_scheduling_seam",
-        "content_hash": "42028bcb35f16924"
-      },
-      {
-        "file": "src/canary_store.rs",
-        "name": "run_canary_jobs_cap_bounds_total_concurrent_spawns_across_both_dimensions",
-        "content_hash": "c0f7110f86647cad"
-      }
-    ],
-    "proposed_home": "canary_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
     "id": "dup-0b5573eeaebe",
@@ -10376,43 +10324,8 @@
       }
     ],
     "proposed_home": "contract::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-a23c56e564d2",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/eventstore/contract.rs",
-        "name": "subscription_replays_then_goes_live",
-        "content_hash": "42117d1ac77b7f9b"
-      },
-      {
-        "file": "src/eventstore/contract.rs",
-        "name": "stream_subscription_replays_then_goes_live",
-        "content_hash": "0db9afd09b3633a3"
-      }
-    ],
-    "proposed_home": "contract::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-f02a615cda8b",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/eventstore/kurrentdb.rs",
-        "name": "a_single_event_reports_the_position_the_server_issued",
-        "content_hash": "b482647858a3f3e4"
-      },
-      {
-        "file": "src/eventstore/kurrentdb.rs",
-        "name": "a_batch_reports_the_revision_span_the_ack_names",
-        "content_hash": "3dc16fa60da1e9a5"
-      }
-    ],
-    "proposed_home": "kurrentdb::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-c5228cf29179",
@@ -10878,7 +10791,8 @@
       }
     ],
     "proposed_home": "model::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-fe20f68eb184",
@@ -11098,42 +11012,6 @@
       }
     ],
     "proposed_home": "grounder::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-f8c8e2e29540",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/mod.rs",
-        "name": "a_file_added_to_the_tree_since_the_index_was_built_is_flagged",
-        "content_hash": "1978d1e625c948a2"
-      },
-      {
-        "file": "src/grounder/symbols/mod.rs",
-        "name": "a_file_removed_from_the_tree_since_the_index_was_built_is_flagged",
-        "content_hash": "b00b974304bd994c"
-      }
-    ],
-    "proposed_home": "mod::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-d4aab3ae8e0e",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/registry.rs",
-        "name": "javascript_tags_query",
-        "content_hash": "0e972f20a6071ad4"
-      },
-      {
-        "file": "src/grounder/symbols/registry.rs",
-        "name": "typescript_tags_query",
-        "content_hash": "b0e1b2651936dbdc"
-      }
-    ],
-    "proposed_home": "registry::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -12569,22 +12447,23 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-c8ebc048439a",
+    "id": "dup-ede1947069a2",
     "classification": "near",
     "sites": [
       {
         "file": "src/progress_store.rs",
         "name": "record_launch",
-        "content_hash": "12f507aaf1e4f50a"
+        "content_hash": "c5e4fbc342916169"
       },
       {
         "file": "src/progress_store.rs",
         "name": "record_stop_failure",
-        "content_hash": "ac1bd83e51082074"
+        "content_hash": "9012a79dd3c973af"
       }
     ],
     "proposed_home": "progress_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-dfb3994243db",
@@ -12770,45 +12649,23 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-8b14b77d020f",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/run_store.rs",
-        "name": "the_resolved_base_is_persisted_on_the_run_start_and_survives_adopt",
-        "content_hash": "db5ab963194e57d0"
-      },
-      {
-        "file": "src/run_store.rs",
-        "name": "the_base_tip_is_persisted_on_the_run_start_and_survives_adopt",
-        "content_hash": "db5ab963194e57d0"
-      },
-      {
-        "file": "src/run_store.rs",
-        "name": "the_spec_path_is_persisted_on_the_run_start_and_survives_adopt",
-        "content_hash": "943636411c305513"
-      }
-    ],
-    "proposed_home": "run_store::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-c317d66b0546",
+    "id": "dup-77bd4d35ea26",
     "classification": "near",
     "sites": [
       {
         "file": "src/run_store.rs",
         "name": "ensure_started_adopts_the_same_criteria_run_without_re_minting",
-        "content_hash": "f740049e50e522b6"
+        "content_hash": "33f3cafa5b4ba2a4"
       },
       {
         "file": "src/run_store.rs",
         "name": "ensure_started_mints_a_new_run_when_the_criteria_change",
-        "content_hash": "c295d6ae890b1b88"
+        "content_hash": "14f0794fa0ac140a"
       }
     ],
     "proposed_home": "run_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-3dd926889508",
@@ -13681,63 +13538,23 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-65c2645daf24",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/build_env_authority_periphery.rs",
-        "name": "run_once",
-        "content_hash": "0b22596e9c8530eb"
-      },
-      {
-        "file": "tests/rigger_run_base_gate_env_periphery.rs",
-        "name": "run_once",
-        "content_hash": "4bb2b3451d51c0ea"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/build_env_authority_periphery.rs, tests/rigger_run_base_gate_env_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-9b9db533d046",
+    "id": "dup-5dc33b6ca236",
     "classification": "near",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
         "name": "one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_agent_subprocess",
-        "content_hash": "4790eed406863e84"
-      },
-      {
-        "file": "tests/build_env_authority_periphery.rs",
-        "name": "jobs_cap_coexists_with_a_configured_wrapper_at_both_real_injection_sites",
-        "content_hash": "c4c386f0bc24bd36"
+        "content_hash": "ae9ca0072c158593"
       },
       {
         "file": "tests/build_env_authority_periphery.rs",
         "name": "auto_wrapper_resolves_to_a_real_probed_binary_and_reaches_both_real_subprocesses",
-        "content_hash": "b340a221ff927cb5"
-      }
-    ],
-    "proposed_home": "build_env_authority_periphery::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-735f2d3802fc",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/build_env_authority_periphery.rs",
-        "name": "run_propagates_a_named_wrappers_uncreatable_cache_dir_at_the_library_entry_point",
-        "content_hash": "e8347ae84c51e5ea"
-      },
-      {
-        "file": "tests/build_env_authority_periphery.rs",
-        "name": "run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_library_entry_point",
-        "content_hash": "f6f3407d65c658c6"
+        "content_hash": "65523d3732448a81"
       }
     ],
     "proposed_home": "build_env_authority_periphery::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-dd10d8d2efb8",
@@ -14167,24 +13984,6 @@
       }
     ],
     "proposed_home": "canary_model_drift_periphery::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-bd13f0d25ce1",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/canary_tolerant_attribution_periphery.rs",
-        "name": "a_tolerant_match_in_a_later_about_entry_still_scores_the_catch",
-        "content_hash": "8057a1afa7f8b1f3"
-      },
-      {
-        "file": "tests/canary_tolerant_attribution_periphery.rs",
-        "name": "an_empty_about_entry_never_scores_a_catch_even_against_a_trailing_slash_anchor",
-        "content_hash": "63975288f1e3928b"
-      }
-    ],
-    "proposed_home": "canary_tolerant_attribution_periphery::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -17205,42 +17004,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-f99638d3db96",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/console_shell_periphery.rs",
-        "name": "the_served_font_route_returns_a_real_woff2_asset_with_correct_binary_headers",
-        "content_hash": "e82c6536941c9687"
-      },
-      {
-        "file": "tests/dash_console_wasm_route_periphery.rs",
-        "name": "the_served_console_wasm_route_returns_a_real_wasm_module_with_correct_binary_headers",
-        "content_hash": "7e9a5a5305328b4a"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/console_shell_periphery.rs, tests/dash_console_wasm_route_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-2c0773c5730e",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/console_wasm_build_periphery.rs",
-        "name": "build_wasm_artifact_scrubs_every_inherited_cargo_feature_env_var_before_spawning",
-        "content_hash": "f86a8bc6b75152d8"
-      },
-      {
-        "file": "tests/console_wasm_build_periphery.rs",
-        "name": "build_wasm_artifact_clears_rustflags_and_empties_the_wrapper_vars",
-        "content_hash": "8aa76a5456380c4a"
-      }
-    ],
-    "proposed_home": "console_wasm_build_periphery::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-e359b939b0fa",
     "classification": "near",
     "sites": [
@@ -17466,24 +17229,6 @@
     ],
     "proposed_home": "one shared `exploration_graph` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
-  },
-  {
-    "id": "dup-91477cc75aa4",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/dash_graph_exploration_fold.rs",
-        "name": "cluster_key_is_reachable_over_the_public_crate_boundary",
-        "content_hash": "237af912aae03f03"
-      },
-      {
-        "file": "tests/dash_graph_exploration_fold.rs",
-        "name": "cluster_key_honors_the_boundary_edges_of_the_names_a_file_predicate",
-        "content_hash": "0fb2333100f52380"
-      }
-    ],
-    "proposed_home": "dash_graph_exploration_fold::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
     "id": "dup-79495b3c2235",
@@ -17749,42 +17494,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/dedup_seeding_periphery.rs, tests/published_content_key_split_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-ff761af86084",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/design_intent_events.rs",
-        "name": "the_public_emit_lowers_every_concept_kind_onto_the_fold_arm_that_matches_it",
-        "content_hash": "21461b3e9a3376c6"
-      },
-      {
-        "file": "tests/design_intent_events.rs",
-        "name": "the_public_link_emit_lowers_every_link_rel_onto_the_fold_arm_that_matches_it",
-        "content_hash": "fe517aa4715d149c"
-      }
-    ],
-    "proposed_home": "design_intent_events::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-59e92471febe",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/design_intent_events.rs",
-        "name": "every_recognized_end_user_usage_shape_is_dropped_before_the_fold",
-        "content_hash": "e6ee560e5e8ee685"
-      },
-      {
-        "file": "tests/design_intent_events.rs",
-        "name": "a_design_word_in_a_non_handbook_usage_doc_does_not_leak_the_handbook_content_keep",
-        "content_hash": "83207d156bf7bad1"
-      }
-    ],
-    "proposed_home": "design_intent_events::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18079,7 +17788,8 @@
       }
     ],
     "proposed_home": "graph_denoise_target_project::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-fa251330d936",
@@ -18516,24 +18226,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-8ea961567395",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/kurrentdb_always_available.rs",
-        "name": "no_source_still_gates_on_the_retired_kurrentdb_feature",
-        "content_hash": "6af32bb594a6a062"
-      },
-      {
-        "file": "tests/turbovec_retired.rs",
-        "name": "no_source_still_gates_on_the_retired_turbovec_feature",
-        "content_hash": "a6be510c9b248236"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/kurrentdb_always_available.rs, tests/turbovec_retired.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-2c150e59c6d9",
     "classification": "near",
     "sites": [
@@ -18550,62 +18242,6 @@
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/land_refused_names_its_paths_periphery.rs, tests/regate_landed_on_resume_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-238f6df687da",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/metadata_card_handoff_viz.rs",
-        "name": "build_harness",
-        "content_hash": "3c24e690ad32c728"
-      },
-      {
-        "file": "tests/proof_row_renders_on_the_card.rs",
-        "name": "build_harness",
-        "content_hash": "3c24e690ad32c728"
-      },
-      {
-        "file": "tests/subject_lens_overlay_client_arms.rs",
-        "name": "build_harness",
-        "content_hash": "7c1f36a2d795443b"
-      },
-      {
-        "file": "tests/subject_view_memory_rail_client.rs",
-        "name": "build_harness",
-        "content_hash": "7c1f36a2d795443b"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/metadata_card_handoff_viz.rs, tests/proof_row_renders_on_the_card.rs, tests/subject_lens_overlay_client_arms.rs, tests/subject_view_memory_rail_client.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0c9c3cbd4b5a",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "tests/metadata_card_handoff_viz.rs",
-        "name": "build_harness",
-        "content_hash": "3c24e690ad32c728"
-      },
-      {
-        "file": "tests/proof_row_renders_on_the_card.rs",
-        "name": "build_harness",
-        "content_hash": "3c24e690ad32c728"
-      },
-      {
-        "file": "tests/subject_lens_overlay_client_arms.rs",
-        "name": "build_harness",
-        "content_hash": "7c1f36a2d795443b"
-      },
-      {
-        "file": "tests/subject_view_memory_rail_client.rs",
-        "name": "build_harness",
-        "content_hash": "7c1f36a2d795443b"
-      }
-    ],
-    "proposed_home": "one shared `build_harness` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-ff735ff86fe9",
@@ -18811,24 +18447,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-3e64f9e11fa8",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/parallel_ordered_emit.rs",
-        "name": "drive_default",
-        "content_hash": "512b509185ac67b5"
-      },
-      {
-        "file": "tests/parallel_ordered_emit.rs",
-        "name": "drive_paced",
-        "content_hash": "6127eacbb2b42e52"
-      }
-    ],
-    "proposed_home": "parallel_ordered_emit::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-e4f67a924cc1",
     "classification": "near",
     "sites": [
@@ -19000,24 +18618,6 @@
       }
     ],
     "proposed_home": "reap_before_removal_periphery::support (consolidate these 5 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-fc5ffda10df5",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/reminder_dedup_workflow_child_env_periphery.rs",
-        "name": "workflow_stamps_its_own_pid_on_the_spawned_child_with_no_inbound_sentinel",
-        "content_hash": "90eb6e60c38634d3"
-      },
-      {
-        "file": "tests/reminder_dedup_workflow_child_env_periphery.rs",
-        "name": "workflow_still_stamps_a_fresh_own_pid_on_the_child_even_when_its_own_reminder_was_suppressed",
-        "content_hash": "add85d6faf2bbdfc"
-      }
-    ],
-    "proposed_home": "reminder_dedup_workflow_child_env_periphery::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -19918,24 +19518,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-502c3b2e40cb",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/spawn_timing_periphery.rs",
-        "name": "spawn_timing_pairs_real_writer_events_through_a_real_store_by_role",
-        "content_hash": "8fa926e1c6285146"
-      },
-      {
-        "file": "tests/spawn_timing_periphery.rs",
-        "name": "spawn_timing_excludes_a_real_same_batch_pair_as_suspect_not_a_silent_zero",
-        "content_hash": "3c909e674fc0d8b8"
-      }
-    ],
-    "proposed_home": "spawn_timing_periphery::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-7fb3b2dc01eb",
     "classification": "near",
     "sites": [
@@ -20210,24 +19792,6 @@
       }
     ],
     "proposed_home": "stop_failure_hook_periphery::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-8698869c5150",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/store_config.rs",
-        "name": "a_present_store_block_deserializes_backend_and_url",
-        "content_hash": "7b001b32d492c5ed"
-      },
-      {
-        "file": "tests/store_config.rs",
-        "name": "unrelated_workflow_keys_are_ignored_by_the_lightweight_probe",
-        "content_hash": "295b0fee8d2b84bb"
-      }
-    ],
-    "proposed_home": "store_config::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

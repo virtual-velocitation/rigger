@@ -133,5 +133,45 @@
     "id": "dup-9c8fbf2fd88a",
     "disposition": "not-a-duplicate",
     "reason": "`code_default` and `concepts_default` build two different `Lens` variants at their own default-grain constants, the expected values the selector tests compare against."
+  },
+  {
+    "id": "dup-7dfa0dd1a6a8",
+    "disposition": "not-a-duplicate",
+    "reason": "Unit tests of two different functions, `width_threshold`'s nearest-rank split point over a width distribution and `full_fraction`'s strictly-greater share over a threshold; only the assert_eq shape is shared."
+  },
+  {
+    "id": "dup-fda029aaf8ec",
+    "disposition": "not-a-duplicate",
+    "reason": "The outcome and the header serialize different payloads (one item's score versus the batch's build, corpus and resolved models) through the one shared `canary_event` constructor, so only the json! literal shape is shared."
+  },
+  {
+    "id": "dup-866e5f4c8285",
+    "disposition": "not-a-duplicate",
+    "reason": "Three contract checks of different clauses (revision assignment and order on append, backward-read order and inclusive lower bound, forward-read inclusive `from`) that share only the append-then-read setup every contract check performs."
+  },
+  {
+    "id": "dup-7e1f522f852f",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different enum mappings: `ConceptKind::node_kind` names a design concept's node kind while `LinkRel::rel` names a design link's edge relation; only the match-to-constant shape is shared."
+  },
+  {
+    "id": "dup-ede1947069a2",
+    "disposition": "not-a-duplicate",
+    "reason": "Two public record entry points for different report types (a spawn launch, a stop-failure hook firing) that already delegate their shared append contract to `append_stamped` and differ only in the record they name."
+  },
+  {
+    "id": "dup-77bd4d35ea26",
+    "disposition": "not-a-duplicate",
+    "reason": "Opposite outcomes of `ensure_started`: the same criteria adopt the existing run and append nothing, while changed criteria mint a distinct run with its own boundary and move the current-run pointer."
+  },
+  {
+    "id": "dup-5dc33b6ca236",
+    "disposition": "not-a-duplicate",
+    "reason": "Different build-env facets over the shared `run_once` and `assert_reaches_both` helpers: a configured wrapper plus the default-off control run versus an `auto` wrapper resolved from a staged fake binary."
+  },
+  {
+    "id": "dup-e4e39c11c4c2",
+    "disposition": "not-a-duplicate",
+    "reason": "One folds a whole run's mixed stream and pins every machinery arm dropped and every content arm kept, the other pins only the actor-metadata path (a decision-only actor, a finding whose actor differs from its `by`), both over the shared `apply_json_as` fold."
   }
 ]
