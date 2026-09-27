@@ -21,9 +21,9 @@
 //! in effect (spec 89 Design, SCRATCH LIVES OUTSIDE THE STORE TREE).
 
 use std::path::Path;
-use std::process::Command;
 
 mod common;
+use common::git::run_git;
 
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -34,12 +34,7 @@ use rigger::eventstore::{Direction, EventStore};
 fn git_init_committed(root: &Path) {
     let run = |args: &[&str]| {
         assert!(
-            Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .expect("spawn git")
-                .success(),
+            run_git(root, args).status.success(),
             "git {args:?} must succeed"
         );
     };
@@ -135,14 +130,19 @@ fn rigger_emit_from_a_relocated_worktree_resolves_the_owning_repos_real_store() 
     let elsewhere = tempfile::tempdir().expect("create the relocated-scratch sibling dir");
     let worktree = elsewhere.path().join("rigger-wt-x");
     assert!(
-        Command::new("git")
-            .args(["worktree", "add", "-q"])
-            .arg(&worktree)
-            .args(["-b", "rigger/u/x"])
-            .current_dir(root)
-            .status()
-            .expect("spawn git worktree add")
-            .success(),
+        run_git(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "-b",
+                "rigger/u/x",
+            ],
+        )
+        .status
+        .success(),
         "git worktree add must succeed for the fixture"
     );
 
@@ -205,14 +205,19 @@ fn rigger_emit_from_a_relocated_worktree_never_climbs_into_a_foreign_ancestors_s
     let worktree = elsewhere.path().join("nested").join("rigger-wt-y");
     std::fs::create_dir_all(worktree.parent().unwrap()).expect("create the worktree's parent");
     assert!(
-        Command::new("git")
-            .args(["worktree", "add", "-q"])
-            .arg(&worktree)
-            .args(["-b", "rigger/u/y"])
-            .current_dir(root)
-            .status()
-            .expect("spawn git worktree add")
-            .success(),
+        run_git(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "-b",
+                "rigger/u/y",
+            ],
+        )
+        .status
+        .success(),
         "git worktree add must succeed for the fixture"
     );
 

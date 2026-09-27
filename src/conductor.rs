@@ -14013,8 +14013,12 @@ mod tests {
     use crate::gate::ExecRunner;
     use crate::spawn::SpawnEvent;
     use crate::test_support::agent;
+    use crate::test_support::commit_at_fixed_date;
     use crate::test_support::gate_def;
     use crate::test_support::gate_def_inputs;
+    use crate::test_support::git_out;
+    use crate::test_support::git_stdout;
+    use crate::test_support::run_git;
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -14974,12 +14978,7 @@ mod tests {
         // The unit's durable branch (still live: `on_pass: none` never merges or
         // deletes it) now carries a `wip` commit recovering the halted spawn's edit,
         // naming both the unit and the exact spawn id the recovery ran ahead of.
-        let log = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["log", "--pretty=%s", &unit_branch("u-halt")])
-            .output()
-            .unwrap();
+        let log = run_git(&repo_path, &["log", "--pretty=%s", &unit_branch("u-halt")]);
         let log = String::from_utf8_lossy(&log.stdout).to_string();
         let expected_subject = format!(
             "wip(u-halt): tree of halted spawn {}",
@@ -14991,15 +14990,13 @@ mod tests {
              {expected_subject:?}, got:\n{log}"
         );
         // The abandoned file itself survived, inside that commit.
-        let show = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args([
+        let show = run_git(
+            &repo_path,
+            &[
                 "show",
                 &format!("{}:halted-work.txt", unit_branch("u-halt")),
-            ])
-            .output()
-            .unwrap();
+            ],
+        );
         assert_eq!(
             String::from_utf8_lossy(&show.stdout),
             "abandoned mid-edit\n",
@@ -15009,12 +15006,10 @@ mod tests {
         // The commit found by subject above need not be the branch tip (the ordinary
         // per-attempt checkpoint commits again afterward) - resolve the recovery
         // commit's OWN sha by subject instead of assuming tip == recovery commit.
-        let recovery_sha = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["log", "--pretty=%H %s", &unit_branch("u-halt")])
-            .output()
-            .unwrap();
+        let recovery_sha = run_git(
+            &repo_path,
+            &["log", "--pretty=%H %s", &unit_branch("u-halt")],
+        );
         let recovery_sha = String::from_utf8_lossy(&recovery_sha.stdout)
             .lines()
             .find(|l| l.ends_with(&expected_subject))
@@ -15108,12 +15103,10 @@ mod tests {
             ledger::Status::Verified
         );
 
-        let log = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["log", "--pretty=%s", &unit_branch("u-halt-unrequested")])
-            .output()
-            .unwrap();
+        let log = run_git(
+            &repo_path,
+            &["log", "--pretty=%s", &unit_branch("u-halt-unrequested")],
+        );
         let log = String::from_utf8_lossy(&log.stdout).to_string();
         let unwanted_subject = format!(
             "wip(u-halt-unrequested): tree of halted spawn {}",
@@ -15220,12 +15213,10 @@ mod tests {
             ledger::Status::Verified
         );
 
-        let log = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["log", "--pretty=%s", &unit_branch("u-halt-live-sibling")])
-            .output()
-            .unwrap();
+        let log = run_git(
+            &repo_path,
+            &["log", "--pretty=%s", &unit_branch("u-halt-live-sibling")],
+        );
         let log = String::from_utf8_lossy(&log.stdout).to_string();
         let unwanted_subject = format!(
             "wip(u-halt-live-sibling): tree of halted spawn {}",
@@ -15316,12 +15307,10 @@ mod tests {
             ledger::Status::Verified
         );
 
-        let log = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["log", "--pretty=%s", &unit_branch("u-halt-prior-run")])
-            .output()
-            .unwrap();
+        let log = run_git(
+            &repo_path,
+            &["log", "--pretty=%s", &unit_branch("u-halt-prior-run")],
+        );
         let log = String::from_utf8_lossy(&log.stdout).to_string();
         let unwanted_subject = format!(
             "wip(u-halt-prior-run): tree of halted spawn {}",
@@ -22810,12 +22799,7 @@ mod tests {
     /// branch as checked-out, so `git branch -D` refuses it - the proof a reclaim that
     /// only deletes the dir off disk, without deregistering, would fail.
     fn worktree_registered_on(repo: &str, branch: &str) -> bool {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(["worktree", "list", "--porcelain"])
-            .output()
-            .unwrap();
+        let out = run_git(repo, &["worktree", "list", "--porcelain"]);
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .any(|l| l.trim() == format!("branch refs/heads/{branch}"))
@@ -26640,18 +26624,17 @@ mod tests {
     /// Whether a local branch ref exists in `repo` - used to pin that speculation lane branches
     /// are torn down (winner cleanup, escalation cleanup, and the crash arm), never leaked.
     fn branch_present(repo: &str, branch: &str) -> bool {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args([
+        run_git(
+            repo,
+            &[
                 "rev-parse",
                 "--verify",
                 "--quiet",
                 &format!("refs/heads/{branch}"),
-            ])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            ],
+        )
+        .status
+        .success()
     }
 
     #[test]
@@ -27332,12 +27315,7 @@ mod tests {
             &["add", "m.rs"][..],
             &["commit", "-q", "-m", "base m.rs"][..],
         ] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
 
         let mut cfg = Config::default();
@@ -28166,8 +28144,8 @@ mod tests {
         // not merely deleting a file base never had.
         std::fs::create_dir_all(repo.path().join("docs")).unwrap();
         std::fs::write(repo.path().join(touched_path), "seed\n").unwrap();
-        run_git(&repo_path, &["add", "-A"]);
-        run_git(&repo_path, &["commit", "-q", "-m", "seed docs/existing.md"]);
+        git_out(&repo_path, &["add", "-A"]);
+        git_out(&repo_path, &["commit", "-q", "-m", "seed docs/existing.md"]);
 
         // Two commits touching the SAME path, built via a loop rather than a literal
         // list: content "scope creep" then back to "seed" - the second undoes the
@@ -28246,8 +28224,8 @@ mod tests {
                 .unwrap();
         std::fs::create_dir_all(seed_dir.join("specs")).unwrap();
         std::fs::write(seed_dir.join("specs").join("90-foo.md"), "planner amend\n").unwrap();
-        run_git(seed_dir.to_str().unwrap(), &["add", "-A"]);
-        run_git(
+        git_out(seed_dir.to_str().unwrap(), &["add", "-A"]);
+        git_out(
             seed_dir.to_str().unwrap(),
             &["commit", "-q", "-m", "planner amend"],
         );
@@ -28261,8 +28239,8 @@ mod tests {
             "operator edit\n",
         )
         .unwrap();
-        run_git(&repo_path, &["add", "-A"]);
-        run_git(&repo_path, &["commit", "-q", "-m", "operator edit"]);
+        git_out(&repo_path, &["add", "-A"]);
+        git_out(&repo_path, &["commit", "-q", "-m", "operator edit"]);
 
         let mut cfg = Config::default();
         cfg.agents.insert("planner".into(), agent("planner"));
@@ -28329,7 +28307,7 @@ mod tests {
                 .unwrap();
         std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
         std::fs::write(wt_dir.join("specs").join("90-foo.md"), "amend\n").unwrap();
-        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        git_out(wt_dir.to_str().unwrap(), &["add", "-A"]);
         // A FIXED, deliberately old author/committer date on the original commit -
         // never the wall-clock "now" a bare `git commit` would use - so the fresh
         // cherry-pick below (which stamps its OWN committer time as real "now")
@@ -28341,15 +28319,7 @@ mod tests {
         // exercising the patch-id recovery path this test exists to prove, the
         // REALISTIC shape being a real crash-and-later-resume spanning
         // wall-clock seconds, so the two dates would never coincide in production.
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(wt_dir.to_str().unwrap())
-            .args(["commit", "-q", "-m", "amend"])
-            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
-            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "fixed-date commit failed");
+        commit_at_fixed_date(wt_dir.to_str().unwrap(), "amend");
 
         let store = Store::open(":memory:").unwrap();
         let cfg = Config::default();
@@ -28387,7 +28357,7 @@ mod tests {
         // back, recovered - never a bare no-artifact marker that would make it
         // uncompensable forever. No NEW git mutation happens either: the durable
         // record alone answers it.
-        let head_after_first = run_git(&repo_path, &["rev-parse", "HEAD"]);
+        let head_after_first = git_out(&repo_path, &["rev-parse", "HEAD"]);
         let second = ctx.integrate_plan_commits("plan", Some(&wt));
         assert!(
             second.is_ok(),
@@ -28410,7 +28380,7 @@ mod tests {
             }
         }
         assert_eq!(
-            run_git(&repo_path, &["rev-parse", "HEAD"]),
+            git_out(&repo_path, &["rev-parse", "HEAD"]),
             head_after_first,
             "the resumed call must not mutate the run branch again - the durable record alone \
              answers it"
@@ -28457,8 +28427,8 @@ mod tests {
                 .unwrap();
         std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
         std::fs::write(wt_dir.join("specs").join("90-foo.md"), "amend\n").unwrap();
-        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
-        run_git(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
+        git_out(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        git_out(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
         let shas = wt.commits_since_base().unwrap();
         assert_eq!(shas.len(), 1);
 
@@ -28522,7 +28492,7 @@ mod tests {
                 .unwrap();
         std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
         std::fs::write(wt_dir.join("specs").join("90-first.md"), "amend 1\n").unwrap();
-        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        git_out(wt_dir.to_str().unwrap(), &["add", "-A"]);
         // A FIXED, deliberately old author/committer date - never the wall-clock "now"
         // a bare `git commit` would use - so the cherry-pick below (which stamps its
         // OWN committer time as real "now") cannot coincidentally reproduce a
@@ -28530,15 +28500,7 @@ mod tests {
         // sibling idempotency tests' identical guard) - which would collapse `first`'s
         // original and landed shas into the SAME object and defeat this test's whole
         // premise (a distinguishable original vs. landed identity).
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(wt_dir.to_str().unwrap())
-            .args(["commit", "-q", "-m", "amend 1"])
-            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
-            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "fixed-date commit failed");
+        commit_at_fixed_date(wt_dir.to_str().unwrap(), "amend 1");
 
         let store = Store::open(":memory:").unwrap();
         let cfg = Config::default();
@@ -28566,8 +28528,8 @@ mod tests {
         // MEANWHILE: a re-spawned planner commits a SECOND amendment onto the SAME
         // worktree - the shape a re-spawn across review rounds naturally produces.
         std::fs::write(wt_dir.join("specs").join("91-second.md"), "amend 2\n").unwrap();
-        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
-        run_git(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend 2"]);
+        git_out(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        git_out(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend 2"]);
 
         // SECOND call: `commits_since_base` now returns BOTH commits (grown). The
         // first must keep its already-confirmed identity; the second lands fresh.
@@ -28644,8 +28606,8 @@ mod tests {
             Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
         std::fs::create_dir_all(wt_path.join("specs")).unwrap();
         std::fs::write(wt_path.join("specs").join("90-a.md"), "amend\n").unwrap();
-        run_git(wt_path.to_str().unwrap(), &["add", "-A"]);
-        run_git(wt_path.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
+        git_out(wt_path.to_str().unwrap(), &["add", "-A"]);
+        git_out(wt_path.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
 
         let real_store = Store::open(":memory:").unwrap();
         let store = FailingStore {
@@ -32521,12 +32483,7 @@ mod tests {
         );
         // Checked out at the handed-out tip: the worktree's HEAD is exactly the unit
         // branch's tip - nothing rewound or re-created it out from under the parked agent.
-        let branch_tip = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &unit_branch("solo")])
-            .output()
-            .unwrap();
+        let branch_tip = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
         let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
             .trim()
             .to_string();
@@ -32619,12 +32576,7 @@ mod tests {
             worktree_registered_on(&repo_path, &unit_branch("solo")),
             "the restored worktree must be a REGISTERED git worktree, not just a leftover dir: {worktree}"
         );
-        let branch_tip = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &unit_branch("solo")])
-            .output()
-            .unwrap();
+        let branch_tip = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
         let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
             .trim()
             .to_string();
@@ -32704,12 +32656,7 @@ mod tests {
             std::path::Path::new(&worktree).exists(),
             "premise: a parked stage keeps its worktree (criterion 1) - the first process must leave it on disk: {worktree}"
         );
-        let branch_tip_before = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &unit_branch("solo")])
-            .output()
-            .unwrap();
+        let branch_tip_before = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
         let branch_tip_before = String::from_utf8_lossy(&branch_tip_before.stdout)
             .trim()
             .to_string();
@@ -32996,12 +32943,7 @@ mod tests {
         // successful MERGE reclaims it), so its tip is the independent, outside-git
         // ground truth for what the adjudicator's own deletion-then-restore actually
         // left checked out.
-        let branch_tip = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &unit_branch("solo")])
-            .output()
-            .unwrap();
+        let branch_tip = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
         let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
             .trim()
             .to_string();
@@ -33436,12 +33378,7 @@ mod tests {
         // tip directly and prove it is back at `round_start_sha` - the lens's residue
         // commit must not survive on it for the next attempt to inherit as if it were
         // the implementer's own committed work.
-        let branch_tip = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &unit_branch("solo")])
-            .output()
-            .unwrap();
+        let branch_tip = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
         assert!(
             branch_tip.status.success(),
             "the unit's branch must survive the crash (only integration deletes it): {}",
@@ -33537,12 +33474,7 @@ mod tests {
         );
 
         let branch = unit_branch("solo");
-        let residue_tip = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &branch])
-            .output()
-            .unwrap();
+        let residue_tip = run_git(&repo_path, &["rev-parse", &branch]);
         assert!(residue_tip.status.success());
         let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
             .trim()
@@ -33735,12 +33667,7 @@ mod tests {
         );
 
         let branch = unit_branch("solo");
-        let residue_tip = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &branch])
-            .output()
-            .unwrap();
+        let residue_tip = run_git(&repo_path, &["rev-parse", &branch]);
         assert!(residue_tip.status.success());
         let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
             .trim()
@@ -33925,12 +33852,7 @@ mod tests {
         // winner below lets this premise check reuse the exact same helpers the
         // single-lane test above does.
         let branch = unit_branch("s");
-        let residue_tip = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &branch])
-            .output()
-            .unwrap();
+        let residue_tip = run_git(&repo_path, &["rev-parse", &branch]);
         assert!(residue_tip.status.success());
         let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
             .trim()
@@ -34241,12 +34163,7 @@ mod tests {
             &["add", "m.rs"][..],
             &["commit", "-q", "-m", "base m.rs"][..],
         ] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
 
         // The unit's OWN branch (a prior window's approved diff): appends one MARK.
@@ -34271,12 +34188,7 @@ mod tests {
             &["add", "m.rs"][..],
             &["commit", "-q", "-m", "poison m.rs"][..],
         ] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
 
         let st = Store::open(":memory:").unwrap();
@@ -34384,23 +34296,13 @@ mod tests {
         commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
         let branch = unit_branch("s");
         let unit_sha = {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(["rev-parse", &branch])
-                .output()
-                .unwrap();
+            let out = run_git(&repo_path, &["rev-parse", &branch]);
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
         // Simulate `Worktree::land`'s fast-forward already having happened: the checked-out
         // repo (the run branch) is ALREADY at the unit's own tip.
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["merge", "--ff-only", &branch])
-            .output()
-            .unwrap();
+        let out = run_git(&repo_path, &["merge", "--ff-only", &branch]);
         assert!(
             out.status.success(),
             "test setup: the fast-forward must succeed: {out:?}"
@@ -34567,12 +34469,7 @@ mod tests {
                 "a batch-mate's own conflicting change",
             ][..],
         ] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
 
         // Simulate the interruption directly: a PRIOR incarnation's own `integrate_and_emit`
@@ -35314,12 +35211,7 @@ mod tests {
         );
         // The durable unit branch is untouched by this park (only a successful integrate
         // deletes it, `run_stage`'s existing - unchanged - split): survives regardless.
-        let branch_tip = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["rev-parse", &unit_branch("solo")])
-            .output()
-            .unwrap();
+        let branch_tip = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
         let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
             .trim()
             .to_string();
@@ -39162,12 +39054,7 @@ mod tests {
         // CONTENT for the coverage word); `beta` grounds onto shared.rs, which alpha creates.
         std::fs::write(repo.path().join("gamma_only.rs"), "// gizmo lives here\n").unwrap();
         for args in [&["add", "-A"][..], &["commit", "-q", "-m", "fixture"][..]] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
         let grep = crate::grounder::Grep {
             root: repo_path.clone(),
@@ -39823,12 +39710,7 @@ mod tests {
 
         // (2) REVERTED ON THE RUN BRANCH, in an EVENTED (not history-rewriting) rollback: the
         // run branch carries a compensation revert commit for unit-a.
-        let log = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["log", "--pretty=%s"])
-            .output()
-            .unwrap();
+        let log = run_git(&repo_path, &["log", "--pretty=%s"]);
         let log = String::from_utf8_lossy(&log.stdout);
         assert!(
             log.lines().any(|l| l.contains("compensate unit-a")),
@@ -40429,19 +40311,9 @@ mod tests {
                 &["add", "a.rs"][..],
                 &["commit", "-q", "-m", "unit-a integrates"][..],
             ] {
-                std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&repo_path)
-                    .args(args)
-                    .output()
-                    .unwrap();
+                run_git(&repo_path, args);
             }
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .unwrap();
+            let out = run_git(&repo_path, &["rev-parse", "HEAD"]);
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
@@ -40526,12 +40398,7 @@ mod tests {
 
         // The condemned commit was reverted on the run branch (an evented rollback), so the
         // final tree does NOT still carry unit-a's condemned artifact under a green ledger.
-        let log = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["log", "--pretty=%s"])
-            .output()
-            .unwrap();
+        let log = run_git(&repo_path, &["log", "--pretty=%s"]);
         let log = String::from_utf8_lossy(&log.stdout);
         assert!(
             log.lines().any(|l| l.contains("compensate unit-a")),
@@ -40639,12 +40506,7 @@ mod tests {
             &["add", "m.rs"][..],
             &["commit", "-q", "-m", "base m.rs"][..],
         ] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
 
         let mut cfg = Config::default();
@@ -40914,12 +40776,7 @@ mod tests {
             &["add", "m.rs"][..],
             &["commit", "-q", "-m", "base m.rs"][..],
         ] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
         // An UNTRACKED file sitting in the operator's own checkout for the whole run - never
         // `git add`ed. A gate command whose cwd is the repo would see it on disk; a gate
@@ -41168,12 +41025,7 @@ mod tests {
             "the post-merge re-gate's own throwaway worktree must be reaped even when its \
              gate suite errors, never leaked for a later step to find; {pm_dir} still exists"
         );
-        let branches = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["branch", "--list", &pm_branch])
-            .output()
-            .unwrap();
+        let branches = run_git(&repo_path, &["branch", "--list", &pm_branch]);
         assert!(
             String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
             "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
@@ -41249,12 +41101,7 @@ mod tests {
              never be swallowed as a passing/failing gate verdict"
         );
 
-        let branches = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["branch", "--list", &pm_branch])
-            .output()
-            .unwrap();
+        let branches = run_git(&repo_path, &["branch", "--list", &pm_branch]);
         assert!(
             String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
             "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
@@ -41403,12 +41250,7 @@ mod tests {
             &["add", "c.rs"][..],
             &["commit", "-q", "-m", "base c.rs"][..],
         ] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
         let store = Store::open(":memory:").unwrap();
         let driver = ConflictDriver {
@@ -41728,12 +41570,7 @@ mod tests {
         std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
         std::fs::write(Path::new(&repo_path).join("gen.txt"), "BASE_GEN\n").unwrap();
         for args in [&["add", "-A"][..], &["commit", "-q", "-m", "base"][..]] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(args)
-                .output()
-                .unwrap();
+            run_git(&repo_path, args);
         }
 
         struct Driver {
@@ -42935,36 +42772,10 @@ mod tests {
         );
     }
 
-    /// Run a git command in `dir`, returning combined stdout+stderr, trimmed. Panics
-    /// (naming the command and its output) on a non-zero exit - a test-only setup
-    /// convenience for building git state directly, alongside this module's existing
-    /// `std::process::Command` calls.
-    fn run_git(dir: &str, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?} in {dir} failed: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
     /// The current HEAD commit hash of a git repo, for asserting a lens produced no
     /// commit.
     fn git_head(repo: &str) -> String {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        git_stdout(repo, &["rev-parse", "HEAD"])
     }
 
     fn init_repo() -> tempfile::TempDir {
@@ -43007,12 +42818,7 @@ mod tests {
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> gate::GateResult {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(["status", "--porcelain"])
-                .output()
-                .unwrap();
+            let out = run_git(dir, &["status", "--porcelain"]);
             let porcelain = String::from_utf8_lossy(&out.stdout);
             let dirty = !porcelain.trim().is_empty();
             if dirty {
@@ -43198,12 +43004,10 @@ mod tests {
         // by the one pre-gate commit. Move the spawn below the pre-gate commit and the
         // sdet file is added only at integrate (a LATER, DIFFERENT commit), failing this.
         let added_in = |path: &str| -> String {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(repo.path())
-                .args(["log", "--diff-filter=A", "--format=%H", "--", path])
-                .output()
-                .unwrap();
+            let out = run_git(
+                repo.path(),
+                &["log", "--diff-filter=A", "--format=%H", "--", path],
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         let feature_add = added_in("feature.rs");
@@ -43511,12 +43315,10 @@ mod tests {
         // the gates judged is the proof. Drop the speculation wiring and the sdet file is never
         // authored, so `sdet_add` is empty - RED.
         let added_in = |path: &str| -> String {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(repo.path())
-                .args(["log", "--diff-filter=A", "--format=%H", "--", path])
-                .output()
-                .unwrap();
+            let out = run_git(
+                repo.path(),
+                &["log", "--diff-filter=A", "--format=%H", "--", path],
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         let feature_add = added_in("feature.rs");

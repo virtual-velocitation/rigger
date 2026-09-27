@@ -14614,8 +14614,11 @@ blocks integration no matter what the static gates say.\n",
 mod tests {
     use super::*;
     use crate::test_support::ev;
+    use crate::test_support::git_init_quiet;
+    use crate::test_support::git_ok;
     use crate::test_support::js_declaration;
     use crate::test_support::pgid_of;
+    use crate::test_support::run_git;
     use crate::test_support::tool_available;
     use crate::test_support::write_file;
     use crate::test_support::CwdGuard;
@@ -17538,27 +17541,11 @@ mod tests {
             &["config", "user.email", "t@example.com"],
             &["config", "user.name", "t"],
         ] {
-            assert!(
-                Command::new("git")
-                    .args(args)
-                    .current_dir(root)
-                    .status()
-                    .unwrap()
-                    .success(),
-                "git {args:?} must succeed"
-            );
+            git_ok(root, args);
         }
         write_file(&root.join(rel), contents.as_bytes());
         for args in [&["add", rel][..], &["commit", "-q", "-m", "seed"]] {
-            assert!(
-                Command::new("git")
-                    .args(args)
-                    .current_dir(root)
-                    .status()
-                    .unwrap()
-                    .success(),
-                "git {args:?} must succeed"
-            );
+            git_ok(root, args);
         }
     }
 
@@ -17720,15 +17707,7 @@ mod tests {
             &["config", "user.email", "t@example.com"],
             &["config", "user.name", "t"],
         ] {
-            assert!(
-                Command::new("git")
-                    .args(args)
-                    .current_dir(empty_root)
-                    .status()
-                    .unwrap()
-                    .success(),
-                "git {args:?} must succeed"
-            );
+            git_ok(empty_root, args);
         }
         let empty_repo = empty_root.to_str().unwrap();
         let err = refuse_when_base_unreachable(
@@ -19079,18 +19058,8 @@ mod tests {
         // committed - exactly what the halt-recovery wip commit, or an ordinary landed unit,
         // leaves behind) it is reclaimed exactly as before this fix - dirtiness, not mere
         // non-liveness, is what changed.
-        Command::new("git")
-            .arg("-C")
-            .arg(&wt_dir)
-            .args(["add", "-A"])
-            .status()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(&wt_dir)
-            .args(["commit", "-q", "-m", "resolved"])
-            .status()
-            .unwrap();
+        run_git(&wt_dir, &["add", "-A"]);
+        run_git(&wt_dir, &["commit", "-q", "-m", "resolved"]);
         let removed =
             reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
         assert_eq!(
@@ -19285,15 +19254,6 @@ mod tests {
         let sub = root.join("src").join("deep");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(find_store_dir_from(&sub), Some(root.join(RIGGER_DIR)));
-    }
-
-    /// `git init -q` a test root so the bounded store walk has a sanctioned repo scope.
-    fn git_init_quiet(root: &Path) {
-        std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(root)
-            .status()
-            .unwrap();
     }
 
     #[test]

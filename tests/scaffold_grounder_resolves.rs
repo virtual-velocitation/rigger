@@ -35,6 +35,7 @@ use std::process::Command;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::git::run_git;
 use common::rigger_bin;
 
 /// Assert that `grounder` (a value a shipped config ACTUALLY carries) is a LIVE name: not a
@@ -90,10 +91,7 @@ fn rigger_init_scaffolds_a_live_grounder_default() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     // A real git repo mirrors how `rigger init` is actually used (stable project identity).
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
+    let _ = run_git(root, &["init", "-q"]);
 
     let out = Command::new(rigger_bin())
         .arg("init")

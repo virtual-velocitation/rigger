@@ -336,10 +336,7 @@ fn the_replay_key_metadata_name_is_one_name_owned_beside_the_key_authority() {
 fn temp_ingestable_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let _ = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
+    let _ = common::git::run_git(root, &["init", "-q"]);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("specs")).unwrap();
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
@@ -365,10 +362,7 @@ fn temp_ingestable_project() -> tempfile::TempDir {
 fn temp_project_with_at_signs_in_its_paths() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let _ = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
+    let _ = common::git::run_git(root, &["init", "-q"]);
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
     for (pkg, name) in [("pkg@1.2.3", "alpha"), ("pkg@4.5.6", "beta")] {
         let package = root.join("src").join(pkg);

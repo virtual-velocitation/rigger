@@ -37,6 +37,7 @@
 //! names.
 
 mod common;
+use common::git::run_git;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -53,12 +54,7 @@ const SPAWN_ID: &str = "seam-unit/implementer#0";
 /// Run `git <args>` in `dir`, asserting success - a fixture-setup failure here is a bug in
 /// this file, not the behavior under test.
 fn git(dir: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let ok = run_git(dir, args).status.success();
     assert!(ok, "git {args:?} must succeed in {dir:?}");
 }
 

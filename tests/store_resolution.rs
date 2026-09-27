@@ -142,6 +142,7 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::git::run_git;
 
 /// The project identity the binary resolves for `root` (the git top-level basename, or the
 /// tracked `.rigger/project.id`), mirrored here so a read-back of the server binds the exact
@@ -313,12 +314,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
         let git = |args: &[&str]| {
-            let ok = Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+            let ok = run_git(root, args).status.success();
             assert!(ok, "git {args:?} must succeed");
         };
         git(&["init", "-q"]);
@@ -341,12 +337,9 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
         // OWNING root via `main_repo_root` (whose `git-common-dir` resolves to the main repo).
         let nested = root.join(".rigger").join("tmp").join("rigger-wt-nested");
         std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
-        let ok = Command::new("git")
-            .args(["worktree", "add", "-q", nested.to_str().unwrap()])
-            .current_dir(root)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let ok = run_git(root, &["worktree", "add", "-q", nested.to_str().unwrap()])
+            .status
+            .success();
         assert!(ok, "git worktree add (nested) must succeed");
 
         // A bare courier - `rigger emit`, no `--eventstore` flag - run FROM the nested worktree,

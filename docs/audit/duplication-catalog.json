@@ -69,7 +69,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-50c4d0b858f8",
+    "id": "dup-35908fb8ceff",
     "classification": "semantic",
     "sites": [
       {
@@ -115,31 +115,6 @@
       {
         "file": "src/conductor.rs",
         "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
         "content_hash": "96b36cb0df82f4e5"
       },
       {
@@ -155,187 +130,7 @@
       {
         "file": "src/conductor.rs",
         "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
         "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
       },
       {
         "file": "src/dash.rs",
@@ -395,37 +190,7 @@
       {
         "file": "src/main.rs",
         "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
       },
       {
         "file": "src/main.rs",
@@ -495,11 +260,6 @@
       {
         "file": "src/worktree.rs",
         "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
       },
       {
@@ -526,11 +286,6 @@
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "d89e0fac03d16933"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -566,11 +321,6 @@
         "file": "tests/change_path_revert_periphery.rs",
         "name": "Command::new",
         "content_hash": "05893ab923baaa2d"
-      },
-      {
-        "file": "tests/change_path_revert_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
       },
       {
         "file": "tests/change_path_revert_periphery.rs",
@@ -640,37 +390,7 @@
       {
         "file": "tests/cli.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
       },
       {
         "file": "tests/cli.rs",
@@ -768,19 +488,19 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
+        "file": "tests/common/fixtures/git.rs",
+        "name": "Command::new",
+        "content_hash": "7266da144e21471d"
+      },
+      {
+        "file": "tests/common/fixtures/git.rs",
+        "name": "Command::new",
+        "content_hash": "583982587bb6b9ca"
+      },
+      {
         "file": "tests/common/fixtures/host.rs",
         "name": "Command::new",
         "content_hash": "b1ad5143fd332b66"
-      },
-      {
-        "file": "tests/common/git.rs",
-        "name": "Command::new",
-        "content_hash": "d89e0fac03d16933"
-      },
-      {
-        "file": "tests/common/git.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
       },
       {
         "file": "tests/common/layer_cli.rs",
@@ -834,11 +554,6 @@
       },
       {
         "file": "tests/core_lane_purity_audit.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/courier_registry_refresh_boundary_periphery.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
       },
@@ -910,16 +625,6 @@
       {
         "file": "tests/dedup_seeding_periphery.rs",
         "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "tests/dedup_seeding_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "tests/dedup_seeding_periphery.rs",
-        "name": "Command::new",
         "content_hash": "05893ab923baaa2d"
       },
       {
@@ -951,11 +656,6 @@
         "file": "tests/files_lens_directory_hulls_viz.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/gate_store_fence_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
@@ -1045,11 +745,6 @@
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "name": "Command::new",
         "content_hash": "7266da144e21471d"
       },
       {
@@ -1110,11 +805,6 @@
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "name": "Command::new",
         "content_hash": "7266da144e21471d"
       },
       {
@@ -1129,36 +819,6 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/land_refused_names_its_paths_periphery.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
       },
@@ -1198,11 +858,6 @@
         "content_hash": "7266da144e21471d"
       },
       {
-        "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "d89e0fac03d16933"
-      },
-      {
         "file": "tests/native_driver_pipelining_behavior.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
@@ -1221,176 +876,6 @@
         "file": "tests/phase_of_role_mapping_periphery.rs",
         "name": "Command::new",
         "content_hash": "be25bd296d269812"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7fb3c3043238f5e6"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7123907d390457ee"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "9114ebf196ef35cb"
-      },
-      {
-        "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
       },
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -1448,29 +933,9 @@
         "content_hash": "7266da144e21471d"
       },
       {
-        "file": "tests/reap_before_removal_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "d89e0fac03d16933"
-      },
-      {
         "file": "tests/regate_landed_on_resume_periphery.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/regate_landed_on_resume_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/regate_landed_on_resume_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/regate_landed_on_resume_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
@@ -1486,21 +951,6 @@
         "file": "tests/registry_refresh_driver_courier_convergence_periphery.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -1548,11 +998,6 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
@@ -1561,16 +1006,6 @@
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
       },
       {
         "file": "tests/reset_menu.rs",
@@ -1606,11 +1041,6 @@
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
-      },
-      {
-        "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
       },
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -1633,16 +1063,6 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
-        "file": "tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
         "file": "tests/review_round_speculation_winner_merge_round_start_sha_periphery.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
@@ -1656,11 +1076,6 @@
         "file": "tests/review_tier_roster_periphery.rs",
         "name": "Command::new",
         "content_hash": "be25bd296d269812"
-      },
-      {
-        "file": "tests/scaffold_grounder_resolves.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
       },
       {
         "file": "tests/scaffold_grounder_resolves.rs",
@@ -1755,25 +1170,10 @@
       {
         "file": "tests/store_flag_precedence.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/store_flag_precedence.rs",
-        "name": "Command::new",
         "content_hash": "e09771f2dfb76bcd"
       },
       {
         "file": "tests/store_precedence.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/store_resolution.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/store_resolution.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
       },
@@ -1843,11 +1243,6 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
-        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
-      },
-      {
         "file": "tests/watchdog_cli_periphery.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
@@ -1914,7 +1309,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 368 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 247 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-15530d0e8b19",
@@ -2756,23 +2151,23 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-de33c52cc0f7",
+    "id": "dup-7bec74512ff3",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
         "name": "a_dirty_tree_whose_named_spawn_was_never_requested_gets_no_wip_recovery_commit",
-        "content_hash": "da0dad7e7c607b4d"
+        "content_hash": "f01bc9d99559d468"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live",
-        "content_hash": "629c265a9c93d8b2"
+        "content_hash": "dc215dcdabd7bf15"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_prior_runs_leftover_spawn_request_for_a_same_named_unit_never_halts_a_new_run",
-        "content_hash": "ba44555aa99ac429"
+        "content_hash": "40f01f977a91b17c"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
@@ -7209,6 +6604,24 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
+    "id": "dup-5a5bc7479aa5",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "src/conductor.rs",
+        "name": "branch_present",
+        "content_hash": "4d56fc6f487e9a2e"
+      },
+      {
+        "file": "src/worktree.rs",
+        "name": "ref_resolves",
+        "content_hash": "6b38d0af3799cbf8"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, src/worktree.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
     "id": "dup-a8bdbc63a1ba",
     "classification": "near",
     "sites": [
@@ -7483,32 +6896,37 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-717ff53c2a8a",
+    "id": "dup-ab3f5a3ddc34",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
         "name": "a_parked_review_spawn_keeps_the_unit_worktree_registered_and_its_cache",
-        "content_hash": "44fb09a156c90c4f"
+        "content_hash": "77593e340aa2e459"
       },
       {
         "file": "src/conductor.rs",
         "name": "review_unit_restores_a_worktree_a_gate_deleted_out_of_band",
-        "content_hash": "e30f1587f663ceb7"
+        "content_hash": "2d34c6b8e86774e1"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_second_step_restores_a_still_parked_units_worktree_deleted_out_of_band",
-        "content_hash": "93d92e0d3c4616b2"
+        "content_hash": "00992e4d25ce9f7c"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-854d13abab44",
+    "id": "dup-c9fd9e17c8aa",
     "classification": "near",
     "sites": [
+      {
+        "file": "src/conductor.rs",
+        "name": "reviewed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored",
+        "content_hash": "2d6390af97beb6f0"
+      },
       {
         "file": "src/conductor.rs",
         "name": "failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored",
@@ -7520,7 +6938,7 @@
         "content_hash": "249dacaaa85c120c"
       }
     ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -7542,23 +6960,23 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-67d634e9d610",
+    "id": "dup-aa296d1087c6",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
         "name": "a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park",
-        "content_hash": "7c8c480a4c504b9c"
+        "content_hash": "8dd69e93e86b5996"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume",
-        "content_hash": "f80a65233d92b4eb"
+        "content_hash": "6727844b262ed41f"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_speculation_lanes_log_derived_start_sha_survives_a_cross_call_resume_after_a_park",
-        "content_hash": "75589d55eef84536"
+        "content_hash": "12d65de4904ab478"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
@@ -7785,18 +7203,18 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-ca68a744f43b",
+    "id": "dup-cda5cb7e3192",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
         "name": "postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch",
-        "content_hash": "200da04c160baee8"
+        "content_hash": "2862d19bacf58892"
       },
       {
         "file": "src/conductor.rs",
         "name": "postmerge_worktree_create_err_still_reaps_the_just_created_branch",
-        "content_hash": "0d149a45e7575aa7"
+        "content_hash": "770ac28e96b0771b"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
@@ -11662,6 +11080,24 @@
       }
     ],
     "proposed_home": "main::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-f43cc4afc6a2",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "src/main.rs",
+        "name": "reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty",
+        "content_hash": "7421d274ce1765dd"
+      },
+      {
+        "file": "src/main.rs",
+        "name": "reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree",
+        "content_hash": "0458571312cc6b21"
+      }
+    ],
+    "proposed_home": "main::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -16920,6 +16356,25 @@
     ],
     "proposed_home": "one shared `write_workflow` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+  },
+  {
+    "id": "dup-fc14355d78e6",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/fixtures/git.rs",
+        "name": "git_out",
+        "content_hash": "81a28e1983d3a4f1"
+      },
+      {
+        "file": "tests/common/fixtures/git.rs",
+        "name": "git_stdout",
+        "content_hash": "81a28e1983d3a4f1"
+      }
+    ],
+    "proposed_home": "git::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-f476ae0e4ebe",

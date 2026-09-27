@@ -133,5 +133,10 @@
     "id": "dup-9c8fbf2fd88a",
     "disposition": "not-a-duplicate",
     "reason": "`code_default` and `concepts_default` build two different `Lens` variants at their own default-grain constants, the expected values the selector tests compare against."
+  },
+  {
+    "id": "dup-fc14355d78e6",
+    "disposition": "not-a-duplicate",
+    "reason": "`git_out` asserts the git command succeeded (through `git_ok`) while `git_stdout` returns the trimmed stdout of any exit status; the two share only the trim, over two different run contracts."
   }
 ]

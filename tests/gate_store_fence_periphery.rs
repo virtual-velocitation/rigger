@@ -174,15 +174,8 @@ use rigger::registry::{self, Instance};
 use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
+use common::git::git_init_quiet;
 use common::{rigger_bin, RestoreEnvVars};
-
-fn git_init_quiet(root: &Path) {
-    Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status()
-        .expect("git init");
-}
 
 /// The real production topology (matching the implementer's own
 /// `require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it`

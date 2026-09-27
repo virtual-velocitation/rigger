@@ -2609,6 +2609,7 @@ fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::liveness::marker_filename;
+    use crate::test_support::commit_at_fixed_date;
     use crate::test_support::run_log;
     use std::process::Command;
 
@@ -4274,15 +4275,7 @@ mod tests {
         // byte-identical commit object in the rare same-committer-second case (see the
         // sibling idempotency tests' identical guard) - which would defeat this very
         // test's own `assert_ne!` below.
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(wt_path.to_str().unwrap())
-            .args(["commit", "-q", "-m", "amend a"])
-            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
-            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "fixed-date commit failed");
+        commit_at_fixed_date(wt_path.to_str().unwrap(), "amend a");
         let original = git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"])
             .unwrap()
             .trim()

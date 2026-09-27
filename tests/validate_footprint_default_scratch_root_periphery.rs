@@ -22,6 +22,7 @@ use std::path::Path;
 use std::process::Command;
 
 mod common;
+use common::git::run_git;
 
 fn temp_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("create temp project");
@@ -85,12 +86,7 @@ fn validate_measures_the_shared_build_cache_at_the_relocated_default_root_with_n
         &["commit", "-q", "-m", "scaffold"],
     ] {
         assert!(
-            Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .expect("spawn git")
-                .success(),
+            run_git(root, args).status.success(),
             "git {args:?} must succeed while seeding the repo"
         );
     }

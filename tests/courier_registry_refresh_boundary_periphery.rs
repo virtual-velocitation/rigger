@@ -29,6 +29,7 @@ use rigger::registry::{self, Instance};
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::git::run_git;
 use common::RestoreEnvVars;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
@@ -141,12 +142,8 @@ fn a_courier_in_a_nested_worktree_refreshes_the_owning_roots_registry_entry() {
     // scratch root a spawned worker's own courier calls run from.
     let wt = root.join(".rigger").join("tmp").join("rigger-wt-x");
     std::fs::create_dir_all(wt.parent().unwrap()).expect("create the worktree's parent dir");
-    let ok = Command::new("git")
-        .args(["worktree", "add", "-q"])
-        .arg(&wt)
-        .current_dir(root)
-        .status()
-        .expect("git must be runnable")
+    let ok = run_git(root, &["worktree", "add", "-q", wt.to_str().unwrap()])
+        .status
         .success();
     assert!(
         ok,

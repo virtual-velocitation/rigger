@@ -156,6 +156,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod common;
+use common::git::git_ok;
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY, STREAM,
@@ -1569,13 +1570,7 @@ fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted()
     // Delete the prior candidate's own durable branch - the exact "already gone" case
     // `adopt_prior_criterion_branch`'s doc comment has always named, reached this round
     // through `branch_tip`'s error arm instead of a `branch_exists` guard.
-    assert!(Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["branch", "-D", &prior_branch])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(repo.path(), &["branch", "-D", &prior_branch]);
     assert!(
         !worktree::branch_exists(repo.path().to_str().unwrap(), &prior_branch),
         "the prior candidate's branch must be genuinely gone before the fresh run starts"

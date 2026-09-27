@@ -45,6 +45,7 @@
 //! `commit` sentinel a pre-fix binary always reported for this shape.
 
 mod common;
+use common::git::run_git;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
@@ -370,12 +371,10 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
     // then remove the checkout - the branch ref survives as the durable checkpoint.
     let seed_wt = tempfile::tempdir().unwrap();
     let seed_dir = seed_wt.path().to_str().unwrap().to_string();
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["worktree", "add", "-b", &branch, &seed_dir, "HEAD"])
-        .output()
-        .unwrap();
+    let out = run_git(
+        &repo_path,
+        &["worktree", "add", "-b", &branch, &seed_dir, "HEAD"],
+    );
     assert!(
         out.status.success(),
         "test setup: git worktree add must succeed: {}",
@@ -384,12 +383,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
     std::fs::write(Path::new(&seed_dir).join("feature.rs"), "fn feature() {}\n").unwrap();
     git_commit_all(&seed_dir, "rigger: prior window work");
     let unit_sha = git_stdout(&seed_dir, &["rev-parse", "HEAD"]);
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["worktree", "remove", "--force", &seed_dir])
-        .output()
-        .unwrap();
+    let out = run_git(&repo_path, &["worktree", "remove", "--force", &seed_dir]);
     assert!(
         out.status.success(),
         "test setup: git worktree remove must succeed"
@@ -397,12 +391,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
 
     // Simulate `Worktree::land`'s fast-forward already having happened: the run branch (the
     // checked-out repo) is ALREADY at the unit's own landed tip.
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["merge", "--ff-only", &branch])
-        .output()
-        .unwrap();
+    let out = run_git(&repo_path, &["merge", "--ff-only", &branch]);
     assert!(
         out.status.success(),
         "test setup: the fast-forward must succeed: {out:?}"
