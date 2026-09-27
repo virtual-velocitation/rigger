@@ -848,9 +848,7 @@ fn clear_worktree_dir(dir: &str, authorized_root: &str) {
 
     #[test]
     fn bare_remove_dir_all_with_no_coverage_is_caught() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        let findings = scan_fixture(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -858,7 +856,6 @@ fn f(dir: &str) {
 }
 ",
         );
-        let findings = scan_tree(root.path());
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].file, "src/somewhere.rs");
         assert_eq!(findings[0].line_no, 2);
@@ -867,9 +864,7 @@ fn f(dir: &str) {
 
     #[test]
     fn bare_git_worktree_remove_with_no_coverage_is_caught() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        let findings = scan_fixture(
             "src/somewhere.rs",
             "\
 fn f(repo: &str, dir: &str) {
@@ -879,7 +874,6 @@ fn f(repo: &str, dir: &str) {
 }
 ",
         );
-        let findings = scan_tree(root.path());
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(
             findings[0].shape.contains("git worktree remove"),
@@ -1218,9 +1212,7 @@ fn f(dir: &str) {
 
     #[test]
     fn a_finding_names_its_exact_file_and_line_number() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        let findings = scan_fixture(
             "src/multi_line.rs",
             "\
 fn a() {}
@@ -1230,7 +1222,6 @@ fn b(dir: &str) {
 fn c() {}
 ",
         );
-        let findings = scan_tree(root.path());
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].file, "src/multi_line.rs");
         assert_eq!(findings[0].line_no, 3, "{findings:?}");
@@ -1350,9 +1341,7 @@ fn f(a_very_long_directory_argument_name: &str, a_very_long_authorized_root_argu
     /// `"worktree"`/`"remove"` pair the old same-line-only match required.
     #[test]
     fn a_worktree_remove_args_array_wrapped_across_multiple_lines_by_rustfmt_is_still_caught() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        let findings = scan_fixture(
             "src/somewhere.rs",
             "\
 fn f(repo: &str, a_realistically_long_directory_variable_name: &str) {
@@ -1367,7 +1356,6 @@ fn f(repo: &str, a_realistically_long_directory_variable_name: &str) {
 }
 ",
         );
-        let findings = scan_tree(root.path());
         assert_eq!(
             findings.len(),
             1,

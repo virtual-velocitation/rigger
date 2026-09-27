@@ -122,12 +122,18 @@ struct PortDouble {
 
 impl PortDouble {
     fn new(report: Vec<Option<Position>>) -> Self {
+        PortDouble::built(report, true, None)
+    }
+
+    /// A port answering `report`, `exact` about its slot count, whose reads replay `replayed`
+    /// (then whose append writes nothing) when given, and are live otherwise.
+    fn built(report: Vec<Option<Position>>, exact: bool, replayed: Option<Vec<Event>>) -> Self {
         PortDouble {
             report,
             handed: AtomicUsize::new(0),
-            exact: true,
-            reads_empty: false,
-            replayed: Vec::new(),
+            exact,
+            reads_empty: replayed.is_some(),
+            replayed: replayed.unwrap_or_default(),
         }
     }
 
@@ -135,13 +141,7 @@ impl PortDouble {
     /// port-ILLEGAL - the contract is one slot per handed event - and it exists so the
     /// fold authority can be driven against a report it must refuse instead of absorb.
     fn miscounting(report: Vec<Option<Position>>) -> Self {
-        PortDouble {
-            report,
-            handed: AtomicUsize::new(0),
-            exact: false,
-            reads_empty: false,
-            replayed: Vec::new(),
-        }
+        PortDouble::built(report, false, None)
     }
 
     /// A port whose stream is EMPTY and whose append writes nothing - the exact state a
@@ -153,13 +153,7 @@ impl PortDouble {
     /// A port that REPLAYS `events` to a read and then writes nothing on the append that
     /// follows - for a seam whose write is a decision about state it had to read first.
     fn over_a_stream(events: Vec<Event>, report: Vec<Option<Position>>) -> Self {
-        PortDouble {
-            report,
-            handed: AtomicUsize::new(0),
-            exact: true,
-            reads_empty: true,
-            replayed: events,
-        }
+        PortDouble::built(report, true, Some(events))
     }
 }
 

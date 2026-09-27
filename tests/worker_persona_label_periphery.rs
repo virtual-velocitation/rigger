@@ -195,58 +195,60 @@ fn every_documented_role_maps_to_its_own_persona_and_action_phrase() {
     }
 }
 
-/// A Gap-18 reviewer RESPAWN id (spec 07, `src/spawn.rs::spawn_retry_id`'s own
-/// `{unit}/{role}#{attempt}~retry{n}` shape) still renders the FULL persona-led label, not the
-/// pre-criterion `${req.id}: ${subject}` fallback - the exact regression a `$`-anchored
-/// digit-only regex produced (it demands the id END in digits, so it never matches a
-/// `~retry{n}`-suffixed id). Gap-18 respawns are a normal, frequently-exercised path for
-/// lens/adversary/adjudicator spawns whose result comes back empty or whitespace-only, so this is
-/// the opposite of a corner case.
-#[test]
-fn a_gap_18_respawn_id_still_renders_the_full_persona_led_label() {
-    let Some(label) = run_worker_label(
-        "u1/adjudicator#1~retry2",
-        "weigh and rule on the merged tree.",
-    ) else {
+/// `workerLabel` renders the wave item `id` titled `title` (of `unit`, when the item carries
+/// one) as exactly `want` - skipped, like every label test here, when node is unavailable.
+fn assert_worker_label(id: &str, title: &str, unit: Option<&str>, want: &str) {
+    let Some(label) = run_worker_label_for_unit(id, title, unit) else {
         return;
     };
     assert_eq!(
-        label, "Adjudicator - weigh and rule #1: weigh and rule on the merged tree.",
-        "a ~retry{{n}}-suffixed id must render the persona-led label, using the ATTEMPT ordinal \
-         (matching src/spawn.rs::attempt_of), never fall back to the pre-criterion slug format"
+        label, want,
+        "the rendered worker label for {id:?} titled {title:?}"
     );
 }
 
-/// The retry suffix rides the ROLE half too (a Gap-18 respawn of a plan-critique reviewer) -
-/// proving the structural `Plan-Critique` persona override composes with the retry-aware parser,
-/// not just the base id shape covered above.
-#[test]
-fn a_gap_18_respawn_of_a_plan_critique_reviewer_keeps_its_structural_persona() {
-    let Some(label) = run_worker_label_for_unit(
+rigger::test_cases! {
+    /// A Gap-18 reviewer RESPAWN id (spec 07, `src/spawn.rs::spawn_retry_id`'s own
+    /// `{unit}/{role}#{attempt}~retry{n}` shape) still renders the FULL persona-led label, using
+    /// the ATTEMPT ordinal (matching src/spawn.rs::attempt_of), not the pre-criterion
+    /// `${req.id}: ${subject}` fallback - the exact regression a `$`-anchored digit-only regex
+    /// produced (it demands the id END in digits, so it never matches a `~retry{n}`-suffixed id).
+    /// Gap-18 respawns are a normal, frequently-exercised path for lens/adversary/adjudicator
+    /// spawns whose result comes back empty or whitespace-only, so this is the opposite of a
+    /// corner case.
+    a_gap_18_respawn_id_still_renders_the_full_persona_led_label: assert_worker_label(
+        "u1/adjudicator#1~retry2",
+        "weigh and rule on the merged tree.",
+        None,
+        "Adjudicator - weigh and rule #1: weigh and rule on the merged tree.",
+    );
+    /// The retry suffix rides the ROLE half too (a Gap-18 respawn of a plan-critique reviewer) -
+    /// proving the structural `Plan-Critique` persona override composes with the retry-aware
+    /// parser, not just the base id shape covered above.
+    a_gap_18_respawn_of_a_plan_critique_reviewer_keeps_its_structural_persona: assert_worker_label(
         "plan-critique/adversary#0~retry2",
         "challenge the revised decomposition.",
         Some("plan-critique"),
-    ) else {
-        return;
-    };
-    assert_eq!(
-        label,
         "Plan-Critique - challenge the findings, assumptions, and rigor #0: challenge the \
-         revised decomposition."
+         revised decomposition.",
     );
-}
-
-/// An UNMAPPED custom lens keeps its OWN persona token, readable, with the generic `review` verb
-/// - never a slug, never dropped to a bare id.
-#[test]
-fn an_unmapped_custom_lens_keeps_its_persona_token_with_the_generic_review_verb() {
-    let Some(label) = run_worker_label("u3/lens:custom-checker#0", "check something unusual.")
-    else {
-        return;
-    };
-    assert_eq!(
-        label,
-        "Lens:Custom-Checker - review #0: check something unusual."
+    /// An UNMAPPED custom lens keeps its OWN persona token, readable, with the generic `review`
+    /// verb - never a slug, never dropped to a bare id.
+    an_unmapped_custom_lens_keeps_its_persona_token_with_the_generic_review_verb: assert_worker_label(
+        "u3/lens:custom-checker#0",
+        "check something unusual.",
+        None,
+        "Lens:Custom-Checker - review #0: check something unusual.",
+    );
+    /// Internal whitespace (newlines, tabs, runs of spaces) in the title is collapsed to single
+    /// spaces before the sentence is cut - the same normalization the pre-existing `work` line
+    /// already applied, now feeding the persona-led builder instead of the raw
+    /// `${req.id} · ${work}` concatenation.
+    internal_whitespace_is_normalized_before_the_sentence_is_cut: assert_worker_label(
+        "u6/adjudicator#3",
+        "  weigh   the\n\tfindings and   rule.   second sentence.  ",
+        None,
+        "Adjudicator - weigh and rule #3: weigh the findings and rule.",
     );
 }
 
@@ -291,24 +293,6 @@ fn the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation() {
     assert!(
         !label.contains("This criterion OWNS"),
         "a second sentence must never leak into the rendered subject; got {label:?}"
-    );
-}
-
-/// Internal whitespace (newlines, tabs, runs of spaces) in the title is collapsed to single
-/// spaces before the sentence is cut - the same normalization the pre-existing `work` line
-/// already applied, now feeding the persona-led builder instead of the raw `${req.id} · ${work}`
-/// concatenation.
-#[test]
-fn internal_whitespace_is_normalized_before_the_sentence_is_cut() {
-    let Some(label) = run_worker_label(
-        "u6/adjudicator#3",
-        "  weigh   the\n\tfindings and   rule.   second sentence.  ",
-    ) else {
-        return;
-    };
-    assert_eq!(
-        label,
-        "Adjudicator - weigh and rule #3: weigh the findings and rule."
     );
 }
 

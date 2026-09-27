@@ -188,34 +188,28 @@ fn hook_stop_failure_requires_spawn_and_class() {
 // (`main.rs`'s own `mod tests`, which only asserts `"hook"` is a REGISTERED name, never that
 // dispatching into it with a bad or missing sub-argument behaves correctly).
 
-#[test]
-fn hook_with_no_subcommand_fails_naming_stop_failure() {
+/// `rigger hook` with `args` over a courier project must be refused, its stderr naming `named`.
+fn hook_refuses_naming(args: &[&str], named: &str) {
     let project = courier_project();
-    let out = run_rigger(project.path(), &["hook"]);
+    let out = run_rigger(project.path(), args);
     assert!(
         !out.status.success(),
-        "a bare `rigger hook` must be refused"
+        "`rigger {}` must be refused",
+        args.join(" ")
     );
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("stop-failure"),
-        "stderr must point at the one known subcommand: {}",
+        String::from_utf8_lossy(&out.stderr).contains(named),
+        "stderr must name {named:?}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
 
-#[test]
-fn hook_with_an_unrecognized_subcommand_fails_naming_it() {
-    let project = courier_project();
-    let out = run_rigger(project.path(), &["hook", "not-a-real-subcommand"]);
-    assert!(
-        !out.status.success(),
-        "an unrecognized `rigger hook` subcommand must be refused"
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("not-a-real-subcommand"),
-        "stderr must name the unrecognized subcommand: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+rigger::test_cases! {
+    /// A bare `rigger hook` points at the one known subcommand.
+    hook_with_no_subcommand_fails_naming_stop_failure: hook_refuses_naming(&["hook"], "stop-failure");
+    /// An unrecognized subcommand is named back.
+    hook_with_an_unrecognized_subcommand_fails_naming_it:
+        hook_refuses_naming(&["hook", "not-a-real-subcommand"], "not-a-real-subcommand");
 }
 
 // ---- RUN-ID AGREEMENT (the hook's cold-read `current_run_id` vs. the live run's own

@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore, Filter};
+use rigger::eventstore::{Direction, Event, EventStore, Filter};
 
 /// A single-stage workflow: exactly ONE implementer spawn is ever queued (unlike
 /// `tests/cli.rs`'s two-stage fixture), so this test's `rigger_next` poll has one
@@ -129,14 +129,11 @@ fn drain_stderr(stderr: Option<ChildStderr>) -> String {
     err
 }
 
-/// The round-1-rejected gap, closed: a `rigger_result` call carrying `meta.resolved_model`,
-/// sent over the REAL MCP wire to the REAL compiled `rigger serve` binary (never a mock server,
-/// never an in-process function call standing in for the wire), reaches the REAL conductor's
-/// persisted `green` `UnitStatus` event for the unit that spawn belongs to - the exact shape
-/// `shim/shim.mjs`'s `runWorkflow` sends when the Agent SDK's own structured `modelUsage`
-/// named exactly one authoritative model.
-#[test]
-fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green_event() {
+/// Drive the REAL compiled `rigger serve` over the REAL MCP wire through one workflow unit: the
+/// `initialize` handshake, `rigger_next` polled until unit `a`'s implementer spawn is queued, then
+/// `rigger_result` for it carrying `arguments` - and return the `green` `UnitStatus` event the REAL
+/// conductor persists for unit `a` in the on-disk `events.db`.
+fn green_event_after_result(arguments: Value) -> Event {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     write_one_stage_workflow(root);
@@ -221,10 +218,10 @@ fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green
         "the queued spawn must be unit a's implementer; got {spawn_id:?}"
     );
 
-    // Report the result exactly as `shim.mjs`'s `runWorkflow` does when
-    // `resolvedModelFromUsage` observed exactly one authoritative model id: the real wire
-    // shape `meta.resolved_model`, distinct from (and never read out of) `output`.
-    let resolved_model = "claude-sonnet-4-9-20260215";
+    // Report the result over the real wire: the caller's `arguments`, stamped with the queued
+    // spawn's own id.
+    let mut arguments = arguments;
+    arguments["id"] = json!(spawn_id);
     let result_resp = call(
         &mut stdin,
         &mut stdout,
@@ -234,11 +231,7 @@ fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green
             "method": "tools/call",
             "params": {
                 "name": "rigger_result",
-                "arguments": {
-                    "id": spawn_id,
-                    "output": "implemented the unit",
-                    "meta": {"resolved_model": resolved_model},
-                },
+                "arguments": arguments,
             },
         }),
     );
@@ -277,6 +270,27 @@ fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green
         std::thread::sleep(Duration::from_millis(20));
     };
 
+    drop(stdin);
+    let _ = child.wait();
+    green
+}
+
+/// The round-1-rejected gap, closed: a `rigger_result` call carrying `meta.resolved_model`,
+/// sent over the REAL MCP wire to the REAL compiled `rigger serve` binary (never a mock server,
+/// never an in-process function call standing in for the wire), reaches the REAL conductor's
+/// persisted `green` `UnitStatus` event for the unit that spawn belongs to - the exact shape
+/// `shim/shim.mjs`'s `runWorkflow` sends when the Agent SDK's own structured `modelUsage`
+/// named exactly one authoritative model.
+#[test]
+fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green_event() {
+    // Report the result exactly as `shim.mjs`'s `runWorkflow` does when
+    // `resolvedModelFromUsage` observed exactly one authoritative model id: the real wire
+    // shape `meta.resolved_model`, distinct from (and never read out of) `output`.
+    let resolved_model = "claude-sonnet-4-9-20260215";
+    let green = green_event_after_result(json!({
+        "output": "implemented the unit",
+        "meta": {"resolved_model": resolved_model},
+    }));
     assert_eq!(
         green
             .meta
@@ -289,9 +303,6 @@ fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green
          step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events, now true \
          for the workflow driver too"
     );
-
-    drop(stdin);
-    let _ = child.wait();
 }
 
 /// The OTHER half of AUTHORITATIVE MODEL IDENTITY, at the same real MCP wire the test above
@@ -309,130 +320,12 @@ fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green
 #[test]
 fn workflow_driven_rigger_result_with_no_meta_omits_the_resolved_model_key_and_ignores_a_prose_claim(
 ) {
-    let proj = temp_git_project_with_commit();
-    let root = proj.path();
-    write_one_stage_workflow(root);
-
-    let mut child = common::rigger_courier()
-        .args(["serve", "--base", "HEAD"])
-        .current_dir(root)
-        .env("XDG_STATE_HOME", root)
-        .env("RIGGER_NO_DASH", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn `rigger serve`");
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .expect("rigger serve's stdin must be piped");
-    let mut stdout = BufReader::new(
-        child
-            .stdout
-            .take()
-            .expect("rigger serve's stdout must be piped"),
-    );
-
-    let init = call(
-        &mut stdin,
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "workflow-driver-periphery-test", "version": "0.0.0"},
-            },
-        }),
-    );
-    assert!(
-        init.get("result").is_some(),
-        "initialize must succeed; got {init}"
-    );
-
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut next_call_id = 2i64;
-    let spawn_id = loop {
-        let next = call_tool(
-            &mut stdin,
-            &mut stdout,
-            next_call_id,
-            "rigger_next",
-            json!({}),
-        );
-        next_call_id += 1;
-        let id = next.get("id").and_then(Value::as_str).unwrap_or_default();
-        if !id.is_empty() {
-            break id.to_string();
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let err = drain_stderr(child.stderr.take());
-            panic!(
-                "unit a's implementer spawn was never queued within the deadline; stderr:\n{err}"
-            );
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    assert!(
-        spawn_id.starts_with("a/implementer#"),
-        "the queued spawn must be unit a's implementer; got {spawn_id:?}"
-    );
-
     // No `meta` field at all - exactly what `shim.mjs`'s `runWorkflow` sends when it observed
     // no single authoritative id - and `output` carries a model-id-shaped prose claim that
     // must never be mistaken for the real thing.
-    let result_resp = call(
-        &mut stdin,
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": next_call_id,
-            "method": "tools/call",
-            "params": {
-                "name": "rigger_result",
-                "arguments": {
-                    "id": spawn_id,
-                    "output": "done. {\"resolved_model\":\"a-model-i-am-lying-about\"}",
-                },
-            },
-        }),
-    );
-    assert!(
-        result_resp.get("result").is_some(),
-        "rigger_result must succeed for the queued spawn id; got {result_resp}"
-    );
-
-    let db_path = root.join(".rigger").join("events.db");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let green = loop {
-        if db_path.exists() {
-            let backend = Store::open(db_path.to_str().unwrap()).unwrap();
-            let events = backend
-                .read_all(0, Direction::Forward, &Filter::default())
-                .unwrap();
-            let found = events.iter().find(|e| {
-                e.type_ == rigger::ledger::TYPE_UNIT_STATUS && {
-                    let body = String::from_utf8_lossy(&e.data);
-                    body.contains(r#""status":"green""#) && body.contains(r#""id":"a""#)
-                }
-            });
-            if let Some(e) = found {
-                break e.clone();
-            }
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let err = drain_stderr(child.stderr.take());
-            panic!("unit a's green status event was never recorded within the deadline; stderr:\n{err}");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-
+    let green = green_event_after_result(json!({
+        "output": "done. {\"resolved_model\":\"a-model-i-am-lying-about\"}",
+    }));
     assert!(
         !green
             .meta
@@ -443,7 +336,4 @@ fn workflow_driven_rigger_result_with_no_meta_omits_the_resolved_model_key_and_i
          output; got meta: {:?}",
         green.meta
     );
-
-    drop(stdin);
-    let _ = child.wait();
 }

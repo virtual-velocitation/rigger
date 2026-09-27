@@ -190,41 +190,88 @@ fn the_environment_beats_the_committed_config() {
     );
 }
 
-#[test]
-fn a_present_but_unreadable_store_conn_surfaces_loudly_not_a_silent_sqlite_fallback() {
-    // Rung 3, the sentinel-inversion guard: a `.rigger/store.conn` that is PRESENT but cannot be
-    // read (here a directory stands where the file goes - an IO error distinct from NotFound) must
-    // surface LOUDLY, never collapse into the same silent sqlite default an ABSENT file returns.
-    // Otherwise a bare courier on a server-pinning box whose secret file is unreadable (a
-    // different-user / permission edge the design explicitly contemplates) would silently self-
-    // report to LOCAL sqlite while the conductor uses the server - the run's state fractures across
-    // two stores (the spec-05 wrong-store fracture). This is the secret-file sibling of the config
-    // rung's `a_present_but_unreadable_workflow...` test (d-u2-conn-file-unreadable-loud); it pins
-    // that the file-backed secret rung distinguishes absent (no opinion) from unreadable (loud), the
-    // same NotFound-vs-other split `read_store_config` makes one rung down.
+/// A bare courier over a fresh project that `setup` configured must fail LOUDLY - its stderr
+/// naming every one of `needles` (proving the failure surfaced at the rung under test rather than a
+/// downstream store miss) - never fall through to the local sqlite walk-up (the silent wrong-store
+/// fracture every rung guards), and must fabricate no local `.rigger/events.db`. `what` names the
+/// configuration in the failure.
+fn assert_bare_courier_refuses_loudly(setup: impl Fn(&Path), needles: &[&str], what: &str) {
     let project = temp_project_with_rigger_dir();
     let root = project.path();
-    make_store_conn_unreadable(root);
+    setup(root);
     let out = run_bare_courier(root);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),
-        "an unreadable store.conn must fail loudly, never silently resolve a fallback; \
-         stderr:\n{stderr}"
+        "{what} must fail loudly, never silently resolve a fallback; stderr:\n{stderr}"
     );
-    assert!(
-        stderr.contains("store connection file"),
-        "the failure must name itself as a store-connection-file read error, proving it surfaced at \
-         the secret-file rung rather than a downstream store miss; stderr:\n{stderr}"
-    );
+    for needle in needles {
+        assert!(
+            stderr.contains(needle),
+            "the failure for {what} must name {needle:?}, proving it surfaced at its own rung \
+             rather than a downstream store miss; stderr:\n{stderr}"
+        );
+    }
     assert!(
         !stderr.contains("no rigger store found"),
-        "an unreadable secret file must NOT fall through to the local sqlite walk-up - that silent \
-         wrong-store fallback is the exact fracture this rung guards; stderr:\n{stderr}"
+        "{what} must NOT fall through to the local sqlite walk-up - that silent wrong-store \
+         fallback is the exact fracture this rung guards; stderr:\n{stderr}"
     );
     assert!(
         !event_log(root).exists(),
-        "a loud read failure must leave no fabricated local .rigger/events.db behind"
+        "a loud failure for {what} must leave no fabricated local .rigger/events.db behind"
+    );
+}
+
+rigger::test_cases! {
+    /// Rung 3, the sentinel-inversion guard: a `.rigger/store.conn` that is PRESENT but cannot be
+    /// read (here a directory stands where the file goes - an IO error distinct from NotFound) must
+    /// surface LOUDLY, never collapse into the same silent sqlite default an ABSENT file returns.
+    /// Otherwise a bare courier on a server-pinning box whose secret file is unreadable (a
+    /// different-user / permission edge the design explicitly contemplates) would silently self-
+    /// report to LOCAL sqlite while the conductor uses the server - the run's state fractures across
+    /// two stores (the spec-05 wrong-store fracture). This is the secret-file sibling of the config
+    /// rung's `a_present_but_unreadable_workflow...` test (d-u2-conn-file-unreadable-loud); it pins
+    /// that the file-backed secret rung distinguishes absent (no opinion) from unreadable (loud), the
+    /// same NotFound-vs-other split `read_store_config` makes one rung down.
+    a_present_but_unreadable_store_conn_surfaces_loudly_not_a_silent_sqlite_fallback: assert_bare_courier_refuses_loudly(
+        make_store_conn_unreadable,
+        &["store connection file"],
+        "an unreadable store.conn",
+    );
+    /// Rung 4, the backend-validation guard (d-u2sdet-error-boundary-gaps): a committed
+    /// `store: backend:` naming neither `sqlite` nor `kurrentdb` - a typo like `kurrent`, `postgres`,
+    /// or here `bogus` - must surface as a LOUD configuration error naming the offending value and the
+    /// accepted ones, never a silent fall-through to the embedded-sqlite default that would hide the
+    /// typo behind today's behavior. Otherwise a project that MEANT to pin the server, but fat-fingered
+    /// the backend name, would self-report to LOCAL sqlite while believing it configured the shared
+    /// server - the spec-05 wrong-store fracture reached through a config typo instead of a missing
+    /// credential. `src/main.rs`'s unit test pins this over the pure core (`store: backend: bogus`
+    /// rejected); this proves the rejection is WIRED through the shipped binary and reaches the bare
+    /// courier's stderr, never swallowed between the resolver and the command handler. The sibling
+    /// guards `a_present_but_unreadable_store_conn...` and (config rung) `a_malformed_workflow...`
+    /// cover the OTHER two silent-fallback classes; this closes the invalid-value one.
+    an_unknown_committed_backend_surfaces_loudly_not_a_silent_sqlite_fallback: assert_bare_courier_refuses_loudly(
+        |root: &Path| write_workflow(&root.join(".rigger"), "store:\n  backend: bogus\n"),
+        &["store.backend", "bogus", "sqlite", "kurrentdb"],
+        "an unknown store.backend",
+    );
+    /// Rung 4 selects the server but carries NO credential (d-u2sdet-error-boundary-gaps): a committed
+    /// `store: backend: kurrentdb` with no `url`, and nothing beneath OR above it to supply an address
+    /// - no `--conn` flag, no `KURRENTDB_CONN`, no `.rigger/store.conn` - must surface the three-source
+    /// missing-connection error naming ALL THREE credential channels, never a silent drop to the local
+    /// sqlite default. The committed config deliberately holds only the CHOICE, never a secret, so the
+    /// address must come from a credential source; when every source is empty the operator needs the
+    /// full remediation, not a wrong-store fracture where the run silently resolves LOCAL sqlite while
+    /// the config pins the shared server. `tests/cli.rs` drives the FLAG path (`--eventstore kurrentdb`
+    /// no url) to this same guard and `src/main.rs`'s unit test pins the CONFIG path over the pure
+    /// core; neither observes the CONFIG-rung server-with-no-url arm end-to-end through the binary.
+    /// This closes that: the committed-config server selection reaches the missing-conn guard, wired
+    /// through the shipped binary, and fabricates no local log.
+    a_committed_kurrentdb_backend_with_no_credential_names_all_three_sources: assert_bare_courier_refuses_loudly(
+        |root: &Path| write_workflow(&root.join(".rigger"), "store:\n  backend: kurrentdb\n"),
+        &["--conn", "KURRENTDB_CONN", "store.conn"],
+        "a config-selected server with no resolvable connection string",
     );
 }
 
@@ -239,94 +286,5 @@ fn nothing_configured_resolves_the_local_default() {
         &out,
         root,
         "no source configured resolves the sqlite default",
-    );
-}
-
-#[test]
-fn an_unknown_committed_backend_surfaces_loudly_not_a_silent_sqlite_fallback() {
-    // Rung 4, the backend-validation guard (d-u2sdet-error-boundary-gaps): a committed
-    // `store: backend:` naming neither `sqlite` nor `kurrentdb` - a typo like `kurrent`, `postgres`,
-    // or here `bogus` - must surface as a LOUD configuration error naming the offending value and the
-    // accepted ones, never a silent fall-through to the embedded-sqlite default that would hide the
-    // typo behind today's behavior. Otherwise a project that MEANT to pin the server, but fat-fingered
-    // the backend name, would self-report to LOCAL sqlite while believing it configured the shared
-    // server - the spec-05 wrong-store fracture reached through a config typo instead of a missing
-    // credential. `src/main.rs`'s unit test pins this over the pure core (`store: backend: bogus`
-    // rejected); this proves the rejection is WIRED through the shipped binary and reaches the bare
-    // courier's stderr, never swallowed between the resolver and the command handler. The sibling
-    // guards `a_present_but_unreadable_store_conn...` and (config rung) `a_malformed_workflow...`
-    // cover the OTHER two silent-fallback classes; this closes the invalid-value one.
-    let project = temp_project_with_rigger_dir();
-    let root = project.path();
-    write_workflow(&root.join(".rigger"), "store:\n  backend: bogus\n");
-    let out = run_bare_courier(root);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "an unknown store.backend must fail loudly, never silently resolve a fallback; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("store.backend") && stderr.contains("bogus"),
-        "the failure must name the store.backend config rung and the offending value, proving it \
-         surfaced at the committed-config rung's validation rather than a downstream store miss; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("sqlite") && stderr.contains("kurrentdb"),
-        "the loud error must name the two accepted backends so the fix is unambiguous; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("no rigger store found"),
-        "an invalid backend must NOT fall through to the local sqlite walk-up - that silent \
-         wrong-store fallback behind a typo is the exact fracture this rung guards; stderr:\n{stderr}"
-    );
-    assert!(
-        !event_log(root).exists(),
-        "a loud config-validation failure must leave no fabricated local .rigger/events.db behind"
-    );
-}
-
-#[test]
-fn a_committed_kurrentdb_backend_with_no_credential_names_all_three_sources() {
-    // Rung 4 selects the server but carries NO credential (d-u2sdet-error-boundary-gaps): a committed
-    // `store: backend: kurrentdb` with no `url`, and nothing beneath OR above it to supply an address
-    // - no `--conn` flag, no `KURRENTDB_CONN`, no `.rigger/store.conn` - must surface the three-source
-    // missing-connection error naming ALL THREE credential channels, never a silent drop to the local
-    // sqlite default. The committed config deliberately holds only the CHOICE, never a secret, so the
-    // address must come from a credential source; when every source is empty the operator needs the
-    // full remediation, not a wrong-store fracture where the run silently resolves LOCAL sqlite while
-    // the config pins the shared server. `tests/cli.rs` drives the FLAG path (`--eventstore kurrentdb`
-    // no url) to this same guard and `src/main.rs`'s unit test pins the CONFIG path over the pure
-    // core; neither observes the CONFIG-rung server-with-no-url arm end-to-end through the binary.
-    // This closes that: the committed-config server selection reaches the missing-conn guard, wired
-    // through the shipped binary, and fabricates no local log.
-    let project = temp_project_with_rigger_dir();
-    let root = project.path();
-    write_workflow(&root.join(".rigger"), "store:\n  backend: kurrentdb\n");
-    let out = run_bare_courier(root);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "a config-selected server with no resolvable connection string must fail loudly, never \
-         silently resolve the local sqlite default; stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("--conn")
-            && stderr.contains("KURRENTDB_CONN")
-            && stderr.contains("store.conn"),
-        "the missing-connection error must name all three credential channels so the fix is \
-         unambiguous; stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("no rigger store found"),
-        "a config-selected server with no credential must NOT fall through to the local sqlite \
-         walk-up - that silent wrong-store fallback is the exact fracture this rung guards; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        !event_log(root).exists(),
-        "a loud missing-connection failure must leave no fabricated local .rigger/events.db behind"
     );
 }

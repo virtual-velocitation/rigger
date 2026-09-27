@@ -273,70 +273,41 @@ fn the_resumed_banner_survives_a_genuinely_in_flight_re_parked_attempt_not_yet_r
 // Gap 5: `resume-unit`'s own argument-parsing edges and the "already-landed" refusal.
 // ---------------------------------------------------------------------------------------
 
-/// A non-numeric `--attempts` value refuses loudly, naming the bad value - no store is
-/// ever touched (argument parsing fails first), so an arbitrary empty directory suffices.
-#[test]
-fn resume_unit_rejects_a_non_numeric_attempts_value() {
+/// `rigger resume-unit` with `args` refuses before any store is touched (argument parsing fails
+/// first, so an arbitrary empty directory suffices), its stderr naming `named` and carrying the
+/// lowercase explanation `explains`.
+fn resume_unit_refuses(args: &[&str], named: &str, explains: &str) {
     let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit", "u", "--attempts", "abc"]);
-    assert!(!ok, "a non-numeric --attempts must refuse; stdout: {out:?}");
-    assert!(
-        err.contains("abc") && err.to_lowercase().contains("positive integer"),
-        "the refusal must name the bad value and explain the constraint; stderr: {err:?}"
-    );
-}
-
-/// `--attempts 0` refuses: a grant must add at least one real attempt.
-#[test]
-fn resume_unit_rejects_a_zero_attempts_value() {
-    let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit", "u", "--attempts", "0"]);
-    assert!(!ok, "--attempts 0 must refuse; stdout: {out:?}");
-    assert!(
-        err.contains('0') && err.to_lowercase().contains("positive integer"),
-        "the refusal must name the value and explain the constraint; stderr: {err:?}"
-    );
-}
-
-/// A dangling `--attempts` with no following value refuses with a usage-shaped message,
-/// rather than panicking on an out-of-bounds arg read.
-#[test]
-fn resume_unit_rejects_a_dangling_attempts_flag_with_no_value() {
-    let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit", "u", "--attempts"]);
-    assert!(!ok, "a dangling --attempts must refuse; stdout: {out:?}");
-    assert!(
-        err.contains("--attempts") && err.to_lowercase().contains("expects a number"),
-        "the refusal must name the flag and what it expects; stderr: {err:?}"
-    );
-}
-
-/// An unrecognized flag refuses, rather than being silently swallowed or misread as a
-/// second unit id.
-#[test]
-fn resume_unit_rejects_an_unknown_flag() {
-    let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit", "u", "--bogus"]);
-    assert!(!ok, "an unknown flag must refuse; stdout: {out:?}");
-    assert!(
-        err.contains("--bogus") && err.to_lowercase().contains("unknown argument"),
-        "the refusal must name the offending argument; stderr: {err:?}"
-    );
-}
-
-/// No unit id at all refuses with a usage-shaped message.
-#[test]
-fn resume_unit_rejects_when_no_unit_id_is_given() {
-    let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit"]);
+    let (out, err, ok) = run_rigger(dir.path(), args);
     assert!(
         !ok,
-        "a bare resume-unit with no id must refuse; stdout: {out:?}"
+        "`rigger {}` must refuse; stdout: {out:?}",
+        args.join(" ")
     );
     assert!(
-        err.to_lowercase().contains("expected a unit id"),
-        "the refusal must say a unit id was expected; stderr: {err:?}"
+        err.contains(named) && err.to_lowercase().contains(explains),
+        "the refusal must name {named:?} and explain {explains:?}; stderr: {err:?}"
     );
+}
+
+rigger::test_cases! {
+    /// A non-numeric `--attempts` value refuses loudly, naming the bad value.
+    resume_unit_rejects_a_non_numeric_attempts_value:
+        resume_unit_refuses(&["resume-unit", "u", "--attempts", "abc"], "abc", "positive integer");
+    /// `--attempts 0` refuses: a grant must add at least one real attempt.
+    resume_unit_rejects_a_zero_attempts_value:
+        resume_unit_refuses(&["resume-unit", "u", "--attempts", "0"], "0", "positive integer");
+    /// A dangling `--attempts` with no following value refuses with a usage-shaped message,
+    /// rather than panicking on an out-of-bounds arg read.
+    resume_unit_rejects_a_dangling_attempts_flag_with_no_value:
+        resume_unit_refuses(&["resume-unit", "u", "--attempts"], "--attempts", "expects a number");
+    /// An unrecognized flag refuses, rather than being silently swallowed or misread as a
+    /// second unit id.
+    resume_unit_rejects_an_unknown_flag:
+        resume_unit_refuses(&["resume-unit", "u", "--bogus"], "--bogus", "unknown argument");
+    /// No unit id at all refuses with a usage-shaped message.
+    resume_unit_rejects_when_no_unit_id_is_given:
+        resume_unit_refuses(&["resume-unit"], "", "expected a unit id");
 }
 
 /// An unknown unit id - absent from the current run entirely - refuses by name. A
