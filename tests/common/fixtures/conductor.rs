@@ -54,12 +54,16 @@ pub fn has_status_marker(events: &[Event], status: &str) -> bool {
     count_status_marker(events, status) > 0
 }
 
-/// The implementer writes real work (`feature.rs`) on every lane; the sole adjudicator approves
-/// every lane it sees. Uniform across lanes (no lane-index branching), so candidate 0 wins
-/// deterministically against an identical candidate 1.
-pub struct ApproveEveryLaneDriver;
+/// A driver whose implementer writes `body` to `file` in its worktree and whose reviewers answer
+/// through [`review_or_adjudicate`] - the adjudicator approves, every other reviewer returns a
+/// plain note. Uniform across lanes (no lane-index branching), so under speculation candidate 0
+/// wins deterministically against an identical candidate 1.
+pub struct WriteAndApprove {
+    pub file: &'static str,
+    pub body: &'static str,
+}
 
-impl AgentDriver for ApproveEveryLaneDriver {
+impl AgentDriver for WriteAndApprove {
     fn spawn(
         &self,
         _a: &AgentDef,
@@ -68,16 +72,10 @@ impl AgentDriver for ApproveEveryLaneDriver {
         _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
         if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("feature.rs"), "REAL_WORK\n").unwrap();
+            std::fs::write(Path::new(&opts.dir).join(self.file), self.body).unwrap();
             return Ok(AgentResult::default());
         }
-        if opts.id.contains("/adjudicator#") {
-            return Ok(AgentResult {
-                output: r#"{"verdict":"approve"}"#.into(),
-                resolved_model: String::new(),
-            });
-        }
-        Ok(AgentResult::default())
+        Ok(review_or_adjudicate(opts))
     }
 }
 

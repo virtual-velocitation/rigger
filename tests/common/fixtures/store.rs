@@ -77,3 +77,29 @@ pub fn registry_entries(
     }
     out
 }
+
+/// A git repo with one commit and an installed, always-refusing `pre-commit` hook, returned with
+/// its path - after proving the hook really refuses an ordinary commit in a worktree of the same
+/// repo, so a green run over it is proof of a bypass, never proof the hook was toothless.
+pub fn repo_with_refusing_hook() -> (tempfile::TempDir, String) {
+    let repo = super::temp_git_project_with_commit();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    super::install_refusing_hook(&repo_path);
+
+    let wt_path = std::env::temp_dir().join(format!("hook-sanity-{}", uuid::Uuid::new_v4()));
+    let wt = rigger::worktree::Worktree::create(
+        &repo_path,
+        wt_path.to_str().unwrap(),
+        "rigger/hook-sanity",
+        "",
+    )
+    .unwrap();
+    std::fs::write(wt_path.join("probe.txt"), "x\n").unwrap();
+    let err = wt
+        .commit("rigger: probe")
+        .expect_err("the installed hook must refuse an ordinary commit in a sibling worktree");
+    assert!(err.to_string().contains("hook: refusing"), "{err}");
+    drop(wt);
+    let _ = std::fs::remove_dir_all(&wt_path);
+    (repo, repo_path)
+}

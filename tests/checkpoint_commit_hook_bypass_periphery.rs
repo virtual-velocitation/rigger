@@ -33,47 +33,13 @@
 
 mod common;
 
-use common::fixtures::agent;
-use common::fixtures::gate_def;
 use common::fixtures::mk_stage;
-use common::git::install_refusing_hook;
-use common::git::temp_git_project_with_commit;
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config};
+use common::fixtures::WriteAndApprove;
+use common::fixtures::{repo_with_refusing_hook, workflow_cfg};
+use rigger::conductor::{run, Deps};
 use rigger::eventstore::sqlite::Store;
 use rigger::ledger;
-use serde_json::Value;
 use std::path::Path;
-
-/// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else. The
-/// non-implementer spawns (SDET-author, review lens, adjudicator) all approve outright - only
-/// their fact of running (not their content) matters here.
-struct SimpleWorkDriver;
-
-impl AgentDriver for SimpleWorkDriver {
-    fn spawn(
-        &self,
-        _a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            return Ok(AgentResult::default());
-        }
-        if opts.id.contains("/adjudicator#") {
-            return Ok(AgentResult {
-                output: r#"{"verdict":"approve"}"#.into(),
-                resolved_model: String::new(),
-            });
-        }
-        Ok(AgentResult {
-            output: "reviewed the diff".into(),
-            resolved_model: String::new(),
-        })
-    }
-}
 
 /// Drives the CONDUCTOR's real pre-gate attempt commit (`RunCtx::run_single_stage`, the
 /// `w.commit_checkpoint(...)` call right after the SDET-author spawn) through a genuinely
@@ -82,40 +48,20 @@ impl AgentDriver for SimpleWorkDriver {
 /// (white-box, calls `Worktree::commit_checkpoint` directly, never through `run`).
 #[test]
 fn a_pre_gate_attempt_commit_bypasses_an_installed_refusing_hook() {
-    let repo = temp_git_project_with_commit();
-    let repo_path = repo.path().to_str().unwrap().to_string();
-    install_refusing_hook(&repo_path);
+    let (repo, repo_path) = repo_with_refusing_hook();
 
-    // Sanity: the hook really does refuse an ordinary commit in a worktree of this same repo,
-    // so a green run below is proof of a bypass, never proof the hook was toothless.
-    let wt_path = std::env::temp_dir().join(format!("hook-sanity-{}", uuid::Uuid::new_v4()));
-    let wt = rigger::worktree::Worktree::create(
-        &repo_path,
-        wt_path.to_str().unwrap(),
-        "rigger/hook-sanity",
-        "",
-    )
-    .unwrap();
-    std::fs::write(wt_path.join("probe.txt"), "x\n").unwrap();
-    let err = wt
-        .commit("rigger: probe")
-        .expect_err("the installed hook must refuse an ordinary commit in a sibling worktree");
-    assert!(err.to_string().contains("hook: refusing"), "{err}");
-    drop(wt);
-    let _ = std::fs::remove_dir_all(&wt_path);
-
-    let mut cfg = Config::default();
+    let mut cfg = workflow_cfg(
+        &["worker", "lens", "judge"],
+        &[("g", "exit 0")],
+        vec![mk_stage("unit-a", "g")],
+    );
     cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
-    cfg.agents.insert("worker".into(), agent("worker"));
-    cfg.agents.insert("lens".into(), agent("lens"));
-    cfg.agents.insert("judge".into(), agent("judge"));
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
-    cfg.workflow
-        .stages
-        .insert("unit-a".into(), mk_stage("unit-a", "g"));
 
     let store = Store::open(":memory:").unwrap();
-    let driver = SimpleWorkDriver;
+    let driver = WriteAndApprove {
+        file: "a.rs",
+        body: "A_WORK\n",
+    };
     let deps = Deps {
         store: &store,
         driver: &driver,

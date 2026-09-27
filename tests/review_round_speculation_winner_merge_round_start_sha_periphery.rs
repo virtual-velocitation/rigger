@@ -37,7 +37,7 @@
 mod common;
 
 use common::fixtures::{
-    assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg, ApproveEveryLaneDriver,
+    assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg, WriteAndApprove,
 };
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, Deps, STREAM};
@@ -59,7 +59,10 @@ fn a_speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_rev
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = speculation_regen_door_cfg("merge");
     let store = Store::open(":memory:").unwrap();
-    let driver = ApproveEveryLaneDriver;
+    let driver = WriteAndApprove {
+        file: "feature.rs",
+        body: "REAL_WORK\n",
+    };
     let deps = Deps {
         store: &store,
         driver: &driver,
