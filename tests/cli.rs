@@ -11961,11 +11961,7 @@ fn write_fake_executable(bindir: &Path, name: &str) {
     std::fs::create_dir_all(bindir).unwrap();
     let bin = bindir.join(name);
     std::fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&bin);
 }
 
 /// A minimal synthetic `PATH` carrying only what `rigger validate` itself needs: `git` (for
@@ -18546,27 +18542,83 @@ fn setup_installs_graph_hygiene_guidance_into_consumer_skill() {
     }
 }
 
+/// Write `content` to `code.txt` under `root`, stage it, and `git commit` it with `PATH` set
+/// to `path` (so the pre-commit hook finds whichever `rigger` that `PATH` stages) and no
+/// inherited `CARGO_TARGET_DIR`. Returns whether the commit succeeded and its stderr.
+fn commit_a_code_change(root: &Path, path: &str, content: &str, message: &str) -> (bool, String) {
+    std::fs::write(root.join("code.txt"), content).unwrap();
+    git_ok(root, &["add", "code.txt"]);
+    let out = Command::new("git")
+        .args(["commit", "-q", "-m", message])
+        .current_dir(root)
+        .env("PATH", path)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("git must be runnable");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The `using-rigger` skill as committed at `root`'s HEAD (empty when absent).
+fn committed_skill(root: &Path) -> String {
+    git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default()
+}
+
+/// [`committed_skill`], proven to be a real fresh render, not a stub.
+fn fresh_committed_skill(root: &Path) -> String {
+    let skill = committed_skill(root);
+    assert!(
+        skill.contains("name: using-rigger"),
+        "the seed must be a real fresh render, not a stub; got:\n{skill}"
+    );
+    skill
+}
+
+/// Mark `path` executable (0o755) on unix.
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Write `script` as an executable `rigger` in a `shim-bin/` under `root` and return a `PATH`
+/// value with that dir prepended, so anything run with it finds this `rigger` BY NAME.
+fn rigger_shim_on_path(root: &Path, script: impl AsRef<[u8]>) -> String {
+    let bindir = root.join("shim-bin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let shim = bindir.join("rigger");
+    std::fs::write(&shim, script).unwrap();
+    make_executable(&shim);
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", bindir.display(), orig_path)
+}
+
+/// Place an executable copy of the REAL compiled `rigger` binary (the one this very test suite
+/// runs) at `dir/rigger`.
+fn copy_the_built_binary_into(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let dest = dir.join("rigger");
+    std::fs::copy(rigger_bin(), &dest)
+        .unwrap_or_else(|e| panic!("copy the tree-built binary to {}: {e}", dest.display()));
+    make_executable(&dest);
+}
+
 /// Stage a `rigger` shim (a tiny sh script that execs the freshly built binary) in a
 /// `shim-bin/` under `root` and return a `PATH` value with that dir prepended, so a `git
 /// commit` run with this `PATH` finds `rigger` BY NAME - the pre-commit hook invokes `rigger`
 /// unqualified (spec 24), and pinning it to the built binary keeps the test off whatever old
 /// `rigger` happens to be installed in the ambient `PATH`.
 fn stage_rigger_shim(root: &Path) -> String {
-    let bindir = root.join("shim-bin");
-    std::fs::create_dir_all(&bindir).unwrap();
-    let shim = bindir.join("rigger");
-    std::fs::write(
-        &shim,
+    rigger_shim_on_path(
+        root,
         format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", rigger_bin().display()),
     )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let orig_path = std::env::var("PATH").unwrap_or_default();
-    format!("{}:{}", bindir.display(), orig_path)
 }
 
 /// Seed genuinely STALE tracked copies of both rendered docs under `root`, committed with
@@ -18596,8 +18648,7 @@ fn seed_stale_tracked_docs(root: &Path) {
     );
     // Guard against a vacuous pass in every caller: HEAD must carry the STALE bytes right after
     // the seed, so a later "the hook detected drift" assertion can only hold for real.
-    let seeded_skill =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    let seeded_skill = committed_skill(root);
     assert!(
         seeded_skill.contains("STALE DOC"),
         "the --no-verify seed must commit the STALE docs unchanged so the discrimination is \
@@ -18678,19 +18729,15 @@ fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
     let commit_path = stage_rigger_shim(root);
 
     // Make an UNRELATED tracked change and attempt to commit it.
-    std::fs::write(root.join("code.txt"), "a documented code fact changed\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "change a documented fact"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let (ok, stderr) = commit_a_code_change(
+        root,
+        &commit_path,
+        "a documented code fact changed\n",
+        "change a documented fact",
+    );
 
     assert!(
-        !out.status.success(),
+        !ok,
         "a drifted render must REFUSE the commit, not silently let it through; stderr:\n{stderr}"
     );
     assert!(
@@ -18715,8 +18762,7 @@ fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
     );
 
     // Nothing landed: HEAD still carries the STALE seed, not a silently-substituted re-render.
-    let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    let committed = committed_skill(root);
     assert!(
         committed.contains("STALE DOC"),
         "a refused commit must not land - HEAD must still carry the stale seed; got:\n{committed}"
@@ -18730,36 +18776,27 @@ fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
     );
 }
 
-/// Spec 70, crit 1 (a MATCHING render passes silently, end to end): the flip side of refusing
-/// instead of rewriting. When the committed docs are ALREADY the fresh render, the hook must
-/// change nothing and let the commit through exactly as before this fix - no warning, no
-/// refusal, no touched doc content. Drives the REAL `rigger` binary and REAL git.
-#[test]
-fn setup_precommit_hook_passes_untouched_when_the_render_matches() {
+/// Over a self-hosting repo whose committed docs are a fresh render, `stage` the `rigger`
+/// binaries the hook can reach (returning the commit's `PATH`) and commit `content` with
+/// `message`: the hook's render matches what was staged, so the commit passes without a
+/// refusal, the change rides it, and the already-fresh doc lands byte-identical - the hook
+/// must not touch it.
+fn assert_the_hook_passes_a_matching_render_untouched(
+    stage: fn(&Path) -> String,
+    content: &str,
+    message: &str,
+) {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     setup_selfhosting_repo_with_fresh_docs(root);
-    let fresh_skill_before =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert!(
-        fresh_skill_before.contains("name: using-rigger"),
-        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
-    );
+    let fresh_skill_before = fresh_committed_skill(root);
 
-    let commit_path = stage_rigger_shim(root);
-    std::fs::write(root.join("code.txt"), "an unrelated change\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "unrelated change"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let commit_path = stage(root);
+    let (ok, stderr) = commit_a_code_change(root, &commit_path, content, message);
     assert!(
-        out.status.success(),
-        "a matching render must pass the commit through untouched; stderr:\n{stderr}"
+        ok,
+        "a matching render must pass the commit through, even when PATH is stale; \
+         stderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("refusing"),
@@ -18769,14 +18806,44 @@ fn setup_precommit_hook_passes_untouched_when_the_render_matches() {
     let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
         tree.contains("code.txt"),
-        "the unrelated change must ride the commit; tree:\n{tree}"
+        "the change must ride the commit; tree:\n{tree}"
     );
-    let committed_after =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert_eq!(
-        committed_after, fresh_skill_before,
+        committed_skill(root),
+        fresh_skill_before,
         "the already-fresh doc must land byte-identical - the hook must not touch it"
     );
+}
+
+rigger::test_cases! {
+    /// Spec 70, crit 1 (a MATCHING render passes silently, end to end): the flip side of refusing
+    /// instead of rewriting. When the committed docs are ALREADY the fresh render, the hook must
+    /// change nothing and let the commit through exactly as before this fix - no warning, no
+    /// refusal, no touched doc content. Drives the REAL `rigger` binary and REAL git.
+    setup_precommit_hook_passes_untouched_when_the_render_matches:
+        assert_the_hook_passes_a_matching_render_untouched(
+            stage_rigger_shim,
+            "an unrelated change\n",
+            "unrelated change",
+        );
+    /// Spec 75, crit 2 (a MATCHING render passes via the tree-built binary, end to end): OWNS the
+    /// end-to-end hook behavior (crit 1 owns the candidate order and its rendering in the
+    /// template - `precommit_block_resolves_a_tree_built_binary_before_path` proves that
+    /// textually). A commit in a worktree whose code adds a rendered fact - here, the tree's own
+    /// local target build - PASSES when that build is present and its render matches the staged
+    /// docs, even though `PATH` carries only a STALE `rigger` that would render a MISMATCH. A pass
+    /// can only happen by the hook genuinely PREFERRING the tree-built candidate over PATH: if it
+    /// fell back to PATH instead, the stale shim's render would drift against the staged fresh
+    /// docs and this same commit would be refused (proven by the sibling refusal test below).
+    setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rigger:
+        assert_the_hook_passes_a_matching_render_untouched(
+            |root| {
+                stage_tree_built_binary(root);
+                stage_stale_rigger_shim(root)
+            },
+            "a rendered fact this worktree's code added\n",
+            "add a rendered fact",
+        );
 }
 
 /// Spec 68, criterion 1 (the fast pre-commit hook's scope is a DELIBERATE non-generalization,
@@ -18820,19 +18887,15 @@ fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_it
     std::fs::write(&planning_path, "WIP hand-edit, not a render\n").unwrap();
 
     let commit_path = stage_rigger_shim(root);
-    std::fs::write(root.join("code.txt"), "an unrelated change\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "unrelated change"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let (ok, stderr) = commit_a_code_change(
+        root,
+        &commit_path,
+        "an unrelated change\n",
+        "unrelated change",
+    );
 
     assert!(
-        out.status.success(),
+        ok,
         "the commit must succeed - the hook must never drift-check or block on a registry \
          entry outside its fixed scope; stderr:\n{stderr}"
     );
@@ -18973,25 +19036,14 @@ fn path_without_rigger() -> String {
 /// the graceful-degrade "rigger docs errors" path: the hook must WARN and let the commit proceed.
 /// Returns a `PATH` with the shim dir prepended.
 fn stage_failing_docs_rigger_shim(root: &Path) -> String {
-    let bindir = root.join("shim-bin");
-    std::fs::create_dir_all(&bindir).unwrap();
-    let shim = bindir.join("rigger");
-    std::fs::write(
-        &shim,
+    rigger_shim_on_path(
+        root,
         format!(
             "#!/bin/sh\nif [ \"$1\" = docs ]; then\n  echo 'boom: rigger docs failed' 1>&2\n  \
-             exit 1\nfi\nexec \"{}\" \"$@\"\n",
+         exit 1\nfi\nexec \"{}\" \"$@\"\n",
             rigger_bin().display()
         ),
     )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let orig_path = std::env::var("PATH").unwrap_or_default();
-    format!("{}:{}", bindir.display(), orig_path)
 }
 
 /// Place a copy of the REAL compiled `rigger` binary (the one this very test suite runs) at
@@ -19001,15 +19053,7 @@ fn stage_failing_docs_rigger_shim(root: &Path) -> String {
 /// tree-built binary to prefer over whatever sits on PATH.
 fn stage_tree_built_binary(root: &Path) {
     let dir = root.join("target").join("debug");
-    std::fs::create_dir_all(&dir).unwrap();
-    let dest = dir.join("rigger");
-    std::fs::copy(rigger_bin(), &dest)
-        .unwrap_or_else(|e| panic!("copy the tree-built binary to {}: {e}", dest.display()));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    copy_the_built_binary_into(&dir);
 }
 
 /// Stage a `rigger` on `PATH` that is a STALE binary standing in for an old build from before
@@ -19021,95 +19065,22 @@ fn stage_tree_built_binary(root: &Path) {
 /// tree-built candidate it must lose to; present ALONE it is the only binary reachable at all,
 /// so a fresh-vs-staged mismatch is unavoidable. Returns a `PATH` with the shim dir prepended.
 fn stage_stale_rigger_shim(root: &Path) -> String {
-    let bindir = root.join("shim-bin");
-    std::fs::create_dir_all(&bindir).unwrap();
-    let shim = bindir.join("rigger");
-    std::fs::write(
-        &shim,
+    rigger_shim_on_path(
+        root,
         "#!/bin/sh\n\
 case \"$1\" in\n\
   docs)\n\
-    printf 'STALE DOC - not a real render\\n' > skills/using-rigger/SKILL.md\n\
-    printf 'STALE DOC - not a real render\\n' > docs/handbook/using-rigger.md\n\
-    exit 0\n\
-    ;;\n\
+printf 'STALE DOC - not a real render\\n' > skills/using-rigger/SKILL.md\n\
+printf 'STALE DOC - not a real render\\n' > docs/handbook/using-rigger.md\n\
+exit 0\n\
+;;\n\
   version)\n\
-    echo 'rigger 0.0.0-stale-test-shim'\n\
-    exit 0\n\
-    ;;\n\
+echo 'rigger 0.0.0-stale-test-shim'\n\
+exit 0\n\
+;;\n\
 esac\n\
 exit 1\n",
     )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let orig_path = std::env::var("PATH").unwrap_or_default();
-    format!("{}:{}", bindir.display(), orig_path)
-}
-
-/// Spec 75, crit 2 (a MATCHING render passes via the tree-built binary, end to end): OWNS the
-/// end-to-end hook behavior (crit 1 owns the candidate order and its rendering in the
-/// template - `precommit_block_resolves_a_tree_built_binary_before_path` proves that
-/// textually). A commit in a worktree whose code adds a rendered fact - here, the tree's own
-/// local target build - PASSES when that build is present and its render matches the staged
-/// docs, even though `PATH` carries only a STALE `rigger` that would render a MISMATCH. A pass
-/// can only happen by the hook genuinely PREFERRING the tree-built candidate over PATH: if it
-/// fell back to PATH instead, the stale shim's render would drift against the staged fresh
-/// docs and this same commit would be refused (proven by the sibling refusal test below).
-#[test]
-fn setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rigger() {
-    let proj = temp_git_project_with_commit();
-    let root = proj.path();
-    setup_selfhosting_repo_with_fresh_docs(root);
-    let fresh_skill_before =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert!(
-        fresh_skill_before.contains("name: using-rigger"),
-        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
-    );
-
-    stage_tree_built_binary(root);
-    let commit_path = stage_stale_rigger_shim(root);
-    std::fs::write(
-        root.join("code.txt"),
-        "a rendered fact this worktree's code added\n",
-    )
-    .unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "add a rendered fact"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "a tree-built binary present must PASS the commit even though PATH is stale; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("refusing"),
-        "a tree-built binary whose render matches the staged docs must never refuse; \
-         stderr:\n{stderr}"
-    );
-
-    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
-    assert!(
-        tree.contains("code.txt"),
-        "the worktree's own change must ride the commit; tree:\n{tree}"
-    );
-    let committed_after =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert_eq!(
-        committed_after, fresh_skill_before,
-        "the already-fresh doc must land byte-identical - the tree-built binary's render \
-         matched what was staged"
-    );
 }
 
 /// Spec 75, crit 2 (the SAME commit shape REFUSES with only a stale PATH rigger, end to end):
@@ -19124,31 +19095,18 @@ fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rig
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     setup_selfhosting_repo_with_fresh_docs(root);
-    let fresh_skill_before =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert!(
-        fresh_skill_before.contains("name: using-rigger"),
-        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
-    );
+    let fresh_skill_before = fresh_committed_skill(root);
 
     // No tree-built candidate staged anywhere this time - only the stale PATH rigger.
     let commit_path = stage_stale_rigger_shim(root);
-    std::fs::write(
-        root.join("code.txt"),
+    let (ok, stderr) = commit_a_code_change(
+        root,
+        &commit_path,
         "a rendered fact this worktree's code added\n",
-    )
-    .unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "add a rendered fact"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+        "add a rendered fact",
+    );
     assert!(
-        !out.status.success(),
+        !ok,
         "with only a stale PATH rigger the same commit shape must still be REFUSED; \
          stderr:\n{stderr}"
     );
@@ -19158,8 +19116,7 @@ fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rig
         "the refusal must name both docs the stale render drifted from; stderr:\n{stderr}"
     );
 
-    let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    let committed = committed_skill(root);
     assert_eq!(
         committed, fresh_skill_before,
         "a refused commit must not land - HEAD must still carry the fresh seed, not the stale \
@@ -19183,15 +19140,7 @@ fn stage_unit_derived_binary(main_repo_root: &Path, unit: &str) {
         .join("tmp")
         .join(format!("cargo-target-{unit}"))
         .join("debug");
-    std::fs::create_dir_all(&dir).unwrap();
-    let dest = dir.join("rigger");
-    std::fs::copy(rigger_bin(), &dest)
-        .unwrap_or_else(|e| panic!("copy the tree-built binary to {}: {e}", dest.display()));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    copy_the_built_binary_into(&dir);
 }
 
 /// Spec 75, crit 2, closing a gap this unit's own periphery accounting left open
@@ -19374,17 +19323,12 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
     std::fs::create_dir_all(&hooks).unwrap();
     let user_hook = hooks.join("pre-commit");
     std::fs::write(&user_hook, "#!/bin/sh\ntouch USER_HOOK_RAN\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&user_hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&user_hook);
 
     // `rigger setup` chains its block onto the pre-existing hook; then make it self-hosting with
     // ALREADY-FRESH tracked docs so the final commit's hook finds no drift and falls through.
     setup_selfhosting_repo_with_fresh_docs(root);
-    let fresh_skill_before =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    let fresh_skill_before = committed_skill(root);
 
     // The chained hook carries BOTH the user hook's command and rigger's block.
     let hook = std::fs::read_to_string(&user_hook).unwrap();
@@ -19419,8 +19363,7 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
     // terminal-shadow bug (append-after) would have skipped rigger's block entirely, which this
     // cannot distinguish from "ran and found nothing to do" - the reachability is proven by the
     // block-position assertion above; this proves it did not somehow corrupt what it read.
-    let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    let committed = committed_skill(root);
     assert_eq!(
         committed, fresh_skill_before,
         "rigger's block must leave an already-fresh doc byte-identical; got:\n{committed}"
@@ -19492,79 +19435,54 @@ fn setup_precommit_hook_never_touches_unrelated_files() {
     );
 }
 
-/// Spec 24, crit 2 (graceful degrade when rigger is UNAVAILABLE, end to end): with `rigger`
-/// removed from `PATH`, the hook WARNS and lets the commit PROCEED - it never blocks a commit.
-/// The docs are not regenerated (the spec-20 drift check is the backstop, not the hook), so HEAD
-/// keeps the stale seed.
-#[test]
-fn setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable() {
+/// Over a self-hosting repo whose committed docs are STALE, commit a change with `PATH` set
+/// to `path(root)`, a `rigger` the hook cannot render with: the hook never blocks the commit,
+/// prints `warning`, and regenerates nothing.
+fn assert_the_hook_warns_and_proceeds(path: fn(&Path) -> String, message: &str, warning: &str) {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     setup_selfhosting_repo_with_stale_docs(root);
 
-    let path = path_without_rigger();
-    std::fs::write(root.join("code.txt"), "changed\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "change with rigger off PATH"])
-        .current_dir(root)
-        .env("PATH", &path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let path = path(root);
+    let (ok, stderr) = commit_a_code_change(root, &path, "changed\n", message);
     assert!(
-        out.status.success(),
+        ok,
         "the commit must succeed - the hook must never block it; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("no rigger binary found"),
-        "the hook must WARN that rigger is unavailable (checked every tree-built candidate \
-         AND PATH, spec 75); stderr:\n{stderr}"
+        stderr.contains(warning),
+        "the hook must WARN {warning:?}; stderr:\n{stderr}"
     );
-    let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    let committed = committed_skill(root);
     assert!(
         committed.contains("STALE DOC"),
-        "with rigger unavailable the hook regenerates nothing; got:\n{committed}"
+        "a hook that cannot render regenerates nothing; got:\n{committed}"
     );
 }
 
-/// Spec 24, crit 2 (graceful degrade when `rigger docs` ERRORS, end to end): `rigger` is on
-/// `PATH` (so `command -v rigger` succeeds) but `rigger docs` fails. The hook WARNS and lets the
-/// commit PROCEED - a transient generator failure degrades to "caught later" by the drift check,
-/// never "cannot commit". HEAD keeps the stale seed.
-#[test]
-fn setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors() {
-    let proj = temp_git_project_with_commit();
-    let root = proj.path();
-    setup_selfhosting_repo_with_stale_docs(root);
-
-    let path = stage_failing_docs_rigger_shim(root);
-    std::fs::write(root.join("code.txt"), "changed\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "change while rigger docs errors"])
-        .current_dir(root)
-        .env("PATH", &path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the commit must succeed - a failing `rigger docs` must never block it; stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("rigger docs failed"),
-        "the hook must WARN that `rigger docs` failed; stderr:\n{stderr}"
-    );
-    let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert!(
-        committed.contains("STALE DOC"),
-        "a failing `rigger docs` regenerates nothing; got:\n{committed}"
-    );
+rigger::test_cases! {
+    /// Spec 24, crit 2 (graceful degrade when rigger is UNAVAILABLE, end to end): with `rigger`
+    /// removed from `PATH`, the hook WARNS and lets the commit PROCEED - it never blocks a commit.
+    /// The docs are not regenerated (the spec-20 drift check is the backstop, not the hook), so HEAD
+    /// keeps the stale seed.
+    ///
+    /// The warning names that every tree-built candidate AND `PATH` were checked (spec 75).
+    setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable:
+        assert_the_hook_warns_and_proceeds(
+            |_| path_without_rigger(),
+            "change with rigger off PATH",
+            "no rigger binary found",
+        );
+    /// Spec 24, crit 2 (graceful degrade when `rigger docs` ERRORS, end to end): `rigger` is on
+    /// `PATH` (so `command -v rigger` succeeds) but `rigger docs` fails. The hook WARNS and lets the
+    /// commit PROCEED - a transient generator failure degrades to "caught later" by the drift check,
+    /// never "cannot commit". HEAD keeps the stale seed.
+    setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors:
+        assert_the_hook_warns_and_proceeds(
+            stage_failing_docs_rigger_shim,
+            "change while rigger docs errors",
+            "rigger docs failed",
+        );
 }
 
 /// Spec 24, crit 2 (staging scope, the all-tracked gate, end to end): a repo in the degenerate
@@ -19658,11 +19576,7 @@ fn setup_precommit_hook_refusal_aborts_a_chained_hook_body() {
     std::fs::create_dir_all(&hooks).unwrap();
     let user_hook = hooks.join("pre-commit");
     std::fs::write(&user_hook, "#!/bin/sh\ntouch USER_HOOK_RAN\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&user_hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&user_hook);
 
     // `rigger setup` chains its block BEFORE the existing hook body (spec 24); seed genuinely
     // STALE tracked docs so the final commit's hook has real drift to refuse.
@@ -19715,8 +19629,7 @@ fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     setup_selfhosting_repo_with_fresh_docs(root);
-    let fresh_skill =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+    let fresh_skill = committed_skill(root);
 
     // Drift ONLY the handbook back to a stale committed copy; the skill stays the true fresh
     // render committed by `setup_selfhosting_repo_with_fresh_docs`.
@@ -19740,19 +19653,15 @@ fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
     );
 
     let commit_path = stage_rigger_shim(root);
-    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "change a documented fact"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let (ok, stderr) = commit_a_code_change(
+        root,
+        &commit_path,
+        "a documented fact changed\n",
+        "change a documented fact",
+    );
 
     assert!(
-        !out.status.success(),
+        !ok,
         "a single drifted doc must still refuse the commit; stderr:\n{stderr}"
     );
     assert!(
