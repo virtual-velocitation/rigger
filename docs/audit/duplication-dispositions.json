@@ -233,5 +233,20 @@
     "id": "dup-f0a2e1334847",
     "disposition": "not-a-duplicate",
     "reason": "Different concerns sharing a lookup shape: one reaches a decision's summary through GOVERNS, the other proves recording a proof merges into and never wipes an entity's attrs."
+  },
+  {
+    "id": "dup-8743cc5db2b4",
+    "disposition": "not-a-duplicate",
+    "reason": "The two conflict drivers share only the shared barrier and side-write helpers; their retry arms run different recovery protocols (two re-park rounds that stage a placeholder first, versus one round that commits the source and then simulates a crash)."
+  },
+  {
+    "id": "dup-549ccc50144c",
+    "disposition": "not-a-duplicate",
+    "reason": "The row-1 and row-4 before-record crash tests use different crash drivers, obstructions and cleanup (an untracked file in the unit worktree versus a FIFO in the run branch) and assert different boundary markers."
+  },
+  {
+    "id": "dup-5f516fce9f0b",
+    "disposition": "not-a-duplicate",
+    "reason": "One test proves that a compensation revert reopens adoption of the second-life tip; the other is the control proving that a plain remediation failure never does - opposite outcomes of different ledger events."
   }
 ]

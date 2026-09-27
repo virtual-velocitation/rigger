@@ -60,7 +60,7 @@
     ]
   },
   {
-    "id": "dup-dfdbf462abd4",
+    "id": "dup-1e57da4f8b58",
     "sites": [
       {
         "file": "src/budget.rs",
@@ -604,18 +604,18 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 177,
-        "end_line": 177
+        "start_line": 178,
+        "end_line": 178
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1572,
-        "end_line": 1572
+        "start_line": 1375,
+        "end_line": 1375
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2486,
-        "end_line": 2486
+        "start_line": 2139,
+        "end_line": 2139
       },
       {
         "file": "tests/build_watch_paths.rs",
@@ -1154,68 +1154,48 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 298,
-        "end_line": 298
+        "start_line": 301,
+        "end_line": 301
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 310,
-        "end_line": 310
+        "start_line": 313,
+        "end_line": 313
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 329,
-        "end_line": 329
+        "start_line": 354,
+        "end_line": 354
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 502,
-        "end_line": 502
+        "start_line": 405,
+        "end_line": 405
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 702,
-        "end_line": 702
+        "start_line": 1556,
+        "end_line": 1556
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 962,
-        "end_line": 962
+        "start_line": 1645,
+        "end_line": 1645
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1193,
-        "end_line": 1193
+        "start_line": 1910,
+        "end_line": 1910
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1399,
-        "end_line": 1399
+        "start_line": 2014,
+        "end_line": 2014
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1666,
-        "end_line": 1666
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1776,
-        "end_line": 1776
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2077,
-        "end_line": 2077
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2213,
-        "end_line": 2213
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2471,
-        "end_line": 2471
+        "start_line": 2230,
+        "end_line": 2230
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
@@ -1224,33 +1204,33 @@
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 212,
-        "end_line": 212
+        "start_line": 204,
+        "end_line": 204
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 219,
-        "end_line": 219
+        "start_line": 211,
+        "end_line": 211
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 232,
-        "end_line": 232
+        "start_line": 224,
+        "end_line": 224
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 238,
-        "end_line": 238
+        "start_line": 230,
+        "end_line": 230
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 244,
-        "end_line": 244
+        "start_line": 236,
+        "end_line": 236
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 318,
-        "end_line": 318
+        "start_line": 310,
+        "end_line": 310
       },
       {
         "file": "tests/meta_phases_declaration_periphery.rs",
@@ -1544,18 +1524,18 @@
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
-        "start_line": 373,
-        "end_line": 373
+        "start_line": 363,
+        "end_line": 363
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
-        "start_line": 387,
-        "end_line": 387
+        "start_line": 377,
+        "end_line": 377
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
-        "start_line": 400,
-        "end_line": 400
+        "start_line": 390,
+        "end_line": 390
       },
       {
         "file": "tests/registry_refresh_driver_courier_convergence_periphery.rs",
@@ -2490,7 +2470,7 @@
     ]
   },
   {
-    "id": "dup-83a6d4922163",
+    "id": "dup-7021db868000",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -2524,8 +2504,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2403,
-        "end_line": 2575
+        "start_line": 2080,
+        "end_line": 2220
       },
       {
         "file": "tests/batched_fold_cadence.rs",
@@ -2546,11 +2526,6 @@
         "file": "tests/grounder_name_contract.rs",
         "start_line": 40,
         "end_line": 171
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1681,
-        "end_line": 1789
       }
     ]
   },
@@ -2949,8 +2924,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 283,
-        "end_line": 314
+        "start_line": 284,
+        "end_line": 315
       },
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -3070,7 +3045,7 @@
     ]
   },
   {
-    "id": "dup-8d2c69f5d210",
+    "id": "dup-24bdfbc6c1c3",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -5403,6 +5378,11 @@
         "end_line": 229
       },
       {
+        "file": "tests/common/fixtures/config.rs",
+        "start_line": 92,
+        "end_line": 92
+      },
+      {
         "file": "tests/common/layer_cli.rs",
         "start_line": 29,
         "end_line": 29
@@ -5884,83 +5864,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 406,
-        "end_line": 406
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 559,
-        "end_line": 559
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 775,
-        "end_line": 775
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1013,
-        "end_line": 1013
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1249,
-        "end_line": 1249
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1490,
-        "end_line": 1490
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1700,
-        "end_line": 1700
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1892,
-        "end_line": 1892
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2107,
-        "end_line": 2107
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2242,
-        "end_line": 2242
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2408,
-        "end_line": 2408
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2619,
-        "end_line": 2619
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2848,
-        "end_line": 2848
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2958,
-        "end_line": 2958
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3409,
-        "end_line": 3409
-      },
-      {
-        "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 59,
-        "end_line": 59
+        "start_line": 482,
+        "end_line": 482
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -6071,11 +5976,6 @@
         "file": "tests/published_content_key_split_periphery.rs",
         "start_line": 254,
         "end_line": 254
-      },
-      {
-        "file": "tests/regate_landed_on_resume_periphery.rs",
-        "start_line": 236,
-        "end_line": 236
       },
       {
         "file": "tests/registry_periphery.rs",
@@ -6924,13 +6824,13 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2033,
-        "end_line": 2038
+        "start_line": 1866,
+        "end_line": 1871
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2040,
-        "end_line": 2048
+        "start_line": 1873,
+        "end_line": 1881
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
@@ -7599,8 +7499,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 289,
-        "end_line": 306
+        "start_line": 292,
+        "end_line": 309
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
@@ -11884,8 +11784,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 176,
-        "end_line": 185
+        "start_line": 177,
+        "end_line": 186
       },
       {
         "file": "tests/cli.rs",
@@ -11904,8 +11804,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 325,
-        "end_line": 376
+        "start_line": 326,
+        "end_line": 377
       },
       {
         "file": "tests/fanout_gate_inheritance_periphery.rs",
@@ -11915,77 +11815,17 @@
     ]
   },
   {
-    "id": "dup-74ffd79bb650",
+    "id": "dup-5f516fce9f0b",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 383,
-        "end_line": 399
+        "start_line": 1057,
+        "end_line": 1133
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 832,
-        "end_line": 851
-      }
-    ]
-  },
-  {
-    "id": "dup-7baafe962b8c",
-    "sites": [
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 860,
-        "end_line": 1005
-      },
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1672,
-        "end_line": 1812
-      }
-    ]
-  },
-  {
-    "id": "dup-4cd2de755c71",
-    "sites": [
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1092,
-        "end_line": 1176
-      },
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1184,
-        "end_line": 1254
-      }
-    ]
-  },
-  {
-    "id": "dup-cac17f66d5aa",
-    "sites": [
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1265,
-        "end_line": 1396
-      },
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1403,
-        "end_line": 1525
-      }
-    ]
-  },
-  {
-    "id": "dup-20256de409e4",
-    "sites": [
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1956,
-        "end_line": 2074
-      },
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2102,
-        "end_line": 2241
+        "start_line": 1141,
+        "end_line": 1203
       }
     ]
   },
@@ -16374,8 +16214,8 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 308,
-        "end_line": 317
+        "start_line": 311,
+        "end_line": 320
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
@@ -16385,52 +16225,17 @@
     ]
   },
   {
-    "id": "dup-c579d7abdb85",
+    "id": "dup-8743cc5db2b4",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 449,
-        "end_line": 526
+        "start_line": 525,
+        "end_line": 590
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1366,
-        "end_line": 1423
-      }
-    ]
-  },
-  {
-    "id": "dup-72a7cd5d3922",
-    "sites": [
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 948,
-        "end_line": 984
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1169,
-        "end_line": 1215
-      }
-    ]
-  },
-  {
-    "id": "dup-09b3e7c0162a",
-    "sites": [
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1809,
-        "end_line": 1834
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2338,
-        "end_line": 2360
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2583,
-        "end_line": 2603
+        "start_line": 1300,
+        "end_line": 1345
       }
     ]
   },
@@ -16439,8 +16244,8 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2033,
-        "end_line": 2038
+        "start_line": 1866,
+        "end_line": 1871
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
@@ -16454,8 +16259,8 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2040,
-        "end_line": 2048
+        "start_line": 1873,
+        "end_line": 1881
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
@@ -16469,63 +16274,33 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2065,
-        "end_line": 2088
+        "start_line": 1898,
+        "end_line": 1921
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2203,
-        "end_line": 2223
+        "start_line": 2004,
+        "end_line": 2024
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 308,
-        "end_line": 328
+        "start_line": 300,
+        "end_line": 320
       }
     ]
   },
   {
-    "id": "dup-c26be666d17b",
+    "id": "dup-549ccc50144c",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2093,
-        "end_line": 2190
+        "start_line": 1926,
+        "end_line": 1991
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2228,
-        "end_line": 2324
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2834,
-        "end_line": 2934
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2944,
-        "end_line": 3042
-      }
-    ]
-  },
-  {
-    "id": "dup-676391cb986b",
-    "sites": [
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2640,
-        "end_line": 2800
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3105,
-        "end_line": 3207
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3220,
-        "end_line": 3340
+        "start_line": 2029,
+        "end_line": 2093
       }
     ]
   },
@@ -16534,13 +16309,13 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2810,
-        "end_line": 2822
+        "start_line": 2488,
+        "end_line": 2500
       },
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
-        "start_line": 79,
-        "end_line": 92
+        "start_line": 71,
+        "end_line": 84
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
@@ -16565,17 +16340,17 @@
     ]
   },
   {
-    "id": "dup-2c150e59c6d9",
+    "id": "dup-2e2f1164e9a0",
     "sites": [
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
         "start_line": 53,
-        "end_line": 65
+        "end_line": 57
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
         "start_line": 228,
-        "end_line": 245
+        "end_line": 235
       }
     ]
   },

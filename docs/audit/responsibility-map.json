@@ -9621,7 +9621,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7967e70c7109b5b5"
+    "content_hash": "484e1b3ffda9daa1"
   },
   {
     "file": "src/main.rs",
@@ -9949,7 +9949,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c5568341eca742c5"
+    "content_hash": "5e41a4b3453fc232"
   },
   {
     "file": "src/main.rs",
