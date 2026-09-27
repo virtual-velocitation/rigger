@@ -23,6 +23,7 @@
 
 mod common;
 
+use common::fixtures::assert_decisions_region_discloses_progressively;
 use common::served::node_harness_passes;
 use common::served::{fetch_with_retry, graph_provider_of, try_fetch_over};
 use rigger::contextgraph::Graph;
@@ -66,67 +67,7 @@ fn the_served_root_page_ships_the_decisions_progressive_disclosure_region() {
         .map(|(_, body)| body)
         .expect("a served response body");
 
-    // Bind to the decisions render region: from the `el("decisions")` assignment to its empty-state
-    // sentinel, so a `<details>` ANOTHER panel emits cannot satisfy the guard.
-    let start = page
-        .find("el(\"decisions\")")
-        .expect("the served page must carry the decisions render region");
-    let end = page[start..]
-        .find("no decisions recorded")
-        .map(|i| start + i)
-        .expect("the decisions render must keep its empty-state sentinel");
-    let region = &page[start..end];
-
-    // Native progressive disclosure crosses the wire: each decision a `<details>` with a `<summary>`
-    // preview line - NOT the old flat `<table>` that dumped every (possibly multi-KB) summary inline.
-    assert!(
-        region.contains("<details"),
-        "the served decisions region must render each decision as a native <details>: {region}"
-    );
-    assert!(
-        region.contains("<summary>"),
-        "the served decisions region needs a one-line <summary> preview per decision: {region}"
-    );
-    assert!(
-        !region.contains("<table"),
-        "the served decisions region must no longer be a flat <table> dump: {region}"
-    );
-
-    // The `<summary>` line previews id + a ONE-LINE summary; the expandable body carries the FULL
-    // reasoning. Both the id and the truncated preview feed the summary line, and the full `summary`
-    // text feeds the body, so a long decision collapses to one line but expands whole.
-    assert!(
-        region.contains("esc(d.id)"),
-        "the served summary line must show the decision id: {region}"
-    );
-    assert!(
-        region.contains("preview(d.summary)"),
-        "the served summary line must show a one-line preview of the summary: {region}"
-    );
-    assert!(
-        region.contains("esc(d.summary)"),
-        "the served expandable body must carry the full decision reasoning: {region}"
-    );
-    assert!(
-        region.contains("d.superseded"),
-        "the served region must still distinguish superseded decisions (struck): {region}"
-    );
-
-    // The `preview()` helper the summary line depends on ships too, collapsing the summary to a
-    // SINGLE line (whitespace runs collapsed) and truncating a long one with an ellipsis - so the
-    // always-visible line the served page carries is never a multi-KB dump.
-    let p = page
-        .find("function preview(")
-        .expect("the served page must carry the preview() helper");
-    let helper = &page[p..(p + 320).min(page.len())];
-    assert!(
-        helper.contains("replace(/\\s+/"),
-        "served preview() must collapse whitespace runs to one line: {helper}"
-    );
-    assert!(
-        helper.contains(".slice(") && helper.contains("..."),
-        "served preview() must truncate a long summary with an ellipsis: {helper}"
-    );
+    assert_decisions_region_discloses_progressively(page);
 }
 
 /// A DOM shim + test driver (JavaScript source) that RUNS the served page's own `render()` twice -
