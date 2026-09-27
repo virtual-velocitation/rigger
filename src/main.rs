@@ -19302,7 +19302,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let parent = dir.path();
         git_init_quiet(parent);
-        plant_store(&parent);
+        plant_store(parent);
 
         // A nested, storeless git repo below the parent (not a linked worktree).
         let nested = parent
@@ -20353,8 +20353,8 @@ mod tests {
     }
 
     /// `parse` refuses every one of the `cases` argument lists.
-    fn assert_every_arg_list_refused<T>(
-        parse: fn(&[String]) -> Result<T, Box<dyn std::error::Error>>,
+    fn assert_every_arg_list_refused<T, E>(
+        parse: fn(&[String]) -> Result<T, E>,
         cases: &[&[&str]],
     ) {
         for args in cases {
