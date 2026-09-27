@@ -6,22 +6,38 @@
 
 mod common;
 use common::cli::{run_rigger, temp_project};
+use common::git::{git_commit_all, init_repo};
 use common::repo::repo_root;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 
-/// One principle gate: its id, the stages that must list it, and the text this repository's
-/// own command for it must carry.
+/// One principle gate: its id, the stages that must list it, the text this repository's own
+/// command for it must carry, and the gates it must run before wherever both are listed.
 struct PrincipleGate {
     id: &'static str,
     stages: &'static [&'static str],
     repo_command: &'static str,
+    precedes: &'static [&'static str],
 }
 
-const PRINCIPLE_GATES: &[PrincipleGate] = &[PrincipleGate {
-    id: "boundary",
-    stages: &["implement", "checkin"],
-    repo_command: "cargo test --test boundary_audit",
-}];
+const PRINCIPLE_GATES: &[PrincipleGate] = &[
+    PrincipleGate {
+        id: "boundary",
+        stages: &["implement", "checkin"],
+        repo_command: "cargo test --test boundary_audit",
+        precedes: &[],
+    },
+    // The audit gate regenerates `docs/audit/*` before it asserts, so it must run before the
+    // `test` gate, whose plain `cargo test` includes the audit's drift guards: a unit whose
+    // only audit difference is a stale generated catalog is then never red.
+    PrincipleGate {
+        id: "audit",
+        stages: &["implement", "checkin"],
+        repo_command: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit",
+        precedes: &["test"],
+    },
+];
 
 /// Every principle gate missing from the workflow at `root`: undeclared, not listed on a stage
 /// it guards, or (when `repo` is set) declared with a command other than this repository's.
@@ -40,12 +56,26 @@ fn missing_principle_gates(root: &Path, repo: bool) -> Vec<String> {
             Some(_) => {}
         }
         for stage in gate.stages {
-            let listed = wf
+            let gates = wf
                 .stages
                 .get(*stage)
-                .is_some_and(|s| s.gates.iter().any(|g| g == gate.id));
-            if !listed {
+                .map(|s| s.gates.clone())
+                .unwrap_or_default();
+            let Some(at) = gates.iter().position(|g| g == gate.id) else {
                 missing.push(format!("stage `{stage}` does not list gate `{}`", gate.id));
+                continue;
+            };
+            for later in gate.precedes {
+                if gates
+                    .iter()
+                    .position(|g| g == later)
+                    .is_some_and(|l| l < at)
+                {
+                    missing.push(format!(
+                        "stage `{stage}` runs gate `{later}` before gate `{}`",
+                        gate.id
+                    ));
+                }
             }
         }
     }
@@ -68,4 +98,81 @@ fn a_scaffolded_consumer_project_carries_every_principle_gate() {
         missing.is_empty(),
         "the scaffolded workflow.yml: {missing:#?}"
     );
+}
+
+/// This repository's own command for gate `id`, as the production parser loads it.
+fn repo_gate_command(id: &str) -> String {
+    let cfg = rigger::config_store::load(repo_root().to_str().unwrap()).unwrap();
+    cfg.workflow.gates[id].run.clone()
+}
+
+/// The shipped `audit` gate run in a fixture repository whose committed catalog is `committed`,
+/// against a stand-in `cargo`: in write mode it regenerates the catalog as `fresh`; otherwise it
+/// asserts, failing with `red` output when `red` is set. Returns (passed, output).
+fn run_audit_gate(committed: &str, fresh: &str, red: Option<&str>) -> (bool, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join("docs/audit")).unwrap();
+    init_repo(&repo);
+    std::fs::write(repo.join("docs/audit/catalog.json"), committed).unwrap();
+    git_commit_all(&repo, "catalog");
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let assert_step = match red {
+        Some(output) => format!("echo '{output}'; exit 101"),
+        None => "echo 'test result: ok'".to_string(),
+    };
+    let cargo = bin.join("cargo");
+    std::fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\nif [ \"$RIGGER_AUDIT_WRITE\" = 1 ]; then printf '{fresh}' > \
+             docs/audit/catalog.json; exit 0; fi\n{assert_step}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(repo_gate_command("audit"))
+        .current_dir(&repo)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
+
+#[test]
+fn the_audit_gate_passes_a_fresh_committed_catalog_silently() {
+    let (passed, out) = run_audit_gate("same", "same", None);
+    assert!(passed, "{out}");
+    assert!(!out.contains("not committed"), "{out}");
+}
+
+#[test]
+fn the_audit_gate_names_a_regenerated_uncommitted_catalog_without_failing_on_drift_alone() {
+    let (passed, out) = run_audit_gate("stale", "fresh", None);
+    assert!(passed, "drift alone must never fail the gate: {out}");
+    assert!(
+        out.contains("audit: docs/audit was regenerated for this tree and is not committed"),
+        "the gate must report the uncommitted regeneration distinctly: {out}"
+    );
+}
+
+#[test]
+fn the_audit_gate_fails_red_assertions_with_its_own_diagnostic() {
+    let (passed, out) = run_audit_gate("same", "same", Some("clusters with no disposition"));
+    assert!(!passed, "{out}");
+    assert!(out.contains("clusters with no disposition"), "{out}");
+    assert!(out.contains("error[audit]:"), "{out}");
 }
