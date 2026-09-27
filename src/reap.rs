@@ -1319,62 +1319,50 @@ mod tests {
         assert!(died, "an eligible, matching target must be signalled");
     }
 
-    #[test]
-    fn signal_if_unchanged_skips_a_starttime_mismatch() {
-        // The TOCTOU guard (spec 78): even though the pid and cwd both genuinely match, a
-        // starttime that no longer matches the scan's recorded value means the scan's
-        // identity is stale - skip rather than signal.
+    /// A live `sleep` rooted in a fresh `scratch` base whose recorded starttime is shifted by
+    /// `starttime_shift`, signalled against the base named `signal_base`, must be SKIPPED -
+    /// still alive afterwards.
+    fn assert_signal_skipped(starttime_shift: u64, signal_base: &str, why: &str) {
         let repo = FakeRepo::new();
         let base = repo.base("scratch");
-        let mut child = sleeper_in(&base);
-        let real_starttime = wait_until(|| pid_starttime(child.id()).is_some());
-        assert!(real_starttime);
-        let wrong = ScanEntry {
-            pid: child.id(),
-            starttime: pid_starttime(child.id()).unwrap().wrapping_add(1),
-        };
-        signal_if_unchanged(
-            &wrong,
-            &base,
-            std::process::id(),
-            &HashSet::new(),
-            Signal::KILL,
-        );
-        let still_alive = matches!(child.try_wait(), Ok(None));
-        cleanup(&mut child);
-        assert!(
-            still_alive,
-            "a starttime mismatch must be skipped, never signalled"
-        );
-    }
-
-    #[test]
-    fn signal_if_unchanged_skips_when_cwd_is_outside_the_given_base() {
-        // The pid and starttime both genuinely match, but the base passed in does not
-        // contain the process's cwd - must be skipped (mirrors "cwd changed" between scan
-        // and signal: from this call's point of view, it no longer matches).
-        let repo = FakeRepo::new();
-        let base = repo.base("scratch");
-        let other_base = repo.base("unrelated");
+        let signal_base = repo.base(signal_base);
         let mut child = sleeper_in(&base);
         let ready = wait_until(|| pid_starttime(child.id()).is_some());
-        assert!(ready);
+        assert!(ready, "precondition: starttime is readable");
         let target = ScanEntry {
             pid: child.id(),
-            starttime: pid_starttime(child.id()).unwrap(),
+            starttime: pid_starttime(child.id())
+                .unwrap()
+                .wrapping_add(starttime_shift),
         };
         signal_if_unchanged(
             &target,
-            &other_base,
+            &signal_base,
             std::process::id(),
             &HashSet::new(),
             Signal::KILL,
         );
         let still_alive = matches!(child.try_wait(), Ok(None));
         cleanup(&mut child);
-        assert!(
-            still_alive,
-            "a cwd outside the given base must be skipped, never signalled"
+        assert!(still_alive, "{why}");
+    }
+
+    crate::test_cases! {
+        // The TOCTOU guard (spec 78): even though the pid and cwd both genuinely match, a
+        // starttime that no longer matches the scan's recorded value means the scan's
+        // identity is stale - skip rather than signal.
+        signal_if_unchanged_skips_a_starttime_mismatch: assert_signal_skipped(
+            1,
+            "scratch",
+            "a starttime mismatch must be skipped, never signalled",
+        );
+        // The pid and starttime both genuinely match, but the base passed in does not
+        // contain the process's cwd - must be skipped (mirrors "cwd changed" between scan
+        // and signal: from this call's point of view, it no longer matches).
+        signal_if_unchanged_skips_when_cwd_is_outside_the_given_base: assert_signal_skipped(
+            0,
+            "unrelated",
+            "a cwd outside the given base must be skipped, never signalled",
         );
     }
 
