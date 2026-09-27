@@ -4231,7 +4231,7 @@ fn render_section_4() -> String {
 // the prose can never cite a stale count. Closing or changing a cited cluster makes the render
 // panic with the id, which is the prompt to re-cite that sentence.
 
-const PROJECT_BATCHES: &str = "dup-0f2f14f8c3ce";
+const PROJECT_BATCHES: &str = "dup-f8130edd50f7";
 
 /// The real catalog's cluster `id`, which the report's prose cites.
 fn cited(id: &str) -> &'static DupCluster {

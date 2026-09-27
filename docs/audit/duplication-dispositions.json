@@ -65,11 +65,6 @@
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
   {
-    "id": "dup-7bae97cd072c",
-    "disposition": "not-a-duplicate",
-    "reason": "`in_community` and `refs` build edges of two different relations (`IN_COMMUNITY` versus `REFERENCES`) through two different edge fixtures."
-  },
-  {
     "id": "dup-7081e6d4e9ca",
     "disposition": "not-a-duplicate",
     "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
@@ -115,21 +110,6 @@
     "reason": "`changed` and `is_error` test emptiness of two different fields on two different types for two different questions."
   },
   {
-    "id": "dup-315e8a57aba8",
-    "disposition": "not-a-duplicate",
-    "reason": "Two emptiness tests over unrelated functions: the spec lint's disposition advisories and the audit scanner's function list."
-  },
-  {
-    "id": "dup-45945bd806e6",
-    "disposition": "not-a-duplicate",
-    "reason": "`resume-unit` and `watch` refusals exercise two different subcommands after two different fixture setups (an escalated unit versus a bare store)."
-  },
-  {
-    "id": "dup-5c7ae82e0b2e",
-    "disposition": "not-a-duplicate",
-    "reason": "`stats --canary` and `status --line` are two different subcommands asserting two different outputs (a hint substring versus an exact status line)."
-  },
-  {
     "id": "dup-9c8fbf2fd88a",
     "disposition": "not-a-duplicate",
     "reason": "`code_default` and `concepts_default` build two different `Lens` variants at their own default-grain constants, the expected values the selector tests compare against."
@@ -173,11 +153,6 @@
     "id": "dup-e4e39c11c4c2",
     "disposition": "not-a-duplicate",
     "reason": "One folds a whole run's mixed stream and pins every machinery arm dropped and every content arm kept, the other pins only the actor-metadata path (a decision-only actor, a finding whose actor differs from its `by`), both over the shared `apply_json_as` fold."
-  },
-  {
-    "id": "dup-fc14355d78e6",
-    "disposition": "not-a-duplicate",
-    "reason": "`git_out` asserts the git command succeeded (through `git_ok`) while `git_stdout` returns the trimmed stdout of any exit status; the two share only the trim, over two different run contracts."
   },
   {
     "id": "dup-7da4ecc76203",
@@ -300,7 +275,7 @@
     "reason": "The two conflict drivers share only the shared barrier and side-write helpers; their retry arms run different recovery protocols (two re-park rounds that stage a placeholder first, versus one round that commits the source and then simulates a crash)."
   },
   {
-    "id": "dup-549ccc50144c",
+    "id": "dup-333ec555460f",
     "disposition": "not-a-duplicate",
     "reason": "The row-1 and row-4 before-record crash tests use different crash drivers, obstructions and cleanup (an untracked file in the unit worktree versus a FIFO in the run branch) and assert different boundary markers."
   },
@@ -308,11 +283,6 @@
     "id": "dup-5f516fce9f0b",
     "disposition": "not-a-duplicate",
     "reason": "One test proves that a compensation revert reopens adoption of the second-life tip; the other is the control proving that a plain remediation failure never does - opposite outcomes of different ledger events."
-  },
-  {
-    "id": "dup-fa6d2818cb22",
-    "disposition": "not-a-duplicate",
-    "reason": "The replay fixture grants an agent tools, while the model-pinning fixture sets its model and model ladder; each builds a different facet of AgentDef for a different suite."
   },
   {
     "id": "dup-f31e5f12e527",
@@ -337,12 +307,12 @@
   {
     "sweep": "error-shaping helper functions",
     "disposition": "not-a-duplicate",
-    "reason": "The sweep gathers eleven unrelated sites whose names mention an error (a failure-marker constructor, a review-tree guard, a retired-grounder message, and eight tests of different error paths); they share only the word, not one error-shaping concern."
+    "reason": "Re-checked for repeated error shaping: the retired-key refusals now share one `reject_retired_key`; the remaining sites (a failure-marker constructor, a review-tree guard, the retired-grounder message and tests of distinct error paths) share only the word, not one error-shaping concern."
   },
   {
     "sweep": ".rigger-path string literals",
     "disposition": "not-a-duplicate",
-    "reason": "The sweep gathers every string literal that mentions .rigger - distinct paths (store, lock, scratch, agents, instructions), messages, docs and fixture contents across the tree - not one path-composition concern to share."
+    "reason": "Production code builds every .rigger path from the one `RIGGER_DIR` constant (config::RIGGER_DIR); the remaining literals are messages, documentation text, gitignore entries, shell-script text and test fixtures that name the directory rather than compose a path."
   },
   {
     "id": "dup-6a2acacd5cf0",
@@ -385,12 +355,12 @@
     "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and then delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, rather than re-implementing it."
   },
   {
-    "id": "dup-0f2f14f8c3ce",
+    "id": "dup-f8130edd50f7",
     "disposition": "not-a-duplicate",
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
   },
   {
-    "id": "dup-fe20f68eb184",
+    "id": "dup-b435f9efe66c",
     "disposition": "not-a-duplicate",
     "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
   },
@@ -400,7 +370,7 @@
     "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
   },
   {
-    "id": "dup-a9ddd3832b37",
+    "id": "dup-6ee3275d996e",
     "disposition": "not-a-duplicate",
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
@@ -450,12 +420,12 @@
     "reason": "The audit's `scan_file`/`tokenize` produce a normalized token stream and function spans over every Rust file for similarity shingling (and must run in every feature lane), while `extract` returns symbol definitions through the optional tree-sitter grammars; different outputs for different consumers."
   },
   {
-    "id": "dup-e84b51908c12",
+    "id": "dup-2c59700de5eb",
     "disposition": "not-a-duplicate",
     "reason": "`workflowdef::project_events` lowers `.rigger/workflow.yml` into definition events, while the test fixture flattens the symbols ingest's per-file batches for a whole project: different sources and different events."
   },
   {
-    "id": "dup-5fa55b6ec938",
+    "id": "dup-8dd44d643a5c",
     "disposition": "not-a-duplicate",
     "reason": "The cli fixture writes a worker agent plus a one-stage workflow with an appended block, while the probe fixture writes a caller-given body verbatim into a bare `.rigger` dir for the lightweight readers."
   },
@@ -465,14 +435,14 @@
     "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through `append_and_fold_batch`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
   },
   {
-    "id": "dup-984a3c95ea6a",
+    "id": "dup-df1f9764f4e9",
     "disposition": "not-a-duplicate",
     "reason": "Two different fixture graphs for two different contracts: a hub over the render budget plus a small community for the drill and overview client contract, versus a two-file plus decision graph for the files-lens route dispatch."
   },
   {
     "sweep": "sqlite Connection::open call sites",
     "disposition": "not-a-duplicate",
-    "reason": "Each site is a single call into rusqlite's own `Connection::open`, already the one opening function: the stores open their own files, and the tests open a raw connection to inspect or corrupt a store underneath it, so a wrapper would only rename the call."
+    "reason": "Every store connection opens through the one `sqlite::open_connection`, which applies the shared write-ahead-log and busy-timeout settings; the remaining sites are that opener and tests that open a raw connection to inspect or corrupt a store file."
   },
   {
     "sweep": "/proc-path string literals",
@@ -500,29 +470,9 @@
     "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
   },
   {
-    "id": "dup-d5b6c4cbdd70",
-    "disposition": "not-a-duplicate",
-    "reason": "One pins only `defaults.grounder` in a nameless minimal workflow, the other writes a worker agent and a gated single-stage merge workflow: different workflow content for different tests."
-  },
-  {
     "id": "dup-20d63cdc7260",
     "disposition": "not-a-duplicate",
     "reason": "`Heartbeat::start` spawns a heartbeat thread while `McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor."
-  },
-  {
-    "id": "dup-255c66ac36f2",
-    "disposition": "not-a-duplicate",
-    "reason": "Two one-line fixtures over the shared `temp_project` that seed different store states (an empty `.rigger` dir via `seed_rigger_dir` vs an empty event log via `seed_store`)."
-  },
-  {
-    "id": "dup-b684ceb89441",
-    "disposition": "not-a-duplicate",
-    "reason": "Three sorted id reads over different graph parts under different predicates: nodes of one kind, one member's live community memberships, and one file's live contains targets."
-  },
-  {
-    "id": "dup-a483e9b75b5e",
-    "disposition": "not-a-duplicate",
-    "reason": "Each writes a different agent and workflow through the shared `write_agent` (a lens-only review stage vs a gated merge unit that escalates after one retry); only the helper-call shape is shared."
   },
   {
     "id": "dup-a17e83ea2e51",
@@ -640,11 +590,6 @@
     "reason": "Tests that each assert a different property of a different served page or shipped file; only the fetch-then-contains shape is shared."
   },
   {
-    "id": "dup-4fa082976655",
-    "disposition": "not-a-duplicate",
-    "reason": "The dash `layer_of` classifies a graph node into a rendering layer while the periphery `layer_of` classifies a source path into an architectural layer."
-  },
-  {
     "id": "dup-4d77d0fdce5a",
     "disposition": "not-a-duplicate",
     "reason": "Route tests over different query parameters asserting different outcomes (explain absent, cluster drill, unknown card subject)."
@@ -725,19 +670,9 @@
     "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
   },
   {
-    "id": "dup-589c05b4ad8a",
-    "disposition": "not-a-duplicate",
-    "reason": "Three path compositions naming three different stores (the instance registry directory, the event log, the graph database)."
-  },
-  {
     "id": "dup-3dd926889508",
     "disposition": "not-a-duplicate",
     "reason": "`len` reports a sidecar's entry count while `batch_calls` reads a test double's recorded batch count."
-  },
-  {
-    "id": "dup-dd10d8d2efb8",
-    "disposition": "not-a-duplicate",
-    "reason": "The two fixture repos seed different histories: one plain commit with no tag versus a tagged mainline history carrying a go-gitsemver config."
   },
   {
     "id": "dup-58e746ca5c35",
@@ -750,32 +685,12 @@
     "reason": "Two canary scoring tests with different seeded items and different expected counts."
   },
   {
-    "id": "dup-f17856d9afa5",
-    "disposition": "not-a-duplicate",
-    "reason": "End-to-end CLI tests with different seeded histories asserting different rendered lines."
-  },
-  {
     "id": "dup-9da3f693c2b7",
     "disposition": "not-a-duplicate",
     "reason": "Source-drift guards pinning different sentences in different files (the worker scratch policy versus the workerLabel wiring)."
   },
   {
-    "id": "dup-d29a266a9bb2",
-    "disposition": "not-a-duplicate",
-    "reason": "Thin scaffold wrappers that each pass a different workflow body and agent set to the already-shared `write_scaffold`."
-  },
-  {
-    "id": "dup-b4eb9ad7910c",
-    "disposition": "not-a-duplicate",
-    "reason": "Two step tests over different scenarios (a wedged unit reaching a fixpoint versus recurrence surviving process boundaries) with different assertions."
-  },
-  {
-    "id": "dup-ad5c04bfa829",
-    "disposition": "not-a-duplicate",
-    "reason": "`validate` tests that seed different inconsistencies and assert different warnings."
-  },
-  {
-    "id": "dup-4a87e8dc8806",
+    "id": "dup-d46432042e0c",
     "disposition": "not-a-duplicate",
     "reason": "The two lens suites seed different graphs (code entities under communities versus design docs under concepts)."
   },
@@ -785,24 +700,9 @@
     "reason": "Lens-selector tests asserting different arms (fallback to files versus the concepts lens)."
   },
   {
-    "id": "dup-8f36b1dc4598",
-    "disposition": "not-a-duplicate",
-    "reason": "Three project fixtures with different setups (an empty `.rigger/`, an initialized log, and a committed repo with a seeded store) over the already-shared `temp_project`."
-  },
-  {
-    "id": "dup-d23f3a1d6a5d",
+    "id": "dup-b58b0ff72b22",
     "disposition": "not-a-duplicate",
     "reason": "Three backend-selection checks asserting different outcomes (server selected, sqlite selected, server reached with credentials redacted)."
-  },
-  {
-    "id": "dup-08519818cdf9",
-    "disposition": "not-a-duplicate",
-    "reason": "Three trimmed-stdout compositions over three different git runners (plain, identity-carrying, and the stdout-returning variant)."
-  },
-  {
-    "id": "dup-cb99d798887c",
-    "disposition": "not-a-duplicate",
-    "reason": "`node_harness_passes` skips when node is absent while `run_node_harness` requires it; both delegate to the shared claim runners."
   },
   {
     "id": "dup-c99581d3e41e",
@@ -825,7 +725,7 @@
     "reason": "`doc` and `link` build two different event types with different payload fields."
   },
   {
-    "id": "dup-89f6632b3d54",
+    "id": "dup-c49b09543e58",
     "disposition": "not-a-duplicate",
     "reason": "Three suites' fixture graphs seed different nodes and edges for different route assertions."
   },
@@ -850,24 +750,9 @@
     "reason": "Two dedup tests over different scenarios (repeated governs edges versus arrival-order independence) with different assertions."
   },
   {
-    "id": "dup-f83ceb89ff28",
+    "id": "dup-269f626ea28e",
     "disposition": "not-a-duplicate",
     "reason": "`graph show` face tests over different degraded states that call the already-shared helpers with different arguments and assert different notes."
-  },
-  {
-    "id": "dup-c579d7abdb85",
-    "disposition": "not-a-duplicate",
-    "reason": "Conflict-merge `spawn` doubles scripted for different scenarios (sibling commits, planted FIFO, stray file) with different side effects."
-  },
-  {
-    "id": "dup-72a7cd5d3922",
-    "disposition": "not-a-duplicate",
-    "reason": "Conflict-merge `spawn` doubles scripted for different scenarios with different worktree side effects."
-  },
-  {
-    "id": "dup-09b3e7c0162a",
-    "disposition": "not-a-duplicate",
-    "reason": "Conflict-merge `spawn` doubles scripted for different landing scenarios with different worktree side effects."
   },
   {
     "id": "dup-b39b9c66964a",
@@ -910,17 +795,17 @@
     "reason": "The store-secrets `write_store_conn` also locks the file to owner-only so the permission warning stays out of its cases; the precedence one writes it plain."
   },
   {
-    "id": "dup-4575c16355c4",
+    "id": "dup-5f1cbfb1ea59",
     "disposition": "not-a-duplicate",
     "reason": "Store-resolution tests asserting different resolution outcomes (server, local sqlite, empty conn treated as unset)."
   },
   {
-    "id": "dup-f551cbe69c01",
+    "id": "dup-498b51115191",
     "disposition": "not-a-duplicate",
     "reason": "Fixture graphs with different memberships (communities without concepts, mixed membership, files over code)."
   },
   {
-    "id": "dup-37eae0d8b54b",
+    "id": "dup-06ffd3c67857",
     "disposition": "not-a-duplicate",
     "reason": "Fixture graphs with different shapes (a full in-budget graph versus communities over concepts)."
   },
@@ -928,5 +813,100 @@
     "id": "dup-659554f6286f",
     "disposition": "not-a-duplicate",
     "reason": "`seed_workflow_yml` and `seed_js_files` seed different files for different constants checks."
+  },
+  {
+    "id": "dup-d501c7d9195a",
+    "disposition": "not-a-duplicate",
+    "reason": "Two constructors of two different test doubles (the conductor Stub answering one output, the plan-amend driver naming its planner); each sets its own type's one field over its own defaults."
+  },
+  {
+    "id": "dup-73fd1b3e0b03",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line edge constructors for different relations with different liveness: a live community-membership edge in the map tests and an extracted reference edge through the shared `edge` fixture."
+  },
+  {
+    "id": "dup-4ccd568cae24",
+    "disposition": "not-a-duplicate",
+    "reason": "Unrelated tests sharing only a short arrange-assert shape: the dash serving the embedded wasm artifact, and two scanner cases about where a cfg(test) attribute sits."
+  },
+  {
+    "id": "dup-232528c40d46",
+    "disposition": "not-a-duplicate",
+    "reason": "Unrelated tests sharing only the read-then-assert-contains shape: a dash CSS layout rule and a CI workflow job script."
+  },
+  {
+    "id": "dup-59fa698ee47b",
+    "disposition": "not-a-duplicate",
+    "reason": "Lookups over two different read models: a dash Neighborhood node's optional layer, and a call-graph node's layer in the shared graph fixtures."
+  },
+  {
+    "id": "dup-262161c4943f",
+    "disposition": "not-a-duplicate",
+    "reason": "Struct builders for different types and fields: a sonnet agent with tools, a fan-out stage with needs and gates, and an agent with a model ladder."
+  },
+  {
+    "id": "dup-66f6002153cf",
+    "disposition": "not-a-duplicate",
+    "reason": "Unrelated tests sharing only the assert-contains shape: the spec-lint next-step line, and two checks on the native driver's source text."
+  },
+  {
+    "id": "dup-f43cc4afc6a2",
+    "disposition": "not-a-duplicate",
+    "reason": "The two sides of the reclaim guard: a dirty worktree the workflow still declares is spared (and reclaimed once clean), while an undeclared dirty one is removed; different declared sets, outcomes and follow-up checks."
+  },
+  {
+    "id": "dup-9a077e3876ec",
+    "disposition": "not-a-duplicate",
+    "reason": "Scanner unit tests that each feed a different source shape and assert a different property (span, name, test flag, enclosing mods, advisory count); they share only the parse-then-assert idiom."
+  },
+  {
+    "id": "dup-5bb2147904eb",
+    "disposition": "not-a-duplicate",
+    "reason": "Scanner unit tests that each feed a different text shape and assert a different outcome (a fail-closed quote state, scanning resuming after Notes, a bodiless trait method); they share only the parse-then-assert idiom."
+  },
+  {
+    "id": "dup-ad4ebfe4d855",
+    "disposition": "not-a-duplicate",
+    "reason": "Integration of uncommitted work versus integration of a pre-committed artifact, where the second asserts the merged commit is exactly the gated one."
+  },
+  {
+    "id": "dup-71aadfa4568e",
+    "disposition": "not-a-duplicate",
+    "reason": "Scenario tests that each seed a different run history through the shared store-project and seed_run_events fixtures and assert a different surface (causes, stats, release-ready, resume); only the fixture calls are common."
+  },
+  {
+    "id": "dup-6193e0f04ade",
+    "disposition": "not-a-duplicate",
+    "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
+  },
+  {
+    "id": "dup-751f1b83af79",
+    "disposition": "not-a-duplicate",
+    "reason": "Multi-step scenario tests over different workflows (budget halt, hung unbounded spawn, recurrence and stalled frontier) through the shared step_line fixture; each asserts a different attention sequence."
+  },
+  {
+    "id": "dup-ea8a80f3da16",
+    "disposition": "not-a-duplicate",
+    "reason": "Two-line tests that each hand a different fixture project to a different scenario body (a manual-review pause, an ambient kurrentdb connection)."
+  },
+  {
+    "id": "dup-2a101767f24d",
+    "disposition": "not-a-duplicate",
+    "reason": "Named fixture projects, each a base project plus a different seeding (the event log, the .rigger directory, the store, or a committed repo with a store); only the compose-and-return is shared."
+  },
+  {
+    "id": "dup-c3c8358993cf",
+    "disposition": "not-a-duplicate",
+    "reason": "Fold fixtures applying two different inferred-edge payloads (a reference and a call with its caller) through the one shared apply_json."
+  },
+  {
+    "id": "dup-9c3b5c80063e",
+    "disposition": "not-a-duplicate",
+    "reason": "Sorted id collections over different graph parts with different filters: nodes of a kind, a member's live community edges, and a file's contains edges."
+  },
+  {
+    "id": "dup-d5a2e2020223",
+    "disposition": "not-a-duplicate",
+    "reason": "Assertions over two different audit scanners in two suites (the OS-kill scan and the same-named-helper clustering), each with its own finding type and message."
   }
 ]
