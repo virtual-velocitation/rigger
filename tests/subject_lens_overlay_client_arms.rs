@@ -24,8 +24,7 @@
 
 mod common;
 
-use common::fixtures::tool_available;
-use common::served::run_node_harness;
+use common::served::node_harness_passes;
 
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
 /// surfaces the client seam touches (innerHTML / textContent / dataset / .hidden / .className /
@@ -231,42 +230,17 @@ const REPROJECT_FAILURE_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
-/// RUNTIME guard (spec 55 c4, dispatch arm): onLensPick's NO-SUBJECT arm reloads the whole-graph
-/// overview under the new lens rather than re-projecting a non-existent subject - the other half of the
-/// subject-sticky rule, which the served-page runtime (always flipping the lens WITH a subject) never
-/// drives. Dropping the `else loadKgOverview()` branch reddens it.
-#[test]
-fn a_lens_flip_with_no_subject_reloads_the_whole_graph_overview() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP a_lens_flip_with_no_subject_reloads_the_whole_graph_overview: no `node` runtime on \
-             PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
-             install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(RESOLVING_FETCH, NO_SUBJECT_LENS_DRIVER),
-        "OK no-subject-lens-flip-reloads-overview",
-    );
-}
-
-/// RUNTIME guard (spec 55 c4, degrade arm): a FAILED live subject-re-projection fetch degrades the panel
-/// to the documented "unavailable" message (the panel-never-throws contract on the NEW re-request path),
-/// the LIVE `catch` neither the served-page test (fetch always resolves) nor the serving-seam test
-/// (`!LIVE` static-export degrade) reaches. Dropping reprojectSubject's try/catch reddens it.
-#[test]
-fn a_failed_live_reprojection_fetch_degrades_to_a_message() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP a_failed_live_reprojection_fetch_degrades_to_a_message: no `node` runtime on PATH. \
-             This runtime guard needs node (present on dev machines and on ubuntu-latest CI); install \
-             node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(REPROJECT_FAILS_FETCH, REPROJECT_FAILURE_DRIVER),
-        "OK reprojection-fetch-failure-degrades",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard (spec 55 c4, dispatch arm): onLensPick's NO-SUBJECT arm reloads the whole-graph
+    /// overview under the new lens rather than re-projecting a non-existent subject - the other half of the
+    /// subject-sticky rule, which the served-page runtime (always flipping the lens WITH a subject) never
+    /// drives. Dropping the `else loadKgOverview()` branch reddens it.
+    a_lens_flip_with_no_subject_reloads_the_whole_graph_overview:
+        node_harness_passes(&build_harness(RESOLVING_FETCH, NO_SUBJECT_LENS_DRIVER), "OK no-subject-lens-flip-reloads-overview");
+    /// RUNTIME guard (spec 55 c4, degrade arm): a FAILED live subject-re-projection fetch degrades the panel
+    /// to the documented "unavailable" message (the panel-never-throws contract on the NEW re-request path),
+    /// the LIVE `catch` neither the served-page test (fetch always resolves) nor the serving-seam test
+    /// (`!LIVE` static-export degrade) reaches. Dropping reprojectSubject's try/catch reddens it.
+    a_failed_live_reprojection_fetch_degrades_to_a_message:
+        node_harness_passes(&build_harness(REPROJECT_FAILS_FETCH, REPROJECT_FAILURE_DRIVER), "OK reprojection-fetch-failure-degrades");
 }

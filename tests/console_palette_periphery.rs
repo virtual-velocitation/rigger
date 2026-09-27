@@ -12,40 +12,23 @@
 
 mod common;
 
-use common::served::served_console_body;
+use common::served::{assert_served_console_page_carries, served_console_body};
 
-/// THE PALETTE's own markup: a dialog carrying a filter input and a results list, hidden
-/// until opened, wired to the header's existing palette button (`src/console.html`'s own
-/// `palbtn`, already present since criterion 1 - see `p94-u94c1-shell-and-fonts-impl`'s own
-/// note that it deliberately left the dialog markup for this criterion).
-#[test]
-fn the_served_console_page_carries_the_palette_dialog_markup() {
-    let body = served_console_body();
-    for needle in [
-        "id=\"paletteOverlay\"",
-        "id=\"paletteInput\"",
-        "id=\"paletteList\"",
-        "id=\"palbtn\"",
-    ] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+rigger::test_cases! {
+    /// THE PALETTE's own markup: a dialog carrying a filter input and a results list, hidden
+    /// until opened, wired to the header's existing palette button (`src/console.html`'s own
+    /// `palbtn`, already present since criterion 1 - see `p94-u94c1-shell-and-fonts-impl`'s own
+    /// note that it deliberately left the dialog markup for this criterion).
+    the_served_console_page_carries_the_palette_dialog_markup:
+        assert_served_console_page_carries(&["id=\"paletteOverlay\"", "id=\"paletteInput\"", "id=\"paletteList\"", "id=\"palbtn\""]);
 }
 
-/// THE PALETTE opens on Ctrl-K and Cmd-K (Design: "`Ctrl-K` and `Cmd-K` open the
-/// palette"), checked ahead of the position model's own input-tag focus guard so the
-/// chorded shortcut opens the palette regardless of what currently has focus.
-#[test]
-fn the_served_console_page_opens_the_palette_on_ctrl_k_and_cmd_k() {
-    let body = served_console_body();
-    for needle in ["e.metaKey || e.ctrlKey", "\"k\"", "openPalette("] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+rigger::test_cases! {
+    /// THE PALETTE opens on Ctrl-K and Cmd-K (Design: "`Ctrl-K` and `Cmd-K` open the
+    /// palette"), checked ahead of the position model's own input-tag focus guard so the
+    /// chorded shortcut opens the palette regardless of what currently has focus.
+    the_served_console_page_opens_the_palette_on_ctrl_k_and_cmd_k:
+        assert_served_console_page_carries(&["e.metaKey || e.ctrlKey", "\"k\"", "openPalette("]);
 }
 
 /// The shared case body: the served console page's source carries `needle` (`why` prefixes
@@ -66,35 +49,18 @@ rigger::test_cases! {
         );
 }
 
-/// THE PALETTE filters as the person types (Design: "filtered as the person types"),
-/// wired to the search input's own `input` event.
-#[test]
-fn the_served_console_page_filters_the_palette_as_typed() {
-    let body = served_console_body();
-    for needle in ["addEventListener(\"input\"", "filterPalette("] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+rigger::test_cases! {
+    /// THE PALETTE filters as the person types (Design: "filtered as the person types"),
+    /// wired to the search input's own `input` event.
+    the_served_console_page_filters_the_palette_as_typed:
+        assert_served_console_page_carries(&["addEventListener(\"input\"", "filterPalette("]);
 }
 
-/// THE PALETTE runs the highlighted entry on Enter and closes on Escape (Design: "`Enter`
-/// runs the highlighted one, `Escape` closes").
-#[test]
-fn the_served_console_page_runs_on_enter_and_closes_on_escape() {
-    let body = served_console_body();
-    for needle in [
-        "\"Enter\"",
-        "runHighlightedPaletteCommand(",
-        "\"Escape\"",
-        "closePalette(",
-    ] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+rigger::test_cases! {
+    /// THE PALETTE runs the highlighted entry on Enter and closes on Escape (Design: "`Enter`
+    /// runs the highlighted one, `Escape` closes").
+    the_served_console_page_runs_on_enter_and_closes_on_escape:
+        assert_served_console_page_carries(&["\"Enter\"", "runHighlightedPaletteCommand(", "\"Escape\"", "closePalette("]);
 }
 
 /// THE PALETTE's five kinds of entry each resolve to a real action on the page: a view

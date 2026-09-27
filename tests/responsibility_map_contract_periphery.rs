@@ -53,7 +53,7 @@ mod common;
 
 use common::repo::committed_json;
 use common::repo::repo_root;
-use common::repo::repo_text;
+use common::repo::{assert_committed_json_round_trips, assert_committed_ledger_is_nonempty};
 use serde::Deserialize;
 
 /// Mirrors `tests/simplification_audit.rs`'s private `MapEntryWire` shape field-for-field, from
@@ -78,18 +78,13 @@ const MAP_CONTRACT: &str =
     "MapEntry contract (file/name/is_test/proposed_module/reason/content_hash)";
 const TARGET_FILES: [&str; 3] = ["src/conductor.rs", "src/main.rs", "src/dash.rs"];
 
-/// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 85's documented field shape
-/// (not the producer's private Rust type) can actually parse the committed artifact. This is
-/// the specific gap the boundary probe found - `Deserialize` is derived but never exercised
-/// anywhere in the unit's own tests.
-#[test]
-fn the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would() {
-    let entries = committed_json::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
-    assert!(
-        !entries.is_empty(),
-        "{MAP_PATH} deserialized to zero entries - a downstream consumer pinning counts \
-         against this file would silently see nothing"
-    );
+rigger::test_cases! {
+    /// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 85's documented field shape
+    /// (not the producer's private Rust type) can actually parse the committed artifact. This is
+    /// the specific gap the boundary probe found - `Deserialize` is derived but never exercised
+    /// anywhere in the unit's own tests.
+    the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would:
+        assert_committed_ledger_is_nonempty::<ConsumedMapEntry>(MAP_PATH, MAP_CONTRACT);
 }
 
 /// Every entry names one of the three files spec 85's Done-when criterion 1 fixes by literal
@@ -214,27 +209,17 @@ fn is_test_rows_and_only_is_test_rows_land_in_a_tests_proposed_module() {
     }
 }
 
-/// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
-/// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
-/// the producer's own trailing-newline convention) reproduces the committed bytes exactly. This
-/// is the strongest form of the round-trip contract - it proves the JSON shape is lossless and
-/// canonical from an outside reader's perspective, not merely that the producer's own function
-/// agrees with itself (every one of the implementer's own drift-guard tests compares the SAME
-/// producer type/function on both sides; this test decodes and re-encodes through a
-/// SEPARATELY-declared type, the position any real future consumer will be in).
-#[test]
-fn deserializing_then_reserializing_reproduces_the_committed_bytes_exactly() {
-    let committed = repo_text(MAP_PATH);
-    let entries = committed_json::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
-    let mut reencoded =
-        serde_json::to_string_pretty(&entries).expect("ConsumedMapEntry re-serializes");
-    reencoded.push('\n');
-    assert_eq!(
-        committed, reencoded,
-        "{MAP_PATH} does not round-trip byte-for-byte through the documented MapEntry shape - \
-         a downstream consumer decoding and re-encoding this file would silently diverge from \
-         the committed artifact"
-    );
+rigger::test_cases! {
+    /// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
+    /// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
+    /// the producer's own trailing-newline convention) reproduces the committed bytes exactly. This
+    /// is the strongest form of the round-trip contract - it proves the JSON shape is lossless and
+    /// canonical from an outside reader's perspective, not merely that the producer's own function
+    /// agrees with itself (every one of the implementer's own drift-guard tests compares the SAME
+    /// producer type/function on both sides; this test decodes and re-encodes through a
+    /// SEPARATELY-declared type, the position any real future consumer will be in).
+    deserializing_then_reserializing_reproduces_the_committed_bytes_exactly:
+        assert_committed_json_round_trips::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
 }
 
 // -----------------------------------------------------------------------------------------

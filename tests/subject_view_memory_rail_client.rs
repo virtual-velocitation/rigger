@@ -15,8 +15,7 @@
 
 mod common;
 
-use common::fixtures::tool_available;
-use common::served::run_node_harness;
+use common::served::node_harness_passes;
 
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
 /// surfaces the client seam touches (innerHTML / textContent / dataset / .hidden / .className /
@@ -148,22 +147,11 @@ const RAIL_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
-/// RUNTIME guard (spec 63 c5, SUBJECT VIEW): clicking a node reveals the docked memory rail with the
-/// subject's decisions/findings/concepts, never leaking that content into the neighborhood panel
-/// itself, and clearing the subject hides the rail again. Dropping `renderMemoryRail`'s wiring (or
-/// folding its content into `#kgpanel`) reddens this.
-#[test]
-fn clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel: \
-             no `node` runtime on PATH. This runtime guard needs node (present on dev machines and \
-             on ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(RESOLVING_FETCH, RAIL_DRIVER),
-        "OK memory-rail-shows-on-seed-and-hides-on-clear",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard (spec 63 c5, SUBJECT VIEW): clicking a node reveals the docked memory rail with the
+    /// subject's decisions/findings/concepts, never leaking that content into the neighborhood panel
+    /// itself, and clearing the subject hides the rail again. Dropping `renderMemoryRail`'s wiring (or
+    /// folding its content into `#kgpanel`) reddens this.
+    clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel:
+        node_harness_passes(&build_harness(RESOLVING_FETCH, RAIL_DRIVER), "OK memory-rail-shows-on-seed-and-hides-on-clear");
 }

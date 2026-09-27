@@ -21,6 +21,52 @@ pub fn committed_json<T: serde::de::DeserializeOwned>(rel: &str, contract: &str)
         .unwrap_or_else(|e| panic!("{rel} does not deserialize as the documented {contract}: {e}"))
 }
 
+/// The committed JSON ledger `rel`, decoded as `contract`, holds at least one entry - a
+/// downstream consumer pinning counts against it never silently sees nothing.
+pub fn assert_committed_ledger_is_nonempty<T: serde::de::DeserializeOwned>(
+    rel: &str,
+    contract: &str,
+) {
+    let entries: Vec<T> = committed_json(rel, contract);
+    assert!(
+        !entries.is_empty(),
+        "{rel} deserialized to zero entries - a downstream consumer pinning counts against \
+         this file would silently see nothing"
+    );
+}
+
+/// Decoding the committed JSON file `rel` as `contract` and re-encoding it reproduces the
+/// committed bytes exactly - a downstream consumer decoding and re-encoding it never silently
+/// diverges from the committed artifact.
+pub fn assert_committed_json_round_trips<T>(rel: &str, contract: &str)
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let decoded: T = committed_json(rel, contract);
+    let mut reencoded = serde_json::to_string_pretty(&decoded).expect("the contract re-serializes");
+    reencoded.push('\n');
+    assert_eq!(
+        repo_text(rel),
+        reencoded,
+        "{rel} does not round-trip byte-for-byte through the documented {contract}"
+    );
+}
+
+/// The committed text file `rel`, compared lowercase, carries none of `phrasings`; the failure
+/// names what `rel` must describe instead (`why`) and every phrasing still present.
+pub fn assert_doc_carries_none_of(rel: &str, phrasings: &[&str], why: &str) {
+    let text = repo_text(rel).to_lowercase();
+    let present: Vec<&str> = phrasings
+        .iter()
+        .copied()
+        .filter(|phrasing| text.contains(phrasing))
+        .collect();
+    assert!(
+        present.is_empty(),
+        "{rel} {why}. Phrasings still present in the document: {present:#?}"
+    );
+}
+
 /// The lines of the TOML table `[header]` in `manifest`, up to the next table header.
 pub fn table_lines(manifest: &str, header: &str) -> Vec<String> {
     let want = format!("[{header}]");

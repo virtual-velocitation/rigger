@@ -58,7 +58,7 @@ mod common;
 
 use common::repo::committed_json;
 use common::repo::repo_root;
-use common::repo::repo_text;
+use common::repo::{assert_committed_json_round_trips, assert_committed_ledger_is_nonempty};
 use serde::Deserialize;
 
 /// Mirrors `tests/simplification_audit.rs`'s private `DupSiteWire` shape field-for-field, from
@@ -104,19 +104,13 @@ const MANDATORY_SWEEPS: [&str; 5] = [
     "error-shaping helper functions",
 ];
 
-/// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 85's documented field shape
-/// (not the producer's private Rust type) can actually parse the committed artifact. This is
-/// the specific gap the boundary probe found - `Deserialize` is derived but the unit's own
-/// tests only ever exercise it against a synthetic fixture, never the real committed file.
-#[test]
-fn the_committed_duplication_catalog_deserializes_as_a_downstream_consumer_would() {
-    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
-    assert!(
-        !clusters.is_empty(),
-        "{CATALOG_PATH} deserialized to zero clusters - a downstream consumer pinning counts \
-         against this file (spec 85: 'follow-up specs can pin counts and prove reductions') \
-         would silently see nothing"
-    );
+rigger::test_cases! {
+    /// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 85's documented field shape
+    /// (not the producer's private Rust type) can actually parse the committed artifact. This is
+    /// the specific gap the boundary probe found - `Deserialize` is derived but the unit's own
+    /// tests only ever exercise it against a synthetic fixture, never the real committed file.
+    the_committed_duplication_catalog_deserializes_as_a_downstream_consumer_would:
+        assert_committed_ledger_is_nonempty::<ConsumedDupCluster>(CATALOG_PATH, CATALOG_CONTRACT);
 }
 
 /// Spec 85 Design: "every cluster of two or more sites" with one of the three named
@@ -269,28 +263,18 @@ fn every_mandatory_sweep_appears_as_exactly_one_semantic_cluster_in_the_committe
     }
 }
 
-/// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
-/// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
-/// the producer's own trailing-newline convention, per `catalog_to_json`) reproduces the
-/// committed bytes exactly. This is the strongest form of the round-trip contract - it proves
-/// the JSON shape is lossless and canonical from an outside reader's perspective, not merely
-/// that the producer's own function agrees with itself (both of the implementer's own
-/// round-trip-adjacent tests compare the SAME producer type/function on both sides; this test
-/// decodes and re-encodes through a SEPARATELY-declared type, the position any real future
-/// consumer will be in).
-#[test]
-fn deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly() {
-    let committed = repo_text(CATALOG_PATH);
-    let clusters = committed_json::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
-    let mut reencoded =
-        serde_json::to_string_pretty(&clusters).expect("ConsumedDupCluster re-serializes");
-    reencoded.push('\n');
-    assert_eq!(
-        committed, reencoded,
-        "{CATALOG_PATH} does not round-trip byte-for-byte through the documented DupCluster \
-         shape - a downstream consumer decoding and re-encoding this file would silently \
-         diverge from the committed artifact"
-    );
+rigger::test_cases! {
+    /// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
+    /// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
+    /// the producer's own trailing-newline convention, per `catalog_to_json`) reproduces the
+    /// committed bytes exactly. This is the strongest form of the round-trip contract - it proves
+    /// the JSON shape is lossless and canonical from an outside reader's perspective, not merely
+    /// that the producer's own function agrees with itself (both of the implementer's own
+    /// round-trip-adjacent tests compare the SAME producer type/function on both sides; this test
+    /// decodes and re-encodes through a SEPARATELY-declared type, the position any real future
+    /// consumer will be in).
+    deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly:
+        assert_committed_json_round_trips::<Vec<ConsumedDupCluster>>(CATALOG_PATH, CATALOG_CONTRACT);
 }
 
 // -----------------------------------------------------------------------------------------

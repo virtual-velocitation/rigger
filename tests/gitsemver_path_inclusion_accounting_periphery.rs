@@ -175,18 +175,15 @@ mod scan_self_tests {
             assert!(is_real_path_attribute_line("    #[path = \"../build/gitsemver.rs\"]"));
     }
 
-    #[test]
-    fn a_doc_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site() {
-        // The exact shape tests/code_entity_test_exclusion_periphery.rs's own doc comment
-        // writes - the false positive this scan is deliberately built to reject.
-        assert!(!is_real_path_attribute_line(
+    rigger::test_cases! {
+        /// The exact shape tests/code_entity_test_exclusion_periphery.rs's own doc comment
+        /// writes - the false positive this scan is deliberately built to reject.
+        a_doc_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site:
+            assert!(!is_real_path_attribute_line(
             "/// upward-escaping #[path = \"../build/gitsemver.rs\"]"
         ));
-    }
-
-    #[test]
-    fn a_line_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site() {
-        assert!(!is_real_path_attribute_line(
+        a_line_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site:
+            assert!(!is_real_path_attribute_line(
             "// #[path]-included into build.rs and the two test files"
         ));
     }

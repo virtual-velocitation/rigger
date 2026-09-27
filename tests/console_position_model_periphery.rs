@@ -13,48 +13,22 @@
 
 mod common;
 
-use common::served::served_console_body;
+use common::served::{assert_served_console_page_carries, served_console_body};
 
-/// THE POSITION MODEL loads the wasm core and drives it through the three fold ops named
-/// verbatim in the addendum's own data-plane diagram: `fold_reset(events)`, `fold_push(e)`,
-/// `fold_at(N)`.
-#[test]
-fn the_served_console_page_loads_the_wasm_core_and_calls_the_three_fold_ops() {
-    let body = served_console_body();
-    for needle in [
-        "/console/core.wasm",
-        "console_alloc",
-        "console_call",
-        "console_free",
-        "fold_reset",
-        "fold_push",
-        "fold_at",
-        "scrub_track",
-    ] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+rigger::test_cases! {
+    /// THE POSITION MODEL loads the wasm core and drives it through the three fold ops named
+    /// verbatim in the addendum's own data-plane diagram: `fold_reset(events)`, `fold_push(e)`,
+    /// `fold_at(N)`.
+    the_served_console_page_loads_the_wasm_core_and_calls_the_three_fold_ops:
+        assert_served_console_page_carries(&["/console/core.wasm", "console_alloc", "console_call", "console_free", "fold_reset", "fold_push", "fold_at", "scrub_track"]);
 }
 
-/// THE POSITION MODEL loads the snapshot into `fold_reset` and follows the live stream with
-/// `since=` into `fold_push` (Design: "the page loads the snapshot into the core
-/// (`fold_reset`), pushes stream events (`fold_push`)").
-#[test]
-fn the_served_console_page_fetches_the_snapshot_and_follows_the_stream() {
-    let body = served_console_body();
-    for needle in [
-        "/api/console/snapshot",
-        "/api/console/stream",
-        "since=",
-        "EventSource(",
-    ] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+rigger::test_cases! {
+    /// THE POSITION MODEL loads the snapshot into `fold_reset` and follows the live stream with
+    /// `since=` into `fold_push` (Design: "the page loads the snapshot into the core
+    /// (`fold_reset`), pushes stream events (`fold_push`)").
+    the_served_console_page_fetches_the_snapshot_and_follows_the_stream:
+        assert_served_console_page_carries(&["/api/console/snapshot", "/api/console/stream", "since=", "EventSource("]);
 }
 
 /// THE POSITION MODEL's replay/keys (Design: "the play button replays from the cursor at
@@ -83,17 +57,11 @@ fn the_served_console_page_wires_replay_and_keyboard_controls() {
     );
 }
 
-/// THE POSITION MODEL's URL hash (Design: "The URL hash carries the view, the selection and
-/// the position (`#/theater?at=N`, ...) and is restored on load, so a moment is a link").
-#[test]
-fn the_served_console_page_restores_and_updates_the_url_hash() {
-    let body = served_console_body();
-    for needle in ["location.hash", "history.replaceState", "?at="] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+rigger::test_cases! {
+    /// THE POSITION MODEL's URL hash (Design: "The URL hash carries the view, the selection and
+    /// the position (`#/theater?at=N`, ...) and is restored on load, so a moment is a link").
+    the_served_console_page_restores_and_updates_the_url_hash:
+        assert_served_console_page_carries(&["location.hash", "history.replaceState", "?at="]);
 }
 
 /// THE POSITION MODEL's retained-window recovery (CONSTRAINTS WALK, "Stream drop": "a gap

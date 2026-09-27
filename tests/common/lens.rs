@@ -1,7 +1,7 @@
 //! Fixtures for the dash's lens suites: the lens under test and the graphs it folds.
 
 use rigger::contextgraph::{Graph, KIND_CODE_ENTITY, KIND_CONCEPT, REL_REALIZES, TIER_EXTRACTED};
-use rigger::dash::Lens;
+use rigger::dash::{clustered_overview, Cluster, ClusterEdge, Lens};
 
 use super::fixtures::{edge, labelled_node, node_with_attrs};
 
@@ -41,4 +41,68 @@ pub fn shared_member_graph() -> Graph {
             realizes("src/d.rs::q", OTHER_D),
         ],
     }
+}
+
+/// `lens`'s overview of `graph` over the public boundary: `total` still counts every graph node,
+/// a derived grain carries no empty state, the fold yields exactly `clusters` and `edges`, and
+/// none of `never_keys` (storage schema names the lens must never surface) is a cluster key.
+pub fn assert_overview_folds(
+    graph: &Graph,
+    lens: &Lens,
+    total: usize,
+    clusters: Vec<Cluster>,
+    edges: Vec<ClusterEdge>,
+    never_keys: &[&str],
+) {
+    let overview = clustered_overview(graph, lens);
+    assert_eq!(
+        overview.total, total,
+        "total carries every graph node, the excluded super-nodes included"
+    );
+    assert_eq!(
+        overview.empty_state, None,
+        "a DERIVED grain is not the empty state"
+    );
+    assert_eq!(
+        overview.clusters, clusters,
+        "the lens folds exactly its subjects (sized, dominant-kind, labelled) and excludes every \
+         other node entirely: {overview:?}"
+    );
+    assert!(
+        overview
+            .clusters
+            .iter()
+            .all(|c| !never_keys.contains(&c.key.as_str())),
+        "no storage-schema-name kind bucket ever appears as a cluster key: {overview:?}"
+    );
+    assert_eq!(
+        overview.edges, edges,
+        "only cross-bucket coupling weights the super-edge; intra-bucket edges and the spokes to \
+         the excluded super-node add none: {overview:?}"
+    );
+}
+
+/// `lens` at a resolution grain with NO derived assignments over `graph` folds nothing, still
+/// reports all `total` graph nodes, and carries the documented `empty_state` prompt - never an
+/// error and never a bare kind-bucket view.
+pub fn assert_underived_grain_is_the_empty_state(
+    graph: &Graph,
+    lens: &Lens,
+    total: usize,
+    empty_state: &str,
+) {
+    let underived = clustered_overview(graph, lens);
+    assert!(
+        underived.clusters.is_empty() && underived.edges.is_empty(),
+        "an underived grain folds no buckets: {underived:?}"
+    );
+    assert_eq!(
+        underived.total, total,
+        "the empty state still reports the whole graph size"
+    );
+    assert_eq!(
+        underived.empty_state.as_deref(),
+        Some(empty_state),
+        "an underived grain carries the documented empty-state message, never an error"
+    );
 }

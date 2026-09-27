@@ -26,6 +26,7 @@
 
 mod common;
 
+use common::repo::assert_doc_carries_none_of;
 use common::repo::repo_text;
 
 /// Every (fact, needle) the README must carry to tell the new grounding truth. Each needle is
@@ -101,21 +102,12 @@ fn readme_records_the_symbols_default_and_the_retirement_rationale() {
     );
 }
 
-#[test]
-fn readme_carries_none_of_the_retired_grounder_inversions() {
-    let text = repo_text("README.md").to_lowercase();
-
-    let inversions: Vec<&str> = RETIRED_INVERSIONS
-        .iter()
-        .copied()
-        .filter(|phrasing| text.contains(phrasing))
-        .collect();
-
-    assert!(
-        inversions.is_empty(),
-        "README.md must not tell the retired grounding story (spec 57, criterion 4): `grep` is \
-         the explicit opt-out, never the default, and the retired vector engine is not a \
-         build-time `semantic grounding` upgrade to opt into. Inverting phrasings still present \
-         in the README: {inversions:#?}"
+rigger::test_cases! {
+    readme_carries_none_of_the_retired_grounder_inversions: assert_doc_carries_none_of(
+        "README.md",
+        RETIRED_INVERSIONS,
+        "must not tell the retired grounding story (spec 57, criterion 4): `grep` is the \
+         explicit opt-out, never the default, and the retired vector engine is not a \
+         build-time `semantic grounding` upgrade to opt into",
     );
 }

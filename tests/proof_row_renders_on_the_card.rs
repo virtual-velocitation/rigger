@@ -13,8 +13,7 @@
 
 mod common;
 
-use common::fixtures::tool_available;
-use common::served::run_node_harness;
+use common::served::node_harness_passes;
 
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
 /// dataset / .hidden / addEventListener). Mirrors `metadata_card_handoff_viz.rs::DOM_SHIM` verbatim
@@ -122,21 +121,10 @@ const PROOF_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
-/// RUNTIME guard for spec 86 criterion 2's own "WHERE PROOF RENDERS" Design clause: a card gains a
-/// PROOF row - "proven by N tests" with the list on expand - and an explicit "no test reaches this
-/// entity" state (amber, not silent).
-#[test]
-fn proof_row_renders_count_evidence_and_the_explicit_empty_state() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP proof_row_renders_count_evidence_and_the_explicit_empty_state: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(PROOF_DRIVER),
-        "OK proof-row-renders-count-evidence-and-the-explicit-empty-state",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 86 criterion 2's own "WHERE PROOF RENDERS" Design clause: a card gains a
+    /// PROOF row - "proven by N tests" with the list on expand - and an explicit "no test reaches this
+    /// entity" state (amber, not silent).
+    proof_row_renders_count_evidence_and_the_explicit_empty_state:
+        node_harness_passes(&build_harness(PROOF_DRIVER), "OK proof-row-renders-count-evidence-and-the-explicit-empty-state");
 }

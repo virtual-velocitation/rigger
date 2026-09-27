@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use common::fixtures::edge;
 use common::fixtures::plain;
+use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
 use common::served::served;
 use common::served::served_json;
 use rigger::contextgraph::{
@@ -168,66 +169,48 @@ fn lens_from_query_is_a_public_total_selector_that_falls_back_to_files() {
     );
 }
 
-/// THE CODE-LENS OVERVIEW over the public crate boundary: `clustered_overview(graph, &Lens::Code)`
-/// buckets every membership-carrying CODE-ENTITY node by its coupling COMMUNITY - a subsystem grouped
-/// ACROSS directory lines - sizing each community super-node by MEMBER count, colouring it by its
-/// dominant member kind, and labelling it with the community node's deterministic `label`; only edges
-/// that CROSS two communities weight the symmetric super-edge (intra-community coupling and the
-/// membership spokes to the excluded super-node add none). Spec 63 criterion 1 (CODE-LENS PURITY,
-/// the subjects-only rule): the two membership-less non-code-entity nodes (a decision, a design-doc)
-/// carry NO cluster at all here - not even their own kind bucket - so the payload never surfaces a
-/// storage schema name as a cluster key or label. Every value is bound to the fixture so a renamed
-/// field or a mis-fold reddens here, not just in-process.
-#[test]
-fn code_lens_overview_buckets_code_entities_by_community_and_excludes_every_other_kind() {
-    let overview = clustered_overview(&lens_graph(), &code_default());
-
-    assert_eq!(
-        overview.total, 8,
-        "total carries every graph node, the excluded community super-nodes included"
-    );
-    assert_eq!(
-        overview.empty_state, None,
-        "a DERIVED grain is not the empty state"
-    );
-    assert_eq!(
-        overview.clusters,
-        vec![
-            // Each community: sized by MEMBER count (2, the excluded super-node never inflates it),
-            // coloured by dominant member kind, labelled by the community node's deterministic label.
-            Cluster {
-                key: C0.to_string(),
-                count: 2,
-                kind: KIND_CODE_ENTITY.to_string(),
-                label: Some("foo".to_string()),
-            },
-            Cluster {
-                key: C1.to_string(),
-                count: 2,
-                kind: KIND_CODE_ENTITY.to_string(),
-                label: Some("baz".to_string()),
-            },
-            // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the code
-            // lens admits ONLY code-entity subjects, so they carry no bucket of any kind here.
-        ],
-        "code lens folds code entities by community (sized, dominant-kind, labelled) and excludes every non-code-entity / membership-less node entirely: {overview:?}"
-    );
-    assert!(
-        overview
-            .clusters
-            .iter()
-            .all(|c| c.key != KIND_DECISION && c.key != KIND_DESIGN_DOC),
-        "no storage-schema-name (decision / design-doc) ever appears as a cluster key: {overview:?}"
-    );
-    assert_eq!(
-        overview.edges,
-        vec![ClusterEdge {
-            from: C0.to_string(),
-            to: C1.to_string(),
-            weight: 2,
-        }],
-        "only cross-community coupling weights the super-edge; intra-community edges and membership spokes to the excluded super-node add none"
-    );
+rigger::test_cases! {
+    /// THE CODE-LENS OVERVIEW over the public crate boundary: `clustered_overview(graph, &Lens::Code)`
+    /// buckets every membership-carrying CODE-ENTITY node by its coupling COMMUNITY - a subsystem grouped
+    /// ACROSS directory lines - sizing each community super-node by MEMBER count, colouring it by its
+    /// dominant member kind, and labelling it with the community node's deterministic `label`; only edges
+    /// that CROSS two communities weight the symmetric super-edge (intra-community coupling and the
+    /// membership spokes to the excluded super-node add none). Spec 63 criterion 1 (CODE-LENS PURITY,
+    /// the subjects-only rule): the two membership-less non-code-entity nodes (a decision, a design-doc)
+    /// carry NO cluster at all here - not even their own kind bucket - so the payload never surfaces a
+    /// storage schema name as a cluster key or label. Every value is bound to the fixture so a renamed
+    /// field or a mis-fold reddens here, not just in-process.
+    code_lens_overview_buckets_code_entities_by_community_and_excludes_every_other_kind:
+        assert_overview_folds(
+            &lens_graph(),
+            &code_default(),
+            8,
+            vec![
+                // Each community: sized by MEMBER count (2, the excluded super-node never inflates
+                // it), coloured by dominant member kind, labelled by the community node's
+                // deterministic label.
+                Cluster {
+                    key: C0.to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("foo".to_string()),
+                },
+                Cluster {
+                    key: C1.to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("baz".to_string()),
+                },
+                // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the
+                // code lens admits ONLY code-entity subjects, so they carry no bucket of any kind.
+            ],
+            vec![ClusterEdge {
+                from: C0.to_string(),
+                to: C1.to_string(),
+                weight: 2,
+            }],
+            &[KIND_DECISION, KIND_DESIGN_DOC],
+        );
 }
 
 /// THE CODE-LENS DRILL over the public boundary: `cluster_detail(graph, community_key, &Lens::Code)`
@@ -392,31 +375,19 @@ fn code_lens_excludes_a_membership_less_code_entity_entirely() {
     );
 }
 
-/// THE UNDERIVED-GRAIN empty state over the public boundary: a code lens at a resolution grain with
-/// NO derived assignments returns the documented `CODE_LENS_UNDERIVED` prompt - never an error and
-/// never a bare kind-bucket view - while `total` still reports the whole graph size.
-#[test]
-fn code_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error() {
-    let underived = clustered_overview(
-        &lens_graph(),
-        &Lens::Code {
-            resolution: "2".to_string(),
-        },
-    );
-
-    assert!(
-        underived.clusters.is_empty() && underived.edges.is_empty(),
-        "an underived grain folds no communities: {underived:?}"
-    );
-    assert_eq!(
-        underived.total, 8,
-        "the empty state still reports the whole graph size"
-    );
-    assert_eq!(
-        underived.empty_state.as_deref(),
-        Some(CODE_LENS_UNDERIVED),
-        "an underived grain carries the documented empty-state message, never an error"
-    );
+rigger::test_cases! {
+    /// THE UNDERIVED-GRAIN empty state over the public boundary: a code lens at a resolution grain with
+    /// NO derived assignments returns the documented `CODE_LENS_UNDERIVED` prompt - never an error and
+    /// never a bare kind-bucket view - while `total` still reports the whole graph size.
+    code_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error:
+        assert_underived_grain_is_the_empty_state(
+            &lens_graph(),
+            &Lens::Code {
+                resolution: "2".to_string(),
+            },
+            8,
+            CODE_LENS_UNDERIVED,
+        );
 }
 
 /// Spec 63 CRITERION 1, round 4: the SAME empty state above must ALSO carry when the grain is NOT

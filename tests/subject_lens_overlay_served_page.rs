@@ -30,6 +30,7 @@
 mod common;
 
 use common::fixtures::tool_available;
+use common::served::node_harness_passes;
 use common::served::run_node_harness;
 use common::served::vm_harness;
 use rigger::dash;
@@ -699,51 +700,18 @@ const DRILL_OVERLAY_OFF_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
-/// RUNTIME guard (spec 55 c4, badge collision): a click on a NEIGHBORHOOD rationale-badge summary
-/// EXPANDS the native disclosure and does NOT re-seed the neighborhood. Drives the served page's own
-/// script through a faithful mini-DOM (real `closest()` ancestor walk) - the proof the primary seam
-/// harness's single-attribute synthetic targets cannot make. Dropping the delegated listener's
-/// `data-explain` early guard reddens it (the summary click re-seeds).
-#[test]
-fn a_neighborhood_rationale_badge_click_expands_and_does_not_reseed() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP a_neighborhood_rationale_badge_click_expands_and_does_not_reseed: no `node` runtime \
-             on PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
-             install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &vm_harness(
-            ADDITIVE_SHIM,
-            BADGE_NO_RESEED_DRIVER,
-            "dash-additive-harness.js",
-        ),
-        "OK badge-click-expands-no-reseed",
-    );
-}
-
-/// RUNTIME guard (spec 55 c4, additive): the DRILL view - an overlayNotes-bearing SVG view, unlike the
-/// inline-badge neighborhood - renders BYTE-IDENTICAL with the overlay off, the same additive proof the
-/// primary harness makes for the neighborhood, driven here for the second overlay-surface wiring. An
-/// ungated `overlayNotes()` (emitting its wrapper with the overlay off) reddens it.
-#[test]
-fn the_drill_view_is_byte_identical_with_the_overlay_off() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP the_drill_view_is_byte_identical_with_the_overlay_off: no `node` runtime on PATH. \
-             This runtime guard needs node (present on dev machines and on ubuntu-latest CI); install \
-             node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &vm_harness(
-            ADDITIVE_SHIM,
-            DRILL_OVERLAY_OFF_DRIVER,
-            "dash-additive-harness.js",
-        ),
-        "OK drill-overlay-off-byte-identical",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard (spec 55 c4, badge collision): a click on a NEIGHBORHOOD rationale-badge summary
+    /// EXPANDS the native disclosure and does NOT re-seed the neighborhood. Drives the served page's own
+    /// script through a faithful mini-DOM (real `closest()` ancestor walk) - the proof the primary seam
+    /// harness's single-attribute synthetic targets cannot make. Dropping the delegated listener's
+    /// `data-explain` early guard reddens it (the summary click re-seeds).
+    a_neighborhood_rationale_badge_click_expands_and_does_not_reseed:
+        node_harness_passes(&vm_harness(ADDITIVE_SHIM, BADGE_NO_RESEED_DRIVER, "dash-additive-harness.js"), "OK badge-click-expands-no-reseed");
+    /// RUNTIME guard (spec 55 c4, additive): the DRILL view - an overlayNotes-bearing SVG view, unlike the
+    /// inline-badge neighborhood - renders BYTE-IDENTICAL with the overlay off, the same additive proof the
+    /// primary harness makes for the neighborhood, driven here for the second overlay-surface wiring. An
+    /// ungated `overlayNotes()` (emitting its wrapper with the overlay off) reddens it.
+    the_drill_view_is_byte_identical_with_the_overlay_off:
+        node_harness_passes(&vm_harness(ADDITIVE_SHIM, DRILL_OVERLAY_OFF_DRIVER, "dash-additive-harness.js"), "OK drill-overlay-off-byte-identical");
 }

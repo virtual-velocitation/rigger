@@ -149,9 +149,9 @@
 
 mod common;
 
+use common::repo::assert_committed_json_round_trips;
 use common::repo::committed_json;
 use common::repo::repo_root;
-use common::repo::repo_text;
 use serde::{Deserialize, Serialize};
 
 /// Mirrors `tests/simplification_audit.rs`'s private `TestOnlyRefWire` shape field-for-field,
@@ -369,31 +369,19 @@ fn the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_as
     }
 }
 
-/// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
-/// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
-/// the producer's own trailing-newline convention, per `dead_code_to_json`) reproduces the
-/// committed bytes exactly. This is the strongest form of the round-trip contract - it proves the
-/// JSON shape is lossless and canonical from an outside reader's perspective, not merely that the
-/// producer's own function agrees with itself (the implementer's own drift-guard test compares
-/// the SAME producer type/function on both sides; this test decodes and re-encodes through a
-/// SEPARATELY-declared type, the position any real future consumer will be in). It is also the
-/// mechanical proof that no field beyond the eight declared above is present in the file today:
-/// an extra field would silently drop on decode and then fail this exact comparison.
-#[test]
-fn deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly(
-) {
-    let committed = repo_text(DEAD_CODE_PATH);
-    let candidates =
-        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
-    let mut reencoded =
-        serde_json::to_string_pretty(&candidates).expect("ConsumedDeadCodeCandidate re-serializes");
-    reencoded.push('\n');
-    assert_eq!(
-        committed, reencoded,
-        "{DEAD_CODE_PATH} does not round-trip byte-for-byte through the documented \
-         DeadCodeCandidate shape - a downstream consumer decoding and re-encoding this file \
-         would silently diverge from the committed artifact"
-    );
+rigger::test_cases! {
+    /// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
+    /// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
+    /// the producer's own trailing-newline convention, per `dead_code_to_json`) reproduces the
+    /// committed bytes exactly. This is the strongest form of the round-trip contract - it proves the
+    /// JSON shape is lossless and canonical from an outside reader's perspective, not merely that the
+    /// producer's own function agrees with itself (the implementer's own drift-guard test compares
+    /// the SAME producer type/function on both sides; this test decodes and re-encodes through a
+    /// SEPARATELY-declared type, the position any real future consumer will be in). It is also the
+    /// mechanical proof that no field beyond the eight declared above is present in the file today:
+    /// an extra field would silently drop on decode and then fail this exact comparison.
+    deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly:
+        assert_committed_json_round_trips::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
 }
 
 // -----------------------------------------------------------------------------------------

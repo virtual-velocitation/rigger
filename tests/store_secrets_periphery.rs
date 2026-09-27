@@ -66,39 +66,28 @@ rigger::test_cases! {
         );
 }
 
-/// An `@` in the URL PATH (after the authority, before any query) is not a userinfo separator, so it
-/// is left untouched. This is the path-position sibling of the in-crate query-`@` case, and it pins
-/// that the authority boundary is the first `/` (path start), not merely the first `?`.
-#[test]
-fn redact_conn_leaves_an_at_sign_in_the_path_alone() {
-    let conn = "kurrentdb://db.internal:2113/tenants/a@b/stream";
-    assert_eq!(
-        redact_conn(conn),
-        conn,
-        "an `@` past the authority (in the path) is not a credential and must not be touched"
+rigger::test_cases! {
+    /// An `@` in the URL PATH (after the authority, before any query) is not a userinfo separator,
+    /// so it is left untouched. This is the path-position sibling of the in-crate query-`@` case,
+    /// and it pins that the authority boundary is the first `/` (path start), not merely the first
+    /// `?`.
+    redact_conn_leaves_an_at_sign_in_the_path_alone: assert_redacts(
+        "kurrentdb://db.internal:2113/tenants/a@b/stream",
+        "path at sign",
+        "kurrentdb://db.internal:2113/tenants/a@b/stream",
+        "an `@` past the authority (in the path) is not a credential and must not be touched",
     );
-}
-
-/// When the authority itself contains several `@`, the host begins at the LAST one, so everything
-/// before it (the whole userinfo, embedded `@` and all) is scrubbed and the host survives. Pins the
-/// `rfind`-based host boundary the doc promises.
-#[test]
-fn redact_conn_scrubs_the_whole_userinfo_when_the_authority_has_several_at_signs() {
-    let out = redact_conn("kurrentdb://spy:hun@ter2@db.internal:2113");
-    assert!(
-        !out.contains("spy") && !out.contains("hun@ter2"),
-        "the entire userinfo up to the last `@` must be scrubbed: {out}"
+    /// When the authority itself contains several `@`, the host begins at the LAST one, so
+    /// everything before it (the whole userinfo, embedded `@` and all) is scrubbed and the host
+    /// survives. Pins the `rfind`-based host boundary the doc promises.
+    redact_conn_scrubs_the_whole_userinfo_when_the_authority_has_several_at_signs: assert_redacts(
+        "kurrentdb://spy:hun@ter2@db.internal:2113",
+        "several at signs",
+        "kurrentdb://<redacted>@db.internal:2113",
+        "the host begins at the last `@` of the authority; everything before it is the credential",
     );
-    assert_eq!(
-        out, "kurrentdb://<redacted>@db.internal:2113",
-        "the host begins at the last `@` of the authority; everything before it is the credential"
-    );
-}
-
-/// The empty string is a boundary input: no URL, nothing to scrub, no panic.
-#[test]
-fn redact_conn_on_the_empty_string_is_empty() {
-    assert_eq!(redact_conn(""), "");
+    /// The empty string is a boundary input: no URL, nothing to scrub, no panic.
+    redact_conn_on_the_empty_string_is_empty: assert_redacts("", "empty input", "", "nothing to scrub");
 }
 
 /// Redacting an already-redacted string is stable: the marker carries no `user:pass@`, so a second

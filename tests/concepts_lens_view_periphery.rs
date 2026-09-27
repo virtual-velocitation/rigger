@@ -53,6 +53,7 @@ use std::process::Command;
 use common::fixtures::edge;
 use common::fixtures::plain;
 use common::fixtures::tool_available;
+use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
 use common::served::page_script;
 use common::served::served;
 use common::served::served_json;
@@ -177,70 +178,53 @@ fn lens_from_query_is_a_public_total_selector_including_concepts() {
     );
 }
 
-/// THE CONCEPTS-LENS OVERVIEW over the public crate boundary: `clustered_overview(graph,
-/// &Lens::Concepts)` buckets every REALIZES-carrying node by the concept it realizes - an idea grouped
-/// ACROSS directory lines - sizing each concept super-node by MEMBER count, colouring it by its
-/// dominant member kind, and labelling it with the concept node's deterministic `label`. A node
-/// realizing MORE THAN ONE concept folds under its PRIMARY (the larger by member count) and is counted
-/// ONCE there; only edges that CROSS two concepts weight the symmetric super-edge (intra-concept
-/// coupling and the REALIZES spokes to the excluded super-node add none). Spec 63 criterion 4
-/// (CONCEPTS-LENS PURITY): a membership-LESS node carries NO bucket at all here, regardless of its own
-/// kind - the concepts lens admits exactly one subject taxonomy, never a per-kind bucket. Every value
-/// is bound to the fixture so a renamed field or a mis-fold reddens here, not just in-process.
-#[test]
-fn concepts_lens_overview_buckets_members_by_concept_across_directories_and_excludes_membershipless_nodes(
-) {
-    let overview = clustered_overview(&lens_graph(), &concepts_default());
-
-    assert_eq!(
-        overview.total, 8,
-        "total carries every graph node, the excluded concept super-nodes included"
-    );
-    assert_eq!(
-        overview.empty_state, None,
-        "a DERIVED grain is not the empty state"
-    );
-    assert_eq!(
-        overview.clusters,
-        vec![
-            // concept/1/0 (the larger): {store.md, append, index} = 3 members across three
-            // directories, dominant kind code-entity (append + index), labelled by the concept node.
-            Cluster {
-                key: C0.to_string(),
-                count: 3,
-                kind: KIND_CODE_ENTITY.to_string(),
-                label: Some("the store".to_string()),
-            },
-            // concept/1/1 (the smaller): the SHARED append folds under its primary c0, so c1 counts
-            // ONLY its sole non-shared member docs/api.md - never silently duplicated.
-            Cluster {
-                key: C1.to_string(),
-                count: 1,
-                kind: KIND_DESIGN_DOC.to_string(),
-                label: Some("the api".to_string()),
-            },
-            // NO cluster for the unattached code entity or the membership-less decision (spec 63 c4):
-            // the concepts lens admits ONLY concept members, so a membership-less node of any kind
-            // carries no bucket here.
-        ],
-        "concepts lens folds members by concept (primary bucket, shared counted once) and excludes every membership-less node entirely, at any kind: {overview:?}"
-    );
-    assert!(
-        overview
-            .clusters
-            .iter()
-            .all(|c| c.key != KIND_CODE_ENTITY && c.key != KIND_DECISION),
-        "no storage-schema-name (code-entity / decision) kind bucket ever appears as a cluster key under the concepts lens: {overview:?}"
-    );
-    assert_eq!(
-        overview.edges,
-        vec![ClusterEdge {
-            from: C0.to_string(),
-            to: C1.to_string(),
-            weight: 1,
-        }],
-        "only the cross-concept reference weights the super-edge; the intra-concept call and the REALIZES spokes to the excluded super-node add none: {overview:?}"
-    );
+rigger::test_cases! {
+    /// THE CONCEPTS-LENS OVERVIEW over the public crate boundary: `clustered_overview(graph,
+    /// &Lens::Concepts)` buckets every REALIZES-carrying node by the concept it realizes - an idea grouped
+    /// ACROSS directory lines - sizing each concept super-node by MEMBER count, colouring it by its
+    /// dominant member kind, and labelling it with the concept node's deterministic `label`. A node
+    /// realizing MORE THAN ONE concept folds under its PRIMARY (the larger by member count) and is counted
+    /// ONCE there; only edges that CROSS two concepts weight the symmetric super-edge (intra-concept
+    /// coupling and the REALIZES spokes to the excluded super-node add none). Spec 63 criterion 4
+    /// (CONCEPTS-LENS PURITY): a membership-LESS node carries NO bucket at all here, regardless of its own
+    /// kind - the concepts lens admits exactly one subject taxonomy, never a per-kind bucket. Every value
+    /// is bound to the fixture so a renamed field or a mis-fold reddens here, not just in-process.
+    concepts_lens_overview_buckets_members_by_concept_across_directories_and_excludes_membershipless_nodes:
+        assert_overview_folds(
+            &lens_graph(),
+            &concepts_default(),
+            8,
+            vec![
+                // concept/1/0 (the larger): {store.md, append, index} = 3 members across three
+                // directories, dominant kind code-entity (append + index), labelled by the concept
+                // node.
+                Cluster {
+                    key: C0.to_string(),
+                    count: 3,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("the store".to_string()),
+                },
+                // concept/1/1 (the smaller): the SHARED append folds under its primary c0, so c1
+                // counts ONLY its sole non-shared member docs/api.md - never silently duplicated.
+                Cluster {
+                    key: C1.to_string(),
+                    count: 1,
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    label: Some("the api".to_string()),
+                },
+                // NO cluster for the unattached code entity or the membership-less decision (spec
+                // 63 c4): the concepts lens admits ONLY concept members, so a membership-less node
+                // of any kind carries no bucket here.
+            ],
+            // Only the cross-concept reference weights the super-edge; the intra-concept call and
+            // the REALIZES spokes to the excluded super-node add none.
+            vec![ClusterEdge {
+                from: C0.to_string(),
+                to: C1.to_string(),
+                weight: 1,
+            }],
+            &[KIND_CODE_ENTITY, KIND_DECISION],
+        );
 }
 
 /// THE CONCEPTS-LENS DRILL over the public boundary: `cluster_detail(graph, concept_key,
@@ -421,31 +405,19 @@ fn concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs() 
     );
 }
 
-/// THE UNDERIVED-GRAIN empty state over the public boundary: a concepts lens at a resolution grain
-/// with NO derived assignments returns the documented `CONCEPTS_LENS_UNDERIVED` prompt - never an
-/// error and never a bare kind-bucket view - while `total` still reports the whole graph size.
-#[test]
-fn concepts_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error() {
-    let underived = clustered_overview(
-        &lens_graph(),
-        &Lens::Concepts {
-            resolution: "2".to_string(),
-        },
-    );
-
-    assert!(
-        underived.clusters.is_empty() && underived.edges.is_empty(),
-        "an underived concepts grain folds no concepts: {underived:?}"
-    );
-    assert_eq!(
-        underived.total, 8,
-        "the empty state still reports the whole graph size"
-    );
-    assert_eq!(
-        underived.empty_state.as_deref(),
-        Some(CONCEPTS_LENS_UNDERIVED),
-        "an underived concepts grain carries the documented empty-state message, never an error"
-    );
+rigger::test_cases! {
+    /// THE UNDERIVED-GRAIN empty state over the public boundary: a concepts lens at a resolution grain
+    /// with NO derived assignments returns the documented `CONCEPTS_LENS_UNDERIVED` prompt - never an
+    /// error and never a bare kind-bucket view - while `total` still reports the whole graph size.
+    concepts_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error:
+        assert_underived_grain_is_the_empty_state(
+            &lens_graph(),
+            &Lens::Concepts {
+                resolution: "2".to_string(),
+            },
+            8,
+            CONCEPTS_LENS_UNDERIVED,
+        );
 }
 
 /// THE SERIALIZED `shared` WIRE-SHAPE back-compat the external panel reads: this pins the JSON key's

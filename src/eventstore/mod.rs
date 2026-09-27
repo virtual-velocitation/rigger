@@ -743,37 +743,24 @@ pub fn endpoint_label(conn: &str) -> String {
 mod endpoint_label_tests {
     use super::endpoint_label;
 
-    #[test]
-    fn strips_userinfo_and_query_keeps_scheme_host_port() {
-        assert_eq!(
+    crate::test_cases! {
+        /// Userinfo AND query are stripped; only scheme+host:port survives.
+        strips_userinfo_and_query_keeps_scheme_host_port: assert_eq!(
             endpoint_label("kurrentdb://admin:secret@db.example:2113?tls=true"),
-            "kurrentdb://db.example:2113",
-            "userinfo AND query are stripped; only scheme+host:port survives"
+            "kurrentdb://db.example:2113"
         );
-    }
-
-    #[test]
-    fn strips_a_bare_user_with_no_password() {
-        assert_eq!(
+        strips_a_bare_user_with_no_password: assert_eq!(
             endpoint_label("esdb+discover://user@cluster.internal:2113"),
             "esdb+discover://cluster.internal:2113"
         );
-    }
-
-    #[test]
-    fn an_already_credential_free_endpoint_is_unchanged() {
-        assert_eq!(
+        an_already_credential_free_endpoint_is_unchanged: assert_eq!(
             endpoint_label("kurrentdb://db.example:2113"),
             "kurrentdb://db.example:2113"
         );
-    }
-
-    #[test]
-    fn a_credential_smuggled_after_the_path_is_dropped_with_the_path() {
-        assert_eq!(
+        /// A `?user=&password=` query is dropped with the path.
+        a_credential_smuggled_after_the_path_is_dropped_with_the_path: assert_eq!(
             endpoint_label("kurrentdb://host:2113/stream?user=u&password=p"),
-            "kurrentdb://host:2113",
-            "a `?user=&password=` query is dropped with the path"
+            "kurrentdb://host:2113"
         );
     }
 
@@ -824,42 +811,31 @@ mod endpoint_label_tests {
 mod redact_tests {
     use super::redact_conn;
 
-    #[test]
-    fn strips_user_and_password_but_keeps_scheme_host_and_query() {
-        let redacted = redact_conn("kurrentdb://myuser:supersecret@db.internal:2113?tls=true");
-        assert!(
-            !redacted.contains("supersecret") && !redacted.contains("myuser"),
-            "userinfo must never survive redaction: {redacted}"
+    crate::test_cases! {
+        /// Scheme, host, port, and query print; only the credential (user AND password) is
+        /// scrubbed - the exact output carries neither half.
+        strips_user_and_password_but_keeps_scheme_host_and_query: assert_eq!(
+            redact_conn("kurrentdb://myuser:supersecret@db.internal:2113?tls=true"),
+            "kurrentdb://<redacted>@db.internal:2113?tls=true"
         );
-        assert_eq!(
-            redacted, "kurrentdb://<redacted>@db.internal:2113?tls=true",
-            "scheme, host, port, and query print; only the credential is scrubbed"
-        );
-    }
-
-    #[test]
-    fn strips_a_userinfo_with_no_password() {
-        assert_eq!(
+        strips_a_userinfo_with_no_password: assert_eq!(
             redact_conn("kurrentdb://alice@db.internal:2113"),
             "kurrentdb://<redacted>@db.internal:2113"
         );
-    }
-
-    #[test]
-    fn leaves_a_conn_with_no_userinfo_unchanged() {
-        let conn = "kurrentdb://127.0.0.1:2113?tls=false";
-        assert_eq!(
-            redact_conn(conn),
-            conn,
-            "no credential means nothing to scrub"
+        /// No credential means nothing to scrub.
+        leaves_a_conn_with_no_userinfo_unchanged: assert_eq!(
+            redact_conn("kurrentdb://127.0.0.1:2113?tls=false"),
+            "kurrentdb://127.0.0.1:2113?tls=false"
         );
-    }
-
-    #[test]
-    fn an_at_sign_in_the_query_is_not_a_credential() {
-        // The `@` sits in the query, not the authority, so it is NOT a userinfo separator.
-        let conn = "kurrentdb://db.internal:2113?user=a@b";
-        assert_eq!(redact_conn(conn), conn);
+        /// The `@` sits in the query, not the authority, so it is NOT a userinfo separator.
+        an_at_sign_in_the_query_is_not_a_credential: assert_eq!(
+            redact_conn("kurrentdb://db.internal:2113?user=a@b"),
+            "kurrentdb://db.internal:2113?user=a@b"
+        );
+        plain_text_with_no_url_is_untouched: assert_eq!(
+            redact_conn("no rigger store found"),
+            "no rigger store found"
+        );
     }
 
     #[test]
@@ -873,14 +849,6 @@ mod redact_tests {
         assert!(
             redacted.contains("10.0.0.5:2113") && redacted.contains("timed out"),
             "the host and the surrounding message text still print: {redacted}"
-        );
-    }
-
-    #[test]
-    fn plain_text_with_no_url_is_untouched() {
-        assert_eq!(
-            redact_conn("no rigger store found"),
-            "no rigger store found"
         );
     }
 }

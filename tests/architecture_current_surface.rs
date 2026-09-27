@@ -44,6 +44,7 @@
 
 mod common;
 
+use common::repo::assert_doc_carries_none_of;
 use common::repo::repo_text;
 
 /// The return type `EventStore::append` is declared with inside `text`, extracted rather
@@ -168,26 +169,17 @@ fn architecture_renders_the_event_store_port_the_source_declares() {
     );
 }
 
-#[test]
-fn architecture_names_no_retired_or_wrong_default_grounder() {
-    let text = repo_text("docs/architecture.md").to_lowercase();
-
-    let inversions: Vec<&str> = WRONG_DEFAULT_OR_RETIRED_PHRASINGS
-        .iter()
-        .copied()
-        .filter(|phrasing| text.contains(phrasing))
-        .collect();
-
-    assert!(
-        inversions.is_empty(),
-        "docs/architecture.md must describe the grounder surface that EXISTS (spec 57): \
-         `symbols` is the unset default (an unset `defaults.grounder` resolves to it and it \
-         ships in the default build), and `grep` / `nop` are the explicit, named-only \
-         opt-outs. The vector engine `turbovec` and its `hybrid` composite were RETIRED - they \
-         are neither the default nor a live choice, so the front-door document must not name \
-         them, and must never call `grep` the default. Every grounder enumeration (the seams \
-         diagram, the seams table, the config example, the module map, and ADR-0001 R4) must \
-         name `symbols` as the default. Inverting or retired phrasings still present in the \
-         document: {inversions:#?}"
+rigger::test_cases! {
+    architecture_names_no_retired_or_wrong_default_grounder: assert_doc_carries_none_of(
+        "docs/architecture.md",
+        WRONG_DEFAULT_OR_RETIRED_PHRASINGS,
+        "must describe the grounder surface that EXISTS (spec 57): `symbols` is the unset \
+         default (an unset `defaults.grounder` resolves to it and it ships in the default \
+         build), and `grep` / `nop` are the explicit, named-only opt-outs. The vector engine \
+         `turbovec` and its `hybrid` composite were RETIRED - they are neither the default nor \
+         a live choice, so the front-door document must not name them, and must never call \
+         `grep` the default. Every grounder enumeration (the seams diagram, the seams table, \
+         the config example, the module map, and ADR-0001 R4) must name `symbols` as the \
+         default",
     );
 }

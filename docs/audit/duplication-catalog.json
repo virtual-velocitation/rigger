@@ -8464,84 +8464,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-be1e9fdfabe6",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/console/map.rs",
-        "name": "module_of_a_directory_module_is_the_directory_not_the_file_within_it",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "module_of_a_crate_member_is_its_crate_name",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "district_purpose_falls_back_to_the_bare_module_name_when_uncurated",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "src/eventstore/mod.rs",
-        "name": "strips_a_bare_user_with_no_password",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "src/eventstore/mod.rs",
-        "name": "an_already_credential_free_endpoint_is_unchanged",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "src/eventstore/mod.rs",
-        "name": "strips_a_userinfo_with_no_password",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "src/eventstore/mod.rs",
-        "name": "plain_text_with_no_url_is_untouched",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "src/spec.rs",
-        "name": "ownership_check_recognizes_owner_inside_a_hyphenated_compound",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "impl_self_type_still_handles_a_generic_self_type_with_a_where_clause",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "impl_self_type_handles_a_bound_generic_self_type",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "impl_self_type_handles_a_trait_impl_on_a_lifetime_generic_self_type",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "impl_self_type_handles_a_generic_trait_impl_on_a_generic_self_type",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "impl_self_type_handles_a_const_generic_self_type",
-        "content_hash": "3bf878275005eb46"
-      },
-      {
-        "file": "tests/store_secrets_periphery.rs",
-        "name": "redact_conn_on_the_empty_string_is_empty",
-        "content_hash": "3bf878275005eb46"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 5 files: src/console/map.rs, src/eventstore/mod.rs, src/spec.rs, tests/simplification_audit.rs, tests/store_secrets_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-fdbf1d3819aa",
     "classification": "near",
     "sites": [
@@ -10528,65 +10450,6 @@
     ],
     "proposed_home": "mod::appended - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
     "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
-  },
-  {
-    "id": "dup-7f0fe9332e9b",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/eventstore/mod.rs",
-        "name": "strips_userinfo_and_query_keeps_scheme_host_port",
-        "content_hash": "d3bd773cd46cceeb"
-      },
-      {
-        "file": "src/eventstore/mod.rs",
-        "name": "a_credential_smuggled_after_the_path_is_dropped_with_the_path",
-        "content_hash": "d3bd773cd46cceeb"
-      },
-      {
-        "file": "src/spec.rs",
-        "name": "strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair",
-        "content_hash": "d3bd773cd46cceeb"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/eventstore/mod.rs, src/spec.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-3049e1b1c058",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/eventstore/mod.rs",
-        "name": "strips_user_and_password_but_keeps_scheme_host_and_query",
-        "content_hash": "bb40f8e1e1e54990"
-      },
-      {
-        "file": "tests/store_secrets_periphery.rs",
-        "name": "redact_conn_scrubs_the_whole_userinfo_when_the_authority_has_several_at_signs",
-        "content_hash": "bb40f8e1e1e54990"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/eventstore/mod.rs, tests/store_secrets_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-b000d24367b5",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/eventstore/mod.rs",
-        "name": "leaves_a_conn_with_no_userinfo_unchanged",
-        "content_hash": "fbfd2b533e9fbe7e"
-      },
-      {
-        "file": "tests/store_secrets_periphery.rs",
-        "name": "redact_conn_leaves_an_at_sign_in_the_path_alone",
-        "content_hash": "fbfd2b533e9fbe7e"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/eventstore/mod.rs, tests/store_secrets_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
     "id": "dup-09b3cd252ed3",
@@ -13663,34 +13526,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-039e74de7c26",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/adaptive_labels_periphery.rs",
-        "name": "the_real_concepts_drill_names_its_decluttered_shared_member_on_hover",
-        "content_hash": "409d89fd9ecf3baf"
-      },
-      {
-        "file": "tests/subject_lens_overlay_client_arms.rs",
-        "name": "a_lens_flip_with_no_subject_reloads_the_whole_graph_overview",
-        "content_hash": "409d89fd9ecf3baf"
-      },
-      {
-        "file": "tests/subject_lens_overlay_client_arms.rs",
-        "name": "a_failed_live_reprojection_fetch_degrades_to_a_message",
-        "content_hash": "409d89fd9ecf3baf"
-      },
-      {
-        "file": "tests/subject_view_memory_rail_client.rs",
-        "name": "clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel",
-        "content_hash": "409d89fd9ecf3baf"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: tests/adaptive_labels_periphery.rs, tests/subject_lens_overlay_client_arms.rs, tests/subject_view_memory_rail_client.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-55487fee1a95",
     "classification": "near",
     "sites": [
@@ -13834,24 +13669,6 @@
         "file": "tests/readme_retirement_rationale.rs",
         "name": "readme_records_the_symbols_default_and_the_retirement_rationale",
         "content_hash": "86b143f2f9c272e7"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/architecture_current_surface.rs, tests/readme_retirement_rationale.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-afaf7abb598f",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/architecture_current_surface.rs",
-        "name": "architecture_names_no_retired_or_wrong_default_grounder",
-        "content_hash": "6d8711521433b873"
-      },
-      {
-        "file": "tests/readme_retirement_rationale.rs",
-        "name": "readme_carries_none_of_the_retired_grounder_inversions",
-        "content_hash": "6d8711521433b873"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/architecture_current_surface.rs, tests/readme_retirement_rationale.rs)",
@@ -15488,22 +15305,12 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-b8dbc28d6bf5",
+    "id": "dup-45945bd806e6",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/cli.rs",
         "name": "resume_unit_refuses_an_unknown_unit",
-        "content_hash": "e0879711075cbe4d"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "step_rejects_an_unknown_flag",
-        "content_hash": "e0879711075cbe4d"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "step_rejects_base_without_a_value",
         "content_hash": "e0879711075cbe4d"
       },
       {
@@ -17129,29 +16936,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-b7c2ed5518ee",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/code_lens_overview_collapse_viz.rs",
-        "name": "the_overview_collapses_to_sized_labelled_community_super_nodes_purely",
-        "content_hash": "068a98682fd2cbcf"
-      },
-      {
-        "file": "tests/subject_lens_overlay_served_page.rs",
-        "name": "a_neighborhood_rationale_badge_click_expands_and_does_not_reseed",
-        "content_hash": "068a98682fd2cbcf"
-      },
-      {
-        "file": "tests/subject_lens_overlay_served_page.rs",
-        "name": "the_drill_view_is_byte_identical_with_the_overlay_off",
-        "content_hash": "068a98682fd2cbcf"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/code_lens_overview_collapse_viz.rs, tests/subject_lens_overlay_served_page.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-f31664ca8a0a",
     "classification": "near",
     "sites": [
@@ -17248,42 +17032,6 @@
         "file": "tests/concepts_lens_view_periphery.rs",
         "name": "lens_from_query_is_a_public_total_selector_including_concepts",
         "content_hash": "6b588156f83a923f"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-680731fdfa42",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/code_lens_view_periphery.rs",
-        "name": "code_lens_overview_buckets_code_entities_by_community_and_excludes_every_other_kind",
-        "content_hash": "d077496b8505e599"
-      },
-      {
-        "file": "tests/concepts_lens_view_periphery.rs",
-        "name": "concepts_lens_overview_buckets_members_by_concept_across_directories_and_excludes_membershipless_nodes",
-        "content_hash": "d077496b8505e599"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-c23edb94c48b",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/code_lens_view_periphery.rs",
-        "name": "code_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error",
-        "content_hash": "e044579d96e1e732"
-      },
-      {
-        "file": "tests/concepts_lens_view_periphery.rs",
-        "name": "concepts_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error",
-        "content_hash": "e044579d96e1e732"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)",
@@ -17687,52 +17435,6 @@
       }
     ],
     "proposed_home": "config_unknown_key_dotted_path_periphery::support (consolidate these 12 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0fbc4645bb71",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/console_palette_periphery.rs",
-        "name": "the_served_console_page_carries_the_palette_dialog_markup",
-        "content_hash": "eaa593b38d1f9c37"
-      },
-      {
-        "file": "tests/console_palette_periphery.rs",
-        "name": "the_served_console_page_runs_on_enter_and_closes_on_escape",
-        "content_hash": "eaa593b38d1f9c37"
-      },
-      {
-        "file": "tests/console_position_model_periphery.rs",
-        "name": "the_served_console_page_loads_the_wasm_core_and_calls_the_three_fold_ops",
-        "content_hash": "abf9fdadbded9277"
-      },
-      {
-        "file": "tests/console_position_model_periphery.rs",
-        "name": "the_served_console_page_fetches_the_snapshot_and_follows_the_stream",
-        "content_hash": "eaa593b38d1f9c37"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/console_palette_periphery.rs, tests/console_position_model_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-54ddd6b0fb8e",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/console_palette_periphery.rs",
-        "name": "the_served_console_page_opens_the_palette_on_ctrl_k_and_cmd_k",
-        "content_hash": "b84fdcc41454a557"
-      },
-      {
-        "file": "tests/console_position_model_periphery.rs",
-        "name": "the_served_console_page_restores_and_updates_the_url_hash",
-        "content_hash": "b84fdcc41454a557"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/console_palette_periphery.rs, tests/console_position_model_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18219,29 +17921,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-25aa4bfac3b3",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/dead_code_json_contract_periphery.rs",
-        "name": "deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly",
-        "content_hash": "28827405c41c7806"
-      },
-      {
-        "file": "tests/duplication_catalog_contract_periphery.rs",
-        "name": "deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly",
-        "content_hash": "28827405c41c7806"
-      },
-      {
-        "file": "tests/responsibility_map_contract_periphery.rs",
-        "name": "deserializing_then_reserializing_reproduces_the_committed_bytes_exactly",
-        "content_hash": "28827405c41c7806"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-10a4225b14d4",
     "classification": "near",
     "sites": [
@@ -18357,24 +18036,6 @@
       }
     ],
     "proposed_home": "design_intent_events::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-631383bb9343",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/duplication_catalog_contract_periphery.rs",
-        "name": "the_committed_duplication_catalog_deserializes_as_a_downstream_consumer_would",
-        "content_hash": "ee98d3e02e180514"
-      },
-      {
-        "file": "tests/responsibility_map_contract_periphery.rs",
-        "name": "the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would",
-        "content_hash": "ee98d3e02e180514"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18601,39 +18262,6 @@
     ],
     "proposed_home": "one shared `collect_rs_files` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
-  },
-  {
-    "id": "dup-3f3d5990c9fe",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
-        "name": "a_doc_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site",
-        "content_hash": "129e95d7ad9df1bd"
-      },
-      {
-        "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
-        "name": "a_line_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site",
-        "content_hash": "129e95d7ad9df1bd"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "cfg_all_with_test_nested_inside_a_further_any_is_not_recognized",
-        "content_hash": "129e95d7ad9df1bd"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "cfg_all_with_not_test_is_not_recognized",
-        "content_hash": "129e95d7ad9df1bd"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "cfg_all_on_an_unrelated_attribute_is_not_recognized",
-        "content_hash": "129e95d7ad9df1bd"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/simplification_audit.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
     "id": "dup-76ac18c56947",
@@ -19247,29 +18875,6 @@
     ],
     "proposed_home": "one shared `build_harness` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
-  },
-  {
-    "id": "dup-1588335c2532",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/metadata_card_handoff_viz.rs",
-        "name": "metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens",
-        "content_hash": "5b93d7629df4fad8"
-      },
-      {
-        "file": "tests/metadata_card_handoff_viz.rs",
-        "name": "metadata_card_wiring_fires_at_every_render_and_drill_call_site",
-        "content_hash": "5b93d7629df4fad8"
-      },
-      {
-        "file": "tests/proof_row_renders_on_the_card.rs",
-        "name": "proof_row_renders_count_evidence_and_the_explicit_empty_state",
-        "content_hash": "5b93d7629df4fad8"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/metadata_card_handoff_viz.rs, tests/proof_row_renders_on_the_card.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
     "id": "dup-ff735ff86fe9",

@@ -20,8 +20,7 @@
 
 mod common;
 
-use common::fixtures::tool_available;
-use common::served::run_node_harness;
+use common::served::node_harness_passes;
 use common::served::vm_harness;
 use rigger::dash;
 
@@ -124,28 +123,13 @@ const COLLAPSE_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
-/// RUNTIME guard (spec 63 c6, OVERVIEW COLLAPSE): the served page's `renderKgOverview` collapses a
-/// `Lens::Code` overview into sized, labelled community super-nodes and never a storage-schema name.
-/// Dropping the collapse (rendering members instead of clusters), the count-based sizing, the
-/// id-not-kind label fallback, or leaking a schema token onto the canvas each reddens this.
-#[test]
-fn the_overview_collapses_to_sized_labelled_community_super_nodes_purely() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP the_overview_collapses_to_sized_labelled_community_super_nodes_purely: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &vm_harness(
-            DOM_SHIM,
-            COLLAPSE_DRIVER,
-            "dash-overview-collapse-harness.js",
-        ),
-        "OK overview-collapses-to-sized-labelled-community-super-nodes-purely",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard (spec 63 c6, OVERVIEW COLLAPSE): the served page's `renderKgOverview` collapses a
+    /// `Lens::Code` overview into sized, labelled community super-nodes and never a storage-schema name.
+    /// Dropping the collapse (rendering members instead of clusters), the count-based sizing, the
+    /// id-not-kind label fallback, or leaking a schema token onto the canvas each reddens this.
+    the_overview_collapses_to_sized_labelled_community_super_nodes_purely:
+        node_harness_passes(&vm_harness(DOM_SHIM, COLLAPSE_DRIVER, "dash-overview-collapse-harness.js"), "OK overview-collapses-to-sized-labelled-community-super-nodes-purely");
 }
 
 /// STRUCTURAL companion (the fallback proof when `node` is unavailable): the served page's

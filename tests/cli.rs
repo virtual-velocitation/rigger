@@ -11363,20 +11363,28 @@ fn step_resolves_the_model_ladders_first_rung_for_the_initial_attempt() {
     );
 }
 
-/// `rigger step` rejects an unknown flag with a clear, non-zero error rather than
-/// silently running an unconstrained step.
-#[test]
-fn step_rejects_an_unknown_flag() {
+/// The shared case body: `rigger step <args>` on a two-stage project exits non-zero with a
+/// stderr naming `needle` - a clear refusal, never a silent unconstrained step.
+fn assert_step_rejects(args: &[&str], needle: &str) {
     let dir = temp_project();
     let root = dir.path();
     write_two_stage_workflow(root);
 
-    let (_out, err, ok) = run_rigger(root, &["step", "--nope"]);
-    assert!(!ok, "an unknown flag must be a non-zero exit");
+    let (_out, err, ok) = run_rigger(root, args);
+    assert!(!ok, "`rigger {}` must be a non-zero exit", args.join(" "));
     assert!(
-        err.contains("unknown flag"),
-        "the error must name the unknown flag; got: {err:?}"
+        err.contains(needle),
+        "the error must say {needle:?}; got: {err:?}"
     );
+}
+
+rigger::test_cases! {
+    /// `rigger step` rejects an unknown flag with a clear, non-zero error rather than
+    /// silently running an unconstrained step.
+    step_rejects_an_unknown_flag: assert_step_rejects(&["step", "--nope"], "unknown flag");
+    /// `rigger step --base` with no following ref is a clear, non-zero error, never a
+    /// silent unconstrained step - matching the `--spec` contract.
+    step_rejects_base_without_a_value: assert_step_rejects(&["step", "--base"], "--base expects a ref");
 }
 
 /// `rigger step --base <ref>` anchors a NEW run branch: it creates the `rigger-run`
@@ -11410,22 +11418,6 @@ fn step_accepts_base_and_anchors_the_run_branch() {
         git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
         Some(base_sha.as_str()),
         "the run branch must be anchored on the --base commit"
-    );
-}
-
-/// `rigger step --base` with no following ref is a clear, non-zero error, never a
-/// silent unconstrained step - matching the `--spec` contract.
-#[test]
-fn step_rejects_base_without_a_value() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-
-    let (_out, err, ok) = run_rigger(root, &["step", "--base"]);
-    assert!(!ok, "--base without a value must be a non-zero exit");
-    assert!(
-        err.contains("--base expects a ref"),
-        "the error must explain --base needs a ref; got: {err:?}"
     );
 }
 

@@ -1252,14 +1252,13 @@ mod tests {
         assert_eq!(module_of("worktree.rs"), "worktree");
     }
 
-    #[test]
-    fn module_of_a_directory_module_is_the_directory_not_the_file_within_it() {
-        assert_eq!(module_of("src/contextgraph/query.rs"), "contextgraph");
-    }
-
-    #[test]
-    fn module_of_a_crate_member_is_its_crate_name() {
-        assert_eq!(module_of("crates/console-core/src/lib.rs"), "console-core");
+    crate::test_cases! {
+        module_of_a_directory_module_is_the_directory_not_the_file_within_it:
+            assert_eq!(module_of("src/contextgraph/query.rs"), "contextgraph");
+        module_of_a_crate_member_is_its_crate_name:
+            assert_eq!(module_of("crates/console-core/src/lib.rs"), "console-core");
+        district_purpose_falls_back_to_the_bare_module_name_when_uncurated:
+            assert_eq!(district_purpose("some_future_module"), "some_future_module");
     }
 
     #[test]
@@ -1284,11 +1283,6 @@ mod tests {
         assert_eq!(district_purpose("worktree"), "worktree lifecycle");
         assert_eq!(district_purpose("liveness"), "liveness & heartbeats");
         assert_eq!(district_purpose("spawn"), "liveness & heartbeats");
-    }
-
-    #[test]
-    fn district_purpose_falls_back_to_the_bare_module_name_when_uncurated() {
-        assert_eq!(district_purpose("some_future_module"), "some_future_module");
     }
 
     // ---- build: districts, ranks, exclusion --------------------------------------------------
@@ -2647,7 +2641,8 @@ mod tests {
     }
 
     crate::test_cases! {
-        fit_district_of_an_unknown_purpose_is_none: assert_fit_of_an_unknown_key_is_none(fit_district, "no-such-district");
+        fit_district_of_an_unknown_purpose_is_none:
+            assert_fit_of_an_unknown_key_is_none(fit_district, "no-such-district");
     }
 
     /// adv-u84c2-fit-district-cannot-zoom-out-past-full-extent's own repro, now a permanent
@@ -2744,7 +2739,8 @@ mod tests {
     }
 
     crate::test_cases! {
-        fit_entity_of_an_unknown_id_is_none: assert_fit_of_an_unknown_key_is_none(fit_entity, "no-such-entity");
+        fit_entity_of_an_unknown_id_is_none:
+            assert_fit_of_an_unknown_key_is_none(fit_entity, "no-such-entity");
     }
 
     // ---- legend / kind_colour (criterion 3) ---------------------------------------------------

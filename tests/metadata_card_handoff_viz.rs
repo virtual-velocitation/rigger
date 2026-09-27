@@ -23,8 +23,7 @@
 
 mod common;
 
-use common::fixtures::tool_available;
-use common::served::run_node_harness;
+use common::served::node_harness_passes;
 
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
 /// dataset / .hidden / addEventListener). Mirrors `subject_view_memory_rail_client.rs`'s shim
@@ -238,24 +237,19 @@ const CARD_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
-/// RUNTIME guard for spec 63 c2's own Done-when clause: a code subject's card carries file:line,
-/// concept chips, and memory counts, AND a card chip resolves to a lens handoff target of the
-/// chip's own taxonomy carrying the chosen subject - proven for EVERY card taxonomy (code, file,
-/// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
-#[test]
-fn metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens: no \
-             `node` runtime on PATH. This runtime guard needs node (present on dev machines and \
-             on ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(CARD_DRIVER),
-        "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 63 c2's own Done-when clause: a code subject's card carries file:line,
+    /// concept chips, and memory counts, AND a card chip resolves to a lens handoff target of the
+    /// chip's own taxonomy carrying the chosen subject - proven for EVERY card taxonomy (code, file,
+    /// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
+    metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens:
+        node_harness_passes(&build_harness(CARD_DRIVER), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
+    /// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
+    /// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
+    /// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
+    /// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
+    metadata_card_wiring_fires_at_every_render_and_drill_call_site:
+        node_harness_passes(&build_harness(WIRING_DRIVER), "OK metadata-card-wiring-fires-at-every-call-site");
 }
 
 /// Driver for the CARD's OWN WIRING (spec 63 c2): `renderCard`/`loadCard` are proven above in
@@ -323,23 +317,3 @@ const WIRING_DRIVER: &str = r#"
   console.log("OK metadata-card-wiring-fires-at-every-call-site");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
-
-/// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
-/// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
-/// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
-/// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
-#[test]
-fn metadata_card_wiring_fires_at_every_render_and_drill_call_site() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP metadata_card_wiring_fires_at_every_render_and_drill_call_site: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(WIRING_DRIVER),
-        "OK metadata-card-wiring-fires-at-every-call-site",
-    );
-}

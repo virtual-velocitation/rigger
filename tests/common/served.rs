@@ -121,6 +121,17 @@ pub fn served_console_body() -> String {
         .to_string()
 }
 
+/// The served console page carries every one of `needles`.
+pub fn assert_served_console_page_carries(needles: &[&str]) {
+    let body = served_console_body();
+    for needle in needles {
+        assert!(
+            body.contains(needle),
+            "missing {needle:?} in the served console page: {body}"
+        );
+    }
+}
+
 /// The body of a raw HTTP response read as text.
 pub fn body_of(resp: &str) -> &str {
     resp.split_once("\r\n\r\n")
@@ -191,6 +202,19 @@ pub fn run_page_harness(page: &str, harness_src: &str) -> (bool, String, String)
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// [`run_node_harness`], skipped (loudly) when there is no `node` runtime on PATH - node is
+/// present on dev machines and ubuntu-latest CI, so only a machine without it skips.
+pub fn node_harness_passes(harness_src: &str, ok_token: &str) {
+    if !super::fixtures::tool_available("node", "--version") {
+        eprintln!(
+            "SKIP: no `node` runtime on PATH. This runtime guard needs node (present on dev \
+             machines and on ubuntu-latest CI); install node to run it."
+        );
+        return;
+    }
+    run_node_harness(harness_src, ok_token);
 }
 
 /// Run `harness_src` against the live served page, asserting node succeeds and prints

@@ -6507,7 +6507,8 @@ mod tests {
     }
 
     rigger::test_cases! {
-        fnv1a_is_not_mistaken_for_the_fn_keyword: assert_single_fn_named("fn fnv1a_64(bytes: &[u8]) -> u64 {\n    0\n}\n", "fnv1a_64");
+        fnv1a_is_not_mistaken_for_the_fn_keyword:
+            assert_single_fn_named("fn fnv1a_64(bytes: &[u8]) -> u64 {\n    0\n}\n", "fnv1a_64");
     }
 
     // -------------------------------------------------------------------------------------
@@ -6515,15 +6516,24 @@ mod tests {
     // -------------------------------------------------------------------------------------
 
     rigger::test_cases! {
-        a_brace_inside_a_line_comment_is_ignored: assert_single_fn_ends_at("fn a() {\n    // a stray { brace\n    let _ = 1;\n}\n", 4);
-        a_brace_inside_a_block_comment_is_ignored: assert_single_fn_ends_at("fn a() {\n    /* a { stray } brace */\n    let _ = 1;\n}\n", 4);
-        nested_block_comments_are_handled: assert_single_fn_ends_at("fn a() {\n    /* outer /* inner { */ still comment */\n    let _ = 1;\n}\n", 4);
-        a_brace_inside_a_string_literal_is_ignored: assert_single_fn_ends_at("fn a() {\n    let s = \"{ not a brace }\";\n}\n", 3);
-        a_brace_inside_a_raw_string_with_hashes_is_ignored: assert_single_fn_ends_at("fn a() {\n    let s = r#\"{ not \\\"real\\\" }\"#;\n}\n", 3);
-        a_brace_inside_a_byte_string_is_ignored: assert_single_fn_ends_at("fn a() {\n    let s = b\"{ not a brace }\";\n}\n", 3);
-        a_brace_char_literal_is_not_mistaken_for_real_braces: assert_single_fn_ends_at("fn a() {\n    let c = '{';\n    let d = '}';\n}\n", 4);
-        a_lifetime_is_not_mistaken_for_a_char_literal: assert_single_fn_ends_at("fn a<'x>(v: &'x str) -> &'x str {\n    v\n}\n", 3);
-        an_escaped_quote_char_literal_does_not_confuse_the_scanner: assert_single_fn_ends_at("fn a() {\n    let c = '\\'';\n    let _ = 1;\n}\n", 4);
+        a_brace_inside_a_line_comment_is_ignored:
+            assert_single_fn_ends_at("fn a() {\n    // a stray { brace\n    let _ = 1;\n}\n", 4);
+        a_brace_inside_a_block_comment_is_ignored:
+            assert_single_fn_ends_at("fn a() {\n    /* a { stray } brace */\n    let _ = 1;\n}\n", 4);
+        nested_block_comments_are_handled:
+            assert_single_fn_ends_at("fn a() {\n    /* outer /* inner { */ still comment */\n    let _ = 1;\n}\n", 4);
+        a_brace_inside_a_string_literal_is_ignored:
+            assert_single_fn_ends_at("fn a() {\n    let s = \"{ not a brace }\";\n}\n", 3);
+        a_brace_inside_a_raw_string_with_hashes_is_ignored:
+            assert_single_fn_ends_at("fn a() {\n    let s = r#\"{ not \\\"real\\\" }\"#;\n}\n", 3);
+        a_brace_inside_a_byte_string_is_ignored:
+            assert_single_fn_ends_at("fn a() {\n    let s = b\"{ not a brace }\";\n}\n", 3);
+        a_brace_char_literal_is_not_mistaken_for_real_braces:
+            assert_single_fn_ends_at("fn a() {\n    let c = '{';\n    let d = '}';\n}\n", 4);
+        a_lifetime_is_not_mistaken_for_a_char_literal:
+            assert_single_fn_ends_at("fn a<'x>(v: &'x str) -> &'x str {\n    v\n}\n", 3);
+        an_escaped_quote_char_literal_does_not_confuse_the_scanner:
+            assert_single_fn_ends_at("fn a() {\n    let c = '\\'';\n    let _ = 1;\n}\n", 4);
     }
 
     // -------------------------------------------------------------------------------------
@@ -6538,7 +6548,8 @@ mod tests {
     }
 
     rigger::test_cases! {
-        a_trait_default_method_with_a_body_is_recorded: assert_single_fn_named("trait T {\n    fn spawn(&self) {\n        let _ = 1;\n    }\n}\n", "spawn");
+        a_trait_default_method_with_a_body_is_recorded:
+            assert_single_fn_named("trait T {\n    fn spawn(&self) {\n        let _ = 1;\n    }\n}\n", "spawn");
     }
 
     #[test]
@@ -6693,7 +6704,8 @@ mod tests {
     }
 
     rigger::test_cases! {
-        a_free_function_with_no_pub_keyword_is_private: assert_first_fn_visibility("fn helper() {}\n", "private");
+        a_free_function_with_no_pub_keyword_is_private:
+            assert_first_fn_visibility("fn helper() {}\n", "private");
     }
 
     #[test]
@@ -6704,8 +6716,10 @@ mod tests {
     }
 
     rigger::test_cases! {
-        a_pub_crate_function_keeps_the_qualifier: assert_first_fn_visibility("pub(crate) fn helper() {}\n", "pub(crate)");
-        a_pub_super_function_keeps_the_qualifier: assert_first_fn_visibility("mod m {\n    pub(super) fn helper() {}\n}\n", "pub(super)");
+        a_pub_crate_function_keeps_the_qualifier:
+            assert_first_fn_visibility("pub(crate) fn helper() {}\n", "pub(crate)");
+        a_pub_super_function_keeps_the_qualifier:
+            assert_first_fn_visibility("mod m {\n    pub(super) fn helper() {}\n}\n", "pub(super)");
     }
 
     #[test]
@@ -6802,32 +6816,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cfg_all_with_test_nested_inside_a_further_any_is_not_recognized() {
-        // `test` must be a BARE top-level clause of the `all(...)` - one nested one level
-        // deeper inside an `any(...)` changes the boolean meaning entirely (this predicate can
-        // be true even when NOT a test build, via the `debug_assertions` arm), so it must NOT
-        // be classified as test-in-full. Conservative non-recognition, not a misclassification.
-        assert!(!cfg_all_contains_bare_test(
+    rigger::test_cases! {
+        /// `test` must be a BARE top-level clause of the `all(...)` - one nested one level
+        /// deeper inside an `any(...)` changes the boolean meaning entirely (this predicate can
+        /// be true even when NOT a test build, via the `debug_assertions` arm), so it must NOT
+        /// be classified as test-in-full. Conservative non-recognition, not a misclassification.
+        cfg_all_with_test_nested_inside_a_further_any_is_not_recognized:
+            assert!(!cfg_all_contains_bare_test(
             "#[cfg(all(any(test, debug_assertions), feature = \"store\"))]"
         ));
-    }
-
-    #[test]
-    fn cfg_all_with_not_test_is_not_recognized() {
-        // The exact inverse of the real shape - `not(test)` inside an `all(...)` means this
-        // compiles only OUTSIDE a test build, so recognizing it as test-in-full would be a real
-        // false positive, not just an over-broad guess. Must stay unrecognized.
-        assert!(!cfg_all_contains_bare_test(
+        /// The exact inverse of the real shape - `not(test)` inside an `all(...)` means this
+        /// compiles only OUTSIDE a test build, so recognizing it as test-in-full would be a real
+        /// false positive, not just an over-broad guess. Must stay unrecognized.
+        cfg_all_with_not_test_is_not_recognized: assert!(!cfg_all_contains_bare_test(
             "#[cfg(all(not(test), feature = \"x\"))]"
         ));
-    }
-
-    #[test]
-    fn cfg_all_on_an_unrelated_attribute_is_not_recognized() {
-        // `all(` reached from something other than `cfg(` (an arbitrary hypothetical attribute
-        // macro taking its own `all(...)` argument) must not be mistaken for a cfg predicate.
-        assert!(!cfg_all_contains_bare_test("#[other(all(test))]"));
+        /// `all(` reached from something other than `cfg(` (an arbitrary hypothetical attribute
+        /// macro taking its own `all(...)` argument) must not be mistaken for a cfg predicate.
+        cfg_all_on_an_unrelated_attribute_is_not_recognized:
+            assert!(!cfg_all_contains_bare_test("#[other(all(test))]"));
     }
 
     #[test]
@@ -6934,9 +6941,21 @@ mod tests {
         assert_eq!(impl_self_type("MyGuard where MyGuard: Bar<Baz>"), "MyGuard");
     }
 
-    #[test]
-    fn impl_self_type_still_handles_a_generic_self_type_with_a_where_clause() {
-        assert_eq!(impl_self_type("Foo<T> where T: Bar<Baz>"), "Foo");
+    rigger::test_cases! {
+        impl_self_type_still_handles_a_generic_self_type_with_a_where_clause:
+            assert_eq!(impl_self_type("Foo<T> where T: Bar<Baz>"), "Foo");
+        impl_self_type_handles_a_bound_generic_self_type:
+            assert_eq!(impl_self_type("<T: Clone> Buckets<T>"), "Buckets");
+        impl_self_type_handles_a_trait_impl_on_a_lifetime_generic_self_type:
+            assert_eq!(impl_self_type("Trait for Server<'a>"), "Server");
+        impl_self_type_handles_a_generic_trait_impl_on_a_generic_self_type: assert_eq!(
+            impl_self_type("<'a> Trait<'a> for ReplayDriver<'a>"),
+            "ReplayDriver"
+        );
+        impl_self_type_handles_a_const_generic_self_type: assert_eq!(
+            impl_self_type("<const N: usize> Wrapper<[u8; N]>"),
+            "Wrapper"
+        );
     }
 
     #[test]
@@ -6961,32 +6980,6 @@ mod tests {
     // that ruling - hand-traced as correct today, but a future edit to
     // `strip_leading_impl_generics`/`impl_self_type` had nothing pinning any of them.
     // -------------------------------------------------------------------------------------
-
-    #[test]
-    fn impl_self_type_handles_a_bound_generic_self_type() {
-        assert_eq!(impl_self_type("<T: Clone> Buckets<T>"), "Buckets");
-    }
-
-    #[test]
-    fn impl_self_type_handles_a_trait_impl_on_a_lifetime_generic_self_type() {
-        assert_eq!(impl_self_type("Trait for Server<'a>"), "Server");
-    }
-
-    #[test]
-    fn impl_self_type_handles_a_generic_trait_impl_on_a_generic_self_type() {
-        assert_eq!(
-            impl_self_type("<'a> Trait<'a> for ReplayDriver<'a>"),
-            "ReplayDriver"
-        );
-    }
-
-    #[test]
-    fn impl_self_type_handles_a_const_generic_self_type() {
-        assert_eq!(
-            impl_self_type("<const N: usize> Wrapper<[u8; N]>"),
-            "Wrapper"
-        );
-    }
 
     #[test]
     fn strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match() {
@@ -7603,7 +7596,8 @@ mod tests {
     }
 
     rigger::test_cases! {
-        number_literals_including_a_fraction_are_lit_tokens: assert_lit_tokens("fn a() { let x = 1_000u32; let y = 1.5; }", &["1_000u32", "1.5"]);
+        number_literals_including_a_fraction_are_lit_tokens:
+            assert_lit_tokens("fn a() { let x = 1_000u32; let y = 1.5; }", &["1_000u32", "1.5"]);
     }
 
     #[test]
@@ -8123,7 +8117,8 @@ mod tests {
         /// to `ok`/`failed` just under threshold) even though `ok` and `failed` themselves DO
         /// cluster mechanically - reading it revealed a real recall gap the parallel-constructor
         /// sweep above exists to close.
-        the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster: assert_real_cluster_of_holds(
+        the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster:
+            assert_real_cluster_of_holds(
             "src/spawn.rs",
             "liveness_fault",
             ["ok", "failed"],
@@ -8314,7 +8309,8 @@ mod tests {
         /// prior review rounds, verified closed on the REAL tree: `scan_file`, `tokenize` (this
         /// file's own bespoke scanner/lexer) and `extract` (`src/grounder/symbols/extract.rs`, the
         /// codebase's one canonical tree-sitter extractor) land in one cluster.
-        the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster: assert_real_cluster_of_holds(
+        the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster:
+            assert_real_cluster_of_holds(
             "src/grounder/symbols/extract.rs",
             "extract",
             ["scan_file", "tokenize"],
@@ -8520,10 +8516,12 @@ mod tests {
         /// Spec 90 criterion 2: the wire shape is LINE-FREE - it round-trips through
         /// `DupClusterWire`, not the full `DupCluster` (whose `start_line`/`end_line` are no
         /// longer present in the json at all).
-        catalog_to_json_round_trips_through_deserialize: assert_catalog_ledger_round_trips(dup_cluster_wire, ["start_line", "end_line"]);
+        catalog_to_json_round_trips_through_deserialize:
+            assert_catalog_ledger_round_trips(dup_cluster_wire, ["start_line", "end_line"]);
         /// The unguarded sibling carries the identity (line-free) AND the lines - never the
         /// content_hash, which belongs solely to the guarded file.
-        catalog_lines_to_json_round_trips_and_carries_only_the_line_spans: assert_catalog_ledger_round_trips(
+        catalog_lines_to_json_round_trips_and_carries_only_the_line_spans:
+            assert_catalog_ledger_round_trips(
             dup_cluster_lines,
             ["content_hash", "proposed_home"],
         );
@@ -8573,7 +8571,8 @@ mod tests {
 
     rigger::test_cases! {
         #[should_panic(expected = "missing criterion 1's placeholder contract")]
-        replace_section_2_panics_loudly_when_the_heading_is_entirely_absent: replace_into_a_headingless_document(
+        replace_section_2_panics_loudly_when_the_heading_is_entirely_absent:
+            replace_into_a_headingless_document(
             replace_section_2,
             "## 2. Duplication Catalog\n\nx\n",
         );
@@ -9352,7 +9351,8 @@ mod tests {
         /// CLAIM-4 equivalent for section 4.3 (mirrors
         /// `report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`),
         /// over a synthetic ledger (see `assert_dead_code_render_cites_the_unguarded_lines_value`).
-        report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them: assert_dead_code_render_cites_the_unguarded_lines_value(
+        report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them:
+            assert_dead_code_render_cites_the_unguarded_lines_value(
             render_dead_code_full_list,
             |c, line| format!("`{}:{}`", c.file, line),
         );
@@ -9439,7 +9439,8 @@ mod tests {
 
     rigger::test_cases! {
         #[should_panic(expected = "missing criterion 1's placeholder contract")]
-        replace_section_6_panics_loudly_when_the_heading_is_entirely_absent: replace_into_a_headingless_document(
+        replace_section_6_panics_loudly_when_the_heading_is_entirely_absent:
+            replace_into_a_headingless_document(
             replace_section_6,
             "## 6. Prioritized Plan\n\nx\n",
         );
@@ -9604,7 +9605,8 @@ mod tests {
         /// `report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
         /// same shared machinery, applied to `render_dead_code_deletion_list` instead (see
         /// `assert_dead_code_render_cites_the_unguarded_lines_value`).
-        report_section_6_item_0_cites_file_line_exactly_as_the_unguarded_lines_file_records_them: assert_dead_code_render_cites_the_unguarded_lines_value(
+        report_section_6_item_0_cites_file_line_exactly_as_the_unguarded_lines_file_records_them:
+            assert_dead_code_render_cites_the_unguarded_lines_value(
             render_dead_code_deletion_list,
             |c, line| format!("`{}` (line {})", c.name, line),
         );
