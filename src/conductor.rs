@@ -1100,6 +1100,23 @@ fn conflict_regenerate_key(unit: &str, attempt: u32) -> String {
     format!("{unit}#{attempt}")
 }
 
+/// The live value `key` maps to in one of [`RunCtx`]'s lock-guarded, string-keyed caches or
+/// ledgers (a gate-verdict replay key, a content digest, or a
+/// [`conflict_regenerate_key`]), cloned out so the lock is never held past the lookup.
+fn cached<V: Clone>(map: &Mutex<HashMap<String, V>>, key: &str) -> Option<V> {
+    map.lock().unwrap().get(key).cloned()
+}
+
+/// Clear the LIVE (in-process) entry for `unit`'s `attempt` from a per-`(unit, attempt)`
+/// crash-resume ledger once its episode has closed (the durable log record is never
+/// retracted; only this process's live view forgets it).
+fn clear_attempt<V>(ledger: &Mutex<HashMap<String, V>>, unit: &str, attempt: u32) {
+    ledger
+        .lock()
+        .unwrap()
+        .remove(&conflict_regenerate_key(unit, attempt));
+}
+
 /// The common parse-and-match prefix every spec 88 criterion 1 round 4 TABLE row fold
 /// shares: a `TYPE_UNIT_STATUS` marker whose own `status` field, `(unit, attempt)` key
 /// ([`conflict_regenerate_key`]), and `pass` (recovered from the event's own `replay_key`
@@ -1169,7 +1186,7 @@ fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, Str
 /// `integrate-landed` row - [`RunCtx::pending_landing`]'s own after-record, kept here
 /// too because the moment it closes a pending landing-intent, [`pending_landing_from_log`]
 /// stops seeing that landing at all. A resumed [`integrate_and_emit`](RunCtx::integrate_and_emit)
-/// call whose `files` read empty and whose `pending_landing_for` found nothing PENDING
+/// call whose `files` read empty and whose the `pending_landing` lookup found nothing PENDING
 /// still cannot tell "genuinely nothing to land" apart from "landed for real, but the
 /// post-merge re-gate that must follow never completed" from git state alone - this map
 /// is the one durable fact that can: a unit with an entry here landed something real and
@@ -2512,7 +2529,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // A held fan-out (the plan-critique gate did not release, or a gate spawn was parked/
     // budget-refused) must still trip the breaker if a gate spawn exhausted the budget -
     // the main wave loop below is skipped, so it cannot.
-    if !fan_out_released && ctx.budget_broke() {
+    if !fan_out_released && ctx.budget_broke.load(Ordering::SeqCst) {
         ctx.trip_budget_breaker()?;
     }
 
@@ -2569,7 +2586,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
             // wide wave can exhaust the budget partway through, refusing later spawns.
             // Record the breaker and stop here too, not only at the next wave boundary.
-            if ctx.budget_broke() {
+            if ctx.budget_broke.load(Ordering::SeqCst) {
                 ctx.trip_budget_breaker()?;
                 break;
             }
@@ -2612,7 +2629,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // transiently pending, every remaining unit is settled - integrated, escalated,
     // verified-but-does-not-integrate, or blocked-forever behind such a unit - so the
     // as-assembled tree IS final and the deferred gate runs against it, once.
-    let converged = !ctx.parked() && !ctx.manual_review_pending() && !ctx.budget_halted();
+    let converged = !ctx.parked.load(Ordering::SeqCst)
+        && !ctx.manual_review.load(Ordering::SeqCst)
+        && !ctx.budget_halted.load(Ordering::SeqCst);
     ctx.run_deferred_gates(&stages, converged)?;
 
     let events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
@@ -3174,7 +3193,7 @@ struct RunCtx<'a> {
     /// from the prior log ([`landed_from_log`]) and never removed - unlike
     /// [`pending_landing`](RunCtx::pending_landing), which stops tracking a landing the
     /// instant it closes. Consulted at the TOP of
-    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when `pending_landing_for`
+    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when the `pending_landing` lookup
     /// finds nothing pending and nothing is owed: that combination alone cannot distinguish
     /// "never landed anything" from "landed for real, crashed before the post-merge re-gate
     /// that must follow it ever ran" - this map is the durable fact that can, so a real
@@ -3478,35 +3497,6 @@ impl RunCtx<'_> {
             .get(agent_id)
             .map(|a| a.model_for_attempt(attempt))
             .unwrap_or_default()
-    }
-
-    /// The recorded outcome of a gate whose verdict was already emitted under `key` in a
-    /// prior step - its `(pass, evidence)` - or `None` if this gate has not run yet. A
-    /// step re-reaching an already-run gate REPLAYS this instead of re-running the
-    /// command (spec 04, criterion 4): the log is the single source of truth for a
-    /// gate's outcome, so a re-run never pays gate-duration time twice and never appends
-    /// a second GateVerdict. Only [`emit_keyed`](RunCtx::emit_keyed)-stamped verdicts
-    /// (the inline and deferred gate runs) carry a replay key; the integrate-time
-    /// GATED_BY artifact verdicts do not, so they never match a gate-run key.
-    ///
-    /// Consults the `gate_verdicts` cache (seeded once at run start from the prior log,
-    /// extended by [`emit_gate_verdict`](RunCtx::emit_gate_verdict) as this process runs
-    /// gates), so a lookup is O(1) - never a fresh whole-stream scan per gate per step
-    /// (finding arch-gate-verdict-redundant-scan).
-    fn recorded_gate_verdict(&self, key: &str) -> Option<(bool, String)> {
-        self.gate_verdicts.lock().unwrap().get(key).cloned()
-    }
-
-    /// The content-address cache-hit for a gate whose `(command, tree-sha)` `digest`
-    /// matches a prior GREEN verdict: its `(position, unit)`, or `None` when no green
-    /// carries this digest (spec 12, unit 1). This is the ONE site the content cache is
-    /// consulted - the gate is answered from the log instead of re-run - so it is also the
-    /// single seam unit 2's staleness pass gates the hit at (its [`is_stale`](RunCtx::is_stale)
-    /// guard skips this consult for a stale REQUESTING unit) and the merged-tree re-gate
-    /// (unit 5) reuses. Only GREEN verdicts ever populate the cache, so a red is never
-    /// cache-answered here.
-    fn cached_green_verdict(&self, digest: &str) -> Option<(u64, String)> {
-        self.green_digests.lock().unwrap().get(digest).cloned()
     }
 
     /// Whether `unit`'s cached gate verdicts are STALE (spec 12, unit 2): a downstream
@@ -3987,34 +3977,6 @@ impl RunCtx<'_> {
         admitted
     }
 
-    /// Whether a spawn was refused mid-wave because the budget was spent (item 9).
-    fn budget_broke(&self) -> bool {
-        self.budget_broke.load(Ordering::SeqCst)
-    }
-
-    /// Whether any in-flight spawn PARKED this run (the stepwise/replay driver hit an
-    /// unrecorded frontier). A parked run has not converged - a later step drains the
-    /// frontier and integrates more units - so the phase boundary holds the deferred
-    /// gate rather than record a verdict against the partial/base tree.
-    fn parked(&self) -> bool {
-        self.parked.load(Ordering::SeqCst)
-    }
-
-    /// Whether any unit is PAUSED for human review this run (§4.3): a Manual-autonomy
-    /// stage emitted ManualReview and returned pending without integrating. Like a
-    /// park, it is a TRANSIENT non-final state, so the phase boundary holds the
-    /// deferred gate rather than record a verdict against the tree missing that unit.
-    fn manual_review_pending(&self) -> bool {
-        self.manual_review.load(Ordering::SeqCst)
-    }
-
-    /// Whether the spawn-budget breaker HALTED the run with ready units still
-    /// unscheduled (item 9 / §4.4). A budget-halted run left work undone that a resume
-    /// completes, so the tree is not final and the deferred gate is deferred.
-    fn budget_halted(&self) -> bool {
-        self.budget_halted.load(Ordering::SeqCst)
-    }
-
     /// Trip the spawn-budget circuit-breaker (§4.4, §8): record `BudgetExhausted` with the
     /// budget and the spawns made, then record the `TaskAborted` that halts the run (abortTask,
     /// §4.4: integrated work is already committed and every per-stage worktree is removed as
@@ -4064,7 +4026,7 @@ impl RunCtx<'_> {
     /// so the thin driver stops LOUDLY on a halt instead of reading `{"wave":[],"done":true}`
     /// as a clean completion.
     fn halt_reason(&self) -> Option<String> {
-        if self.budget_halted() {
+        if self.budget_halted.load(Ordering::SeqCst) {
             Some(format!(
                 "budget exhausted: {}/{} spawns",
                 self.spawns.load(Ordering::SeqCst),
@@ -8285,7 +8247,7 @@ impl RunCtx<'_> {
             // are not stale, so their greens still stand and hit here.
             let digest = input_digest(&gc.run, &tree_sha);
             if !digest.is_empty() && !self.is_stale(&st.name) {
-                if let Some((pos, cached_unit)) = self.cached_green_verdict(&digest) {
+                if let Some((pos, cached_unit)) = cached(&self.green_digests, &digest) {
                     let evidence = format!(
                         "cache-hit: gate {gid:?} was proven green at log position {pos} \
                          (unit {cached_unit:?}) for the same command and input digest \
@@ -8745,7 +8707,7 @@ impl RunCtx<'_> {
             // command and no duplicate GateVerdict), otherwise run fresh - but ONLY once
             // the run has genuinely converged, so the command measures the fully
             // integrated tree rather than a parked frontier's partial/base tree.
-            let (pass, evidence) = match self.recorded_gate_verdict(&key) {
+            let (pass, evidence) = match cached(&self.gate_verdicts, &key) {
                 Some(v) => v,
                 None => {
                     // Not yet recorded. On a non-converged step (a parked stepwise
@@ -9087,7 +9049,10 @@ impl RunCtx<'_> {
         // real, never take this short-circuit.
         let mut already_landed: Option<(u32, String, String)> = None;
         if files.is_empty() {
-            match self.pending_landing_for(&st.name, attempt) {
+            match cached(
+                &self.pending_landing,
+                &conflict_regenerate_key(&st.name, attempt),
+            ) {
                 None => {
                     // Round 5 fix (sdet-u88c1r4-pending-landing-hides-owed-regeneration):
                     // `None` here means row 4 (landing) is fully closed - but says nothing
@@ -9100,7 +9065,7 @@ impl RunCtx<'_> {
                     if !self.catch_up_owed_regeneration(wt, &st.name, attempt)? {
                         // Spec 103, criterion 3 (RE-GATE WHAT LANDED): row 4 fully closed
                         // and nothing owed is NOT by itself proof there is nothing left to
-                        // GATE. `pending_landing_for` stops seeing a landing the instant
+                        // GATE. the `pending_landing` lookup stops seeing a landing the instant
                         // `record_landed` closes it - so a crash between that append and
                         // the post-merge re-gate which must follow it (or during that
                         // re-gate) leaves the identical "nothing new" git-state signature
@@ -9114,7 +9079,7 @@ impl RunCtx<'_> {
                         // would) before `UnitIntegrated` is ever emitted. Only a unit with
                         // NO landed row at all - genuinely never landed anything - keeps
                         // the true no-op short circuit.
-                        match self.landed_sha_for(&st.name, attempt) {
+                        match cached(&self.landed, &conflict_regenerate_key(&st.name, attempt)) {
                             Some((landed_pass, sha, pre_merge)) => {
                                 files = wt
                                     .diff_names(&pre_merge, crate::worktree::DiffMode::MergeBase)?;
@@ -9158,7 +9123,7 @@ impl RunCtx<'_> {
                         already_landed = Some((pass, unit_tip, run_tip));
                     } else {
                         self.record_landed(&st.name, attempt, pass, &unit_tip, &run_tip)?;
-                        self.clear_pending_landing(&st.name, attempt);
+                        clear_attempt(&self.pending_landing, &st.name, attempt);
                         self.catch_up_owed_regeneration(wt, &st.name, attempt)?;
                         files = wt.changed_since_base()?;
                     }
@@ -9226,7 +9191,7 @@ impl RunCtx<'_> {
         // `land` actually succeeds, same as any other resumed pass.
         let (commit, pre_merge) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
             self.record_landed(&st.name, attempt, landed_pass, &unit_tip, &run_tip)?;
-            self.clear_pending_landing(&st.name, attempt);
+            clear_attempt(&self.pending_landing, &st.name, attempt);
             (unit_tip, run_tip)
         } else {
             let mut retry = 0u32;
@@ -9343,7 +9308,7 @@ impl RunCtx<'_> {
                             &retry.to_string(),
                             &regen_sha,
                         )?;
-                        self.clear_regenerate_pending(&st.name, attempt);
+                        clear_attempt(&self.conflict_regenerate_pending, &st.name, attempt);
                         lock = self.integrate_mu.lock().unwrap();
                         // Loop back: the next pass's `merge_into_worktree` picks up the follow-up
                         // regenerate commit just made and fast-forwards it too, this time with
@@ -9386,7 +9351,7 @@ impl RunCtx<'_> {
                             let regen_sha =
                                 self.regenerate_conflicted_paths(wt, &st.name, &all_regenerable)?;
                             self.record_regenerate_commit(&st.name, attempt, &episode, &regen_sha)?;
-                            self.clear_regenerate_pending(&st.name, attempt);
+                            clear_attempt(&self.conflict_regenerate_pending, &st.name, attempt);
                             lock = self.integrate_mu.lock().unwrap();
                             continue;
                         }
@@ -10026,7 +9991,15 @@ impl RunCtx<'_> {
         }
         let regen_sha = self.regenerate_conflicted_paths(wt, unit, &owed)?;
         self.record_regenerate_commit(unit, attempt, &format!("resume-{regen_sha}"), &regen_sha)?;
-        self.clear_regenerate_pending(unit, attempt);
+        // Clear the LIVE (in-process) pending entry now the regeneration ran - as after every
+        // regenerate_conflicted_paths call. Without it `regenerate_pending_for` would keep
+        // reporting the same paths owed forever THIS process (the durable log marker itself
+        // is deliberately never retracted - re-running the regenerate command on an
+        // already-regenerated, unchanged tree is an established idempotent no-op, see
+        // `u88c1-nothing-to-commit-guard-justified` - so a resumed process re-doing it once
+        // more is harmless), spinning `integrate_and_emit`'s own loop forever on a `Merged`
+        // outcome that never stops looking "owed".
+        clear_attempt(&self.conflict_regenerate_pending, unit, attempt);
         Ok(true)
     }
 
@@ -10034,62 +10007,11 @@ impl RunCtx<'_> {
     /// for `unit`'s conflict-resolution episode at `attempt` - see
     /// [`conflict_regenerate_pending_from_log`] and [`RunCtx::conflict_regenerate_pending`].
     fn regenerate_pending_for(&self, unit: &str, attempt: u32) -> Vec<String> {
-        self.conflict_regenerate_pending
-            .lock()
-            .unwrap()
-            .get(&conflict_regenerate_key(unit, attempt))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Clear the LIVE (in-process) pending-regenerate entry for `unit`'s episode at
-    /// `attempt` once [`Self::regenerate_conflicted_paths`] has actually run for it -
-    /// called right after every such call. Without this, [`Self::regenerate_pending_for`]
-    /// would keep reporting the same paths owed forever THIS process (the durable log
-    /// marker itself is deliberately never retracted - re-running the regenerate command
-    /// on an already-regenerated, unchanged tree is an established idempotent no-op, see
-    /// `u88c1-nothing-to-commit-guard-justified` - so a resumed process re-doing it once
-    // more is harmless), spinning [`Self::integrate_and_emit`]'s own loop forever on a
-    /// `Merged` outcome that never stops looking "owed".
-    fn clear_regenerate_pending(&self, unit: &str, attempt: u32) {
-        self.conflict_regenerate_pending
-            .lock()
-            .unwrap()
-            .remove(&conflict_regenerate_key(unit, attempt));
-    }
-
-    /// The `(pass, unit_tip, run_tip)` of `unit`'s durably-recorded landing-intent at `attempt`
-    /// not yet matched by a landed record, if any (round 4 fix - see
-    /// [`RunCtx::pending_landing`]'s own doc for the crash window this closes).
-    fn pending_landing_for(&self, unit: &str, attempt: u32) -> Option<(u32, String, String)> {
-        self.pending_landing
-            .lock()
-            .unwrap()
-            .get(&conflict_regenerate_key(unit, attempt))
-            .cloned()
-    }
-
-    /// Clear the LIVE pending-landing entry for `unit`'s `attempt` once
-    /// [`Self::record_landed`] has closed it out - mirrors
-    /// [`Self::clear_regenerate_pending`] exactly.
-    fn clear_pending_landing(&self, unit: &str, attempt: u32) {
-        self.pending_landing
-            .lock()
-            .unwrap()
-            .remove(&conflict_regenerate_key(unit, attempt));
-    }
-
-    /// The `(pass, sha, pre_merge)` of `unit`'s durably-recorded `integrate-landed` row at
-    /// `attempt`, if any (spec 103, criterion 3 - RE-GATE WHAT LANDED; see [`landed_from_log`]'s
-    /// own doc for the crash window this closes: a resumed call whose landing-intent is
-    /// already matched, closed, and gone from [`Self::pending_landing_for`] can still recover
-    /// what actually landed from here, never guessing from live git state alone).
-    fn landed_sha_for(&self, unit: &str, attempt: u32) -> Option<(u32, String, String)> {
-        self.landed
-            .lock()
-            .unwrap()
-            .get(&conflict_regenerate_key(unit, attempt))
-            .cloned()
+        cached(
+            &self.conflict_regenerate_pending,
+            &conflict_regenerate_key(unit, attempt),
+        )
+        .unwrap_or_default()
     }
 
     /// [`Self::regenerate_pending_for`] unioned with `fresh` (this round's own regenerable
@@ -10288,9 +10210,9 @@ impl RunCtx<'_> {
     /// [`Self::record_landing_intent`]'s before-record brackets. `pre_merge` (spec 103,
     /// criterion 3) is the run branch's tip BEFORE this landing - the SAME value the paired
     /// `integrate-landing-intent` recorded as `run_tip` - carried here too so a LATER resume,
-    /// after `pending_landing_for` has stopped seeing this landing (matched, no longer
+    /// after the `pending_landing` lookup has stopped seeing this landing (matched, no longer
     /// pending), can still recover both the landed sha AND the pre-landing tip from this row
-    /// alone via [`Self::landed_sha_for`], never from live process state.
+    /// alone via [`landed`](RunCtx::landed), never from live process state.
     fn record_landed(
         &self,
         unit: &str,
@@ -30837,7 +30759,7 @@ mod tests {
             "a new spawn beyond the folded count is refused"
         );
         assert!(
-            c.budget_broke(),
+            c.budget_broke.load(Ordering::SeqCst),
             "refusing a new over-budget spawn trips the breaker"
         );
     }
@@ -34552,7 +34474,7 @@ mod tests {
         // already fast-forwarded the run branch onto the unit's own tip and durably recorded
         // the landing (`record_landed`, the `integrate-landed` row), but crashed before the
         // post-merge re-gate that must follow it ever ran. On resume, `changed_since_base`
-        // reads empty (the content is already on the run branch) and `pending_landing_for`
+        // reads empty (the content is already on the run branch) and the `pending_landing` lookup
         // finds nothing PENDING (the landed row already exists, matching whatever intent
         // preceded it) - so the resumed call must not mistake "nothing left to land" for
         // "nothing left to gate": it must resolve `commit` from the durably-recorded landed
