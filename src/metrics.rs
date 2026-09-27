@@ -1854,20 +1854,105 @@ mod tests {
         assert_eq!(m.gates["clippy"].total(), 3);
     }
 
-    #[test]
-    fn counts_review_rejects_on_both_per_unit_and_fan_out_paths() {
+    /// Folding `events` gives each named review counter its expected value; the fold is
+    /// returned for any further check.
+    fn assert_counters(events: &[Event], expect: &[(&str, u64)]) -> Metrics {
+        let m = project(events);
+        for &(name, want) in expect {
+            let got = match name {
+                "units_started" => m.units_started,
+                "units_escalated" => m.units_escalated,
+                "first_pass_clean" => m.first_pass_clean,
+                "review_approve" => m.review_approve,
+                "review_reject" => m.review_reject,
+                other => panic!("no counter named {other}"),
+            };
+            assert_eq!(got, want, "{name}");
+        }
+        m
+    }
+
+    crate::test_cases! {
         // Per-unit reject: `verified` arms, then UnitFailed-while-armed = reject.
         // Fan-out reject: empty-agent UnitStarted, then a bare UnitFailed = reject.
-        let events = vec![
-            started("p", "impl"),
-            status("p", "verified"),
-            failed("p"), // per-unit review reject
-            started("f", ""),
-            failed("f"), // fan-out / review-only reject
-        ];
-        let m = project(&events);
-        assert_eq!(m.review_reject, 2);
-        assert_eq!(m.review_approve, 0);
+        counts_review_rejects_on_both_per_unit_and_fan_out_paths: assert_counters(
+            &[
+                started("p", "impl"),
+                status("p", "verified"),
+                failed("p"), // per-unit review reject
+                started("f", ""),
+                failed("f"), // fan-out / review-only reject
+            ],
+            &[("review_reject", 2), ("review_approve", 0)],
+        );
+        // A fan-out review stage that rejects once (UnitFailed) and on the next
+        // attempt approves (reviewed) yields exactly one reject and one approve.
+        fan_out_reject_then_approve_counts_one_each: assert_counters(
+            &[
+                started("r", ""),
+                failed("r"),             // reject
+                status("r", "reviewed"), // approve on the retry
+                integrated("r"),
+            ],
+            &[("review_reject", 1), ("review_approve", 1)],
+        );
+        // A normal agent-named unit failing its gates (no `verified`, no `reviewed`)
+        // is a remediation, NOT a review reject.
+        a_gate_failure_of_a_named_unit_is_not_a_review_reject: assert_counters(
+            &[
+                started("g", "impl"),
+                verdict("build", false),
+                failed("g"),
+                verdict("build", true),
+                integrated("g"),
+            ],
+            &[("review_reject", 0), ("review_approve", 0), ("first_pass_clean", 0)],
+        );
+        // A unit that crashes before any gate/review (UnitFailed with no prior
+        // verdict/verified) on a named agent is not a review reject.
+        a_spawn_crash_of_a_named_unit_is_not_a_review_reject: assert_counters(
+            &[started("x", "impl"), failed("x")],
+            &[("review_reject", 0)],
+        );
+        // On resume the conductor re-emits UnitStarted for a not-yet-integrated
+        // unit; the dedup guard keeps units_started (the yield/escalation
+        // denominator) at 1.
+        duplicate_unit_started_counts_the_unit_once: assert_counters(
+            &[
+                started("u", "impl"),
+                failed("u"),
+                started("u", "impl"), // resume re-emit
+                integrated("u"),
+            ],
+            &[("units_started", 1), ("first_pass_clean", 0)],
+        );
+        // Two units' events interleave in the append-only stream (run_batch spawns
+        // under a thread scope). Per-id state must not bleed: `a` approves, `b`
+        // rejects.
+        interleaved_units_keep_per_id_review_state: assert_counters(
+            &[
+                started("a", "impl"),
+                started("b", "impl"),
+                status("a", "verified"),
+                status("b", "verified"),
+                status("a", "reviewed"),
+                integrated("a"),
+                failed("b"), // b's verified arm => review reject for b
+            ],
+            &[("review_approve", 1), ("review_reject", 1), ("first_pass_clean", 1)],
+        );
+        escalation_is_counted_once_per_unit: {
+            let m = assert_counters(
+                &[
+                    started("a", "impl"),
+                    started("b", "impl"),
+                    failed("a"),
+                    escalated("a"),
+                ],
+                &[("units_escalated", 1), ("units_started", 2)],
+            );
+            assert_eq!(m.escalation_rate(), 0.5);
+        };
     }
 
     #[test]
@@ -1923,47 +2008,6 @@ mod tests {
     }
 
     #[test]
-    fn fan_out_reject_then_approve_counts_one_each() {
-        // A fan-out review stage that rejects once (UnitFailed) and on the next
-        // attempt approves (reviewed) yields exactly one reject and one approve.
-        let events = vec![
-            started("r", ""),
-            failed("r"),             // reject
-            status("r", "reviewed"), // approve on the retry
-            integrated("r"),
-        ];
-        let m = project(&events);
-        assert_eq!(m.review_reject, 1);
-        assert_eq!(m.review_approve, 1);
-    }
-
-    #[test]
-    fn a_gate_failure_of_a_named_unit_is_not_a_review_reject() {
-        // A normal agent-named unit failing its gates (no `verified`, no `reviewed`)
-        // is a remediation, NOT a review reject.
-        let events = vec![
-            started("g", "impl"),
-            verdict("build", false),
-            failed("g"),
-            verdict("build", true),
-            integrated("g"),
-        ];
-        let m = project(&events);
-        assert_eq!(m.review_reject, 0);
-        assert_eq!(m.review_approve, 0);
-        assert_eq!(m.first_pass_clean, 0); // it failed once
-    }
-
-    #[test]
-    fn a_spawn_crash_of_a_named_unit_is_not_a_review_reject() {
-        // A unit that crashes before any gate/review (UnitFailed with no prior
-        // verdict/verified) on a named agent is not a review reject.
-        let events = vec![started("x", "impl"), failed("x")];
-        let m = project(&events);
-        assert_eq!(m.review_reject, 0);
-    }
-
-    #[test]
     fn agentless_gate_failure_is_counted_as_a_review_reject_known_false_positive() {
         // Pins the accepted LOSSY false positive (module doc): a non-fan-out stage
         // authored with an empty `agent` that runs real gates and fails emits a bare
@@ -1980,56 +2024,6 @@ mod tests {
         assert_eq!(m.review_approve, 0);
         // The failing gate is still tallied as a real gate run.
         assert_eq!(m.gates.get("build").unwrap().fail, 1);
-    }
-
-    #[test]
-    fn duplicate_unit_started_counts_the_unit_once() {
-        // On resume the conductor re-emits UnitStarted for a not-yet-integrated
-        // unit; the dedup guard keeps units_started (the yield/escalation
-        // denominator) at 1.
-        let events = vec![
-            started("u", "impl"),
-            failed("u"),
-            started("u", "impl"), // resume re-emit
-            integrated("u"),
-        ];
-        let m = project(&events);
-        assert_eq!(m.units_started, 1);
-        assert_eq!(m.first_pass_clean, 0); // failed before integrating
-    }
-
-    #[test]
-    fn interleaved_units_keep_per_id_review_state() {
-        // Two units' events interleave in the append-only stream (run_batch spawns
-        // under a thread scope). Per-id state must not bleed: `a` approves, `b`
-        // rejects.
-        let events = vec![
-            started("a", "impl"),
-            started("b", "impl"),
-            status("a", "verified"),
-            status("b", "verified"),
-            status("a", "reviewed"),
-            integrated("a"),
-            failed("b"), // b's verified arm => review reject for b
-        ];
-        let m = project(&events);
-        assert_eq!(m.review_approve, 1);
-        assert_eq!(m.review_reject, 1);
-        assert_eq!(m.first_pass_clean, 1); // only `a`
-    }
-
-    #[test]
-    fn escalation_is_counted_once_per_unit() {
-        let events = vec![
-            started("a", "impl"),
-            started("b", "impl"),
-            failed("a"),
-            escalated("a"),
-        ];
-        let m = project(&events);
-        assert_eq!(m.units_escalated, 1);
-        assert_eq!(m.units_started, 2);
-        assert_eq!(m.escalation_rate(), 0.5);
     }
 
     #[test]
@@ -2085,34 +2079,31 @@ mod tests {
     fn failed_sha(id: &str, sha: &str) -> Event {
         failed(id).with_meta(META_WORKTREE_SHA, sha)
     }
-    /// A `ReviewFinding` a lens/adversary raised, attributed via the conductor-stamped
-    /// META_ACTOR and concerning `about` files.
-    fn finding(id: &str, actor: &str, about: &[&str]) -> Event {
+    /// A `ReviewFinding` concerning `about` files, carrying the payload `by` role token when
+    /// one is given.
+    fn review_finding(id: &str, by: Option<&str>, about: &[&str]) -> Event {
         let about_json = about
             .iter()
             .map(|f| format!("\"{f}\""))
             .collect::<Vec<_>>()
             .join(",");
+        let by_json = by.map(|by| format!(r#","by":"{by}""#)).unwrap_or_default();
         ev(
             TYPE_REVIEW_FINDING,
-            &format!(r#"{{"id":"{id}","about":[{about_json}]}}"#),
+            &format!(r#"{{"id":"{id}"{by_json},"about":[{about_json}]}}"#),
         )
-        .with_meta(META_ACTOR, actor)
+    }
+    /// A `ReviewFinding` a lens/adversary raised, attributed via the conductor-stamped
+    /// META_ACTOR and concerning `about` files.
+    fn finding(id: &str, actor: &str, about: &[&str]) -> Event {
+        review_finding(id, None, about).with_meta(META_ACTOR, actor)
     }
     /// A `ReviewFinding` as the OUT-OF-PROCESS courier path records it: the reviewer emits
     /// it through `rigger emit`, which stamps NO `META_ACTOR`, so its attribution rides the
     /// payload `by` role token the conductor's `review_protocol` told the reviewer to carry.
     /// This is the shape a real single-driver-path (courier) run produces.
     fn courier_finding(id: &str, by: &str, about: &[&str]) -> Event {
-        let about_json = about
-            .iter()
-            .map(|f| format!("\"{f}\""))
-            .collect::<Vec<_>>()
-            .join(",");
-        ev(
-            TYPE_REVIEW_FINDING,
-            &format!(r#"{{"id":"{id}","by":"{by}","about":[{about_json}]}}"#),
-        )
+        review_finding(id, Some(by), about)
     }
     /// An adjudicator `SpawnResult` whose `output` carries the grown verdict JSON line.
     fn adjudication(unit: &str, attempt: u32, output: &str) -> Event {
