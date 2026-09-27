@@ -19,6 +19,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
+use common::fixtures::summarized_node;
 use common::served::body_of;
 use common::served::fetch_served;
 use rigger::contextgraph::{
@@ -32,15 +33,7 @@ use rigger::contextgraph::{
 /// decision, and a `SUPERSEDES` edge into `dz`). `shared.rs::foo` carries one leaf and `other.rs`
 /// carries none, so the batch proves the visible-set coverage and the has-any filter over the wire.
 fn rationale_graph() -> Graph {
-    let node = |id: &str, kind: &str, summary: &str| Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: if summary.is_empty() {
-            BTreeMap::new()
-        } else {
-            BTreeMap::from([("summary".to_string(), summary.to_string())])
-        },
-    };
+    let node = summarized_node;
     let finding = |id: &str, summary: &str, by: &str, unit: &str| Node {
         id: id.to_string(),
         kind: KIND_FINDING.to_string(),
