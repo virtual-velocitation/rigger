@@ -19,14 +19,14 @@
 //! entry, not two, with the courier call's own refresh landing on the identical file the step
 //! created and carrying forward the SAME `project`/`root`/`store` identity.
 
-use std::process::Command;
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 use common::cli::run_rigger_in_state_home;
+use common::cli::{write_scaffold, UNISOLATED_WORKER};
 use common::fixtures::registry_entries;
+use common::git::temp_git_project_with_commit;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
 use courier_registry::assert_ok;
@@ -38,37 +38,10 @@ use courier_registry::assert_ok;
 /// a `nop` grounder) so `rigger step` completes deterministically with no model call and no
 /// git worktree of its own.
 fn driver_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let ok = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git init must succeed while seeding the fixture");
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the fixture");
-    }
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write the agent prompt");
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    let dir = temp_git_project_with_commit();
+    write_scaffold(
+        dir.path(),
+        &[("worker", UNISOLATED_WORKER)],
         r#"name: convergencetest
 defaults:
   grounder: nop
@@ -78,8 +51,7 @@ stages:
     agent: worker
     on_pass: none
 "#,
-    )
-    .expect("write workflow.yml");
+    );
     dir
 }
 

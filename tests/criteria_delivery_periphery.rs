@@ -25,34 +25,16 @@
 //! proving delivery into `coverage`/`spec_criterion` proves delivery to all of them at once; this
 //! file does not re-walk each call site separately.
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
+mod common;
+use common::fixtures::NoopDriver;
+
+use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
 use serde_json::Value;
 use std::path::Path;
-
-/// A driver that does nothing and reports nothing: this criterion is about what the baseline-unit
-/// synthesis RECORDS at the `UnitStarted` seam, not about agent behaviour - an empty result and a
-/// `true` gate are enough to reach integration.
-#[derive(Default)]
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: String::new(),
-            resolved_model: String::new(),
-        })
-    }
-}
 
 /// The exact real-world input spec 80's Goal names: specs/62's own criterion 1, extracted through
 /// the SAME public `extract_criteria` call every real consumer (`main.rs::load_criteria`,

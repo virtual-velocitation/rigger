@@ -26,9 +26,11 @@ use std::process::Command;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::progress_under_an_ambient_kurrentdb_conn;
 use common::cli::run_rigger_in_state_home;
+use common::cli::seed_store;
 use common::fixtures::registry_entries;
-use common::RestoreEnvVars;
+use common::git::temp_git_project_with_commit;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
 use courier_registry::assert_ok;
@@ -37,31 +39,8 @@ use courier_registry::assert_ok;
 /// real commit (`git worktree add` needs a committed HEAD) and an INITIALIZED event log - a
 /// courier refuses to fabricate one from a cwd with no existing store (spec 05).
 fn courier_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let ok = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git init must succeed while seeding the fixture");
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the fixture");
-    }
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
-    std::fs::File::create(rigger_dir.join("events.db")).expect("seed an initialized event log");
+    let dir = temp_git_project_with_commit();
+    seed_store(dir.path());
     dir
 }
 
@@ -219,22 +198,5 @@ fn a_registry_write_error_never_fails_a_couriers_real_work() {
 #[serial_test::serial(kurrentdb_conn_env)]
 fn an_ambient_kurrentdb_conn_never_leaks_into_a_boundary_courier() {
     let project = courier_project_with_commit();
-    let root = project.path();
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
-
-    let _restore = RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
-    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
-
-    let out = run_rigger_in_state_home(
-        root,
-        state.path(),
-        &["progress", "u1/impl#0", "did a thing"],
-    );
-    assert!(
-        out.status.success(),
-        "a courier spawned through the shared rigger_courier() helper must resolve the \
-         fixture's local sqlite store, not attempt a real gRPC connection to whatever \
-         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    progress_under_an_ambient_kurrentdb_conn(project.path());
 }

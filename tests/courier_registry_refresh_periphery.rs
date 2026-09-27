@@ -25,9 +25,9 @@ use rigger::registry::{self, DEFAULT_IDLE_MS};
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 use common::cli::courier_project;
+use common::cli::progress_under_an_ambient_kurrentdb_conn;
 use common::cli::run_rigger_in_state_home;
 use common::fixtures::registry_entries;
-use common::RestoreEnvVars;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
 use courier_registry::assert_ok;
@@ -241,24 +241,7 @@ fn a_homeless_environment_never_fails_a_courier_command() {
 #[serial_test::serial(kurrentdb_conn_env)]
 fn an_ambient_kurrentdb_conn_never_leaks_into_a_courier_spawned_through_the_shared_helper() {
     let project = courier_project();
-    let root = project.path();
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
-
-    let _restore = RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
-    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
-
-    let out = run_rigger_in_state_home(
-        root,
-        state.path(),
-        &["progress", "u1/impl#0", "did a thing"],
-    );
-    assert!(
-        out.status.success(),
-        "a courier spawned through the shared rigger_courier() helper must resolve the \
-         fixture's local sqlite store, not attempt a real gRPC connection to whatever \
-         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let out = progress_under_an_ambient_kurrentdb_conn(project.path());
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("progress recorded for u1/impl#0"),
         "the courier's own output is unaffected by the ambient KURRENTDB_CONN once stripped: {}",

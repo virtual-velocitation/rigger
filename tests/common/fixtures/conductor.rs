@@ -178,3 +178,24 @@ pub fn assert_winner_reviewed_sha_is_round_start(events: &[Event]) {
         "the verified sha must be a real 40-hex sha: {verified_sha:?}"
     );
 }
+
+/// A driver that does nothing and reports nothing: for a test about what a run RECORDS rather
+/// than about agent behaviour - an empty result and a passing gate are enough to reach
+/// integration.
+#[derive(Default)]
+pub struct NoopDriver;
+
+impl AgentDriver for NoopDriver {
+    fn spawn(
+        &self,
+        _agent: &AgentDef,
+        _prompt: &str,
+        _opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        Ok(AgentResult {
+            output: String::new(),
+            resolved_model: String::new(),
+        })
+    }
+}

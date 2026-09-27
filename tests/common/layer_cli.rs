@@ -18,16 +18,8 @@ use crate::common::rigger_bin;
 /// makes the identity resolution deterministic (the top-level is the fixture), and the pinned
 /// id file makes the seed and the binary agree on the store namespace. Kept alive by the caller.
 pub fn project(identity: &str) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let git = |args: &[&str]| {
-        let _ = Command::new("git").args(args).current_dir(root).status();
-    };
-    git(&["init", "-q"]);
-    git(&["config", "user.email", "t@t"]);
-    git(&["config", "user.name", "t"]);
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::write(root.join(".rigger").join("project.id"), identity).unwrap();
+    let dir = crate::common::cli::identified_git_project();
+    std::fs::write(dir.path().join(".rigger").join("project.id"), identity).unwrap();
     dir
 }
 

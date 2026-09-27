@@ -23,8 +23,6 @@
 //! channel, and verbatim pass-through are pinned by their own criteria; here we only prove that
 //! the store choice governs the event LOG and never redirects a local projection.
 
-use std::process::Command;
-
 // =======================================================================================
 // Structural boundary: projections open as LOCAL sqlite; the event-log resolver and the
 // server adapter never touch a projection path. Always on - no container required.
@@ -126,6 +124,7 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::identified_git_project;
 use common::cli::run_stream_identity;
 
 /// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
@@ -163,21 +162,6 @@ fn start_kurrentdb(
     ))
 }
 
-/// A throwaway project that is its OWN git repo (so the identity is stable and the ingest walk
-/// roots at the fixture), configured for the server-backed store purely by `KURRENTDB_CONN`.
-fn server_project() -> tempfile::TempDir {
-    let project = tempfile::tempdir().unwrap();
-    let root = project.path();
-    let git = |args: &[&str]| {
-        let _ = Command::new("git").args(args).current_dir(root).status();
-    };
-    git(&["init", "-q"]);
-    git(&["config", "user.email", "t@t"]);
-    git(&["config", "user.name", "t"]);
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    project
-}
-
 #[test]
 fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server() {
     use rigger::contextgraph::sqlite::Projector;
@@ -188,7 +172,7 @@ fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let project = server_project();
+        let project = identified_git_project();
         let root = project.path();
         // A small source file so the default lane has something to parse; the light lane ingests
         // nothing but still CREATES the graph store, so this test asserts the same boundary in
@@ -250,7 +234,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let project = server_project();
+        let project = identified_git_project();
         let root = project.path();
 
         // A bare `rigger progress` - no `--eventstore` flag - the exact surface a worker uses. It

@@ -45,6 +45,23 @@ pub fn init_event_log(root: &Path) {
         .expect("the event log initializes");
 }
 
+/// A [`temp_project`] with a commit identity configured and an empty `.rigger/` directory: its
+/// own git repo keeps the project identity deterministic (the top-level is the fixture).
+pub fn identified_git_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    for args in [
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ] {
+        let _ = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .status();
+    }
+    seed_rigger_dir(dir.path());
+    dir
+}
+
 /// A throwaway project directory that is deliberately NOT a git repo, so the conductor drives
 /// a repo-less run (no worktrees, no run branch).
 pub fn temp_repoless_project() -> tempfile::TempDir {
@@ -316,4 +333,27 @@ pub fn write_workflow(root: &Path, name: &str, block: &str) {
          {block}"
     );
     write_scaffold(root, &[("worker", UNISOLATED_WORKER)], &workflow);
+}
+
+/// `rigger progress` from the courier project at `root` (under a throwaway `XDG_STATE_HOME`)
+/// while THIS test process carries a well-formed but UNREACHABLE `KURRENTDB_CONN`, restored
+/// afterwards. The shared `rigger_courier()` strips it from every child, so the courier must
+/// resolve the fixture's local sqlite store and succeed; returns its output.
+pub fn progress_under_an_ambient_kurrentdb_conn(root: &Path) -> Output {
+    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
+    let _restore = super::RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
+    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
+    let out = run_rigger_in_state_home(
+        root,
+        state.path(),
+        &["progress", "u1/impl#0", "did a thing"],
+    );
+    assert!(
+        out.status.success(),
+        "a courier spawned through the shared rigger_courier() helper must resolve the \
+         fixture's local sqlite store, not attempt a real gRPC connection to whatever \
+         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
 }

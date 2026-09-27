@@ -42,6 +42,9 @@
 //! spec can actually produce on the production path: the authored-ungated carve-out, and the
 //! unmatched-sub-unit blind spot the fix closes.
 
+mod common;
+use common::fixtures::NoopDriver;
+
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM, TYPE_UNIT_PROPOSED,
 };
@@ -50,27 +53,6 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
 use serde_json::{json, Value};
-
-/// A driver that does nothing and reports nothing - this criterion is about whether a unit
-/// under an ungated fan-out template SPAWNS and INTEGRATES at all (the invariant's carve-out),
-/// not about agent behaviour.
-#[derive(Default)]
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: String::new(),
-            resolved_model: String::new(),
-        })
-    }
-}
 
 /// A real, criteria-driven fan-out decomposition against a template that declares NO gates at
 /// all must still run every synthesized baseline unit to completion - the Design's own
