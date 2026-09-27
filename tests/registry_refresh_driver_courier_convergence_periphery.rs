@@ -28,6 +28,9 @@ use rigger::registry::{self, Instance};
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+#[path = "common/courier_registry.rs"]
+mod courier_registry;
+use courier_registry::assert_ok;
 
 /// A throwaway project both the driver (`register_run_instance`, via `git_repo()`) and a
 /// courier (`refresh_registry_entry`, via `require_store_dir`'s walk-up) must resolve to the
@@ -104,15 +107,6 @@ fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
         .env_remove("KURRENTDB_CONN")
         .output()
         .expect("the rigger binary runs")
-}
-
-fn assert_ok(out: &Output, args: &[&str]) {
-    assert!(
-        out.status.success(),
-        "rigger {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
 }
 
 /// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -

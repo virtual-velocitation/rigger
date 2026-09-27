@@ -30,6 +30,9 @@ use rigger::registry::{self, Instance};
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 use common::RestoreEnvVars;
+#[path = "common/courier_registry.rs"]
+mod courier_registry;
+use courier_registry::assert_ok;
 
 /// A throwaway project the compiled binary accepts as a courier target: its own git repo with a
 /// real commit (`git worktree add` needs a committed HEAD) and an INITIALIZED event log - a
@@ -74,15 +77,6 @@ fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
         .env("XDG_STATE_HOME", state_home)
         .output()
         .expect("the rigger binary runs")
-}
-
-fn assert_ok(out: &Output, args: &[&str]) {
-    assert!(
-        out.status.success(),
-        "rigger {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
 }
 
 /// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
