@@ -2101,8 +2101,8 @@ const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 const CATALOG_LINES_PATH: &str = "docs/audit/duplication-catalog.lines.json";
 
 /// The committed sidecar of human judgements on catalogued clusters: a list of
-/// [`Disposition`]s, each naming a cluster by its content-derived id. The catalog writer copies
-/// each one onto its cluster's entry ([`apply_dispositions`]).
+/// [`Disposition`]s, each naming a cluster by its content-derived id or a mandatory sweep by its
+/// name. The catalog writer copies each one onto its cluster's entry ([`apply_dispositions`]).
 const DISPOSITIONS_PATH: &str = "docs/audit/duplication-dispositions.json";
 
 /// The one disposition the audit records today: the detector matched two sites by their
@@ -2966,10 +2966,18 @@ fn sweep_cluster(sweep_name: &str, mut sites: Vec<DupSite>, proposed_home: &str)
     }
 }
 
+/// Whether `c` is the cluster [`sweep_cluster`] built for the sweep called `name` - the ONE
+/// by-name lookup, shared by citations and sweep-named dispositions.
+fn is_sweep_named(c: &DupCluster, name: &str) -> bool {
+    c.note
+        .strip_prefix("mandatory sweep: ")
+        .and_then(|rest| rest.strip_prefix(name))
+        .is_some_and(|rest| rest.starts_with(" - "))
+}
+
 /// The cluster [`sweep_cluster`] built for the sweep called `name`, found back by its note.
 fn sweep_cluster_named<'a>(clusters: &'a [DupCluster], name: &str) -> Option<&'a DupCluster> {
-    let prefix = format!("mandatory sweep: {name} - ");
-    clusters.iter().find(|c| c.note.starts_with(&prefix))
+    clusters.iter().find(|c| is_sweep_named(c, name))
 }
 
 /// The process-spawn port: the ONE production module that constructs a `Command`. Every other
@@ -3306,10 +3314,38 @@ fn cluster_sort_key(c: &DupCluster) -> (String, usize) {
     }
 }
 
+/// What a [`Disposition`] names: a cluster by its content-derived id, or a mandatory sweep by
+/// its name (a sweep's id re-hashes whenever any of its sites changes; its name does not).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum DispositionTarget {
+    Cluster { id: String },
+    Sweep { sweep: String },
+}
+
+impl DispositionTarget {
+    fn matches(&self, c: &DupCluster) -> bool {
+        match self {
+            DispositionTarget::Cluster { id } => c.id == *id,
+            DispositionTarget::Sweep { sweep } => is_sweep_named(c, sweep),
+        }
+    }
+}
+
+impl std::fmt::Display for DispositionTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DispositionTarget::Cluster { id } => write!(f, "{id}"),
+            DispositionTarget::Sweep { sweep } => write!(f, "the mandatory sweep {sweep}"),
+        }
+    }
+}
+
 /// One [`DISPOSITIONS_PATH`] entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Disposition {
-    id: String,
+    #[serde(flatten)]
+    target: DispositionTarget,
     disposition: String,
     reason: String,
 }
@@ -3323,19 +3359,27 @@ fn load_dispositions(root: &Path) -> Vec<Disposition> {
         .unwrap_or_else(|e| panic!("{DISPOSITIONS_PATH} is not a disposition list: {e}"))
 }
 
-/// Copies each disposition onto the cluster its id names. A disposition naming no cluster is
+/// Copies each disposition onto the cluster it names. A disposition naming no cluster is
 /// stale - its cluster was closed or its content changed - and is refused rather than kept.
 fn apply_dispositions(
     clusters: &mut [DupCluster],
     dispositions: &[Disposition],
 ) -> Result<(), String> {
     for d in dispositions {
-        let cluster = clusters.iter_mut().find(|c| c.id == d.id).ok_or_else(|| {
+        let mut named = clusters.iter_mut().filter(|c| d.target.matches(c));
+        let cluster = named.next().ok_or_else(|| {
             format!(
                 "{DISPOSITIONS_PATH} records {} for {}, which names no catalogued cluster",
-                d.disposition, d.id
+                d.disposition, d.target
             )
         })?;
+        if named.next().is_some() {
+            return Err(format!(
+                "{DISPOSITIONS_PATH} records {} for {}, which names more than one cluster - \
+                 disposition each by its id",
+                d.disposition, d.target
+            ));
+        }
         cluster.disposition = Some(d.disposition.clone());
     }
     Ok(())
@@ -8811,7 +8855,9 @@ mod tests {
             one_site_cluster("dup-bbbbbbbbbbbb", "src/b.rs"),
         ];
         let dispositions = vec![Disposition {
-            id: "dup-bbbbbbbbbbbb".to_string(),
+            target: DispositionTarget::Cluster {
+                id: "dup-bbbbbbbbbbbb".to_string(),
+            },
             disposition: NOT_A_DUPLICATE.to_string(),
             reason: "same token shape, different meaning".to_string(),
         }];
@@ -8831,12 +8877,47 @@ mod tests {
     fn a_disposition_naming_no_cluster_is_refused() {
         let mut clusters = vec![one_site_cluster("dup-aaaaaaaaaaaa", "src/a.rs")];
         let dispositions = vec![Disposition {
-            id: "dup-cccccccccccc".to_string(),
+            target: DispositionTarget::Cluster {
+                id: "dup-cccccccccccc".to_string(),
+            },
             disposition: NOT_A_DUPLICATE.to_string(),
             reason: "r".to_string(),
         }];
         let err = apply_dispositions(&mut clusters, &dispositions).unwrap_err();
         assert!(err.contains("dup-cccccccccccc"), "{err}");
+    }
+
+    /// A disposition may name a mandatory sweep instead of an id: the sweep's cluster re-hashes
+    /// whenever any of its sites changes, so the sweep name is the stable handle. It resolves
+    /// the same way citations look a sweep up; an unknown or ambiguous sweep name is refused.
+    #[test]
+    fn a_disposition_may_name_a_mandatory_sweep() {
+        let mut clusters = vec![
+            one_site_cluster("dup-aaaaaaaaaaaa", "src/a.rs"),
+            sweep_cluster(
+                "Connection::open",
+                one_site_cluster("x", "src/b.rs").sites,
+                "home",
+            ),
+        ];
+        let dispositions: Vec<Disposition> = serde_json::from_str(
+            r#"[{"sweep": "Connection::open", "disposition": "not-a-duplicate", "reason": "r"}]"#,
+        )
+        .expect("a sweep-named disposition parses");
+        apply_dispositions(&mut clusters, &dispositions).expect("the sweep is catalogued");
+        assert_eq!(clusters[0].disposition, None);
+        assert_eq!(clusters[1].disposition.as_deref(), Some(NOT_A_DUPLICATE));
+
+        let unknown: Vec<Disposition> = serde_json::from_str(
+            r#"[{"sweep": "no such sweep", "disposition": "not-a-duplicate", "reason": "r"}]"#,
+        )
+        .unwrap();
+        let err = apply_dispositions(&mut clusters, &unknown).unwrap_err();
+        assert!(err.contains("no such sweep"), "{err}");
+
+        clusters.push(sweep_cluster("Connection::open", Vec::new(), "home"));
+        let err = apply_dispositions(&mut clusters, &dispositions).unwrap_err();
+        assert!(err.contains("more than one cluster"), "{err}");
     }
 
     /// THE EXACT-CLUSTER GATE: an exact duplicate is never left open - every exact cluster on the

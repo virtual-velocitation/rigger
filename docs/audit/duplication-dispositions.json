@@ -190,7 +190,7 @@
     "reason": "Both are one-line public probes over the one shared `read_workflow_probe` read, each declaring the single workflow key its own caller needs (`store:` versus `defaults:`); the read itself is already one definition."
   },
   {
-    "id": "dup-35908fb8ceff",
+    "sweep": "Command::new call sites",
     "disposition": "not-a-duplicate",
     "reason": "The mandatory Command::new sweep now holds only the process-spawn port's own construction site plus test code spawning distinct fixture processes (the rigger binary under test, git fixtures, shells); every production spawn routes through src/subprocess.rs, which the process-spawn port gate pins."
   },
@@ -335,12 +335,12 @@
     "reason": "One test pins that a failing gate within one attempt is not masked by a trailing pass, the other that a later all-green attempt supersedes an earlier red; these are opposite outcomes of different battery histories, and both already build their batteries through implement_battery."
   },
   {
-    "id": "dup-7021db868000",
+    "sweep": "error-shaping helper functions",
     "disposition": "not-a-duplicate",
     "reason": "The sweep gathers eleven unrelated sites whose names mention an error (a failure-marker constructor, a review-tree guard, a retired-grounder message, and eight tests of different error paths); they share only the word, not one error-shaping concern."
   },
   {
-    "id": "dup-5d0f39bf7ac4",
+    "sweep": ".rigger-path string literals",
     "disposition": "not-a-duplicate",
     "reason": "The sweep gathers every string literal that mentions .rigger - distinct paths (store, lock, scratch, agents, instructions), messages, docs and fixture contents across the tree - not one path-composition concern to share."
   },
@@ -470,17 +470,17 @@
     "reason": "Two different fixture graphs for two different contracts: a hub over the render budget plus a small community for the drill and overview client contract, versus a two-file plus decision graph for the files-lens route dispatch."
   },
   {
-    "id": "dup-0d2a5de5b03a",
+    "sweep": "sqlite Connection::open call sites",
     "disposition": "not-a-duplicate",
     "reason": "Each site is a single call into rusqlite's own `Connection::open`, already the one opening function: the stores open their own files, and the tests open a raw connection to inspect or corrupt a store underneath it, so a wrapper would only rename the call."
   },
   {
-    "id": "dup-ba5c2a173aab",
+    "sweep": "/proc-path string literals",
     "disposition": "not-a-duplicate",
     "reason": "The literals name different kernel files for different questions (the socket table and per-pid fds for a port holder, the process list and cwd for reaping, stat and status fields) or are test messages and this audit's own sweep strings; the one stat parser is `reap::stat_field_after_comm`."
   },
   {
-    "id": "dup-a52dd4a83e64",
+    "sweep": "/proc/<pid>/stat or /proc/<pid>/status field-extraction functions",
     "disposition": "not-a-duplicate",
     "reason": "No second stat parse remains: `stat_field_after_comm` is the one `/proc/<pid>/stat` parser, `read_ppid` reads the different `/status` file, `pgid_of` calls the parser (only its panic message names the path), and the rest are this audit's own sweep and fixture strings."
   },
