@@ -67,6 +67,16 @@ const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 /// outside this module has a reason to tune.
 const ORDINARY_DRAIN_JOIN_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// A configured binary, or `default` (resolved on `$PATH`) when none is configured - the
+/// ONE empty-means-default rule both [`Driver::bin`] and [`Driver::rigger_bin`] follow.
+fn bin_or_path_default<'s>(configured: &'s str, default: &'s str) -> &'s str {
+    if configured.is_empty() {
+        default
+    } else {
+        configured
+    }
+}
+
 /// Spawns agents as headless Claude Code sessions.
 pub struct Driver<'a> {
     /// The `claude` binary to run. Empty resolves to `"claude"` on `$PATH`, same
@@ -159,7 +169,12 @@ impl Driver<'_> {
         store: &dyn EventStore,
     ) -> Result<Launch, Error> {
         let session_id = uuid::Uuid::new_v4().to_string();
-        let args = build_args(agent, opts, &session_id, self.rigger_bin());
+        let args = build_args(
+            agent,
+            opts,
+            &session_id,
+            bin_or_path_default(&self.rigger_bin, "rigger"),
+        );
 
         let started = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -183,7 +198,7 @@ impl Driver<'_> {
             },
         )?;
 
-        let bin = self.bin();
+        let bin = bin_or_path_default(&self.bin, "claude");
         let mut cmd = Command::new(bin);
         cmd.args(&args);
         if !opts.dir.is_empty() {
@@ -229,22 +244,6 @@ impl Driver<'_> {
             session_id,
             args,
         })
-    }
-
-    fn bin(&self) -> &str {
-        if self.bin.is_empty() {
-            "claude"
-        } else {
-            &self.bin
-        }
-    }
-
-    fn rigger_bin(&self) -> &str {
-        if self.rigger_bin.is_empty() {
-            "rigger"
-        } else {
-            &self.rigger_bin
-        }
     }
 
     /// THE STREAM (spec 104 criterion 2): read `launch`'s child stdout line by line to
@@ -1261,15 +1260,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn classify_no_result_ignores_a_stopfailure_record_from_a_different_run() {
-        // adv-u104c5-stopfailure-crosses-run-boundary: a StopFailure record left over from
-        // an OLD or UNRELATED run must never outrank the live session's own api_retry
-        // category, matching `rigger status`'s established run-scoping convention.
+    /// Records a `billing_error` StopFailure for the spawn under `record_run`, classifies a
+    /// no-result exit of that spawn in `run-1` whose api_retry category was `overloaded`, and
+    /// asserts the classification lands on `expected`.
+    fn assert_stop_failure_classification(record_run: &str, expected: AgentFailure) {
         let store = Store::open(":memory:").unwrap();
         crate::progress_store::record_stop_failure(
             &store,
-            "some-other-run",
+            record_run,
             &crate::progress::StopFailure {
                 spawn: "u/implementer#0".to_string(),
                 class: "billing_error".to_string(),
@@ -1284,37 +1282,21 @@ mod tests {
         o.run_id = "run-1".to_string();
         let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"tail");
         assert!(
-            strip_failure_marker(&e).contains(&format!("class {}", AgentFailure::Overloaded)),
-            "the other run's StopFailure record must not outrank THIS run's api_retry \
-             category: {}",
+            strip_failure_marker(&e).contains(&format!("class {expected}")),
+            "a StopFailure recorded under run {record_run:?} must classify run-1's no-result \
+             exit as {expected}: {}",
             e.0
         );
     }
 
-    #[test]
-    fn classify_no_result_still_honors_a_stopfailure_record_from_the_same_run() {
-        let store = Store::open(":memory:").unwrap();
-        crate::progress_store::record_stop_failure(
-            &store,
-            "run-1",
-            &crate::progress::StopFailure {
-                spawn: "u/implementer#0".to_string(),
-                class: "billing_error".to_string(),
-            },
-        )
-        .unwrap();
-        let driver = Driver {
-            progress_store: &store,
-            ..Driver::default()
-        };
-        let mut o = opts("u/implementer#0");
-        o.run_id = "run-1".to_string();
-        let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"tail");
-        assert!(
-            strip_failure_marker(&e).contains(&format!("class {}", AgentFailure::BillingError)),
-            "{}",
-            e.0
-        );
+    crate::test_cases! {
+        // adv-u104c5-stopfailure-crosses-run-boundary: a StopFailure record left over from
+        // an OLD or UNRELATED run must never outrank the live session's own api_retry
+        // category, matching `rigger status`'s established run-scoping convention.
+        classify_no_result_ignores_a_stopfailure_record_from_a_different_run:
+            assert_stop_failure_classification("some-other-run", AgentFailure::Overloaded);
+        classify_no_result_still_honors_a_stopfailure_record_from_the_same_run:
+            assert_stop_failure_classification("run-1", AgentFailure::BillingError);
     }
 
     #[test]
@@ -1630,36 +1612,27 @@ mod tests {
 
     // ---- THE STREAM (spec 104 criterion 2): the pure per-line mappings ----
 
-    #[test]
-    fn stream_path_mirrors_spawn_scratch_paths_layout() {
-        let p = stream_path("/scratch", "run-1", "u1/implementer#0", 2).unwrap();
-        assert_eq!(
-            p,
-            std::path::PathBuf::from("/scratch/agent-stream/run-1/u1_2fimplementer_230.2.jsonl")
+    crate::test_cases! {
+        stream_path_mirrors_spawn_scratch_paths_layout: assert_eq!(
+            stream_path("/scratch", "run-1", "u1/implementer#0", 2),
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-stream/run-1/u1_2fimplementer_230.2.jsonl"
+            ))
         );
-    }
-
-    #[test]
-    fn stream_path_omits_the_run_subdir_for_an_empty_run_id() {
-        let p = stream_path("/scratch", "", "u1/implementer#0", 0).unwrap();
-        assert_eq!(
-            p,
-            std::path::PathBuf::from("/scratch/agent-stream/u1_2fimplementer_230.0.jsonl")
+        stream_path_omits_the_run_subdir_for_an_empty_run_id: assert_eq!(
+            stream_path("/scratch", "", "u1/implementer#0", 0),
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-stream/u1_2fimplementer_230.0.jsonl"
+            ))
         );
-    }
-
-    #[test]
-    fn stream_path_is_none_for_an_empty_spawn_id() {
-        assert_eq!(stream_path("/scratch", "run-1", "", 0), None);
-    }
-
-    #[test]
-    fn stream_path_is_none_rather_than_relative_for_an_empty_scratch_root() {
+        stream_path_is_none_for_an_empty_spawn_id:
+            assert_eq!(stream_path("/scratch", "run-1", "", 0), None);
         // Spec 104 round-4 REQUIRED FIX 3 regression, pinned directly at this call site
         // (the periphery suite's `spawn_with_an_empty_scratch_root_never_writes_relative_
         // to_cwd` already proves it end to end through `spawn()`; this is the cheap, pure
         // unit-level proof of the same guard, now delegated to `liveness::scratch_subpath`).
-        assert_eq!(stream_path("", "run-1", "u1/implementer#0", 0), None);
+        stream_path_is_none_rather_than_relative_for_an_empty_scratch_root:
+            assert_eq!(stream_path("", "run-1", "u1/implementer#0", 0), None);
     }
 
     #[test]

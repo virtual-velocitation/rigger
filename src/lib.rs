@@ -113,6 +113,9 @@ pub mod watch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod worktree;
 
+/// Parameterised tests: one shared case helper, one generated `#[test]` per named case.
+mod test_cases;
+
 /// Spec 16 unit 2 - the partitioning + routing SAFETY EVAL (architecture 5.5.8). A GATE, not a
 /// runtime surface: it is compiled ONLY under `cfg(test)`, adds no API and no event, and its
 /// quantified arms are feature-gated behind `symbols` internally. It authorizes unit 3 wiring
