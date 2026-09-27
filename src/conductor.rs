@@ -1116,9 +1116,7 @@ fn clear_attempt<V>(ledger: &Mutex<HashMap<String, V>>, unit: &str, attempt: u32
 /// meta - never a second evidence field, so a fold and the live writer that wrote it can
 /// never drift onto two different sources for the same number) this hands back alongside
 /// the event's full parsed JSON body, for the caller to pull its own row-specific fields
-/// (typically `evidence`) from. Factored out so [`pending_landing_from_log`] and
-/// [`landed_from_log`] share ONE JSON walk instead of two near-identical copies - the
-/// project's own simplification audit flags the duplication otherwise.
+/// (typically `evidence`) from. Factored out so [`landings_from_log`] reads every row through ONE JSON walk.
 fn integrate_row(e: &Event) -> Option<(String, String, u32, Value)> {
     if e.type_ != ledger::TYPE_UNIT_STATUS {
         return None;
@@ -1137,81 +1135,71 @@ fn integrate_row(e: &Event) -> Option<(String, String, u32, Value)> {
     Some((key, status, pass, v))
 }
 
-/// Re-derive [`RunCtx::pending_landing`]: per `(unit, attempt)` ([`conflict_regenerate_key`]'s
-/// shape), the `(pass, unit_tip, run_tip)` of the LATEST [`STATUS_INTEGRATE_LANDING_INTENT`]
-/// (row 4's before-record) not yet matched by a [`STATUS_INTEGRATE_LANDED`] (its after-
-/// record) - round 4's own fix for the SAME class of gap
-/// [`conflict_regenerate_pending_from_log`] closes for row 3: `Worktree::land` can fast-
-/// forward the run branch to exactly the unit's own tip, so a crash between that real
+/// Re-derive [`RunCtx::pending_landing`] and [`RunCtx::landed`] from the integrate rows of
+/// `prior_events`, in ONE fold over them.
+///
+/// PENDING: per `(unit, attempt)` ([`conflict_regenerate_key`]'s shape), the `(pass, unit_tip,
+/// run_tip)` of the LATEST [`STATUS_INTEGRATE_LANDING_INTENT`] (row 4's before-record) not yet
+/// matched by a [`STATUS_INTEGRATE_LANDED`] (its after-record) - round 4's own fix for the SAME
+/// class of gap [`conflict_regenerate_pending_from_log`] closes for row 3: `Worktree::land` can
+/// fast-forward the run branch to exactly the unit's own tip, so a crash between that real
 /// mutation and its durable after-record leaves BOTH `integrate_and_emit`'s own
-/// `changed_since_base` (its very first read) and a fresh `merge_into_worktree` call
-/// reporting a genuine "nothing new" on resume - indistinguishable, from git state alone,
-/// from a stage that never had anything to land at all. `run_tip` (the OLDER base this
-/// landing merged FROM) is carried so a resumed `integrate_and_emit` can recompute the
-/// files this landing touched via [`Worktree::diff_names`] (merge-base mode) against it, since the
-/// CURRENT base has already absorbed them.
-fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
-    let mut pending: HashMap<String, (u32, String, String)> = HashMap::new();
+/// `changed_since_base` (its very first read) and a fresh `merge_into_worktree` call reporting a
+/// genuine "nothing new" on resume - indistinguishable, from git state alone, from a stage that
+/// never had anything to land at all. `run_tip` (the OLDER base this landing merged FROM) is
+/// carried so a resumed `integrate_and_emit` can recompute the files this landing touched via
+/// [`Worktree::diff_names`] (merge-base mode) against it, since the CURRENT base has already
+/// absorbed them.
+///
+/// LANDED (spec 103, criterion 3 - RE-GATE WHAT LANDED): per `(unit, attempt)`, the `(pass,
+/// sha, pre_merge)` of the LATEST durably-recorded `integrate-landed` row - the pending map's own
+/// after-record, kept here too because the moment it closes a pending landing-intent, the
+/// pending map stops seeing that landing at all. A resumed
+/// [`integrate_and_emit`](RunCtx::integrate_and_emit) call whose `files` read empty and whose
+/// `pending_landing` lookup found nothing PENDING still cannot tell "genuinely nothing to land"
+/// apart from "landed for real, but the post-merge re-gate that must follow never completed"
+/// from git state alone - this map is the one durable fact that can: a unit with an entry here
+/// landed something real and must still be re-gated on resume; a unit with none here never
+/// landed anything at all. Never removed once inserted (unlike the pending map) - there is no
+/// "un-landing" event, and a later attempt keys its own landing under a different `attempt`,
+/// never retracting an earlier one's row.
+fn landings_from_log(prior_events: &[Event]) -> (Landings, Landings) {
+    let mut pending = Landings::new();
+    let mut landed = Landings::new();
     for e in prior_events {
         let Some((key, status, pass, v)) = integrate_row(e) else {
             continue;
         };
         if status == STATUS_INTEGRATE_LANDING_INTENT {
-            let Some(evidence) = v.get("evidence") else {
-                continue;
-            };
-            let (Some(unit_tip), Some(run_tip)) = (
-                evidence.get("unit_tip").and_then(Value::as_str),
-                evidence.get("run_tip").and_then(Value::as_str),
-            ) else {
-                continue;
-            };
-            pending.insert(key, (pass, unit_tip.to_string(), run_tip.to_string()));
+            if let Some((unit_tip, run_tip)) = evidence_pair(&v, "unit_tip", "run_tip") {
+                pending.insert(key, (pass, unit_tip, run_tip));
+            }
         } else if status == STATUS_INTEGRATE_LANDED {
             pending.remove(&key);
+            // Older logs recorded this row before `pre_merge` rode along in its evidence
+            // (spec 103, criterion 3) - such a row cannot be resolved by this fold, so it
+            // is skipped rather than guessed; a unit whose ONLY landed row predates the fix
+            // keeps taking the true no-op short circuit it always did, no regression.
+            if let Some((sha, pre_merge)) = evidence_pair(&v, "sha", "pre_merge") {
+                landed.insert(key, (pass, sha, pre_merge));
+            }
         }
     }
-    pending
+    (pending, landed)
 }
 
-/// Re-derive [`RunCtx::landed`] (spec 103, criterion 3 - RE-GATE WHAT LANDED): per
-/// `(unit, attempt)`, the `(pass, sha, pre_merge)` of the LATEST durably-recorded
-/// `integrate-landed` row - [`RunCtx::pending_landing`]'s own after-record, kept here
-/// too because the moment it closes a pending landing-intent, [`pending_landing_from_log`]
-/// stops seeing that landing at all. A resumed [`integrate_and_emit`](RunCtx::integrate_and_emit)
-/// call whose `files` read empty and whose the `pending_landing` lookup found nothing PENDING
-/// still cannot tell "genuinely nothing to land" apart from "landed for real, but the
-/// post-merge re-gate that must follow never completed" from git state alone - this map
-/// is the one durable fact that can: a unit with an entry here landed something real and
-/// must still be re-gated on resume; a unit with none here never landed anything at all.
-/// Never removed once inserted (unlike `pending_landing`) - there is no "un-landing"
-/// event, and a later attempt keys its own landing under a different `attempt`, never
-/// retracting an earlier one's row.
-fn landed_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
-    let mut landed: HashMap<String, (u32, String, String)> = HashMap::new();
-    for e in prior_events {
-        let Some((key, status, pass, v)) = integrate_row(e) else {
-            continue;
-        };
-        if status != STATUS_INTEGRATE_LANDED {
-            continue;
-        }
-        // Older logs recorded this row before `pre_merge` rode along in its evidence
-        // (spec 103, criterion 3) - such a row cannot be resolved by this fold, so it
-        // is skipped rather than guessed; a unit whose ONLY landed row predates the fix
-        // keeps taking the true no-op short circuit it always did, no regression.
-        let Some(evidence) = v.get("evidence") else {
-            continue;
-        };
-        let (Some(sha), Some(pre_merge)) = (
-            evidence.get("sha").and_then(Value::as_str),
-            evidence.get("pre_merge").and_then(Value::as_str),
-        ) else {
-            continue;
-        };
-        landed.insert(key, (pass, sha.to_string(), pre_merge.to_string()));
-    }
-    landed
+/// Per `(unit, attempt)` key, a landing's `(pass, sha-a, sha-b)` - the shape both
+/// [`landings_from_log`] maps share.
+type Landings = HashMap<String, (u32, String, String)>;
+
+/// The string fields `a` and `b` of an integrate row's `evidence` object, or `None` when the
+/// row carries no evidence or either field is absent (an older row, skipped rather than
+/// guessed).
+fn evidence_pair(v: &Value, a: &str, b: &str) -> Option<(String, String)> {
+    let evidence = v.get("evidence")?;
+    let a = evidence.get(a).and_then(Value::as_str)?;
+    let b = evidence.get(b).and_then(Value::as_str)?;
+    Some((a.to_string(), b.to_string()))
 }
 
 /// Re-derive [`RunCtx::integrate_attempted`]: the `(unit, attempt)` keys for which `prior_events`
@@ -1548,13 +1536,22 @@ pub fn parked_spawn(id: &str) -> Error {
 /// failure. Robust to the conductor's own `format!("... {}", e.0)` wrapping at the
 /// review spawn sites, since the marker survives as a substring.
 pub fn is_parked(e: &Error) -> bool {
-    e.0.contains(PARKED_MARKER)
+    carries_marker(e, PARKED_MARKER)
+}
+
+/// Whether `e` carries the halt sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
+/// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`] or
+/// [`LAND_REFUSED_MARKER`]) - that halt's signal rather than a real spawn or stage failure.
+/// Robust to the conductor's own `format!("... {}", e.0)` wrapping at every call site, since
+/// each marker survives as a substring.
+fn carries_marker(e: &Error, marker: &str) -> bool {
+    e.0.contains(marker)
 }
 
 /// The sentinel a REVIEW-TIER spawn (lens/adversary/adjudicator) embeds in its refusal
 /// error when [`reserve_spawn`](RunCtx::reserve_spawn) denies it because the CUMULATIVE
 /// spawn budget is spent (§4.4, §8). Like [`PARKED_MARKER`] it uses control characters no
-/// real error text carries, so [`is_budget_refused`] recognizes it even after the review
+/// real error text carries, so [`carries_marker`] (with [`BUDGET_MARKER`]) recognizes it even after the review
 /// site or the wave collapse wraps the error with stage/agent context.
 ///
 /// A budget-refused review spawn is NOT a stage failure - it is symmetric with the
@@ -1577,7 +1574,7 @@ enum SpawnHalt {
     /// The budget-refusal signal a spawn returns when
     /// [`reserve_spawn`](RunCtx::reserve_spawn) denies it: `tier` and `agent` name the
     /// refused spawn (for the audit trail), and the embedded [`BUDGET_MARKER`] lets
-    /// [`is_budget_refused`] recognize it through the conductor's own `format!("... {}", e.0)`
+    /// [`carries_marker`] (with [`BUDGET_MARKER`]) recognize it through the conductor's own `format!("... {}", e.0)`
     /// error wrapping. Only [`reserve_spawn`] returning `false` produces this - and it sets
     /// `budget_broke` before it does - so the sentinel and the breaker flag always travel
     /// together.
@@ -1617,13 +1614,6 @@ fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
     }
 }
 
-/// Whether `e` is a budget-refusal signal from a review-tier spawn (see
-/// [`SpawnHalt::BudgetRefused`]) rather than a real spawn failure. Robust to the review sites' own
-/// error wrapping, since the marker survives as a substring.
-fn is_budget_refused(e: &Error) -> bool {
-    e.0.contains(BUDGET_MARKER)
-}
-
 /// Whether `e` is a NON-TERMINAL unwind - a park (the stepwise/replay frontier) OR a
 /// review-tier budget refusal - as opposed to a genuine terminal failure (spec 64
 /// criterion 1). Both dispositions get the SAME treatment everywhere a worktree-keep
@@ -1633,11 +1623,11 @@ fn is_budget_refused(e: &Error) -> bool {
 /// worktree down over. One predicate for both, so every site that answers "should this
 /// unwind KEEP the worktree" (or, negated, "is this the genuine error to prioritize over
 /// a co-chunked park/refusal") reads it from ONE place instead of hand-spelling the
-/// `is_parked(e) || is_budget_refused(e)` disjunct (or its De Morgan negation) at each
+/// `is_parked(e) || carries_marker(e, BUDGET_MARKER)` disjunct (or its De Morgan negation) at each
 /// call site - the exact duplication that let round 2 and round 3's masking defects hide
 /// (arch-u1c1-r3-predicate-now-also-negated).
 fn is_parked_or_budget_refused(e: &Error) -> bool {
-    is_parked(e) || is_budget_refused(e)
+    is_parked(e) || carries_marker(e, BUDGET_MARKER)
 }
 
 /// The number of times a reviewer whose result is DEGENERATE (empty or whitespace-only)
@@ -1666,7 +1656,7 @@ const DEGENERATE_MARKER: &str = "\u{1}rigger:reviewer-degenerate\u{1}";
 /// working recovery.
 ///
 /// It carries the [`DEGENERATE_MARKER`] sentinel so [`run_wave`](RunCtx::run_wave) routes
-/// it through the dedicated no-lesson arm ([`is_degenerate_reviewer`]) rather than the
+/// it through the dedicated no-lesson arm ([`carries_marker`] (with [`DEGENERATE_MARKER`])) rather than the
 /// generic wave-failure arm (which would emit a misattributing per-unit lesson). It still
 /// PROPAGATES OUT of `run` (`run_wave` sets it as the wave's error), so a dead reviewer
 /// HALTS the run loudly rather than escalating the unit. The respawn loop lives inside ONE
@@ -1695,13 +1685,6 @@ fn degenerate_reviewer(stage: &str, tier: &str, agent: &str, role: &str, attempt
     ))
 }
 
-/// Whether `e` is a degenerate-reviewer HALT signal (see [`degenerate_reviewer`]) rather
-/// than a real stage failure. Robust to the review sites' own error wrapping, since the
-/// [`DEGENERATE_MARKER`] survives as a substring.
-fn is_degenerate_reviewer(e: &Error) -> bool {
-    e.0.contains(DEGENERATE_MARKER)
-}
-
 /// The sentinel a runtime verdict-channel-mismatch HALT (spec 18, unit 3) embeds in its
 /// error so [`run_wave`](RunCtx::run_wave) and the plan-critique gate recognize it through
 /// their own error wrapping and route it through a DEDICATED arm - like
@@ -1711,13 +1694,6 @@ fn is_degenerate_reviewer(e: &Error) -> bool {
 /// review, so a lesson there would misattribute it. The marker is STRIPPED before the
 /// message surfaces, so the operator's fix stays clean.
 const MISMATCH_MARKER: &str = "\u{1}rigger:verdict-channel-mismatch\u{1}";
-
-/// Whether `e` is a runtime verdict-channel-mismatch HALT signal (see
-/// [`SpawnHalt::VerdictChannelMismatch`]) rather than a real stage failure. Robust to the review
-/// sites' own error wrapping, since the [`MISMATCH_MARKER`] survives as a substring.
-fn is_verdict_channel_mismatch(e: &Error) -> bool {
-    e.0.contains(MISMATCH_MARKER)
-}
 
 /// The sentinel a hard PLAN-STAGE-COMMIT-LANDING failure
 /// ([`RunCtx::integrate_plan_commits`], spec 88 criterion 4) embeds in its error so
@@ -1742,7 +1718,7 @@ fn is_verdict_channel_mismatch(e: &Error) -> bool {
 const PLAN_LANDING_MARKER: &str = "\u{1}rigger:plan-landing-failed\u{1}";
 
 /// Wrap `e` - any hard Err out of [`RunCtx::integrate_plan_commits`]'s own body -
-/// with the [`PLAN_LANDING_MARKER`] naming `unit`, so [`is_plan_landing_failed`]
+/// with the [`PLAN_LANDING_MARKER`] naming `unit`, so [`carries_marker`] (with [`PLAN_LANDING_MARKER`])
 /// recognizes it through the conductor's own error wrapping (the `?` at its one
 /// call site, conductor.rs `run_single_stage`). Wrapping ONCE at this single
 /// boundary - rather than annotating each of the function's several internal `?`
@@ -1754,13 +1730,6 @@ fn plan_landing_failed(unit: &str, e: Error) -> Error {
          branch failed: {}",
         e.0
     ))
-}
-
-/// Whether `e` is a plan-landing infra-fault HALT (see [`plan_landing_failed`])
-/// rather than a real unit failure. Robust to callers' own error wrapping, since the
-/// [`PLAN_LANDING_MARKER`] survives as a substring.
-fn is_plan_landing_failed(e: &Error) -> bool {
-    e.0.contains(PLAN_LANDING_MARKER)
 }
 
 /// The sentinel a LAND-REFUSED-FOR-LOCAL-CHANGES failure ([`RunCtx::land_refused`], spec 103
@@ -1778,13 +1747,6 @@ fn is_plan_landing_failed(e: &Error) -> bool {
 /// recorded by [`RunCtx::land_refused`] itself, before this marker is even minted) and
 /// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
 const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
-
-/// Whether `e` is a land-refused-for-local-changes infra-fault HALT (see
-/// [`RunCtx::land_refused`]) rather than a real unit failure. Robust to callers' own error
-/// wrapping, since the [`LAND_REFUSED_MARKER`] survives as a substring.
-fn is_land_refused(e: &Error) -> bool {
-    e.0.contains(LAND_REFUSED_MARKER)
-}
 
 // ---- FAILURE CLASS (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
 //
@@ -2208,11 +2170,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // Round 4 fix (`RunCtx::pending_landing`'s own doc): a landing-intent durably recorded
     // with no matching landed record yet - `Worktree::land` may have already fast-forwarded
     // the run branch onto the unit's own tip before this process crashed.
-    let pending_landing = pending_landing_from_log(prior_events);
     // Spec 103, criterion 3 (RE-GATE WHAT LANDED): every durably-recorded landing, kept
     // even after `pending_landing` stops tracking it, so a resumed call can still tell a
     // real, already-landed merge apart from a unit that never landed anything at all.
-    let landed = landed_from_log(prior_events);
+    let (pending_landing, landed) = landings_from_log(prior_events);
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -2498,10 +2459,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                     }
                     // A budget-refused gate spawn already set `budget_broke`; hold the
                     // fan-out and let the breaker trip below (like the wave's handling).
-                    Err(e) if is_budget_refused(&e) => fan_out_released = false,
+                    Err(e) if carries_marker(&e, BUDGET_MARKER) => fan_out_released = false,
                     // A degenerate-reviewer HALT (Gap 18) propagates loudly, marker
                     // stripped.
-                    Err(e) if is_degenerate_reviewer(&e) => {
+                    Err(e) if carries_marker(&e, DEGENERATE_MARKER) => {
                         return Err(Error(e.0.replace(DEGENERATE_MARKER, "")))
                     }
                     // A runtime verdict-channel mismatch (spec 18, unit 3) at the
@@ -2509,7 +2470,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                     // the gate adjudicator emitted its verdict but put none on the result
                     // channel, so the empty verdict would otherwise hold the fan-out as a
                     // reject and loop the planner over a persona fault.
-                    Err(e) if is_verdict_channel_mismatch(&e) => {
+                    Err(e) if carries_marker(&e, MISMATCH_MARKER) => {
                         return Err(Error(e.0.replace(MISMATCH_MARKER, "")))
                     }
                     Err(e) => return Err(e),
@@ -3171,7 +3132,7 @@ struct RunCtx<'a> {
     /// [`conflict_regenerate_pending`](RunCtx::conflict_regenerate_pending) exactly): per
     /// `(unit, attempt)`, the `(pass, unit_tip, run_tip)` of the latest durably-recorded
     /// `integrate-landing-intent` not yet matched by an `integrate-landed`. Seeded ONCE at run
-    /// start from the prior log ([`pending_landing_from_log`]) and only ever REMOVED (never
+    /// start from the prior log ([`landings_from_log`]) and only ever REMOVED (never
     /// added to) live, the moment [`RunCtx::record_landed`] closes it out. Read at the very
     /// TOP of [`integrate_and_emit`](RunCtx::integrate_and_emit), BEFORE trusting
     /// `Worktree::changed_since_base`'s "nothing new" answer as "there was never anything to
@@ -3183,7 +3144,7 @@ struct RunCtx<'a> {
     pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
     /// Every durably-recorded `integrate-landed` row (spec 103, criterion 3 - RE-GATE WHAT
     /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded ONCE at run start
-    /// from the prior log ([`landed_from_log`]) and never removed - unlike
+    /// from the prior log ([`landings_from_log`]) and never removed - unlike
     /// [`pending_landing`](RunCtx::pending_landing), which stops tracking a landing the
     /// instant it closes. Consulted at the TOP of
     /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when the `pending_landing` lookup
@@ -3907,7 +3868,7 @@ impl RunCtx<'_> {
     /// implementer replays free and the unit reaches `verified`, the first review-tier
     /// spawn is a new spawn that `reserve_spawn` refuses at a spent budget. That refusal
     /// now unwinds cleanly and trips the breaker (a `BudgetExhausted` event via
-    /// [`SpawnHalt::BudgetRefused`]/[`is_budget_refused`] + the mid-wave `budget_broke()` check),
+    /// [`SpawnHalt::BudgetRefused`]/[`carries_marker`] (with [`BUDGET_MARKER`]) + the mid-wave `budget_broke()` check),
     /// exactly as the implementer's `Ok(false)` refusal does - so a run that exceeds
     /// `defaults.budget` at ANY spawn site aborts with `BudgetExhausted` (criterion 5).
     /// Completing such a unit requires the operator to raise `defaults.budget`; the count
@@ -4132,7 +4093,7 @@ impl RunCtx<'_> {
                     // budget-review-tier-no-exhausted,
                     // adv-confirm-review-tier-no-budgetexhausted,
                     // adv-budget-guard-cannot-assemble-reviewed-unit).
-                    Err(e) if is_budget_refused(&e) => {}
+                    Err(e) if carries_marker(&e, BUDGET_MARKER) => {}
                     // A degenerate-reviewer HALT (Gap 18) is an INFRASTRUCTURE fault, not a
                     // unit failure: the operator's reviewer agent/driver returned only
                     // empty results. Route it through its OWN arm (like the park/budget
@@ -4142,7 +4103,7 @@ impl RunCtx<'_> {
                     // lesson-misattribution). It charges no attempt (no UnitFailed/
                     // UnitEscalated - the halt writes nothing against the unit). Strip the
                     // recognition marker so the operator's halt message stays clean.
-                    Err(e) if is_degenerate_reviewer(&e) => {
+                    Err(e) if carries_marker(&e, DEGENERATE_MARKER) => {
                         if first_err.is_none() {
                             first_err = Some(Error(e.0.replace(DEGENERATE_MARKER, "")));
                         }
@@ -4155,7 +4116,7 @@ impl RunCtx<'_> {
                     // stripped) but emit NO per-unit lesson (a lesson would misattribute the
                     // operator's broken persona to the unit under review) and charge no
                     // attempt (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if is_verdict_channel_mismatch(&e) => {
+                    Err(e) if carries_marker(&e, MISMATCH_MARKER) => {
                         if first_err.is_none() {
                             first_err = Some(Error(e.0.replace(MISMATCH_MARKER, "")));
                         }
@@ -4170,7 +4131,7 @@ impl RunCtx<'_> {
                     // per-unit lesson (a lesson would misattribute the conductor's own
                     // git-plumbing fault to the producer unit) and charge no attempt
                     // (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if is_plan_landing_failed(&e) => {
+                    Err(e) if carries_marker(&e, PLAN_LANDING_MARKER) => {
                         if first_err.is_none() {
                             first_err = Some(Error(e.0.replace(PLAN_LANDING_MARKER, "")));
                         }
@@ -4184,7 +4145,7 @@ impl RunCtx<'_> {
                     // per-unit lesson here - [`Self::land_refused`] already recorded the
                     // real, path-naming one before minting this marker - and charge no
                     // attempt (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if is_land_refused(&e) => {
+                    Err(e) if carries_marker(&e, LAND_REFUSED_MARKER) => {
                         if first_err.is_none() {
                             first_err = Some(Error(e.0.replace(LAND_REFUSED_MARKER, "")));
                         }
@@ -6884,7 +6845,7 @@ impl RunCtx<'_> {
     ///     matter what else also happened in that chunk;
     ///   - "did anything here need to halt the run loudly" (the propagated `Result`,
     ///     which `run_wave` routes through its dedicated arms -
-    ///     is_degenerate_reviewer/is_verdict_channel_mismatch/catch-all,
+    ///     carries_marker(.., DEGENERATE_MARKER)/carries_marker(.., MISMATCH_MARKER)/catch-all,
     ///     conductor.rs:2874-2917 - per spec 19c) - a GENUINE terminal error anywhere in
     ///     the chunk must reach that dispatch, not be masked by a co-chunked park.
     ///
@@ -7123,7 +7084,7 @@ impl RunCtx<'_> {
                     //
                     // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
                     // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                    // so `is_parked`/`is_budget_refused` still recognize it upstream). And the LIVE
+                    // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
                     // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
                     // is false there and a genuine in-process review failure still propagates to
                     // remediation exactly as before - only a REPLAYED recorded error re-parks.
@@ -7133,7 +7094,7 @@ impl RunCtx<'_> {
                     // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` only recognizes
                     // its own `\u{2}` prefix, so a PARKED_MARKER/BUDGET_MARKER error
                     // (`\u{1}`-prefixed) still passes through byte-for-byte unchanged
-                    // here - `is_parked`/`is_budget_refused` upstream are unaffected.
+                    // here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream are unaffected.
                     return Err(Error(format!(
                         "stage {:?} {tier} {agent_id:?}: {}",
                         st.name,
@@ -9449,8 +9410,8 @@ impl RunCtx<'_> {
                 &self.deps.repo,
                 &self.cfg.workflow.defaults.workdir,
             );
-            let pm_dir = postmerge_worktree_dir(&scratch, &st.name, attempt);
-            let pm_branch = postmerge_branch(&st.name, attempt);
+            let (pm_dir, pm_branch) =
+                Throwaway::POSTMERGE.dir_and_branch(&scratch, &st.name, attempt);
             // This dir/branch carry no durable checkpoint (unlike the unit's own `rigger/u/*`
             // branch): a prior process may have crashed between creating them and reaping
             // them, leaving a leftover pinned at a now-stale sha. The safe resume is always
@@ -11230,11 +11191,10 @@ impl RunCtx<'_> {
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
         );
-        let dir = review_worktree_dir(&scratch, &st.name, attempt);
         // A throwaway branch (NOT the deterministic unit branch): this worktree is
         // read-only scaffolding, never a checkpoint, so its branch must not collide with -
         // or survive as - a unit's durable branch.
-        let branch = review_branch(&st.name, attempt);
+        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, &st.name, attempt);
         // A review worktree must reflect the CURRENT base HEAD. Since it carries no durable
         // work, DISCARD any deterministic leftover (a crashed prior review step left the
         // branch+dir pinned at a now-STALE HEAD) before creating, so we recreate off the
@@ -13244,55 +13204,42 @@ fn quarantined_branch(
     })
 }
 
-/// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
-/// `<scratch-root>/rigger-review-<stage-slug>-<attempt>`, derived from the stage id and
-/// the review attempt, NO per-process UUID. A resumed review step recomputes the same path
-/// and RECLAIMS it - [`Self::review_only_worktree`] discards any leftover and recreates off
-/// the current HEAD (never adopting a stale checkout) - instead of leaking a fresh worktree
-/// each process. Unlike the unit worktree this carries no durable checkpoint;
-/// [`Self::run_fan_out_stage`] removes both the dir and its [`review_branch`] when the stage
-/// ends.
-fn review_worktree_dir(scratch_root: &str, stage_id: &str, attempt: u32) -> String {
-    format!(
-        "{scratch_root}/rigger-review-{}-{attempt}",
-        sanitize_for_path(stage_id)
-    )
-}
+/// A THROWAWAY scratch worktree kind: read-only scaffolding that carries no durable checkpoint
+/// and never survives its own stage, so its dir and branch derive DETERMINISTICALLY from the
+/// owning id and attempt (no per-process uuid) - a resumed step recomputes the same pair and
+/// reclaims it instead of leaking a fresh worktree each process. The kind's tag names both.
+#[derive(Clone, Copy)]
+struct Throwaway(&'static str);
 
-/// The DETERMINISTIC throwaway branch for a standalone review worktree (spec 06):
-/// `rigger/review/<stage-slug>-<attempt>`. It is NOT a unit's durable `rigger/u/*`
-/// checkpoint - it is read-only review scaffolding, removed with its worktree when the
-/// stage ends - so it must never collide with, or survive as, a unit branch. Deriving it
-/// from stage + attempt (no uuid) lets a resumed step recompute and reclaim it.
-fn review_branch(stage_id: &str, attempt: u32) -> String {
-    format!("rigger/review/{}-{attempt}", sanitize_for_path(stage_id))
-}
+impl Throwaway {
+    /// A STANDALONE review stage's worktree (spec 06), keyed by the stage id and the review
+    /// attempt. [`RunCtx::review_only_worktree`] discards any leftover and recreates it off the
+    /// current HEAD (never adopting a stale checkout); [`RunCtx::run_fan_out_stage`] removes both
+    /// the dir and its branch when the stage ends. Its branch is NOT a unit's durable `rigger/u/*`
+    /// checkpoint, so it must never collide with, or survive as, a unit branch.
+    const REVIEW: Throwaway = Throwaway("review");
 
-/// The DETERMINISTIC dir for a unit's THROWAWAY post-merge re-gate worktree (spec 12,
-/// unit 5 / spec 103, criterion 7): `<scratch-root>/rigger-postmerge-<unit-slug>-<attempt>`,
-/// derived from the unit id and the integrate attempt, no per-process uuid. The post-merge
-/// re-gate certifies the MERGED run-branch tree right before `UnitIntegrated` - running it in
-/// the operator's own checkout let a stray untracked file there change the verdict, and
-/// running it in the unit's own (already-landed-out-of) `rigger-wt-<slug>` dir would race
-/// whatever that worktree does next - so it gets its own scratch-rooted, throwaway location
-/// instead, the exact same shape as a standalone review's [`review_worktree_dir`]. Carries no
-/// durable checkpoint: [`RunCtx::integrate_and_emit`] discards any leftover before creating it
-/// fresh at the landed sha, and removes both the dir and its [`postmerge_branch`] the instant
-/// its gate suite ends, pass or fail.
-fn postmerge_worktree_dir(scratch_root: &str, unit_id: &str, attempt: u32) -> String {
-    format!(
-        "{scratch_root}/rigger-postmerge-{}-{attempt}",
-        sanitize_for_path(unit_id)
-    )
-}
+    /// A unit's post-merge re-gate worktree (spec 12, unit 5 / spec 103, criterion 7), keyed by
+    /// the unit id and the integrate attempt. The post-merge re-gate certifies the MERGED
+    /// run-branch tree right before `UnitIntegrated` - running it in the operator's own checkout
+    /// let a stray untracked file there change the verdict, and running it in the unit's own
+    /// (already-landed-out-of) `rigger-wt-<slug>` dir would race whatever that worktree does
+    /// next - so it gets its own scratch-rooted, throwaway location instead.
+    /// [`RunCtx::integrate_and_emit`] discards any leftover, points the branch at the exact
+    /// landed sha via [`Worktree::create_branch_at`] (so the worktree checks out precisely the
+    /// tree `UnitIntegrated` is about to certify) and removes both the instant its gate suite
+    /// ends, pass or fail.
+    const POSTMERGE: Throwaway = Throwaway("postmerge");
 
-/// The DETERMINISTIC throwaway branch for a post-merge re-gate worktree (spec 103,
-/// criterion 7): `rigger/postmerge/<unit-slug>-<attempt>`. [`RunCtx::integrate_and_emit`]
-/// points it at the exact landed sha via [`Worktree::create_branch_at`], so the worktree
-/// checks out precisely the tree `UnitIntegrated` is about to certify - never the unit's own
-/// durable `rigger/u/*` checkpoint, and never surviving past its own gate run.
-fn postmerge_branch(unit_id: &str, attempt: u32) -> String {
-    format!("rigger/postmerge/{}-{attempt}", sanitize_for_path(unit_id))
+    /// The worktree dir `<scratch-root>/rigger-<kind>-<id-slug>-<attempt>` and its branch
+    /// `rigger/<kind>/<id-slug>-<attempt>`.
+    fn dir_and_branch(self, scratch_root: &str, id: &str, attempt: u32) -> (String, String) {
+        let slug = format!("{}-{attempt}", sanitize_for_path(id));
+        (
+            format!("{scratch_root}/rigger-{}-{slug}", self.0),
+            format!("rigger/{}/{slug}", self.0),
+        )
+    }
 }
 
 /// Whether two filesystem paths name the same location. Used by the cwd-isolation
@@ -14402,20 +14349,17 @@ mod tests {
     /// `drain_compensations` appends - the existing `UnitFailed` vocabulary carrying
     /// [`META_COMPENSATED`] metadata, never a new event type.
     fn compensated(id: &str) -> Event {
-        Event::new(
-            ledger::TYPE_UNIT_FAILED,
-            serde_json::to_vec(&json!({"id": id, "attempts": 2, "cause": CAUSE_REJECT})).unwrap(),
-        )
-        .with_meta(META_COMPENSATED, "deadbeef")
+        plain_failure(id, 2).with_meta(META_COMPENSATED, "deadbeef")
     }
 
-    /// An ORDINARY remediation `UnitFailed` (spec 88 round 3's control case): no
-    /// [`META_COMPENSATED`] metadata at all, so it must never be mistaken for a
-    /// compensation revert.
-    fn plain_failure(id: &str) -> Event {
+    /// An ORDINARY remediation `UnitFailed` for `id` after `attempts` (spec 88 round 3's
+    /// control case): no [`META_COMPENSATED`] metadata at all, so it must never be mistaken
+    /// for a compensation revert.
+    fn plain_failure(id: &str, attempts: u32) -> Event {
         Event::new(
             ledger::TYPE_UNIT_FAILED,
-            serde_json::to_vec(&json!({"id": id, "attempts": 1, "cause": CAUSE_REJECT})).unwrap(),
+            serde_json::to_vec(&json!({"id": id, "attempts": attempts, "cause": CAUSE_REJECT}))
+                .unwrap(),
         )
     }
 
@@ -14492,7 +14436,7 @@ mod tests {
             run_started_with_spec("specs/1-x.md"),
             started_with_criterion("attempt-1", "c1-aaa"),
             integrated("attempt-1"),
-            plain_failure("attempt-1"),
+            plain_failure("attempt-1", 1),
         ];
         assert_eq!(
             prior_criterion_unit(&events, "c1-aaa", "new-slug"),
@@ -15419,26 +15363,30 @@ mod tests {
         // uuid), so a resumed review step recomputes the same path/branch and can
         // adopt-or-prune rather than leaking a fresh one each process.
         assert_eq!(
-            review_worktree_dir("/scratch", "review stage", 2),
+            Throwaway::REVIEW
+                .dir_and_branch("/scratch", "review stage", 2)
+                .0,
             "/scratch/rigger-review-review-stage-2"
         );
         assert_eq!(
-            review_branch("review stage", 2),
+            Throwaway::REVIEW
+                .dir_and_branch("/scratch", "review stage", 2)
+                .1,
             "rigger/review/review-stage-2"
         );
         assert_eq!(
-            review_worktree_dir("/scratch", "s", 0),
-            review_worktree_dir("/scratch", "s", 0),
+            Throwaway::REVIEW.dir_and_branch("/scratch", "s", 0).0,
+            Throwaway::REVIEW.dir_and_branch("/scratch", "s", 0).0,
             "same (stage, attempt) is deterministic"
         );
         assert_ne!(
-            review_worktree_dir("/scratch", "s", 0),
-            review_worktree_dir("/scratch", "s", 1),
+            Throwaway::REVIEW.dir_and_branch("/scratch", "s", 0).0,
+            Throwaway::REVIEW.dir_and_branch("/scratch", "s", 1).0,
             "a different attempt yields a different worktree dir"
         );
         assert_ne!(
-            review_branch("s", 0),
-            review_branch("s", 1),
+            Throwaway::REVIEW.dir_and_branch("/scratch", "s", 0).1,
+            Throwaway::REVIEW.dir_and_branch("/scratch", "s", 1).1,
             "a different attempt yields a different throwaway review branch"
         );
     }
@@ -16296,6 +16244,29 @@ mod tests {
             },
         );
         cfg
+    }
+
+    /// Append a planner `UnitProposed` for unit `id` (agent `worker`, gate `ok`) against
+    /// `criterion` / its stable id `cid`, tagged with its proposing `spawn` - or, with `None`,
+    /// in the pre-spec-72 legacy shape: no `META_SPAWN` meta and no `episode` key in the JSON
+    /// `data`, exactly what every historical `UnitProposed` has.
+    fn append_proposal(st: &Store, id: &str, criterion: &str, cid: &str, spawn: Option<&str>) {
+        let e = Event::new(
+            TYPE_UNIT_PROPOSED,
+            serde_json::to_vec(&json!({
+                "id": id,
+                "agent": "worker",
+                "criterion": criterion,
+                "criterion_id": cid,
+                "gates": ["ok"],
+            }))
+            .unwrap(),
+        );
+        let e = match spawn {
+            Some(spawn) => e.with_meta(META_SPAWN, spawn),
+            None => e,
+        };
+        st.append(STREAM, ExpectedRevision::Any, &[e]).unwrap();
     }
 
     #[test]
@@ -17682,26 +17653,6 @@ mod tests {
             ("u-ep2", crit_x, cid_x.clone(), "plan/replan#1"),
         ];
 
-        fn append_one(st: &Store, id: &str, criterion: &str, cid: &str, spawn: &str) {
-            st.append(
-                STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": id,
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )
-                .with_meta(META_SPAWN, spawn)],
-            )
-            .unwrap();
-        }
-
         let integrated: HashSet<String> = HashSet::new();
         let terminal: HashSet<String> = HashSet::new();
 
@@ -17709,7 +17660,7 @@ mod tests {
         // shape) before the fresh process's ONE pre-wave catch-up call.
         let st_resume = Store::open(":memory:").unwrap();
         for (id, crit, cid, spawn) in &history {
-            append_one(&st_resume, id, crit, cid, spawn);
+            append_proposal(&st_resume, id, crit, cid, Some(spawn));
         }
         let driver_resume = Stub::new();
         let deps_resume = Deps {
@@ -17751,7 +17702,7 @@ mod tests {
         let mut stages_live = seed_refine_dag(&deps_live.criteria);
         let mut proposed_live: HashSet<String> = HashSet::new();
         for (id, crit, cid, spawn) in &history {
-            append_one(&st_live, id, crit, cid, spawn);
+            append_proposal(&st_live, id, crit, cid, Some(spawn));
             ctx_live
                 .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
                 .unwrap();
@@ -17810,57 +17761,15 @@ mod tests {
         let cid = criterion_stable_id(1, criterion);
         let criteria = vec![criterion.to_string()];
 
-        // NOTE: no `.with_meta(META_SPAWN, ...)` and no `episode` key in the JSON
-        // `data` - exactly the pre-spec-72 shape every historical `UnitProposed`
-        // has.
-        fn append_legacy(st: &Store, id: &str, criterion: &str, cid: &str) {
-            st.append(
-                STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": id,
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )],
-            )
-            .unwrap();
-        }
-
-        fn append_identified(st: &Store, id: &str, criterion: &str, cid: &str, spawn: &str) {
-            st.append(
-                STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": id,
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )
-                .with_meta(META_SPAWN, spawn)],
-            )
-            .unwrap();
-        }
-
         let integrated: HashSet<String> = HashSet::new();
         let terminal: HashSet<String> = HashSet::new();
 
         // RESUME: the entire legacy-then-identified history is already in the
         // store before the fresh process's ONE catch-up call.
         let st_resume = Store::open(":memory:").unwrap();
-        append_legacy(&st_resume, "u-legacy-1", criterion, &cid);
-        append_legacy(&st_resume, "u-legacy-2", criterion, &cid);
-        append_identified(&st_resume, "u-new", criterion, &cid, "plan/replan#1");
+        append_proposal(&st_resume, "u-legacy-1", criterion, &cid, None);
+        append_proposal(&st_resume, "u-legacy-2", criterion, &cid, None);
+        append_proposal(&st_resume, "u-new", criterion, &cid, Some("plan/replan#1"));
 
         let driver_resume = Stub::new();
         let deps_resume = Deps {
@@ -17913,11 +17822,11 @@ mod tests {
         let mut stages_live = seed_refine_dag(&deps_live.criteria);
         let mut proposed_live: HashSet<String> = HashSet::new();
 
-        append_legacy(&st_live, "u-legacy-1", criterion, &cid);
+        append_proposal(&st_live, "u-legacy-1", criterion, &cid, None);
         ctx_live
             .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
             .unwrap();
-        append_legacy(&st_live, "u-legacy-2", criterion, &cid);
+        append_proposal(&st_live, "u-legacy-2", criterion, &cid, None);
         ctx_live
             .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
             .unwrap();
@@ -17931,7 +17840,7 @@ mod tests {
             stages_live.keys().collect::<Vec<_>>()
         );
 
-        append_identified(&st_live, "u-new", criterion, &cid, "plan/replan#1");
+        append_proposal(&st_live, "u-new", criterion, &cid, Some("plan/replan#1"));
         ctx_live
             .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
             .unwrap();
@@ -19420,26 +19329,46 @@ mod tests {
     // applied in order so each event's position increases (older first), then return
     // the rendered capped-decisions section for `seed`.
     fn render_capped_decisions(decisions: &[(&str, String, &str)], seed: &[String]) -> String {
+        let payloads = decisions
+            .iter()
+            .map(|(id, summary, supersedes)| {
+                let mut payload = json!({
+                    "id": id,
+                    "summary": summary,
+                    "governs": seed,
+                });
+                if !supersedes.is_empty() {
+                    payload["supersedes"] = json!(supersedes);
+                }
+                payload
+            })
+            .collect();
+        render_capped(
+            contextgraph::TYPE_DECISION_MADE,
+            payloads,
+            seed,
+            write_capped_decisions,
+        )
+    }
+
+    /// Fold `payloads` as `type_` events into a fresh graph, in order so each event's position
+    /// increases (older first), then return the capped section `write` renders for `seed`'s
+    /// depth-2 subgraph.
+    fn render_capped(
+        type_: &str,
+        payloads: Vec<Value>,
+        seed: &[String],
+        write: fn(&mut String, &Graph, &[String]),
+    ) -> String {
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        for (i, (id, summary, supersedes)) in decisions.iter().enumerate() {
-            let mut payload = json!({
-                "id": id,
-                "summary": summary,
-                "governs": seed,
-            });
-            if !supersedes.is_empty() {
-                payload["supersedes"] = json!(supersedes);
-            }
-            let mut e = Event::new(
-                contextgraph::TYPE_DECISION_MADE,
-                serde_json::to_vec(&payload).unwrap(),
-            );
+        for (i, payload) in payloads.iter().enumerate() {
+            let mut e = Event::new(type_, serde_json::to_vec(payload).unwrap());
             e.position = (i as u64) + 1;
             graph.apply(&e).unwrap();
         }
         let g = graph.subgraph(seed, 2).unwrap();
         let mut b = String::new();
-        write_capped_decisions(&mut b, &g, seed);
+        write(&mut b, &g, seed);
         b
     }
 
@@ -19672,25 +19601,15 @@ mod tests {
     // capped-findings section for `seed`. Mirrors `render_capped_decisions` for the
     // findings half of Gap 17.
     fn render_capped_findings(findings: &[(&str, &str, String)], seed: &[String]) -> String {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        for (i, (id, by, summary)) in findings.iter().enumerate() {
-            let mut e = Event::new(
-                contextgraph::TYPE_REVIEW_FINDING,
-                serde_json::to_vec(&json!({
-                    "id": id,
-                    "by": by,
-                    "summary": summary,
-                    "about": seed,
-                }))
-                .unwrap(),
-            );
-            e.position = (i as u64) + 1;
-            graph.apply(&e).unwrap();
-        }
-        let g = graph.subgraph(seed, 2).unwrap();
-        let mut b = String::new();
-        write_capped_findings(&mut b, &g, seed);
-        b
+        render_capped(
+            contextgraph::TYPE_REVIEW_FINDING,
+            findings
+                .iter()
+                .map(|(id, by, summary)| json!({"id": id, "by": by, "summary": summary, "about": seed}))
+                .collect(),
+            seed,
+            write_capped_findings,
+        )
     }
 
     #[test]
@@ -19914,24 +19833,17 @@ mod tests {
     // capped-lessons section for `seed`. Mirrors `render_capped_findings` for the lessons
     // half of Gap 17 (lessons carry no `by`, so their line is the plain `- id: summary`).
     fn render_capped_lessons(lessons: &[(&str, String)], seed: &[String]) -> String {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        for (i, (id, summary)) in lessons.iter().enumerate() {
-            let mut e = Event::new(
-                contextgraph::TYPE_LESSON_LEARNED,
-                serde_json::to_vec(&json!({
-                    "id": id,
-                    "summary": summary,
-                    "about": seed,
-                }))
-                .unwrap(),
-            );
-            e.position = (i as u64) + 1;
-            graph.apply(&e).unwrap();
-        }
-        let g = graph.subgraph(seed, 2).unwrap();
-        let mut b = String::new();
-        write_capped_lessons(&mut b, &g, seed);
-        b
+        let scoped: Vec<(&str, &str, Vec<&str>)> = lessons
+            .iter()
+            .map(|(id, summary)| {
+                (
+                    *id,
+                    summary.as_str(),
+                    seed.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        render_capped_lessons_scoped(&scoped, seed)
     }
 
     #[test]
@@ -22198,24 +22110,15 @@ mod tests {
         lessons: &[(&str, &str, Vec<&str>)],
         seed: &[String],
     ) -> String {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        for (i, (id, summary, about)) in lessons.iter().enumerate() {
-            let mut e = Event::new(
-                contextgraph::TYPE_LESSON_LEARNED,
-                serde_json::to_vec(&json!({
-                    "id": id,
-                    "summary": summary,
-                    "about": about,
-                }))
-                .unwrap(),
-            );
-            e.position = (i as u64) + 1;
-            graph.apply(&e).unwrap();
-        }
-        let g = graph.subgraph(seed, 2).unwrap();
-        let mut b = String::new();
-        write_capped_lessons(&mut b, &g, seed);
-        b
+        render_capped(
+            contextgraph::TYPE_LESSON_LEARNED,
+            lessons
+                .iter()
+                .map(|(id, summary, about)| json!({"id": id, "summary": summary, "about": about}))
+                .collect(),
+            seed,
+            write_capped_lessons,
+        )
     }
 
     #[test]
@@ -22383,22 +22286,7 @@ mod tests {
     /// create the branch via a worktree, write+commit the file, then remove the
     /// transient worktree dir (the branch ref survives as the durable checkpoint).
     fn commit_on_unit_branch(repo: &str, unit_id: &str, file: &str, content: &str) {
-        let branch = unit_branch(unit_id);
-        let dir = std::env::temp_dir().join(format!(
-            "rigger-seed-{}-{}",
-            sanitize_for_path(unit_id),
-            &uuid::Uuid::new_v4().to_string()[..8]
-        ));
-        let wt =
-            crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch, "").unwrap();
-        std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
-        let committed = wt.commit("rigger: prior window work").unwrap();
-        assert!(!committed.is_empty(), "the prior window must commit work");
-        wt.remove().unwrap();
-        assert!(
-            crate::worktree::Worktree::branch_has_work(repo, &branch),
-            "the seeded branch must carry committed work"
-        );
+        commit_on_named_branch(repo, &unit_branch(unit_id), file, content);
     }
 
     #[test]
@@ -22596,12 +22484,11 @@ mod tests {
         );
     }
 
-    /// Commit throwaway work on an ARBITRARY branch name (periphery seed helper). The
-    /// sibling `commit_on_unit_branch` only ever commits on the CANONICAL
-    /// `unit_branch(id)`, so it cannot stage a unit whose RECORDED branch differs from
-    /// that derivation; this stages exactly that case for the recorded-branch-preference
-    /// boundary below. Mirrors `commit_on_unit_branch`: a one-file worktree, committed and
-    /// immediately removed, leaving the branch carrying real work.
+    /// Commit throwaway work on an ARBITRARY branch name (periphery seed helper): a one-file
+    /// worktree, committed and immediately removed, leaving the branch carrying real work.
+    /// `commit_on_unit_branch` stages the CANONICAL `unit_branch(id)` through it; called
+    /// directly it stages a unit whose RECORDED branch differs from that derivation, for the
+    /// recorded-branch-preference boundary below.
     fn commit_on_named_branch(repo: &str, branch: &str, file: &str, content: &str) {
         let dir = std::env::temp_dir().join(format!(
             "rigger-seed-{}-{}",
@@ -28584,7 +28471,7 @@ mod tests {
         // state, or any other git-level surprise - is a CONDUCTOR-SIDE
         // infrastructure fault around landing the producer's own commits, never the
         // unit's own defect, so it must carry PLAN_LANDING_MARKER (recognized by
-        // `is_plan_landing_failed`) through the ONE wrapping boundary every call site
+        // `carries_marker(.., PLAN_LANDING_MARKER)`) through the ONE wrapping boundary every call site
         // shares, rather than each internal `?` needing its own bespoke wrap. Forced
         // here via a store double that fails specifically the `plan-intent:<unit>`
         // `DecisionMade` write `record_plan_intent` makes BEFORE any git mutation -
@@ -28622,7 +28509,7 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            is_plan_landing_failed(&err),
+            carries_marker(&err, PLAN_LANDING_MARKER),
             "a hard Err out of integrate_plan_commits must carry PLAN_LANDING_MARKER so \
              run_wave routes it through the no-lesson infra-fault arm, not the generic \
              wave-collapse arm: {:?}",
@@ -35701,10 +35588,10 @@ mod tests {
 
         // The exact fence path production would derive: the sibling of the ACTUAL review
         // worktree `run_fan_out_stage` created, via the SAME single-source
-        // `review_worktree_dir` + `review_fence_sibling` derivation the production code
+        // `Throwaway::REVIEW.dir_and_branch` + `review_fence_sibling` derivation the production code
         // path uses (conductor.rs's `review_only_worktree` / `gate::STORE_FENCE_SUFFIX`).
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let review_dir = review_worktree_dir(&scratch, "review", 0);
+        let review_dir = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0).0;
         let want_fence = crate::worktree::review_fence_sibling(&review_dir)
             .expect("a review worktree dir must derive a fence sibling");
 
@@ -35801,8 +35688,7 @@ mod tests {
         );
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = review_worktree_dir(&scratch, "review", 0);
-        let branch = review_branch("review", 0);
+        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
         assert!(
             std::path::Path::new(&dir).exists(),
             "a parked standalone-review stage must KEEP its throwaway review worktree: {dir}"
@@ -35838,7 +35724,7 @@ mod tests {
         // apart from whichever single Result this function returns) answers (1), while
         // the propagated Result still prefers a GENUINE error over a park within the
         // chunk so (2) reaches `run_wave`'s dedicated halt arms
-        // (is_degenerate_reviewer/is_verdict_channel_mismatch/catch-all) undisturbed.
+        // (carries_marker(.., DEGENERATE_MARKER)/carries_marker(.., MISMATCH_MARKER)/catch-all) undisturbed.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
@@ -35899,8 +35785,7 @@ mod tests {
         // genuinely parked - answered by the independent `any_parked` signal, not by
         // which single Result `run_review_agents_concurrently` returned.
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = review_worktree_dir(&scratch, "review", 0);
-        let branch = review_branch("review", 0);
+        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
         assert!(
             std::path::Path::new(&dir).exists(),
             "a PARKED sibling must keep the shared review worktree even when a LOWER-indexed \
@@ -35916,7 +35801,7 @@ mod tests {
     fn a_parked_lens_keeps_the_review_worktree_beside_a_sibling_degenerate_halt() {
         // adv-u1c1-r2-park-swap-swallows-concurrent-genuine-error (round 3), the SECOND
         // genuine-error shape the remedy names alongside a plain crash: a `run_wave`
-        // DEDICATED arm (is_degenerate_reviewer, conductor.rs:2883-2887), distinct from
+        // DEDICATED arm (carries_marker(.., DEGENERATE_MARKER), conductor.rs:2883-2887), distinct from
         // the generic catch-all the crash test above exercises. Lens "a" returns
         // empty/whitespace-only output on its original spawn AND both
         // `REVIEWER_RESPAWN_BOUND` respawns (Stub's default output is `""`, and "a" is
@@ -35924,7 +35809,7 @@ mod tests {
         // degenerate) - a Gap-18 dead-reviewer HALT - while sibling lens "b" (a
         // DIFFERENT index) PARKS in the SAME concurrent chunk. Both must hold from this
         // ONE mixed chunk: the HALT still propagates through `run_wave`'s dedicated
-        // `is_degenerate_reviewer` arm (not swallowed by "b"'s park), AND the shared
+        // `carries_marker(.., DEGENERATE_MARKER)` arm (not swallowed by "b"'s park), AND the shared
         // review worktree survives anyway (the independent `any_parked` signal), exactly
         // like the crash-shaped sibling test above.
         let repo = init_repo();
@@ -35995,8 +35880,7 @@ mod tests {
         );
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = review_worktree_dir(&scratch, "review", 0);
-        let branch = review_branch("review", 0);
+        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
         assert!(
             std::path::Path::new(&dir).exists(),
             "a PARKED sibling must keep the shared review worktree even when a co-chunked \
@@ -36083,8 +35967,7 @@ mod tests {
 
         // The shared review worktree survives anyway - "x" and "z" genuinely parked.
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = review_worktree_dir(&scratch, "review", 0);
-        let branch = review_branch("review", 0);
+        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
         assert!(
             std::path::Path::new(&dir).exists(),
             "PARKED siblings must keep the shared review worktree even when the NON-ZERO-\
@@ -36100,14 +35983,14 @@ mod tests {
     fn a_budget_refused_lens_beside_a_genuinely_crashing_sibling_in_one_chunk() {
         // sdet-u1c1-r3-budget-refused-arm-untested-in-concurrent-chunk (upheld by mutation:
         // adv2-u1c1-r4-budget-refused-arm-upheld-by-mutation): round 3 added TWO NEW
-        // `is_budget_refused` occurrences inside `run_review_agents_concurrently` (the
+        // `carries_marker(.., BUDGET_MARKER)` occurrences inside `run_review_agents_concurrently` (the
         // `any_parked` scan and the swap-exclusion predicate) - distinct from the
         // pre-existing single-spawn budget tests below
         // (`a_budget_refused_standalone_review_spawn_keeps_its_worktree`,
         // `a_budget_refused_plan_critique_gate_keeps_its_review_worktree`), which both
         // budget-refuse the ADVERSARY - a single SEQUENTIAL spawn outside this function -
         // and so cannot reach either of these two call sites at all. Dropping the
-        // `is_budget_refused` disjunct from both left the full suite green, proving the
+        // `carries_marker(.., BUDGET_MARKER)` disjunct from both left the full suite green, proving the
         // gap is real: two lenses RACE the SAME shared budget mid-chunk, and neither test
         // ever put a budget refusal on that race.
         //
@@ -36171,10 +36054,9 @@ mod tests {
 
         // The shared review worktree survives anyway - the OTHER lens was genuinely
         // budget-refused, the SAME worktree-preserving disposition as a park (spec 64 c1):
-        // the `any_parked` scan's `is_budget_refused` arm must have caught it.
+        // the `any_parked` scan's `carries_marker(.., BUDGET_MARKER)` arm must have caught it.
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = review_worktree_dir(&scratch, "review", 0);
-        let branch = review_branch("review", 0);
+        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
         assert!(
             std::path::Path::new(&dir).exists(),
             "a BUDGET-REFUSED sibling must keep the shared review worktree even when the \
@@ -36189,8 +36071,8 @@ mod tests {
     #[test]
     fn a_budget_refused_standalone_review_spawn_keeps_its_worktree() {
         // sdet-u1c1-budget-refused-arm-untested: `run_fan_out_stage`'s `parked_unwind`
-        // guard is `is_parked(e) || is_budget_refused(e)` - an OR of two disjuncts - but
-        // no test had ever driven the `is_budget_refused` arm to a REAL refusal at this
+        // guard is `is_parked(e) || carries_marker(e, BUDGET_MARKER)` - an OR of two disjuncts - but
+        // no test had ever driven the `carries_marker(.., BUDGET_MARKER)` arm to a REAL refusal at this
         // call site, so a regression that dropped it back to `is_parked`-only (the exact
         // mutant that survived every pre-existing test here) would pass silently.
         // `defaults.budget = 1`: the lens's own spawn consumes the whole budget, and the
@@ -36243,8 +36125,7 @@ mod tests {
         );
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = review_worktree_dir(&scratch, "review", 0);
-        let branch = review_branch("review", 0);
+        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
         assert!(
             std::path::Path::new(&dir).exists(),
             "a budget-refused standalone-review spawn must KEEP its throwaway review \
@@ -40853,7 +40734,7 @@ mod tests {
             .map(|u| crate::worktree::unit_cache_sibling(&unit_worktree_dir(&scratch, u)).unwrap())
             .collect();
 
-        // The post-merge worktree's own basename prefix (`postmerge_worktree_dir`) is the
+        // The post-merge worktree's own basename prefix (`Throwaway::POSTMERGE.dir_and_branch`) is the
         // ONLY thing that distinguishes its log line from a unit's ordinary pre-merge run in
         // its own `rigger-wt-<slug>` worktree - both live under the same scratch root.
         let is_postmerge_cwd = |cwd: &str| {
@@ -41001,8 +40882,7 @@ mod tests {
         };
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let pm_dir = postmerge_worktree_dir(&scratch, "unit-a", 0);
-        let pm_branch = postmerge_branch("unit-a", 0);
+        let (pm_dir, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
 
         assert!(
             run(&cfg, &deps).is_err(),
@@ -41080,8 +40960,7 @@ mod tests {
         };
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let pm_dir = postmerge_worktree_dir(&scratch, "unit-a", 0);
-        let pm_branch = postmerge_branch("unit-a", 0);
+        let (pm_dir, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
         std::os::unix::fs::symlink("/nonexistent-adv-u103c7-r3-target", &pm_dir)
             .expect("plant the dangling symlink that occupies pm_dir without `exists()`-ing");
 
@@ -44979,8 +44858,7 @@ mod tests {
         );
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let wt_dir = review_worktree_dir(&scratch, "plan-critique", 0);
-        let branch = review_branch("plan-critique", 0);
+        let (wt_dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "plan-critique", 0);
         assert!(
             std::path::Path::new(&wt_dir).exists(),
             "a parked plan-critique gate must KEEP its throwaway review worktree: {wt_dir}"
@@ -44994,8 +44872,8 @@ mod tests {
     #[test]
     fn a_budget_refused_plan_critique_gate_keeps_its_review_worktree() {
         // sdet-u1c1-budget-refused-arm-untested: `run_plan_critique_gate`'s
-        // `parked_unwind` guard is `is_parked(e) || is_budget_refused(e)` too, but no
-        // test had ever driven the `is_budget_refused` arm to a REAL refusal at this
+        // `parked_unwind` guard is `is_parked(e) || carries_marker(e, BUDGET_MARKER)` too, but no
+        // test had ever driven the `carries_marker(.., BUDGET_MARKER)` arm to a REAL refusal at this
         // call site. `defaults.budget = 1`: the planner's own spawn consumes the whole
         // budget (it runs synchronously right before the gate - spec 10's design, no
         // pre-wave breaker check sits between them), so the gate's adversary spawn is a
@@ -45031,8 +44909,7 @@ mod tests {
         );
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let wt_dir = review_worktree_dir(&scratch, "plan-critique", 0);
-        let branch = review_branch("plan-critique", 0);
+        let (wt_dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "plan-critique", 0);
         assert!(
             std::path::Path::new(&wt_dir).exists(),
             "a budget-refused plan-critique gate must KEEP its throwaway review worktree \

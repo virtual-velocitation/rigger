@@ -243,7 +243,7 @@ fn discard_then_create_never_corrupts_a_concurrent_siblings_admin_entry() {
             // Mirrors `RunCtx::integrate_and_emit`'s post-merge scratch-worktree sequence
             // (conductor.rs): discard whatever a prior attempt left, mint a fresh branch,
             // create the worktree, then reap both - deterministic dir/branch reused every
-            // round, exactly like production's `postmerge_worktree_dir`/`postmerge_branch`.
+            // round, exactly like production's `Throwaway::POSTMERGE.dir_and_branch`.
             let pm_dir = format!("{root_pm}/rigger-postmerge-sim-0");
             let pm_branch = "rigger/postmerge/sim-0".to_string();
             for round in 0..ROUNDS {

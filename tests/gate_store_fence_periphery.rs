@@ -614,7 +614,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
     std::fs::File::create(&live_events).unwrap();
     let live_before = std::fs::read(&live_events).unwrap();
 
-    // The real production derivation (conductor's `review_worktree_dir`, mirrored here): a
+    // The real production derivation (conductor's `Throwaway::REVIEW.dir_and_branch`, mirrored here): a
     // standalone review worktree lives under
     // `<repo>/.rigger/tmp/rigger-review-<stage>-<attempt>` - no per-unit cache sibling,
     // unlike a unit worktree.

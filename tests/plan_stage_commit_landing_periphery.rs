@@ -147,7 +147,7 @@
 //!     wrapper over `integrate_plan_commits_inner` that tags EVERY hard Err with a new, private
 //!     `PLAN_LANDING_MARKER` sentinel (the fifth alongside the pre-existing PARKED/BUDGET/
 //!     DEGENERATE/MISMATCH markers), and `RunCtx::run_wave` gained a matching `Err(e) if
-//!     is_plan_landing_failed(&e)` arm that propagates the halt loudly but records NO per-unit
+//!     carries_marker(&e, PLAN_LANDING_MARKER)` arm that propagates the halt loudly but records NO per-unit
 //!     lesson and charges NO attempt - fixing `adv-u88c4-r7-plan-commit-errors-still-carry-no-
 //!     infra-fault-marker`, the same structural gap named at round 2 and round 4 and never
 //!     closed by three successive git-level-only fixes to the trigger. The implementer's own
@@ -1934,7 +1934,7 @@ impl EventStore for FailingExternalStore<'_> {
     crate::delegate_event_store_reads!();
 }
 
-/// Criterion 4, gap 14 (round 8, new cross-module seam `is_plan_landing_failed` / `run_wave`):
+/// Criterion 4, gap 14 (round 8, new cross-module seam `carries_marker(.., PLAN_LANDING_MARKER)` / `run_wave`):
 /// `RunCtx::integrate_plan_commits` is now a thin wrapper over `integrate_plan_commits_inner`
 /// that tags EVERY hard Err with a new, private `PLAN_LANDING_MARKER` sentinel (the fifth
 /// alongside the pre-existing PARKED/BUDGET/DEGENERATE/MISMATCH markers), and `RunCtx::run_wave`

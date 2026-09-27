@@ -27,7 +27,7 @@
 //! `rigger/postmerge/<unit>-<attempt>` branch ref. The deterministic naming
 //! (`<scratch-root>/rigger-postmerge-<unit-slug>-<attempt>` /
 //! `rigger/postmerge/<unit-slug>-<attempt>`) is documented on the production
-//! `postmerge_worktree_dir`/`postmerge_branch` doc comments (src/conductor.rs) as part of the
+//! `Throwaway::POSTMERGE.dir_and_branch` doc comments (src/conductor.rs) as part of the
 //! criterion's own contract, not a private implementation detail; both tests below use a unit
 //! id (`unit-a`) and attempt (`0`, the first integration attempt of a fresh single-pass run)
 //! for which that slugging is the identity transform, so the path is reconstructed here without
@@ -60,7 +60,7 @@ fn git_ok(dir: &Path, args: &[&str]) {
 }
 
 /// The re-gate worktree/branch naming spec 103 criterion 7 documents as part of its contract
-/// (`postmerge_worktree_dir`/`postmerge_branch`, src/conductor.rs) - reconstructed here rather
+/// (`Throwaway::POSTMERGE.dir_and_branch`, src/conductor.rs) - reconstructed here rather
 /// than called, since those helpers are private to the crate's own module. Valid for a unit id
 /// that needs no sanitizing (`unit-a`: ASCII alphanumerics and a single interior hyphen), which
 /// this file's fixtures always use.

@@ -1791,62 +1791,6 @@
     "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0fcb9d9d58f0",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "pending_landing_from_log",
-        "content_hash": "cfec0a9bfe20702c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "landed_from_log",
-        "content_hash": "54d73d6a0f883b89"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-f5686c66da77",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "is_parked",
-        "content_hash": "d5256e972b9dfcfe"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "is_budget_refused",
-        "content_hash": "f5a627d7419c083c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "is_degenerate_reviewer",
-        "content_hash": "f5a627d7419c083c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "is_verdict_channel_mismatch",
-        "content_hash": "f5a627d7419c083c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "is_plan_landing_failed",
-        "content_hash": "f5a627d7419c083c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "is_land_refused",
-        "content_hash": "f5a627d7419c083c"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 6 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-acc2ed196b43",
     "classification": "near",
     "sites": [
@@ -1865,7 +1809,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-83a6d4922163",
+    "id": "dup-ce2da6f75aac",
     "classification": "semantic",
     "sites": [
       {
@@ -1881,7 +1825,7 @@
       {
         "file": "src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-        "content_hash": "3d0856e2d02c6691"
+        "content_hash": "f49253da8951d862"
       },
       {
         "file": "src/grounder/mod.rs",
@@ -2046,53 +1990,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-3f1ef3fa3676",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "review_worktree_dir",
-        "content_hash": "1160aaf7b5268442"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "review_branch",
-        "content_hash": "8595d6a2857484c5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "postmerge_worktree_dir",
-        "content_hash": "1160aaf7b5268442"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "postmerge_branch",
-        "content_hash": "8595d6a2857484c5"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 4 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-6b7ebc7d745b",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "compensated",
-        "content_hash": "31184cfbf0ab304e"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "plain_failure",
-        "content_hash": "5c01d076ead8f17e"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-99369c42d138",
+    "id": "dup-a453a32cbf38",
     "classification": "near",
     "sites": [
       {
@@ -2103,7 +2001,7 @@
       {
         "file": "src/conductor.rs",
         "name": "prior_criterion_unit_a_plain_non_compensation_failure_never_reopens_an_integrated_criterion",
-        "content_hash": "8ab5e52680e22bf7"
+        "content_hash": "a544bc4417ccc5e8"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
@@ -2442,29 +2340,6 @@
         "file": "src/conductor.rs",
         "name": "a_legacy_proposal_never_supersedes_an_identified_episodes_owner_even_when_logged_later",
         "content_hash": "c0ec580a0c31c6df"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-c1b367529b91",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "append_one",
-        "content_hash": "5945673022c96ba4"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "append_legacy",
-        "content_hash": "1132e873cdbd1024"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "append_identified",
-        "content_hash": "5945673022c96ba4"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
@@ -6310,29 +6185,6 @@
     "note": "mandatory sweep: .rigger-path string literals - 757 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-6bb42578d223",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "render_capped_findings",
-        "content_hash": "0ff32c5246664490"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "render_capped_lessons",
-        "content_hash": "f41b7c5c2848ac86"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "render_capped_lessons_scoped",
-        "content_hash": "efd543dbdcb98f12"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-b4365447b145",
     "classification": "near",
     "sites": [
@@ -6363,24 +6215,6 @@
         "file": "src/conductor.rs",
         "name": "a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header",
         "content_hash": "c2af362f2189e261"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-f87ed9fec6d6",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "commit_on_unit_branch",
-        "content_hash": "c3b128c9ecbc535d"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "commit_on_named_branch",
-        "content_hash": "9c29eb82e0b65347"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
@@ -6996,38 +6830,38 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-beebc024f3ed",
+    "id": "dup-b85b5c278ac9",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
         "name": "a_parked_lens_keeps_the_standalone_review_stages_worktree",
-        "content_hash": "259263275c12ecb1"
+        "content_hash": "347d87501319f5c6"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_parked_lens_keeps_the_review_worktree_even_beside_a_lower_indexed_sibling_crash",
-        "content_hash": "21f87c28298ff23c"
+        "content_hash": "c8252ea5c058c8f5"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_parked_lens_keeps_the_review_worktree_beside_a_sibling_degenerate_halt",
-        "content_hash": "4309001913ace7c9"
+        "content_hash": "b831ce083c0e4c3e"
       },
       {
         "file": "src/conductor.rs",
         "name": "the_swap_to_front_prioritizes_a_genuine_error_at_a_non_zero_chunk_index",
-        "content_hash": "80cd567ac83b909f"
+        "content_hash": "6f456a804c1be07c"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_budget_refused_lens_beside_a_genuinely_crashing_sibling_in_one_chunk",
-        "content_hash": "60ab0ff241895d82"
+        "content_hash": "29207f9469c4ebe3"
       },
       {
         "file": "src/conductor.rs",
         "name": "a_budget_refused_standalone_review_spawn_keeps_its_worktree",
-        "content_hash": "05c6d68a4608b801"
+        "content_hash": "6b7b07aca2ffa656"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 6 sites into one function in this file)",
@@ -7175,18 +7009,18 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-cda5cb7e3192",
+    "id": "dup-ff95b75b9a72",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
         "name": "postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch",
-        "content_hash": "2862d19bacf58892"
+        "content_hash": "b1b38b18aea5be55"
       },
       {
         "file": "src/conductor.rs",
         "name": "postmerge_worktree_create_err_still_reaps_the_just_created_branch",
-        "content_hash": "770ac28e96b0771b"
+        "content_hash": "2de0f151906c13ce"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
@@ -11295,24 +11129,6 @@
         "file": "src/metrics.rs",
         "name": "courier_finding",
         "content_hash": "85700b6ac473315a"
-      }
-    ],
-    "proposed_home": "metrics::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-d04c0e512a77",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/metrics.rs",
-        "name": "spawn_timing_never_pairs_a_cross_run_id_collision",
-        "content_hash": "a7c1df808f0b15dc"
-      },
-      {
-        "file": "src/metrics.rs",
-        "name": "spawn_timing_excludes_a_same_batch_zero_duration_pair_as_suspect",
-        "content_hash": "ffc6118ee556f3b4"
       }
     ],
     "proposed_home": "metrics::support (consolidate these 2 sites into one function in this file)",

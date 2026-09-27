@@ -8,7 +8,7 @@
 //!
 //! WHAT THE IMPLEMENTER'S OWN TEST ALREADY COVERS (not re-proven here).
 //! `src/conductor.rs`'s own `mod tests` proves the NEW fold and lookup
-//! (`landed_from_log`/`RunCtx::landed`/`RunCtx::landed_sha_for`) drive the fixed entry-level
+//! (`landings_from_log`/`RunCtx::landed`/`RunCtx::landed_sha_for`) drive the fixed entry-level
 //! fast path for ONE shape: a single `run()` call against a store HAND-SEEDED with the exact
 //! four events a real prior window would have left (`UnitStarted`, `verified`, `reviewed`,
 //! `integrate-landed` carrying the new `pre_merge` evidence field) - proving that IF the log
@@ -35,7 +35,7 @@
 //! GAP 2 (event type / serialized form - back-compat, the OTHER half of the same probe hit),
 //! `a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavior`. Every
 //! `integrate-landed` row a binary built BEFORE this fix ever recorded carries no `pre_merge`
-//! field at all (the field is new); `landed_from_log`'s own doc comment asserts such a row "is
+//! field at all (the field is new); `landings_from_log`'s own doc comment asserts such a row "is
 //! skipped rather than guessed" so "a unit whose ONLY landed row predates the fix keeps taking
 //! the true no-op short circuit it always did, no regression" - a claim the diff states but
 //! never proves anywhere. This hand-seeds exactly that legacy shape (the one shape GAP 1 never
@@ -354,7 +354,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
 // ============================================================================================
 // GAP 2: a landed row recorded by a binary BEFORE this fix shipped (no `pre_merge` in its
 // evidence) must not crash or misresolve a resumed call - it must keep the exact pre-fix
-// true-no-op behavior, the back-compat contract `landed_from_log`'s own doc comment asserts
+// true-no-op behavior, the back-compat contract `landings_from_log`'s own doc comment asserts
 // but never proves.
 // ============================================================================================
 
@@ -429,7 +429,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
         ),
         // THE LEGACY SHAPE: a real `record_landed` write from a binary built BEFORE this
         // criterion - `evidence` carries only `sha`, never `pre_merge` (the field did not
-        // exist yet). `landed_from_log` must skip this row rather than guess, and the caller
+        // exist yet). `landings_from_log` must skip this row rather than guess, and the caller
         // must fall through to the SAME true no-op short circuit it always took.
         Event::new(
             ledger::TYPE_UNIT_STATUS,
