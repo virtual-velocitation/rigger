@@ -20,6 +20,8 @@
 
 mod common;
 
+use common::is_running;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -53,34 +55,6 @@ fn wait_until(bound: Duration, mut pred: impl FnMut() -> bool) -> bool {
             return false;
         }
         std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
-/// Whether `pid` is a genuinely RUNNING process - unlike `common::is_alive` (a `kill(pid, 0)`-
-/// equivalent existence probe), this reports `false` for a REAPED-PENDING ZOMBIE too, which
-/// still answers alive to that probe: POSIX keeps a terminated child's process-table entry
-/// (holding no memory, no open file descriptors, no CPU time) until its parent calls `wait()`
-/// on it. This suite's OWN test binary runs as pid 1 of its own pid namespace
-/// (`.cargo/pidns-runner.sh`), so a process this fixture backgrounds and never holds a `Child`
-/// handle to gets reparented to US (the namespace's implicit reaper) the instant its own
-/// launcher exits - and this test deliberately never runs a reap loop, so a process that HAS
-/// genuinely terminated via `pdeathsig` sits as an unreaped zombie for the rest of the test,
-/// which is exactly the state this predicate must still call "not surviving" (a zombie holds
-/// no pipe open and burns no CPU - precisely what the criterion cares about). Reads
-/// `/proc/<pid>/stat`'s state field directly - a plain filesystem read, never a signal - so a
-/// genuinely absent pid and a zombie one are treated identically ("not running"). Linux-only,
-/// matching this crate's own existing `/proc`-reading conventions (`.cargo/pidns-runner.sh`,
-/// `src/reap.rs`).
-fn is_running(pid: u32) -> bool {
-    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    // Fields are "<pid> (<comm>) <state> ..."; `comm` may itself contain spaces or parens, so
-    // the state char is the first token after the LAST ')', never a naive whitespace split.
-    match stat.rfind(')') {
-        Some(idx) => !stat[idx + 1..].trim_start().starts_with('Z'),
-        None => false,
     }
 }
 

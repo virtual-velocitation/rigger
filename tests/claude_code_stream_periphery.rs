@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::fixtures::{no_emit, CwdGuard};
+use common::is_running;
 use rigger::conductor::{AgentDriver, AgentFailure, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::Driver;
@@ -929,26 +930,6 @@ fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_cloc
 
 // ---- spec 104 criterion 6 round-4 fix (decision op-104-stop-end-the-tree-and-bound-the-
 // joins): a descendant the driven child forked but never exec'd, inheriting a pipe fd ----
-
-/// Whether `pid` is still actually RUNNING - neither fully gone NOR a ZOMBIE awaiting reap
-/// by whatever process ends up adopting it - distinct from `common::is_alive`'s
-/// `kill(pid, 0)`-based "does this pid still occupy a process-table slot" check, which a
-/// SIGKILLed-but-not-yet-reaped zombie also satisfies. This test's own process is not the
-/// parent of the descendant it is checking (its real parent, the fixture's own shell, is
-/// ended by the SAME stop and so cannot `wait()` it either), so a genuinely-ended
-/// descendant may sit as a zombie - still "alive" by `kill(pid, 0)` - until whatever
-/// init/subreaper eventually collects it; reading its own reported state (`/proc/<pid>/stat`,
-/// the field right after `comm`'s closing paren, `Z` for zombie) is what tells "ended,
-/// awaiting reap by someone else" apart from "never signalled at all".
-fn is_running(pid: u32) -> bool {
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some((_, after_comm)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    !matches!(after_comm.trim_start().chars().next(), Some('Z') | None)
-}
 
 #[test]
 fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {

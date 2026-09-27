@@ -209,8 +209,9 @@ fn scan_with_starttime(base: &Path) -> Vec<ScanEntry> {
 /// AFTER `comm` - `0` is the state, `19` the start time (see `proc(5)`). Fields are located
 /// from the LAST `)` in the line rather than by naive whitespace-splitting, because field 2
 /// (`comm`, the process name in parens) may itself contain spaces or parens. `None` when the
-/// process has already exited, `/proc` is unavailable, or the line has no such field.
-pub(crate) fn stat_field_after_comm(pid: u32, index: usize) -> Option<String> {
+/// process has already exited, `/proc` is unavailable, or the line has no such field. Public so
+/// the test fixtures read a process's state or group through this same parser.
+pub fn stat_field_after_comm(pid: u32, index: usize) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let after_comm = stat.rsplit_once(')')?.1;
     after_comm.split_whitespace().nth(index).map(String::from)

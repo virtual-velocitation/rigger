@@ -39,17 +39,10 @@ impl Drop for CwdGuard {
 }
 
 /// The process-group id of live process `pid`, read from `/proc/<pid>/stat`.
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub fn pgid_of(pid: u32) -> u32 {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .unwrap_or_else(|e| panic!("read /proc/{pid}/stat: {e}"));
-    let after_comm = stat
-        .rsplit_once(')')
-        .expect("/proc stat has a parenthesised comm field")
-        .1;
-    after_comm
-        .split_whitespace()
-        .nth(2)
-        .expect("/proc stat has a pgrp field after comm")
+    rigger::reap::stat_field_after_comm(pid, 2)
+        .unwrap_or_else(|| panic!("/proc/{pid}/stat has a pgrp field after comm"))
         .parse()
         .expect("pgrp is a base-10 integer")
 }
