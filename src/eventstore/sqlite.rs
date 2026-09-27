@@ -1422,18 +1422,27 @@ mod tests {
     /// A store holding `rounds` recordings of one derived-index replay key, in one namespaced
     /// stream, plus a non-derived event that no prune may touch. The duplication the prune sheds.
     fn seeded_with_duplicated_key(path: &str, rounds: usize) -> Store {
-        let s = Store::open(path).unwrap();
         let mut events = vec![Event::new("RunStarted", b"{}".to_vec())];
         for _ in 0..rounds {
-            events.push(
-                Event::new(
-                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                    b"{}".to_vec(),
-                )
-                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-            );
+            events.push(keyed(
+                crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                "gc/src/a.rs@h1#0",
+            ));
         }
-        s.append("run", ExpectedRevision::Any, &events).unwrap();
+        store_with(path, &[("run", events)])
+    }
+
+    /// An event of `type_` carrying the derived-index replay key `key`.
+    fn keyed(type_: &str, key: &str) -> Event {
+        Event::new(type_, b"{}".to_vec()).with_meta(crate::ingest::META_REPLAY_KEY, key)
+    }
+
+    /// A store at `path` holding each `(stream, events)` batch, appended in order.
+    fn store_with(path: &str, batches: &[(&str, Vec<Event>)]) -> Store {
+        let s = Store::open(path).unwrap();
+        for (stream, events) in batches {
+            s.append(stream, ExpectedRevision::Any, events).unwrap();
+        }
         s
     }
 
@@ -1491,35 +1500,31 @@ mod tests {
     fn measure_derived_duplication_scopes_to_the_stream_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = Store::open(path).unwrap();
-        s.append(
-            "proj-a/run",
-            ExpectedRevision::Any,
+        let s = store_with(
+            path.to_str().unwrap(),
             &[
-                Event::new(
-                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                    b"{}".to_vec(),
-                )
-                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-                Event::new(
-                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                    b"{}".to_vec(),
-                )
-                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                (
+                    "proj-a/run",
+                    vec![
+                        keyed(
+                            crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                            "gc/src/a.rs@h1#0",
+                        ),
+                        keyed(
+                            crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                            "gc/src/a.rs@h1#0",
+                        ),
+                    ],
+                ),
+                (
+                    "proj-b/run",
+                    vec![keyed(
+                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        "gc/src/a.rs@h1#0",
+                    )],
+                ),
             ],
-        )
-        .unwrap();
-        s.append(
-            "proj-b/run",
-            ExpectedRevision::Any,
-            &[Event::new(
-                crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                b"{}".to_vec(),
-            )
-            .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0")],
-        )
-        .unwrap();
+        );
         let measured = s
             .measure_derived_duplication("proj-a/", &crate::ingest::derived_index_identity())
             .unwrap();
@@ -1531,25 +1536,22 @@ mod tests {
     fn measure_derived_duplication_on_a_clean_log_reports_no_duplication() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = Store::open(path).unwrap();
-        s.append(
-            "run",
-            ExpectedRevision::Any,
-            &[
-                Event::new(
-                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                    b"{}".to_vec(),
-                )
-                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-                Event::new(
-                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                    b"{}".to_vec(),
-                )
-                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/b.rs@h1#0"),
-            ],
-        )
-        .unwrap();
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[(
+                "run",
+                vec![
+                    keyed(
+                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        "gc/src/a.rs@h1#0",
+                    ),
+                    keyed(
+                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        "gc/src/b.rs@h1#0",
+                    ),
+                ],
+            )],
+        );
         let measured = s
             .measure_derived_duplication("", &crate::ingest::derived_index_identity())
             .unwrap();
@@ -1571,22 +1573,19 @@ mod tests {
         // accounting).
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = Store::open(path).unwrap();
-        s.append(
-            "run",
-            ExpectedRevision::Any,
-            &[
-                Event::new(
-                    crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                    b"{}".to_vec(),
-                )
-                .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-                Event::new(crate::contextgraph::TYPE_EDGE_INFERRED, b"{}".to_vec())
-                    .with_meta(crate::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-            ],
-        )
-        .unwrap();
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[(
+                "run",
+                vec![
+                    keyed(
+                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        "gc/src/a.rs@h1#0",
+                    ),
+                    keyed(crate::contextgraph::TYPE_EDGE_INFERRED, "gc/src/a.rs@h1#0"),
+                ],
+            )],
+        );
         let measured = s
             .measure_derived_duplication("", &crate::ingest::derived_index_identity())
             .unwrap();

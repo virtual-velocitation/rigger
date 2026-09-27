@@ -898,14 +898,17 @@ mod tests {
             assert!(!got.is_empty(), "{why}{got:?}");
         }
 
-        /// Some advisory is attributed to Done-when criterion `criterion`.
-        pub(super) fn assert_flags_criterion(
+        /// Whether some advisory is attributed to Done-when criterion `criterion` is exactly
+        /// `flagged`.
+        pub(super) fn assert_criterion_flagged(
             advisories: Vec<LintAdvisory>,
             criterion: usize,
+            flagged: bool,
             why: &str,
         ) {
-            assert!(
+            assert_eq!(
                 advisories.iter().any(|a| a.criterion == Some(criterion)),
+                flagged,
                 "{why}{advisories:?}"
             );
         }
@@ -928,6 +931,40 @@ mod tests {
         ) {
             let hit = advisories.iter().find(|a| a.class == class).expect(missing);
             assert_eq!(hit.criterion, criterion);
+        }
+
+        /// `criterion_blocks` and `extract_criteria` see the identical text for criterion 1 -
+        /// the two walks agree on the block, not just coincidentally on a verdict.
+        pub(super) fn assert_criterion_1_blocks_agree(text: &str) {
+            assert_eq!(
+                criterion_blocks(text).get(&1).cloned(),
+                extract_criteria(text).first().cloned(),
+                "criterion_blocks and extract_criteria must agree on criterion 1's full text"
+            );
+        }
+
+        /// No `multi-behavior` shape advisory fires on `text`.
+        pub(super) fn assert_no_multi_behavior(text: &str, why: &str) {
+            let advisories = spec_shape_advisories(text);
+            assert!(
+                !advisories
+                    .iter()
+                    .any(|a| a.rule == ShapeRule::MultiBehavior),
+                "{why}{advisories:?}"
+            );
+        }
+
+        /// `path_tokens` over `criteria` yields exactly `expected`, in order.
+        pub(super) fn assert_path_tokens(criteria: &[&str], expected: &[&str]) {
+            let criteria: Vec<String> = criteria.iter().map(|c| c.to_string()).collect();
+            assert_eq!(path_tokens(&criteria), expected);
+        }
+
+        /// `predicate` classifies each `(line, expected, why)` case as `expected`.
+        pub(super) fn assert_classifies(predicate: fn(&str) -> bool, cases: &[(&str, bool, &str)]) {
+            for (line, expected, why) in cases {
+                assert_eq!(predicate(line), *expected, "{why}");
+            }
         }
     }
     use support::*;
@@ -1075,18 +1112,14 @@ mod tests {
         );
     }
 
-    /// A single clause coordinator is NOT enough to flag `multi-behavior` - the threshold
-    /// is two, biased against false positives (a noun pair / Oxford list / single qualifier
-    /// carries one coordinator and must stay silent).
-    #[test]
-    fn a_single_coordinator_does_not_flag_multi_behavior() {
-        let text = "## Done when\n\n\
-            - [ ] rigger version reports the crate version, and a build-provenance id\n";
-        assert!(
-            !spec_shape_advisories(text)
-                .iter()
-                .any(|a| a.rule == ShapeRule::MultiBehavior),
-            "one coordinator is below the multi-behavior threshold"
+    crate::test_cases! {
+        /// A single clause coordinator is NOT enough to flag `multi-behavior` - the threshold
+        /// is two, biased against false positives (a noun pair / Oxford list / single qualifier
+        /// carries one coordinator and must stay silent).
+        a_single_coordinator_does_not_flag_multi_behavior: assert_no_multi_behavior(
+            "## Done when\n\n\
+            - [ ] rigger version reports the crate version, and a build-provenance id\n",
+            "one coordinator is below the multi-behavior threshold: ",
         );
     }
 
@@ -1214,35 +1247,28 @@ mod tests {
         );
     }
 
-    /// A checkbox whose FIRST line carries no clause coordinators stays silent on
-    /// `multi-behavior` even when its continuation lines (again, OWNS-sentence-shaped
-    /// prose) carry two or more `"; "` separators - the coordinator count must come from
-    /// the first physical line alone.
-    #[test]
-    fn spec_shape_advisories_ignores_coordinators_added_by_continuation_lines() {
-        let text = "## Done when\n\n\
+    crate::test_cases! {
+        /// A checkbox whose FIRST line carries no clause coordinators stays silent on
+        /// `multi-behavior` even when its continuation lines (again, OWNS-sentence-shaped
+        /// prose) carry two or more `"; "` separators - the coordinator count must come from
+        /// the first physical line alone.
+        spec_shape_advisories_ignores_coordinators_added_by_continuation_lines: assert_no_multi_behavior(
+            "## Done when\n\n\
             - [ ] the daemon starts up cleanly\n\
             \x20\x20and it writes a pidfile; it rotates the log; it emits a heartbeat too\n\
-            - [ ] a second, unrelated criterion\n";
-        assert!(
-            !spec_shape_advisories(text)
-                .iter()
-                .any(|a| a.rule == ShapeRule::MultiBehavior),
+            - [ ] a second, unrelated criterion\n",
             "the checkbox's first physical line carries no coordinators; coordinators added \
-             by continuation lines must not trigger multi-behavior; got: {:?}",
-            spec_shape_advisories(text)
+             by continuation lines must not trigger multi-behavior; got: ",
         );
     }
 
-    #[test]
-    fn path_tokens_extracts_relative_file_paths_and_trims_markdown() {
-        let criteria = vec![
-            "touches `src/main.rs` and crates/foo/src/bar.rs".to_string(),
-            "the file src/x/y.rs exports Z".to_string(),
-        ];
-        assert_eq!(
-            path_tokens(&criteria),
-            ["src/main.rs", "crates/foo/src/bar.rs", "src/x/y.rs"]
+    crate::test_cases! {
+        path_tokens_extracts_relative_file_paths_and_trims_markdown: assert_path_tokens(
+            &[
+                "touches `src/main.rs` and crates/foo/src/bar.rs",
+                "the file src/x/y.rs exports Z",
+            ],
+            &["src/main.rs", "crates/foo/src/bar.rs", "src/x/y.rs"],
         );
     }
 
@@ -1256,13 +1282,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn path_tokens_dedupes_and_preserves_first_seen_order() {
-        let criteria = vec![
-            "b/two.rs then a/one.rs".to_string(),
-            "again a/one.rs and b/two.rs".to_string(),
-        ];
-        assert_eq!(path_tokens(&criteria), ["b/two.rs", "a/one.rs"]);
+    crate::test_cases! {
+        path_tokens_dedupes_and_preserves_first_seen_order: assert_path_tokens(
+            &["b/two.rs then a/one.rs", "again a/one.rs and b/two.rs"],
+            &["b/two.rs", "a/one.rs"],
+        );
     }
 
     #[test]
@@ -1323,43 +1347,38 @@ mod tests {
         );
     }
 
-    /// F1 ownership: "owner" (not just "OWNS") also counts as an ownership sentence.
-    #[test]
-    fn ownership_check_accepts_the_word_owner() {
-        let text = "## Done when\n\n\
+    crate::test_cases! {
+        /// F1 ownership: "owner" (not just "OWNS") also counts as an ownership sentence.
+        ownership_check_accepts_the_word_owner: assert_criterion_flagged(
+            ownership_advisories("## Done when\n\n\
             - [ ] the daemon writes a pidfile; no clear owner is named otherwise\n\
             - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
-            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede path.\n";
-        assert!(
-            !ownership_advisories(text)
-                .iter()
-                .any(|a| a.criterion == Some(1)),
-            "the word owner must satisfy the ownership check"
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede path.\n"),
+            1,
+            false,
+            "the word owner must satisfy the ownership check: ",
         );
     }
 
-    /// F1 ownership: an OWNS sentence on a WRAPPED CONTINUATION line (this repo's own
-    /// standard Done-when convention - see specs/66-ship-the-planning-discipline.md's own
-    /// Done-when list) must satisfy the check, not only one on the checkbox's first
-    /// physical line. `extract_criteria`/`checkbox_text` only ever see that first line, so
-    /// the ownership check must scan the criterion's FULL block (via `line_criterion`'s
-    /// block boundary), not `extract_criteria`'s truncated text.
-    #[test]
-    fn ownership_check_finds_an_owns_sentence_on_a_wrapped_continuation_line() {
-        let text = "## Done when\n\n\
+    crate::test_cases! {
+        /// F1 ownership: an OWNS sentence on a WRAPPED CONTINUATION line (this repo's own
+        /// standard Done-when convention - see specs/66-ship-the-planning-discipline.md's own
+        /// Done-when list) must satisfy the check, not only one on the checkbox's first
+        /// physical line. `extract_criteria`/`checkbox_text` only ever see that first line, so
+        /// the ownership check must scan the criterion's FULL block (via `line_criterion`'s
+        /// block boundary), not `extract_criteria`'s truncated text.
+        ownership_check_finds_an_owns_sentence_on_a_wrapped_continuation_line: assert_criterion_flagged(
+            ownership_advisories("## Done when\n\n\
             - [ ] the daemon writes a pidfile that is mode 0644 and readable only by the\n\
             \x20\x20service account. This criterion OWNS the pidfile permissions.\n\
             - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
             - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
-            path.\n";
-        assert!(
-            !ownership_advisories(text)
-                .iter()
-                .any(|a| a.criterion == Some(1)),
+            path.\n"),
+            1,
+            false,
             "criterion 1's OWNS sentence sits on a wrapped continuation line, not the \
              checkbox's first physical line - it must still satisfy the ownership check; \
-             got: {:?}",
-            ownership_advisories(text)
+             got: ",
         );
     }
 
@@ -1373,68 +1392,57 @@ mod tests {
     // relocate the discrepancy to a different symptom.
     // -----------------------------------------------------------------------------------
 
-    /// FALSE POSITIVE fixture (round 2): a continuation line at the SAME margin as its
-    /// checkbox (no indentation at all) carries the OWNS sentence. `extract_criteria`
-    /// already joins it into criterion 1's real, load-bearing text (spec 80's JOINING RULE
-    /// is indent-agnostic); before this fix, `ownership_advisories` (built on the
-    /// indent-gated `line_criterion`) could not see it and false-fired F1 on a criterion
-    /// that genuinely carries an OWNS sentence.
-    #[test]
-    fn ownership_check_finds_an_owns_sentence_on_an_unindented_continuation_line() {
-        let text = "## Done when\n\n\
+    crate::test_cases! {
+        /// FALSE POSITIVE fixture (round 2): a continuation line at the SAME margin as its
+        /// checkbox (no indentation at all) carries the OWNS sentence. `extract_criteria`
+        /// already joins it into criterion 1's real, load-bearing text (spec 80's JOINING RULE
+        /// is indent-agnostic); before this fix, `ownership_advisories` (built on the
+        /// indent-gated `line_criterion`) could not see it and false-fired F1 on a criterion
+        /// that genuinely carries an OWNS sentence.
+        ownership_check_finds_an_owns_sentence_on_an_unindented_continuation_line: {
+            let text = "## Done when\n\n\
             - [ ] the daemon writes a pidfile that is mode 0644\n\
             and readable only by the service account. This criterion OWNS the pidfile \
             permissions.\n\
             - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
             - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
             path.\n";
-        // `criterion_blocks`'s text for criterion 1 must agree with `extract_criteria`'s -
-        // proof the two walks now see the identical block, not just a coincidentally
-        // matching verdict.
-        assert_eq!(
-            criterion_blocks(text).get(&1).cloned(),
-            extract_criteria(text).first().cloned(),
-            "criterion_blocks and extract_criteria must agree on criterion 1's full text"
-        );
-        assert!(
-            !ownership_advisories(text)
-                .iter()
-                .any(|a| a.criterion == Some(1)),
-            "criterion 1's OWNS sentence sits on an UNINDENTED continuation line - it must \
-             still satisfy the ownership check; got: {:?}",
-            ownership_advisories(text)
-        );
+            assert_criterion_1_blocks_agree(text);
+            assert_criterion_flagged(
+                ownership_advisories(text),
+                1,
+                false,
+                "criterion 1's OWNS sentence sits on an UNINDENTED continuation line - it must \
+                 still satisfy the ownership check; got: ",
+            );
+        };
     }
 
-    /// FALSE NEGATIVE fixture (round 2): a checkbox, then a BLANK LINE, then unrelated
-    /// indented prose that happens to contain "owns". `extract_criteria` correctly stops
-    /// the block at the blank line (spec 80's JOINING RULE: a blank line is a hard
-    /// boundary), so criterion 1's real text carries no OWNS sentence and MUST be flagged.
-    /// Before this fix, `line_criterion` never reset its open block on a blank line, so the
-    /// indented prose after it wrongly reattached to criterion 1 and suppressed the F1 hit.
-    #[test]
-    fn ownership_check_does_not_reattach_prose_after_a_blank_line_to_the_prior_criterion() {
-        let text = "## Done when\n\n\
+    crate::test_cases! {
+        /// FALSE NEGATIVE fixture (round 2): a checkbox, then a BLANK LINE, then unrelated
+        /// indented prose that happens to contain "owns". `extract_criteria` correctly stops
+        /// the block at the blank line (spec 80's JOINING RULE: a blank line is a hard
+        /// boundary), so criterion 1's real text carries no OWNS sentence and MUST be flagged.
+        /// Before this fix, `line_criterion` never reset its open block on a blank line, so the
+        /// indented prose after it wrongly reattached to criterion 1 and suppressed the F1 hit.
+        ownership_check_does_not_reattach_prose_after_a_blank_line_to_the_prior_criterion: {
+            let text = "## Done when\n\n\
             - [ ] the daemon writes a pidfile\n\
             \n\
             \x20\x20Unrelated prose that just happens to mention who owns the roadmap.\n\
             - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
             - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
             path.\n";
-        assert_eq!(
-            criterion_blocks(text).get(&1).cloned(),
-            extract_criteria(text).first().cloned(),
-            "criterion_blocks and extract_criteria must agree on criterion 1's full text"
-        );
-        assert!(
-            ownership_advisories(text)
-                .iter()
-                .any(|a| a.criterion == Some(1)),
-            "the blank line closes criterion 1's block before the prose that mentions \
-             \"owns\" - it must still be flagged F1 ownership, not silently suppressed; \
-             got: {:?}",
-            ownership_advisories(text)
-        );
+            assert_criterion_1_blocks_agree(text);
+            assert_criterion_flagged(
+                ownership_advisories(text),
+                1,
+                true,
+                "the blank line closes criterion 1's block before the prose that mentions \
+                 \"owns\" - it must still be flagged F1 ownership, not silently suppressed; \
+                 got: ",
+            );
+        };
     }
 
     crate::test_cases! {
@@ -1443,7 +1451,7 @@ mod tests {
         /// two words across a line break into one that spuriously satisfies
         /// `carries_owner_sentence`'s substring check (e.g. "own" + "ership" -> "ownership",
         /// which contains "owner").
-        ownership_check_does_not_let_a_dropped_word_boundary_fake_an_owns_sentence: assert_flags_criterion(
+        ownership_check_does_not_let_a_dropped_word_boundary_fake_an_owns_sentence: assert_criterion_flagged(
             ownership_advisories("## Done when\n\n\
                 - [ ] the widget adopts a new own\n\
                 \x20\x20ership model for the config\n\
@@ -1451,6 +1459,7 @@ mod tests {
                 - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
                 path.\n"),
             1,
+            true,
             "criterion 1 has no real OWNS/owner sentence - \"own\" and \"ership\" sit on \
                  separate lines and must NOT be welded into a false \"ownership\" match; got: \
                  ",
@@ -1467,7 +1476,7 @@ mod tests {
         /// `find_word_across_hyphen`'s boundary check cannot distinguish from a genuine
         /// standalone word, so only the separating space stands between this fixture and a
         /// false ownership claim.
-        ownership_check_does_not_let_a_dropped_word_boundary_weld_own_and_er_into_owner: assert_flags_criterion(
+        ownership_check_does_not_let_a_dropped_word_boundary_weld_own_and_er_into_owner: assert_criterion_flagged(
             ownership_advisories("## Done when\n\n\
                 - [ ] the widget locks down its own\n\
                 \x20\x20er and simpler path through the config\n\
@@ -1475,6 +1484,7 @@ mod tests {
                 - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
                 path.\n"),
             1,
+            true,
             "criterion 1 has no real OWNS/owner sentence - \"own\" and \"er\" sit on \
                  separate lines and must NOT be welded into a false standalone \"owner\" match; \
                  got: ",
@@ -1502,83 +1512,99 @@ mod tests {
         );
     }
 
-    /// F1 ownership: "ownerless" and "not owned" are also explicit denials, not ownership
-    /// sentences.
-    #[test]
-    fn ownership_check_flags_ownerless_and_not_owned_as_denials() {
-        assert!(
-            !carries_owner_sentence("this criterion is ownerless for now"),
-            "\"ownerless\" is a denial, not an ownership sentence"
-        );
-        assert!(
-            !carries_owner_sentence("the pidfile write is not owned by this criterion"),
-            "\"not owned\" is a denial, not an ownership sentence"
-        );
-        assert!(
-            carries_owner_sentence("this criterion OWNS the pidfile write"),
-            "a genuine OWNS sentence must still satisfy the check"
-        );
-    }
-
-    /// F1 ownership: "owns" and "owner" are themselves substrings of ordinary English
-    /// words that carry no ownership claim at all - "owns" inside "drowns", "owner" inside
-    /// "downer" - so a criterion using one of those unrelated words must not be misread as
-    /// carrying a genuine OWNS/owner sentence just because the bare substring happens to
-    /// appear inside a larger word. The same defect class already fixed twice in this file
-    /// (either/or, then worth-considering); left unapplied here it is the identical corner
-    /// cut one function away.
-    #[test]
-    fn ownership_check_does_not_match_owns_or_owner_inside_an_unrelated_word() {
-        assert!(
-            !carries_owner_sentence(
-                "the retry handler drowns duplicate signals during a backoff storm"
+    crate::test_cases! {
+        /// F1 ownership: "ownerless" and "not owned" are also explicit denials, not ownership
+        /// sentences.
+        ownership_check_flags_ownerless_and_not_owned_as_denials: assert_classifies(
+            carries_owner_sentence,
+            &[
+            (
+                "this criterion is ownerless for now",
+                false,
+                "\"ownerless\" is a denial, not an ownership sentence",
             ),
-            "\"drowns\" contains the substring \"owns\" but claims no ownership"
-        );
-        assert!(
-            !carries_owner_sentence("a stale cache entry is a real downer for latency"),
-            "\"downer\" contains the substring \"owner\" but claims no ownership"
-        );
-        assert!(
-            carries_owner_sentence("this criterion OWNS the pidfile write"),
-            "a genuine standalone OWNS must still satisfy the check"
-        );
-        assert!(
-            carries_owner_sentence("no clear owner is named otherwise"),
-            "a genuine standalone owner must still satisfy the check"
+            (
+                "the pidfile write is not owned by this criterion",
+                false,
+                "\"not owned\" is a denial, not an ownership sentence",
+            ),
+            (
+                "this criterion OWNS the pidfile write",
+                true,
+                "a genuine OWNS sentence must still satisfy the check",
+            ),
+            ],
         );
     }
 
-    /// Round-4 REJECT remedy (a) (`adj-u66c3-r4-reject-owner-veto-and-compound-hyphen-defects`):
-    /// `denies_ownership` vetoed the WHOLE block the instant any denial phrase appeared
-    /// anywhere in it, even when a completely separate, genuine "OWNS"/"owner" sentence sat
-    /// elsewhere in the same block - exactly the shape of this unit's own governing spec
-    /// (specs/66's criterion 3 affirmatively OWNS its lint surface while separately
-    /// describing an "ownerless criterion" as fixture prose). An affirmative match
-    /// elsewhere in the block must win; only the "owner" consumed by the "no owner" phrase
-    /// itself is excluded.
-    #[test]
-    fn ownership_check_lets_an_affirmative_owns_win_over_an_unrelated_denial_elsewhere() {
-        assert!(
-            carries_owner_sentence(
+    crate::test_cases! {
+        /// F1 ownership: "owns" and "owner" are themselves substrings of ordinary English
+        /// words that carry no ownership claim at all - "owns" inside "drowns", "owner" inside
+        /// "downer" - so a criterion using one of those unrelated words must not be misread as
+        /// carrying a genuine OWNS/owner sentence just because the bare substring happens to
+        /// appear inside a larger word. The same defect class already fixed twice in this file
+        /// (either/or, then worth-considering); left unapplied here it is the identical corner
+        /// cut one function away.
+        ownership_check_does_not_match_owns_or_owner_inside_an_unrelated_word: assert_classifies(
+            carries_owner_sentence,
+            &[
+            (
+                "the retry handler drowns duplicate signals during a backoff storm",
+                false,
+                "\"drowns\" contains the substring \"owns\" but claims no ownership",
+            ),
+            (
+                "a stale cache entry is a real downer for latency",
+                false,
+                "\"downer\" contains the substring \"owner\" but claims no ownership",
+            ),
+            (
+                "this criterion OWNS the pidfile write",
+                true,
+                "a genuine standalone OWNS must still satisfy the check",
+            ),
+            (
+                "no clear owner is named otherwise",
+                true,
+                "a genuine standalone owner must still satisfy the check",
+            ),
+            ],
+        );
+    }
+
+    crate::test_cases! {
+        /// Round-4 REJECT remedy (a) (`adj-u66c3-r4-reject-owner-veto-and-compound-hyphen-defects`):
+        /// `denies_ownership` vetoed the WHOLE block the instant any denial phrase appeared
+        /// anywhere in it, even when a completely separate, genuine "OWNS"/"owner" sentence sat
+        /// elsewhere in the same block - exactly the shape of this unit's own governing spec
+        /// (specs/66's criterion 3 affirmatively OWNS its lint surface while separately
+        /// describing an "ownerless criterion" as fixture prose). An affirmative match
+        /// elsewhere in the block must win; only the "owner" consumed by the "no owner" phrase
+        /// itself is excluded.
+        ownership_check_lets_an_affirmative_owns_win_over_an_unrelated_denial_elsewhere: assert_classifies(
+            carries_owner_sentence,
+            &[
+            (
                 "this criterion OWNS the pre-launch lint surface. the test also builds an \
-                 ownerless fixture to prove the check fires on it"
+                 ownerless fixture to prove the check fires on it",
+                true,
+                "an unrelated \"ownerless\" mention describing a FIXTURE must not veto a real \
+             OWNS sentence elsewhere in the same block",
             ),
-            "an unrelated \"ownerless\" mention describing a FIXTURE must not veto a real \
-             OWNS sentence elsewhere in the same block"
-        );
-        assert!(
-            carries_owner_sentence(
+            (
                 "the pidfile write is not owned by criterion two. this criterion OWNS the \
-                 daemon startup sequence"
+                 daemon startup sequence",
+                true,
+                "an unrelated \"not owned\" mention must not veto a real OWNS sentence \
+             elsewhere in the same block",
             ),
-            "an unrelated \"not owned\" mention must not veto a real OWNS sentence \
-             elsewhere in the same block"
-        );
-        assert!(
-            !carries_owner_sentence("no owner has been assigned to this criterion yet"),
-            "a block whose ONLY owner mention is itself the \"no owner\" denial phrase must \
-             still be flagged twin-risk, not read as carrying an ownership sentence"
+            (
+                "no owner has been assigned to this criterion yet",
+                false,
+                "a block whose ONLY owner mention is itself the \"no owner\" denial phrase must \
+             still be flagged twin-risk, not read as carrying an ownership sentence",
+            ),
+            ],
         );
     }
 
@@ -2070,28 +2096,53 @@ mod tests {
         );
     }
 
-    /// `starts_new_element` recognizes EACH of its five prefix kinds independently
-    /// (`d-u66c3-mutation-starts-new-element-gap`): every existing `disposition_advisories`
-    /// scenario only ever exercises a "- " dash bullet (the only bullet mark this repo's own
-    /// Done-when checkboxes use) or a fence line (which the paragraph loop's separate
-    /// `fenced[i]` check already excludes regardless of what this function returns for it),
-    /// so mutation testing surfaced three surviving `||` -> `&&` mutants spanning the '#',
-    /// '|', and "```" arms of the boolean chain - none of the five-term `||` chain's terms
-    /// beyond the first "- "/"* " pair was ever independently proven true on its own. Each
-    /// assertion below fixes exactly one term true with the other four false, which
-    /// (boolean algebra, since a line's first character satisfies at most one of these five
-    /// prefixes) forces every possible single-`||`-mutated-to-`&&` variant of the chain to
-    /// disagree with the correct `true` result for at least one assertion here.
-    #[test]
-    fn starts_new_element_recognizes_every_prefix_kind_independently() {
-        assert!(starts_new_element("- a dash bullet"), "dash bullet");
-        assert!(starts_new_element("* a star bullet"), "star bullet");
-        assert!(starts_new_element("# a heading"), "heading");
-        assert!(starts_new_element("| a table row |"), "table row");
-        assert!(starts_new_element("```a fence opener"), "fence opener");
-        assert!(
-            !starts_new_element("plain prose with none of the five prefixes"),
-            "plain prose must not start a new element"
+    crate::test_cases! {
+        /// `starts_new_element` recognizes EACH of its five prefix kinds independently
+        /// (`d-u66c3-mutation-starts-new-element-gap`): every existing `disposition_advisories`
+        /// scenario only ever exercises a "- " dash bullet (the only bullet mark this repo's own
+        /// Done-when checkboxes use) or a fence line (which the paragraph loop's separate
+        /// `fenced[i]` check already excludes regardless of what this function returns for it),
+        /// so mutation testing surfaced three surviving `||` -> `&&` mutants spanning the '#',
+        /// '|', and "```" arms of the boolean chain - none of the five-term `||` chain's terms
+        /// beyond the first "- "/"* " pair was ever independently proven true on its own. Each
+        /// assertion below fixes exactly one term true with the other four false, which
+        /// (boolean algebra, since a line's first character satisfies at most one of these five
+        /// prefixes) forces every possible single-`||`-mutated-to-`&&` variant of the chain to
+        /// disagree with the correct `true` result for at least one assertion here.
+        starts_new_element_recognizes_every_prefix_kind_independently: assert_classifies(
+            starts_new_element,
+            &[
+            (
+                "- a dash bullet",
+                true,
+                "dash bullet",
+            ),
+            (
+                "* a star bullet",
+                true,
+                "star bullet",
+            ),
+            (
+                "# a heading",
+                true,
+                "heading",
+            ),
+            (
+                "| a table row |",
+                true,
+                "table row",
+            ),
+            (
+                "```a fence opener",
+                true,
+                "fence opener",
+            ),
+            (
+                "plain prose with none of the five prefixes",
+                false,
+                "plain prose must not start a new element",
+            ),
+            ],
         );
     }
 

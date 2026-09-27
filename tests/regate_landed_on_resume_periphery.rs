@@ -47,10 +47,10 @@
 mod common;
 use common::git::run_git;
 
-use common::fixtures::agent;
 use common::fixtures::gate_def;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
+use common::fixtures::scratch_cfg;
 use common::git::git_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config};
@@ -227,17 +227,7 @@ fn has_postmerge_gate_verdict(events: &[Event], unit: &str, attempt: u32, gate: 
 }
 
 fn base_cfg(repo_path: &str) -> Config {
-    let mut cfg = Config::default();
-    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own repo
-    // tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture that
-    // leaves `defaults.workdir` unconfigured shares that ONE real location with every other
-    // concurrently-running fixture and agent on the machine. Nesting the workdir back inside
-    // THIS fixture's own unique repo tempdir restores per-test isolation, mirroring every other
-    // periphery suite's identical fix (e.g. `tests/integrate_conflict_merge_periphery.rs`).
-    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
-    cfg.agents.insert("worker".into(), agent("worker"));
-    cfg.agents.insert("lens".into(), agent("lens"));
-    cfg.agents.insert("judge".into(), agent("judge"));
+    let mut cfg = scratch_cfg(repo_path);
     cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg.workflow
         .stages

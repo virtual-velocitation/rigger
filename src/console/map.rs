@@ -1419,62 +1419,62 @@ mod tests {
         );
     }
 
-    /// Design's own tie-break rule ("ties broken to the lexicographically-smallest module",
-    /// mirrored in `build`'s own dominant-module comment): a community whose members split evenly
-    /// across two modules resolves to the ALPHABETICALLY-FIRST module's purpose, never whichever
-    /// happened to be counted first.
-    #[test]
-    fn build_breaks_a_dominant_module_tie_by_the_lexicographically_smallest_module() {
-        // "worktree" > "dash" lexicographically, so a 1-1 tie between them must resolve to
-        // "dash"'s own curated purpose ("dashboard rendering"), never "worktree lifecycle" -
-        // insertion order below is deliberately worktree-first, so a bug that picked "whichever
-        // module was counted first" would still pass if this test inserted dash first.
-        let nodes = vec![
-            code_node(
-                "src/worktree.rs::spawn_worktree",
-                "spawn_worktree",
-                "function",
-            ),
-            code_node("src/dash.rs::live_page", "live_page", "function"),
-        ];
-        let edges = vec![
-            in_community("src/worktree.rs::spawn_worktree", "community/1/0"),
-            in_community("src/dash.rs::live_page", "community/1/0"),
-        ];
-        let model = build(&Graph { nodes, edges });
-
-        assert_eq!(model.districts.len(), 1, "{:?}", model.districts);
-        assert_eq!(
-            model.districts[0].purpose, "dashboard rendering",
-            "a 1-1 dominant-module tie must resolve to the lexicographically-smallest module \
-             ('dash' < 'worktree'), not whichever module was counted first"
-        );
+    /// A graph of `members` - `(entity id, community)` pairs, each a `function` named by its
+    /// id's own tail - plus the live `calls` edges between them.
+    fn community_graph(members: &[(&str, &str)], calls: &[(&str, &str)]) -> Graph {
+        let nodes = members
+            .iter()
+            .map(|(id, _)| code_node(id, id.rsplit("::").next().unwrap(), "function"))
+            .collect();
+        let edges = members
+            .iter()
+            .map(|(id, community)| in_community(id, community))
+            .chain(
+                calls
+                    .iter()
+                    .map(|(from, to)| live_edge(from, to, REL_CALLS)),
+            )
+            .collect();
+        Graph { nodes, edges }
     }
 
-    /// Distinguishes the tie-break rule above from the count it only applies WHEN counts are
-    /// equal: a community with a genuine 3-1 majority for "zzz" over "aaa" must pick "zzz"
-    /// despite "aaa" sorting lexicographically first - the tie-break never overrides a real count.
-    #[test]
-    fn build_dominant_module_is_chosen_by_true_member_count_not_a_frozen_tie() {
-        let nodes = vec![
-            code_node("src/zzz.rs::f1", "f1", "function"),
-            code_node("src/zzz.rs::f2", "f2", "function"),
-            code_node("src/zzz.rs::f3", "f3", "function"),
-            code_node("src/aaa.rs::g1", "g1", "function"),
-        ];
-        let edges = vec![
-            in_community("src/zzz.rs::f1", "community/1/0"),
-            in_community("src/zzz.rs::f2", "community/1/0"),
-            in_community("src/zzz.rs::f3", "community/1/0"),
-            in_community("src/aaa.rs::g1", "community/1/0"),
-        ];
-        let model = build(&Graph { nodes, edges });
-
+    /// The `members` of one community build into exactly one district, whose purpose is
+    /// `purpose` (`why` says which rule decided it).
+    fn assert_one_district_purpose(members: &[&str], purpose: &str, why: &str) {
+        let members: Vec<(&str, &str)> = members.iter().map(|id| (*id, "community/1/0")).collect();
+        let model = build(&community_graph(&members, &[]));
         assert_eq!(model.districts.len(), 1, "{:?}", model.districts);
-        assert_eq!(
-            model.districts[0].purpose, "zzz",
+        assert_eq!(model.districts[0].purpose, purpose, "{why}");
+    }
+
+    crate::test_cases! {
+        /// Design's own tie-break rule ("ties broken to the lexicographically-smallest module",
+        /// mirrored in `build`'s own dominant-module comment): a community whose members split evenly
+        /// across two modules resolves to the ALPHABETICALLY-FIRST module's purpose, never whichever
+        /// happened to be counted first.
+        /// "worktree" > "dash" lexicographically, so a 1-1 tie between them must resolve to
+        /// "dash"'s own curated purpose ("dashboard rendering"), never "worktree lifecycle" -
+        /// insertion order below is deliberately worktree-first, so a bug that picked "whichever
+        /// module was counted first" would still pass if this test inserted dash first.
+        build_breaks_a_dominant_module_tie_by_the_lexicographically_smallest_module: assert_one_district_purpose(
+            &["src/worktree.rs::spawn_worktree", "src/dash.rs::live_page"],
+            "dashboard rendering",
+            "a 1-1 dominant-module tie must resolve to the lexicographically-smallest module \
+             ('dash' < 'worktree'), not whichever module was counted first",
+        );
+        /// Distinguishes the tie-break rule above from the count it only applies WHEN counts are
+        /// equal: a community with a genuine 3-1 majority for "zzz" over "aaa" must pick "zzz"
+        /// despite "aaa" sorting lexicographically first - the tie-break never overrides a real count.
+        build_dominant_module_is_chosen_by_true_member_count_not_a_frozen_tie: assert_one_district_purpose(
+            &[
+                "src/zzz.rs::f1",
+                "src/zzz.rs::f2",
+                "src/zzz.rs::f3",
+                "src/aaa.rs::g1",
+            ],
+            "zzz",
             "the module with the true majority of members (zzz: 3) must dominate over a \
-             lexicographically-earlier minority (aaa: 1)"
+             lexicographically-earlier minority (aaa: 1)",
         );
     }
 
@@ -2099,19 +2099,17 @@ mod tests {
     /// A->B, C->A (C calls A, A calls B), all one community/district - the minimum fixture with
     /// both a CALLED BY neighbour (C) and a CALLS neighbour (B) of the middle entity A.
     fn caller_callee_graph() -> Graph {
-        let nodes = vec![
-            code_node("src/a.rs::a_fn", "a_fn", "function"),
-            code_node("src/a.rs::b_fn", "b_fn", "function"),
-            code_node("src/a.rs::c_fn", "c_fn", "function"),
-        ];
-        let edges = vec![
-            in_community("src/a.rs::a_fn", "community/1/0"),
-            in_community("src/a.rs::b_fn", "community/1/0"),
-            in_community("src/a.rs::c_fn", "community/1/0"),
-            live_edge("src/a.rs::a_fn", "src/a.rs::b_fn", REL_CALLS),
-            live_edge("src/a.rs::c_fn", "src/a.rs::a_fn", REL_CALLS),
-        ];
-        Graph { nodes, edges }
+        community_graph(
+            &[
+                ("src/a.rs::a_fn", "community/1/0"),
+                ("src/a.rs::b_fn", "community/1/0"),
+                ("src/a.rs::c_fn", "community/1/0"),
+            ],
+            &[
+                ("src/a.rs::a_fn", "src/a.rs::b_fn"),
+                ("src/a.rs::c_fn", "src/a.rs::a_fn"),
+            ],
+        )
     }
 
     #[test]
@@ -2188,10 +2186,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn frame_with_no_selection_lights_nothing() {
+    /// Framing the caller/callee map with `selection` selects and lights nothing.
+    fn assert_frame_lights_nothing(selection: Option<&str>) {
         let model = build(&caller_callee_graph());
-        let dl = frame(&model, 800.0, 600.0, &Camera::default(), None);
+        let dl = frame(&model, 800.0, 600.0, &Camera::default(), selection);
         assert!(dl.selected.is_none(), "{dl:?}");
         assert!(
             dl.entities.iter().all(|e| !e.lit),
@@ -2201,6 +2199,10 @@ mod tests {
             dl.edges.iter().all(|e| !e.lit),
             "no edge may be lit with no selection: {dl:?}"
         );
+    }
+
+    crate::test_cases! {
+        frame_with_no_selection_lights_nothing: assert_frame_lights_nothing(None);
     }
 
     #[test]
@@ -2366,25 +2368,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn frame_an_unknown_selection_is_a_graceful_no_op() {
-        let model = build(&caller_callee_graph());
-        let dl = frame(
-            &model,
-            800.0,
-            600.0,
-            &Camera::default(),
-            Some("src/a.rs::does_not_exist"),
-        );
-        assert!(dl.selected.is_none(), "{dl:?}");
-        assert!(dl.entities.iter().all(|e| !e.lit), "{dl:?}");
-        assert!(dl.edges.iter().all(|e| !e.lit), "{dl:?}");
+    crate::test_cases! {
+        frame_an_unknown_selection_is_a_graceful_no_op:
+            assert_frame_lights_nothing(Some("src/a.rs::does_not_exist"));
     }
 
     // ---- hit ----------------------------------------------------------------------------------
 
-    #[test]
-    fn hit_finds_the_nearest_entity_within_radius() {
+    /// An exact hit on the caller/callee map's first drawn entity resolves to that entity.
+    fn assert_a_hit_on_the_first_entity_finds_it() {
         let model = build(&caller_callee_graph());
         let dl = frame(&model, 800.0, 600.0, &Camera::default(), None);
         let target = dl.entities.first().expect("a fixture entity must be drawn");
@@ -2398,6 +2390,14 @@ mod tests {
             target.y,
         );
         assert_eq!(got, Some(Hit::Entity(target.id.clone())), "{dl:?}");
+    }
+
+    crate::test_cases! {
+        hit_finds_the_nearest_entity_within_radius: assert_a_hit_on_the_first_entity_finds_it();
+        /// This entity necessarily sits inside its own district's hull too - an exact hit on the
+        /// dot must still resolve to the ENTITY, never the district.
+        hit_prefers_an_entity_dot_over_the_district_hull_beneath_it:
+            assert_a_hit_on_the_first_entity_finds_it();
     }
 
     #[test]
@@ -2436,44 +2436,22 @@ mod tests {
         assert_eq!(got, Some(Hit::District(d.purpose.clone())));
     }
 
-    #[test]
-    fn hit_prefers_an_entity_dot_over_the_district_hull_beneath_it() {
-        let model = build(&caller_callee_graph());
-        let dl = frame(&model, 800.0, 600.0, &Camera::default(), None);
-        let target = dl.entities.first().expect("a fixture entity must be drawn");
-        // This entity necessarily sits inside its own district's hull too - an exact hit on the
-        // dot must still resolve to the ENTITY, never the district.
-        let got = hit(
-            &model,
-            800.0,
-            600.0,
-            &Camera::default(),
-            None,
-            target.x,
-            target.y,
-        );
-        assert_eq!(got, Some(Hit::Entity(target.id.clone())));
-    }
-
     // ---- explore rail: landmarks, bridges, changing, argued-about -----------------------------
 
     fn cross_district_graph() -> Graph {
-        let nodes = vec![
-            code_node("src/worktree.rs::hub", "hub", "function"),
-            code_node("src/worktree.rs::leaf", "leaf", "function"),
-            code_node("src/dash.rs::bridge", "bridge", "function"),
-            code_node("src/dash.rs::quiet", "quiet", "function"),
-        ];
-        let edges = vec![
-            in_community("src/worktree.rs::hub", "community/1/0"),
-            in_community("src/worktree.rs::leaf", "community/1/0"),
-            in_community("src/dash.rs::bridge", "community/1/1"),
-            in_community("src/dash.rs::quiet", "community/1/1"),
-            live_edge("src/worktree.rs::hub", "src/worktree.rs::leaf", REL_CALLS),
-            // The only cross-district edge: dash::bridge calls worktree::hub.
-            live_edge("src/dash.rs::bridge", "src/worktree.rs::hub", REL_CALLS),
-        ];
-        Graph { nodes, edges }
+        community_graph(
+            &[
+                ("src/worktree.rs::hub", "community/1/0"),
+                ("src/worktree.rs::leaf", "community/1/0"),
+                ("src/dash.rs::bridge", "community/1/1"),
+                ("src/dash.rs::quiet", "community/1/1"),
+            ],
+            &[
+                ("src/worktree.rs::hub", "src/worktree.rs::leaf"),
+                // The only cross-district edge: dash::bridge calls worktree::hub.
+                ("src/dash.rs::bridge", "src/worktree.rs::hub"),
+            ],
+        )
     }
 
     #[test]

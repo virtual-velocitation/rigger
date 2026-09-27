@@ -157,6 +157,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 mod common;
 use common::git::git_ok;
+use common::fixtures::bare_deps;
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY, STREAM,
@@ -382,21 +383,95 @@ fn fresh_run_cfg(gate_run: &str, repo: &Path) -> Config {
 /// see this through the SAME public read path any other consumer (a resumed process,
 /// `rigger status`) would use.
 fn find_unit_started(events: &[Event], id: &str) -> Value {
-    for e in events {
-        if e.type_ != ledger::TYPE_UNIT_STARTED {
-            continue;
-        }
-        let Ok(body) = serde_json::from_slice::<Value>(&e.data) else {
-            continue;
-        };
-        if body.get("id").and_then(Value::as_str) == Some(id) {
-            return body;
-        }
-    }
-    panic!(
-        "no UnitStarted recorded for unit {id:?} among {} events",
-        events.len()
+    unit_bodies(events, ledger::TYPE_UNIT_STARTED, id)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            panic!(
+                "no UnitStarted recorded for unit {id:?} among {} events",
+                events.len()
+            )
+        })
+}
+
+/// The decoded bodies of every `type_` event recorded for unit `id`, in log order.
+fn unit_bodies(events: &[Event], type_: &str, id: &str) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|e| e.type_ == type_)
+        .filter_map(|e| serde_json::from_slice::<Value>(&e.data).ok())
+        .filter(|body| body.get("id").and_then(Value::as_str) == Some(id))
+        .collect()
+}
+
+/// Appends one unit-status `body` to the run stream, standing in for the conductor's own
+/// ledger write.
+fn append_unit_status(store: &dyn EventStore, body: Value) {
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&body).unwrap(),
+            )],
+        )
+        .unwrap();
+}
+
+/// Runs the baseline-only config (an always-failing gate, one retry) for `criterion` and returns
+/// the one baseline unit's slug after asserting it escalated.
+fn escalated_baseline(
+    store: &dyn EventStore,
+    driver: &dyn AgentDriver,
+    repo: &Path,
+    criterion: &str,
+) -> String {
+    let rs1 = run(
+        &baseline_only_cfg("false", 1, repo),
+        &deps(store, driver, repo, criterion),
+    )
+    .unwrap();
+    let prior_slug = rs1.units.keys().next().unwrap().clone();
+    assert_eq!(
+        rs1.units[&prior_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
+    prior_slug
+}
+
+/// Runs a fresh run (an always-failing gate, one retry) whose planner proposes `slug` for
+/// `criterion`, asserting that unit escalated.
+fn escalate_proposed(
+    store: &dyn EventStore,
+    driver: &dyn AgentDriver,
+    repo: &Path,
+    criterion: &str,
+    slug: &str,
+) {
+    let mut cfg1 = fresh_run_cfg("false", repo);
+    cfg1.workflow.defaults.max_retries = 1;
+    let rs1 = run(&cfg1, &deps(store, driver, repo, criterion)).unwrap();
+    assert_eq!(
+        rs1.units[slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+}
+
+/// The conductor's ports for one run over `repo`: `store`, `driver`, the real gate runner, no
+/// grounder or graph, and the one `criterion`.
+fn deps<'a>(
+    store: &'a dyn EventStore,
+    driver: &'a dyn AgentDriver,
+    repo: &Path,
+    criterion: &str,
+) -> Deps<'a> {
+    Deps {
+        criteria: vec![criterion.to_string()],
+        ..bare_deps(store, driver, &ExecRunner, repo.to_str().unwrap())
+    }
 }
 
 /// Criterion 2's primary Done-when proof: "a fresh run whose planner proposes a new slug
@@ -420,15 +495,7 @@ fn a_fresh_runs_differently_named_planner_proposal_adopts_a_prior_runs_escalated
         file_name: "prior-work.txt".into(),
         content: "escalated attempt\n".into(),
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps1 = deps(&store, &driver1, repo.path(), criterion);
     let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
     assert_eq!(
         rs1.units.len(),
@@ -474,15 +541,7 @@ fn a_fresh_runs_differently_named_planner_proposal_adopts_a_prior_runs_escalated
         worker_write: None,
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
 
     assert_eq!(
@@ -560,15 +619,7 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
         file_name: "prior-integrated-work.txt".into(),
         content: "landed attempt\n".into(),
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps1 = deps(&store, &driver1, repo.path(), criterion);
     let rs1 = run(&baseline_only_cfg("true", 3, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(rs1.units[&prior_slug].status, ledger::Status::Integrated);
@@ -598,15 +649,7 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
         worker_write: Some(("second-work.txt".into(), "genuinely fresh\n".into())),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
 
     assert_eq!(
@@ -644,19 +687,9 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
 /// so carries TWO `UnitStarted` events; this reads the one that matters for the property
 /// under test (the id's CURRENT, still-live incarnation), never the stale first one.
 fn find_last_unit_started(events: &[Event], id: &str) -> Value {
-    let mut found: Option<Value> = None;
-    for e in events {
-        if e.type_ != ledger::TYPE_UNIT_STARTED {
-            continue;
-        }
-        let Ok(body) = serde_json::from_slice::<Value>(&e.data) else {
-            continue;
-        };
-        if body.get("id").and_then(Value::as_str) == Some(id) {
-            found = Some(body);
-        }
-    }
-    found.unwrap_or_else(|| panic!("no UnitStarted recorded for unit {id:?}"))
+    unit_bodies(events, ledger::TYPE_UNIT_STARTED, id)
+        .pop()
+        .unwrap_or_else(|| panic!("no UnitStarted recorded for unit {id:?}"))
 }
 
 /// Regression test for the round-2 fix (adv-u88c2-integrated-set-keyed-by-id-not-criterion-
@@ -701,15 +734,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
         worker_write: Some(("run1-criterion-b-work.txt".into(), "run1 work\n".into())),
         gates: vec!["gate".to_string()],
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_b.to_string()],
-    };
+    let deps1 = deps(&store, &driver1, repo.path(), criterion_b);
     let rs1 = run(&fresh_run_cfg("true", repo.path()), &deps1).unwrap();
     assert_eq!(
         rs1.units[shared_slug].status,
@@ -735,15 +760,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
         worker_write: Some(("run2-criterion-a-work.txt".into(), "run2 work\n".into())),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_a.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion_a);
     let mut cfg2 = fresh_run_cfg("false", repo.path());
     cfg2.workflow.defaults.max_retries = 1;
     let rs2 = run(&cfg2, &deps2).unwrap();
@@ -769,15 +786,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
         worker_write: None,
         gates: vec!["gate".to_string()],
     };
-    let deps3 = Deps {
-        store: &store,
-        driver: &driver3,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_a.to_string()],
-    };
+    let deps3 = deps(&store, &driver3, repo.path(), criterion_a);
     let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[fresh_slug].status,
@@ -831,24 +840,19 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
 /// used to stamp a realistic `META_COMPENSATED` value (a real reverted commit sha, never
 /// a placeholder string) on the hand-authored compensation marker tests 5 and 6 append.
 fn find_unit_integrated_commit(events: &[Event], id: &str) -> String {
-    for e in events {
-        if e.type_ != ledger::TYPE_UNIT_INTEGRATED {
-            continue;
-        }
-        let Ok(body) = serde_json::from_slice::<Value>(&e.data) else {
-            continue;
-        };
-        if body.get("id").and_then(Value::as_str) == Some(id) {
-            return body["commit"]
-                .as_str()
-                .expect("UnitIntegrated must carry a commit sha")
-                .to_string();
-        }
-    }
-    panic!(
-        "no UnitIntegrated recorded for unit {id:?} among {} events",
-        events.len()
-    );
+    let body = unit_bodies(events, ledger::TYPE_UNIT_INTEGRATED, id)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            panic!(
+                "no UnitIntegrated recorded for unit {id:?} among {} events",
+                events.len()
+            )
+        });
+    body["commit"]
+        .as_str()
+        .expect("UnitIntegrated must carry a commit sha")
+        .to_string()
 }
 
 /// Test 4's Done-when proof (round 3, SPEC-SCOPED): "regardless of the planner's slug" is
@@ -886,22 +890,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
         file_name: "spec-a-prior-work.txt".into(),
         content: "spec A's abandoned attempt\n".into(),
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
-    let prior_slug = rs1.units.keys().next().unwrap().clone();
-    assert_eq!(
-        rs1.units[&prior_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    let prior_slug = escalated_baseline(&store, &driver1, repo.path(), criterion);
     let prior_branch = format!("rigger/u/{prior_slug}");
     let prior_tip = git_out(repo.path(), &["rev-parse", &prior_branch])
         .expect("spec A's escalated unit must carry a real, resolvable durable branch");
@@ -917,15 +906,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
         worker_write: Some(("spec-b-own-work.txt".into(), "spec B's own work\n".into())),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug_b].status,
@@ -968,15 +949,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps3 = Deps {
-        store: &store,
-        driver: &driver3,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps3 = deps(&store, &driver3, repo.path(), criterion);
     let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[fresh_slug_a2].status,
@@ -1026,15 +999,7 @@ fn integrate_then_build_a_real_second_life_branch(
         file_name: first_life_file.into(),
         content: "first life, later compensated\n".into(),
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo_path.clone(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps1 = deps(&store, &driver1, Path::new(&repo_path), criterion);
     let rs1 = run(&baseline_only_cfg("true", 3, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(
@@ -1133,15 +1098,7 @@ fn a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existi
         worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
@@ -1221,15 +1178,7 @@ fn a_plain_remediation_failure_after_integration_never_reopens_adoption_even_tho
         worker_write: Some(("run2-own-work-2.txt".into(), "genuinely fresh\n".into())),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
@@ -1254,43 +1203,26 @@ fn a_plain_remediation_failure_after_integration_never_reopens_adoption_even_tho
     );
 }
 
-/// Test 7 (round 4): the PRIMARY BLOCKER's own named scenario -
-/// `sdet-u88c2-adopted-from-lost-on-crash-between-branch-create-and-unitstarted` - a
-/// crash AFTER `Worktree::create_branch_at` lands the adopting unit's branch but BEFORE
-/// its `UnitStarted` append. Pre-fix, `adopt_prior_criterion_branch`'s FIRST check
-/// (`branch_exists`) alone short-circuited straight to `None` the instant the branch
-/// existed, so the resumed `UnitStarted` recorded no adoption at all despite the unit's
-/// branch carrying real adopted content - a genuine unit lifecycle continuing on
-/// silently-unrecorded provenance.
-#[test]
-fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption() {
+/// A crash inside the adoption window of a fresh unit `fresh_slug` for `criterion`: the durable
+/// provenance mark is already on the log, and `branch_created` says whether the git side effect
+/// (`Worktree::create_branch_at` at the prior tip) landed too; only `UnitStarted` never did. A
+/// resumed `run()` must recover the EXACT recorded decision and carry the adopted content into
+/// the base alongside the unit's own work.
+fn assert_a_crash_inside_the_adoption_window_recovers_it(
+    criterion: &str,
+    fresh_slug: &str,
+    branch_created: bool,
+) {
     let repo = tempfile::tempdir().unwrap();
     init_repo(repo.path());
     let store = Store::open(":memory:").unwrap();
-    let criterion = "the pump reports its own pressure";
 
-    // PRIOR RUN: an escalated baseline unit with real committed work, exactly like test
-    // 1's setup.
+    // PRIOR RUN: an escalated baseline unit with real committed work.
     let driver1 = WritesFileDriver {
         file_name: "prior-work.txt".into(),
         content: "escalated attempt\n".into(),
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
-    let prior_slug = rs1.units.keys().next().unwrap().clone();
-    assert_eq!(
-        rs1.units[&prior_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    let prior_slug = escalated_baseline(&store, &driver1, repo.path(), criterion);
     let prior_tip = git_out(
         repo.path(),
         &["rev-parse", &format!("rigger/u/{prior_slug}")],
@@ -1299,8 +1231,8 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
     // The fresh unit below serves the SAME criterion text at the same position, so a
     // real production call site computes the IDENTICAL `criterion_stable_id` - read back
     // off the prior unit's own `UnitStarted` rather than hand-typed, so the hand-crafted
-    // provenance mark below carries the value `recorded_adoption` (round 5, keyed on the
-    // full `(unit, criterion_id, spec)` triple) actually requires to match.
+    // provenance mark below carries the value `recorded_adoption` (keyed on the full
+    // `(unit, criterion_id, spec)` triple) actually requires to match.
     let events_after_run1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
     let fresh_criterion_id = find_unit_started(&events_after_run1, &prior_slug)["criterion_id"]
         .as_str()
@@ -1309,50 +1241,43 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
 
     // FRESH RUN boundary, a differently-named unit for the SAME criterion.
     start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
-    let fresh_slug = "crash-after-branch-unit";
     let fresh_branch = format!("rigger/u/{fresh_slug}");
 
-    // Reproduce the EXACT crash state: the git side effect already landed - a real
-    // branch at the prior tip, via the SAME production `Worktree::create_branch_at`
-    // call - and, per the fix, the durable provenance mark that is always written
-    // BEFORE it is therefore ALSO already on the log; only the eventual `UnitStarted`
-    // never landed. `criterion_id` and `spec` are the fresh unit's OWN identity (round
-    // 5) - `spec` is "" since this fresh run carries no launched spec path
-    // (`current_run_spec` folds to the empty string), matching what a real crash-then-
-    // resume would have recorded at the moment of decision.
-    Worktree::create_branch_at(repo.path().to_str().unwrap(), &fresh_branch, &prior_tip).unwrap();
-    store
-        .append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                ledger::TYPE_UNIT_STATUS,
-                serde_json::to_vec(&json!({
-                    "id": fresh_slug,
-                    "status": "adoption-recorded",
-                    "criterion_id": fresh_criterion_id,
-                    "spec": "",
-                    "adopted_from": {
-                        "unit": prior_slug,
-                        "tip": prior_tip,
-                        "spec": "specs/88-a-unit-lineage-is-durable",
-                    },
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
-    let events_before_resume = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-    assert!(
-        !events_before_resume
-            .iter()
-            .any(|e| e.type_ == ledger::TYPE_UNIT_STARTED
-                && serde_json::from_slice::<Value>(&e.data)
-                    .ok()
-                    .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
-                    == Some(fresh_slug.to_string())),
-        "the simulated crash must leave NO UnitStarted for the fresh unit yet"
+    // Reproduce the crash state. The durable provenance mark is always written BEFORE the
+    // branch, so it is on the log either way. `criterion_id` and `spec` are the fresh unit's
+    // OWN identity - `spec` is "" since this fresh run carries no launched spec path
+    // (`current_run_spec` folds to the empty string), matching what a real crash-then-resume
+    // would have recorded at the moment of decision.
+    if branch_created {
+        Worktree::create_branch_at(repo.path().to_str().unwrap(), &fresh_branch, &prior_tip)
+            .unwrap();
+    }
+    append_unit_status(
+        &store,
+        json!({
+            "id": fresh_slug,
+            "status": "adoption-recorded",
+            "criterion_id": fresh_criterion_id,
+            "spec": "",
+            "adopted_from": {
+                "unit": prior_slug,
+                "tip": prior_tip,
+                "spec": "specs/88-a-unit-lineage-is-durable",
+            },
+        }),
     );
+    if branch_created {
+        let events_before_resume = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            unit_bodies(&events_before_resume, ledger::TYPE_UNIT_STARTED, fresh_slug).is_empty(),
+            "the simulated crash must leave NO UnitStarted for the fresh unit yet"
+        );
+    } else {
+        assert!(
+            !worktree::branch_exists(repo.path().to_str().unwrap(), &fresh_branch),
+            "the simulated crash must leave the fresh unit's branch NOT YET created"
+        );
+    }
 
     // RESUME: a real second `run()` call against the SAME store and repo - exactly what
     // a fresh `rigger step` process does after the crash.
@@ -1362,21 +1287,19 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
         worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
         ledger::Status::Integrated,
-        "the recovered unit still runs its ordinary lifecycle through to integration"
+        "the resumed unit still runs its ordinary lifecycle through to integration"
     );
+    // The adopted content (`prior-work.txt`) AND the unit's own fresh work
+    // (`run2-own-work.txt`) both riding into the base is only possible if the resumed call
+    // continued the ordinary lifecycle on a branch at the recorded tip - a genuinely fresh
+    // (non-adopting) start would never produce `prior-work.txt` at all. `fresh_branch` itself
+    // is NOT re-checked: `gc_integrated_branches` reclaims an integrated unit's durable branch
+    // in the SAME call that integrates it.
     assert!(
         repo.path().join("prior-work.txt").exists(),
         "the adopted branch's real prior content must still ride into the base"
@@ -1389,139 +1312,34 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
         fresh_started["adopted_from"],
         json!({"unit": prior_slug, "tip": prior_tip, "spec": "specs/88-a-unit-lineage-is-durable"}),
         "the crash-resumed unit must recover the EXACT recorded decision, spec field \
-         included - never None (the pre-fix defect: `branch_exists` alone returned None \
-         the instant the unit's own branch already existed) and never a freshly \
-         re-derived value (this run's own empty spec would fold to \"\", not the \
-         recorded value, if `current_run_spec` ran again here): {fresh_started}"
+         included - never None (`branch_exists` alone returning None the instant the unit's \
+         own branch already existed) and never a freshly re-derived value (this run's own \
+         empty spec would fold to \"\", not the recorded value): {fresh_started}"
     );
 }
 
-/// Test 8 (round 4): the OTHER half of the same crash window - a crash AFTER the durable
-/// provenance mark is written but BEFORE `Worktree::create_branch_at` ever runs, so the
-/// adopting unit's own branch does not exist yet at all. A resumed call must create it
-/// at the RECORDED tip and complete the adoption exactly as an uninterrupted run would.
-#[test]
-fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume(
-) {
-    let repo = tempfile::tempdir().unwrap();
-    init_repo(repo.path());
-    let store = Store::open(":memory:").unwrap();
-    let criterion = "the valve reports its own position";
-
-    let driver1 = WritesFileDriver {
-        file_name: "prior-work.txt".into(),
-        content: "escalated attempt\n".into(),
-    };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
-    let prior_slug = rs1.units.keys().next().unwrap().clone();
-    assert_eq!(
-        rs1.units[&prior_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
+rigger::test_cases! {
+    /// Test 7 (round 4): the PRIMARY BLOCKER's own named scenario -
+    /// `sdet-u88c2-adopted-from-lost-on-crash-between-branch-create-and-unitstarted` - a
+    /// crash AFTER `Worktree::create_branch_at` lands the adopting unit's branch but BEFORE
+    /// its `UnitStarted` append. Pre-fix, `adopt_prior_criterion_branch`'s FIRST check
+    /// (`branch_exists`) alone short-circuited straight to `None` the instant the branch
+    /// existed, so the resumed `UnitStarted` recorded no adoption at all despite the unit's
+    /// branch carrying real adopted content - a genuine unit lifecycle continuing on
+    /// silently-unrecorded provenance.
+    a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption: assert_a_crash_inside_the_adoption_window_recovers_it(
+        "the pump reports its own pressure",
+        "crash-after-branch-unit",
+        true,
     );
-    let prior_tip = git_out(
-        repo.path(),
-        &["rev-parse", &format!("rigger/u/{prior_slug}")],
-    )
-    .expect("the escalated unit's durable branch must exist with a resolvable tip");
-    // The fresh unit below serves the SAME criterion text at the same position, so a
-    // real production call site computes the IDENTICAL `criterion_stable_id` - read back
-    // off the prior unit's own `UnitStarted` rather than hand-typed, so the hand-crafted
-    // provenance mark below carries the value `recorded_adoption` (round 5, keyed on the
-    // full `(unit, criterion_id, spec)` triple) actually requires to match.
-    let events_after_run1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-    let fresh_criterion_id = find_unit_started(&events_after_run1, &prior_slug)["criterion_id"]
-        .as_str()
-        .expect("the prior unit's own UnitStarted carries its criterion_id")
-        .to_string();
-
-    start_fresh(&store, &[criterion.to_string()], "", "", "", "").unwrap();
-    let fresh_slug = "crash-before-branch-unit";
-    let fresh_branch = format!("rigger/u/{fresh_slug}");
-
-    // Reproduce ONLY the provenance write - the crash happens before the git side
-    // effect ever runs, so the fresh unit's own branch must NOT exist yet. `criterion_id`
-    // and `spec` are the fresh unit's OWN identity (round 5) - `spec` is "" since this
-    // fresh run carries no launched spec path (`current_run_spec` folds to the empty
-    // string), matching what a real crash-then-resume would have recorded at the moment
-    // of decision.
-    store
-        .append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                ledger::TYPE_UNIT_STATUS,
-                serde_json::to_vec(&json!({
-                    "id": fresh_slug,
-                    "status": "adoption-recorded",
-                    "criterion_id": fresh_criterion_id,
-                    "spec": "",
-                    "adopted_from": {
-                        "unit": prior_slug,
-                        "tip": prior_tip,
-                        "spec": "specs/88-a-unit-lineage-is-durable",
-                    },
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
-    assert!(
-        !worktree::branch_exists(repo.path().to_str().unwrap(), &fresh_branch),
-        "the simulated crash must leave the fresh unit's branch NOT YET created"
-    );
-
-    let driver2 = ProposesSlugDriver {
-        proposed_id: fresh_slug.to_string(),
-        criterion: criterion.to_string(),
-        worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
-        gates: vec!["gate".to_string()],
-    };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
-    assert_eq!(
-        rs2.units[fresh_slug].status,
-        ledger::Status::Integrated,
-        "the resumed unit still runs its ordinary lifecycle through to integration"
-    );
-    // The adopted content (`prior-work.txt`) AND the unit's own fresh work
-    // (`run2-own-work.txt`) both riding into the base is only possible if the resumed
-    // call actually created `fresh_branch` at the recorded tip and continued the
-    // ordinary lifecycle on it - a genuinely fresh (non-adopting) start would never
-    // produce `prior-work.txt` at all (exactly as test 1 establishes). `fresh_branch`
-    // itself is NOT re-checked here: `gc_integrated_branches` reclaims an integrated
-    // unit's durable branch in the SAME call that integrates it (test 3's own doc
-    // comment), so by the time `run` returns, a genuinely correct resume has ALREADY
-    // deleted the very branch it created - asserting its continued existence here would
-    // be asserting a bug, not the fix.
-    assert!(repo.path().join("prior-work.txt").exists());
-    assert!(repo.path().join("run2-own-work.txt").exists());
-
-    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-    let fresh_started = find_unit_started(&events, fresh_slug);
-    assert_eq!(
-        fresh_started["adopted_from"],
-        json!({"unit": prior_slug, "tip": prior_tip, "spec": "specs/88-a-unit-lineage-is-durable"}),
-        "the resumed adoption must record the SAME recorded decision, spec field \
-         included - a fresh re-derivation here would fold to an empty spec, not the \
-         recorded value: {fresh_started}"
+    /// Test 8 (round 4): the OTHER half of the same crash window - a crash AFTER the durable
+    /// provenance mark is written but BEFORE `Worktree::create_branch_at` ever runs, so the
+    /// adopting unit's own branch does not exist yet at all. A resumed call must create it
+    /// at the RECORDED tip and complete the adoption exactly as an uninterrupted run would.
+    a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume: assert_a_crash_inside_the_adoption_window_recovers_it(
+        "the valve reports its own position",
+        "crash-before-branch-unit",
+        false,
     );
 }
 
@@ -1545,22 +1363,7 @@ fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted()
         file_name: "prior-work.txt".into(),
         content: "escalated attempt\n".into(),
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
-    let prior_slug = rs1.units.keys().next().unwrap().clone();
-    assert_eq!(
-        rs1.units[&prior_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    let prior_slug = escalated_baseline(&store, &driver1, repo.path(), criterion);
     let prior_branch = format!("rigger/u/{prior_slug}");
     assert!(
         worktree::branch_exists(repo.path().to_str().unwrap(), &prior_branch),
@@ -1588,15 +1391,7 @@ fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted()
         worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
@@ -1679,22 +1474,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
         file_name: "spec-a-baseline-work.txt".into(),
         content: "spec A's abandoned baseline attempt\n".into(),
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
-    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
-    let prior_slug = rs1.units.keys().next().unwrap().clone();
-    assert_eq!(
-        rs1.units[&prior_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    let prior_slug = escalated_baseline(&store, &driver1, repo.path(), criterion_x);
     let prior_tip = git_out(
         repo.path(),
         &["rev-parse", &format!("rigger/u/{prior_slug}")],
@@ -1717,15 +1497,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion_x);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[reused_id].status,
@@ -1764,15 +1536,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps3 = Deps {
-        store: &store,
-        driver: &driver3,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_y.to_string()],
-    };
+    let deps3 = deps(&store, &driver3, repo.path(), criterion_y);
     let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[reused_id].status,
@@ -1851,25 +1615,18 @@ fn a_legacy_adoption_mark_missing_criterion_id_and_spec_never_matches_a_reused_i
     // "reproduce the exact state" technique, so `branch_exists` sees the same
     // unit-already-has-a-branch condition a real completed legacy adoption left behind.
     Worktree::create_branch_at(repo.path().to_str().unwrap(), &legacy_branch, &legacy_tip).unwrap();
-    store
-        .append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                ledger::TYPE_UNIT_STATUS,
-                serde_json::to_vec(&json!({
-                    "id": legacy_id,
-                    "status": "adoption-recorded",
-                    "adopted_from": {
-                        "unit": "some-other-run-s-unrelated-baseline",
-                        "tip": legacy_tip,
-                        "spec": "specs/some-unrelated-old-spec.md",
-                    },
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
+    append_unit_status(
+        &store,
+        json!({
+            "id": legacy_id,
+            "status": "adoption-recorded",
+            "adopted_from": {
+                "unit": "some-other-run-s-unrelated-baseline",
+                "tip": legacy_tip,
+                "spec": "specs/some-unrelated-old-spec.md",
+            },
+        }),
+    );
 
     // A LATER, wholly unrelated run reuses the SAME literal id for a criterion nothing
     // above has ever served - the exact reused-slug shape test 10 drives, but against a
@@ -1886,15 +1643,7 @@ fn a_legacy_adoption_mark_missing_criterion_id_and_spec_never_matches_a_reused_i
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
+    let deps = deps(&store, &driver, repo.path(), criterion);
     let rs = run(&fresh_run_cfg("true", repo.path()), &deps).unwrap();
     assert_eq!(
         rs.units[legacy_id].status,
@@ -1972,15 +1721,7 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
+    let deps1 = deps(&store, &driver1, repo.path(), criterion_x);
     let mut cfg1 = fresh_run_cfg("false", repo.path());
     cfg1.workflow.defaults.max_retries = 1;
     let rs1 = run(&cfg1, &deps1).unwrap();
@@ -2023,15 +1764,7 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_y.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion_y);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[shared_slug].status,
@@ -2116,23 +1849,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
-    let mut cfg1 = fresh_run_cfg("false", repo.path());
-    cfg1.workflow.defaults.max_retries = 1;
-    let rs1 = run(&cfg1, &deps1).unwrap();
-    assert_eq!(
-        rs1.units[shared_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    escalate_proposed(&store, &driver1, repo.path(), criterion_x, shared_slug);
     let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
 
@@ -2150,15 +1867,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_y.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion_y);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[shared_slug].status,
@@ -2192,15 +1901,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps3 = Deps {
-        store: &store,
-        driver: &driver3,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
+    let deps3 = deps(&store, &driver3, repo.path(), criterion_x);
     let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[retry_slug].status,
@@ -2275,23 +1976,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
-    let mut cfg1 = fresh_run_cfg("false", repo.path());
-    cfg1.workflow.defaults.max_retries = 1;
-    let rs1 = run(&cfg1, &deps1).unwrap();
-    assert_eq!(
-        rs1.units[shared_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    escalate_proposed(&store, &driver1, repo.path(), criterion_x, shared_slug);
     let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
 
@@ -2326,15 +2011,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_y.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion_y);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).expect(
         "a resumed retry recomputing the identical (unit_id, tip) quarantine ref must \
          complete the deferred rename, never hard-error on git's own \"branch already \
@@ -2418,23 +2095,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
-    let mut cfg1 = fresh_run_cfg("false", repo.path());
-    cfg1.workflow.defaults.max_retries = 1;
-    let rs1 = run(&cfg1, &deps1).unwrap();
-    assert_eq!(
-        rs1.units[shared_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    escalate_proposed(&store, &driver1, repo.path(), criterion_x, shared_slug);
     let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
 
@@ -2453,15 +2114,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_y.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion_y);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[shared_slug].status,
@@ -2507,15 +2160,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps3 = Deps {
-        store: &store,
-        driver: &driver3,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
+    let deps3 = deps(&store, &driver3, repo.path(), criterion_x);
     // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be
     // used here - match explicitly instead (mirrors tests/build_env_authority_periphery.rs).
     match run(&fresh_run_cfg("true", repo.path()), &deps3) {
@@ -2691,23 +2336,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
-    let mut cfg1 = fresh_run_cfg("false", repo.path());
-    cfg1.workflow.defaults.max_retries = 1;
-    let rs1 = run(&cfg1, &deps1).unwrap();
-    assert_eq!(
-        rs1.units[shared_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    escalate_proposed(&store, &driver1, repo.path(), criterion_x, shared_slug);
 
     // RUN 2 (spec B, an UNRELATED criterion Y): reuses the exact same literal slug, firing
     // the round-6/7 quarantine - but this run's own store fails the quarantine record's
@@ -2729,15 +2358,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &failing_store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_y.to_string()],
-    };
+    let deps2 = deps(&failing_store, &driver2, repo.path(), criterion_y);
     // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be
     // used here - match explicitly, exactly like test 15 above.
     match run(&fresh_run_cfg("true", repo.path()), &deps2) {
@@ -2780,15 +2401,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps3 = Deps {
-        store: &store,
-        driver: &driver3,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_y.to_string()],
-    };
+    let deps3 = deps(&store, &driver3, repo.path(), criterion_y);
     let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[shared_slug].status,
@@ -2818,15 +2431,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps4 = Deps {
-        store: &store,
-        driver: &driver4,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
+    let deps4 = deps(&store, &driver4, repo.path(), criterion_x);
     let rs4 = run(&fresh_run_cfg("true", repo.path()), &deps4).unwrap();
     assert_eq!(
         rs4.units[retry_slug].status,
@@ -2887,23 +2492,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps1 = Deps {
-        store: &store,
-        driver: &driver1,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
-    let mut cfg1 = fresh_run_cfg("false", repo.path());
-    cfg1.workflow.defaults.max_retries = 1;
-    let rs1 = run(&cfg1, &deps1).unwrap();
-    assert_eq!(
-        rs1.units[shared_slug].status,
-        ledger::Status::Escalated,
-        "an always-failing gate must exhaust remediation and escalate, never integrate"
-    );
+    escalate_proposed(&store, &driver1, repo.path(), criterion_x, shared_slug);
     let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
     let events_after_run1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -2979,15 +2568,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps2 = Deps {
-        store: &store,
-        driver: &driver2,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_y.to_string()],
-    };
+    let deps2 = deps(&store, &driver2, repo.path(), criterion_y);
     let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).expect(
         "a resumed retry recomputing the identical (unit_id, tip) quarantine ref, with its \
          record already durably landed, must complete only the still-pending delete, \
@@ -3037,15 +2618,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
         )),
         gates: vec!["gate".to_string()],
     };
-    let deps3 = Deps {
-        store: &store,
-        driver: &driver3,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion_x.to_string()],
-    };
+    let deps3 = deps(&store, &driver3, repo.path(), criterion_x);
     let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[retry_slug].status,

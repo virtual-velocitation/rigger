@@ -193,5 +193,155 @@
     "id": "dup-35908fb8ceff",
     "disposition": "not-a-duplicate",
     "reason": "The mandatory Command::new sweep now holds only the process-spawn port's own construction site plus test code spawning distinct fixture processes (the rigger binary under test, git fixtures, shells); every production spawn routes through src/subprocess.rs, which the process-spawn port gate pins."
+  },
+  {
+    "id": "dup-23cb89af01e7",
+    "disposition": "not-a-duplicate",
+    "reason": "Four converters projecting two different ledger types (a duplication cluster, a dead-code candidate) onto their two different wire shapes (guarded line-free JSON, unguarded line sidecar); each maps a distinct field set, so only the struct-literal shape is shared."
+  },
+  {
+    "id": "dup-ca8ccf1b9f66",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line cwd adapters over two different resolvers: `project_identity` names the project that scopes the streams, `git_repo` returns the owning repository root."
+  },
+  {
+    "id": "dup-10bf3f3faab0",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `run_graph_pass`; each supplies a different derivation (community detection over the coupling layer vs concept derivation over the intent layer) and its own summary."
+  },
+  {
+    "id": "dup-f5d0a37113e0",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
+  },
+  {
+    "id": "dup-39046faa7f9f",
+    "disposition": "not-a-duplicate",
+    "reason": "Both build their fixture through the shared `linear_history`; they test two different git queries (ancestry order vs commit distance) with different expectations."
+  },
+  {
+    "id": "dup-2e3d71bbeb25",
+    "disposition": "not-a-duplicate",
+    "reason": "Both seed through the shared `db_with_one_result`; one proves an unanswered spawn id reads as unreported, the other proves the read is scoped to its own project namespace."
+  },
+  {
+    "id": "dup-0214889fec22",
+    "disposition": "not-a-duplicate",
+    "reason": "Both use the shared `reset_modes_of`/`reset_refusal`; they pin two different flags' rules (`--force-live` never implying a mode vs `--build-cache` composing with other modes)."
+  },
+  {
+    "id": "dup-0d8e695ac484",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already read through the shared `raw_rows`; one selects every edge row's project tag, the other the schema's own index names from `sqlite_master`."
+  },
+  {
+    "id": "dup-0e618ec2d345",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already build through the shared `community_graph`; they are two different fixtures (one three-function district with a caller and a callee, two districts joined by one cross-district call)."
+  },
+  {
+    "id": "dup-0f11f47627d7",
+    "disposition": "not-a-duplicate",
+    "reason": "Three different map queries over one fixture: landmark ranking by degree, case-insensitive name search, and the kind/degree fields a search hit carries."
+  },
+  {
+    "id": "dup-145855a9e558",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already read through the shared `call_edge_rows`; they are the two opposite directions of a direct CALLS hop (a node's callees vs its callers), each with its own query."
+  },
+  {
+    "id": "dup-1a713042d2fe",
+    "disposition": "not-a-duplicate",
+    "reason": "Two named modes of the shared `find_word_boundary` (a hyphen as a word character vs as a boundary), each serving a different caller's matching rule."
+  },
+  {
+    "id": "dup-1b857c1af535",
+    "disposition": "not-a-duplicate",
+    "reason": "Both seed through the shared `store_with`/`keyed`; one proves distinct keys measure no duplication, the other that one key under two covered types is two subjects and cross-checks the real prune."
+  },
+  {
+    "id": "dup-2aabb2b82325",
+    "disposition": "not-a-duplicate",
+    "reason": "Two named modes of the shared `name_occurrence_map` (counting references too vs definitions only), feeding two different ranking signals."
+  },
+  {
+    "id": "dup-2d860358c266",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different fold arms with different fixtures and assertions: the five design-intent link relations vs workflow stage/gate/agent nodes and their needs/runs/reviews edges."
+  },
+  {
+    "id": "dup-32d7509fc4e5",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
+  },
+  {
+    "id": "dup-ab86de4a6b66",
+    "disposition": "not-a-duplicate",
+    "reason": "Both build through the shared `grounder_over`; they pin two different ranking rules (definition over reference, exact over contains tier)."
+  },
+  {
+    "id": "dup-d45ee6096ba3",
+    "disposition": "not-a-duplicate",
+    "reason": "Three different reindex scenarios with different steps and assertions: a concurrent peer's persisted write, a changed file, and a deleted file."
+  },
+  {
+    "id": "dup-da0e76ab77ee",
+    "disposition": "not-a-duplicate",
+    "reason": "Opposite halves of the proof-staging contract: a forward reference is staged then reconciled, while the empty-name boundary sentinel must never stage anything."
+  },
+  {
+    "id": "dup-f0a2e1334847",
+    "disposition": "not-a-duplicate",
+    "reason": "Different concerns sharing a lookup shape: one reaches a decision's summary through GOVERNS, the other proves recording a proof merges into and never wipes an entity's attrs."
+  },
+  {
+    "id": "dup-8743cc5db2b4",
+    "disposition": "not-a-duplicate",
+    "reason": "The two conflict drivers share only the shared barrier and side-write helpers; their retry arms run different recovery protocols (two re-park rounds that stage a placeholder first, versus one round that commits the source and then simulates a crash)."
+  },
+  {
+    "id": "dup-549ccc50144c",
+    "disposition": "not-a-duplicate",
+    "reason": "The row-1 and row-4 before-record crash tests use different crash drivers, obstructions and cleanup (an untracked file in the unit worktree versus a FIFO in the run branch) and assert different boundary markers."
+  },
+  {
+    "id": "dup-5f516fce9f0b",
+    "disposition": "not-a-duplicate",
+    "reason": "One test proves that a compensation revert reopens adoption of the second-life tip; the other is the control proving that a plain remediation failure never does - opposite outcomes of different ledger events."
+  },
+  {
+    "id": "dup-fa6d2818cb22",
+    "disposition": "not-a-duplicate",
+    "reason": "The replay fixture grants an agent tools, while the model-pinning fixture sets its model and model ladder; each builds a different facet of AgentDef for a different suite."
+  },
+  {
+    "id": "dup-f31e5f12e527",
+    "disposition": "not-a-duplicate",
+    "reason": "The two backstop tests seed different interleavings that guard different defects (the emit-only-approve backstop itself, and a parked-unanswered sibling suppressing it); their seeding and assertions already go through the shared helpers."
+  },
+  {
+    "id": "dup-4fbc57c56116",
+    "disposition": "not-a-duplicate",
+    "reason": "One test drives the reference fold arm's own supersede on a refs-only file; the other pins that re-extracting file A leaves file B's reference edge live - a different arm and a different scope boundary."
+  },
+  {
+    "id": "dup-852917647aea",
+    "disposition": "not-a-duplicate",
+    "reason": "concept_events and link_events are the two typed callers of the shared sorted_events emitter; each supplies its own sort order, event type and payload."
+  },
+  {
+    "id": "dup-18409566d0bb",
+    "disposition": "not-a-duplicate",
+    "reason": "One test pins that a failing gate within one attempt is not masked by a trailing pass, the other that a later all-green attempt supersedes an earlier red; these are opposite outcomes of different battery histories, and both already build their batteries through implement_battery."
+  },
+  {
+    "id": "dup-7021db868000",
+    "disposition": "not-a-duplicate",
+    "reason": "The sweep gathers eleven unrelated sites whose names mention an error (a failure-marker constructor, a review-tree guard, a retired-grounder message, and eight tests of different error paths); they share only the word, not one error-shaping concern."
+  },
+  {
+    "id": "dup-5d0f39bf7ac4",
+    "disposition": "not-a-duplicate",
+    "reason": "The sweep gathers every string literal that mentions .rigger - distinct paths (store, lock, scratch, agents, instructions), messages, docs and fixture contents across the tree - not one path-composition concern to share."
   }
 ]

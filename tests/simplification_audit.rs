@@ -6741,14 +6741,12 @@ mod tests {
 
     #[test]
     fn a_simple_free_function_is_found_with_its_line_span() {
-        let src = "fn foo() {\n    let x = 1;\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].name, "foo");
-        assert_eq!(fns[0].start_line, 1);
-        assert_eq!(fns[0].end_line, 3);
-        assert!(!fns[0].is_test);
-        assert_eq!(fns[0].enclosing_impl, None);
+        let f = scan_single("fn foo() {\n    let x = 1;\n}\n");
+        assert_eq!(f.name, "foo");
+        assert_eq!(f.start_line, 1);
+        assert_eq!(f.end_line, 3);
+        assert!(!f.is_test);
+        assert_eq!(f.enclosing_impl, None);
     }
 
     #[test]
@@ -6853,39 +6851,33 @@ mod tests {
     // Scanner: context (impl blocks, mods, #[cfg(test)] inheritance)
     // -------------------------------------------------------------------------------------
 
-    #[test]
-    fn a_method_inside_an_impl_block_carries_its_header() {
-        let src = "impl Foo {\n    fn bar(&self) {}\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].name, "bar");
-        assert_eq!(fns[0].enclosing_impl.as_deref(), Some("Foo"));
+    /// `src` scans to exactly one function, declared in the impl block headed `impl_header`.
+    /// Returns it.
+    fn single_fn_in_impl(src: &str, impl_header: &str) -> ScannedFn {
+        let f = scan_single(src);
+        assert_eq!(f.enclosing_impl.as_deref(), Some(impl_header));
+        f
     }
 
-    #[test]
-    fn a_trait_impl_header_keeps_the_trait_for_type_text() {
-        let src = "impl AgentDriver for Stub {\n    fn spawn(&self) {}\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(
-            fns[0].enclosing_impl.as_deref(),
-            Some("AgentDriver for Stub")
+    rigger::test_cases! {
+        a_method_inside_an_impl_block_carries_its_header: assert_eq!(
+            single_fn_in_impl("impl Foo {\n    fn bar(&self) {}\n}\n", "Foo").name,
+            "bar"
         );
-    }
-
-    #[test]
-    fn a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test() {
-        // Regression (adjudicator u85c1 round 1 REJECT): an impl block sitting inside a
-        // #[cfg(test)] mod must propagate that ancestry to its methods - FrameKind::Impl
-        // previously had no is_test field at all, so this was always false.
-        let src = "#[cfg(test)]\nmod tests {\n    impl AgentDriver for CacheDriver {\n        fn spawn(&self) {}\n    }\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(fns[0].is_test, "{:?}", fns[0]);
-        assert_eq!(
-            fns[0].enclosing_impl.as_deref(),
-            Some("AgentDriver for CacheDriver")
+        a_trait_impl_header_keeps_the_trait_for_type_text: single_fn_in_impl(
+            "impl AgentDriver for Stub {\n    fn spawn(&self) {}\n}\n",
+            "AgentDriver for Stub",
         );
+        /// Regression (adjudicator u85c1 round 1 REJECT): an impl block sitting inside a
+        /// #[cfg(test)] mod must propagate that ancestry to its methods - FrameKind::Impl
+        /// previously had no is_test field at all, so this was always false.
+        a_method_inside_an_impl_nested_in_a_cfg_test_mod_is_flagged_test: {
+            let f = single_fn_in_impl(
+                "#[cfg(test)]\nmod tests {\n    impl AgentDriver for CacheDriver {\n        fn spawn(&self) {}\n    }\n}\n",
+                "AgentDriver for CacheDriver",
+            );
+            assert!(f.is_test, "{f:?}");
+        };
     }
 
     #[test]
@@ -6894,10 +6886,8 @@ mod tests {
         // (no enclosing cfg-test mod) must also mark its methods test - the impl push site
         // used to drop pending_cfg_test unconditionally instead of reading it like
         // Mod/Trait/Fn already do.
-        let src = "#[cfg(test)]\nimpl<'a> RunCtx<'a> {\n    fn for_test() -> Self {\n        todo!()\n    }\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(fns[0].is_test, "{:?}", fns[0]);
+        let f = scan_single("#[cfg(test)]\nimpl<'a> RunCtx<'a> {\n    fn for_test() -> Self {\n        todo!()\n    }\n}\n");
+        assert!(f.is_test, "{f:?}");
     }
 
     #[test]
@@ -6910,24 +6900,21 @@ mod tests {
         assert!(!fns[0].is_test, "{:?}", fns[0]);
     }
 
-    #[test]
-    fn a_function_directly_in_a_cfg_test_mod_is_flagged_test() {
-        let src = "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(fns[0].is_test);
-        assert_eq!(fns[0].enclosing_mods, vec!["tests".to_string()]);
+    /// `src` scans to exactly one function, flagged test, enclosed by the `mods` path.
+    fn assert_single_test_fn_in_mods(src: &str, mods: &[&str]) {
+        let f = scan_single(src);
+        assert!(f.is_test);
+        assert_eq!(f.enclosing_mods, mods);
     }
 
-    #[test]
-    fn a_nested_named_test_submodule_is_still_flagged_test_and_named() {
-        let src = "#[cfg(test)]\nmod tests {\n    mod inner_group {\n        fn a() {}\n    }\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(fns[0].is_test);
-        assert_eq!(
-            fns[0].enclosing_mods,
-            vec!["tests".to_string(), "inner_group".to_string()]
+    rigger::test_cases! {
+        a_function_directly_in_a_cfg_test_mod_is_flagged_test: assert_single_test_fn_in_mods(
+            "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n",
+            &["tests"],
+        );
+        a_nested_named_test_submodule_is_still_flagged_test_and_named: assert_single_test_fn_in_mods(
+            "#[cfg(test)]\nmod tests {\n    mod inner_group {\n        fn a() {}\n    }\n}\n",
+            &["tests", "inner_group"],
         );
     }
 
@@ -7023,11 +7010,9 @@ mod tests {
     fn a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword() {
         // The exact shape this criterion's fix targets: a visibility qualifier sitting between
         // a #[cfg(test)] attribute and the item it governs must not clear the pending flag.
-        let src = "#[cfg(test)]\npub fn helper_for_tests() {}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(fns[0].is_test, "{:?}", fns[0]);
-        assert_eq!(fns[0].visibility, "pub");
+        let f = scan_single("#[cfg(test)]\npub fn helper_for_tests() {}\n");
+        assert!(f.is_test, "{f:?}");
+        assert_eq!(f.visibility, "pub");
     }
 
     #[test]
@@ -7039,60 +7024,43 @@ mod tests {
         assert_eq!(core.out_of_line_mods[0].path_override, None);
     }
 
-    #[test]
-    fn a_cfg_test_out_of_line_mod_is_flagged_test() {
-        let core = scan_str_core("#[cfg(test)]\nmod contract;\n");
+    /// `src` declares exactly one out-of-line mod, flagged test; returns it.
+    fn single_test_out_of_line_mod(src: &str) -> OutOfLineMod {
+        let core = scan_str_core(src);
         assert_eq!(core.out_of_line_mods.len(), 1);
-        assert!(core.out_of_line_mods[0].is_test);
+        let m = core.out_of_line_mods.into_iter().next().unwrap();
+        assert!(m.is_test, "{m:?}");
+        m
     }
 
-    #[test]
-    fn a_cfg_test_pub_out_of_line_mod_is_flagged_test_the_real_eventstore_mod_rs_shape() {
-        // `src/eventstore/mod.rs`'s real declaration: `#[cfg(test)]\npub mod contract;` - the
-        // exact regression this criterion's `pub` fix exists for.
-        let core = scan_str_core("#[cfg(test)]\npub mod contract;\n");
-        assert_eq!(core.out_of_line_mods.len(), 1);
-        assert_eq!(core.out_of_line_mods[0].name, "contract");
-        assert!(
-            core.out_of_line_mods[0].is_test,
-            "{:?}",
-            core.out_of_line_mods[0]
+    rigger::test_cases! {
+        a_cfg_test_out_of_line_mod_is_flagged_test:
+            single_test_out_of_line_mod("#[cfg(test)]\nmod contract;\n");
+        /// `src/eventstore/mod.rs`'s real declaration: `#[cfg(test)]\npub mod contract;` - the
+        /// exact regression this criterion's `pub` fix exists for.
+        a_cfg_test_pub_out_of_line_mod_is_flagged_test_the_real_eventstore_mod_rs_shape: assert_eq!(
+            single_test_out_of_line_mod("#[cfg(test)]\npub mod contract;\n").name,
+            "contract"
         );
-    }
-
-    #[test]
-    fn a_cfg_all_test_and_feature_compound_out_of_line_mod_is_flagged_test_the_real_blast_radius_eval_shape(
-    ) {
-        // Spec 93 criterion 1's real lib.rs shape for a store-only whole-module gate:
-        // `#[cfg(all(test, any(feature = "store", not(feature = "core"))))]` - a strict subset
-        // of `cfg(test)` (it can only ever compile when `cfg(test)` also holds), so it must
-        // classify as test-in-full exactly like the bare `#[cfg(test)]` case above. This is the
-        // regression `cfg_all_contains_bare_test` exists to close.
-        let core = scan_str_core(
-            "#[cfg(all(test, any(feature = \"store\", not(feature = \"core\"))))]\n\
-             mod blast_radius_eval;\n",
+        /// Spec 93 criterion 1's real lib.rs shape for a store-only whole-module gate:
+        /// `#[cfg(all(test, any(feature = "store", not(feature = "core"))))]` - a strict subset
+        /// of `cfg(test)` (it can only ever compile when `cfg(test)` also holds), so it must
+        /// classify as test-in-full exactly like the bare `#[cfg(test)]` case above. This is the
+        /// regression `cfg_all_contains_bare_test` exists to close.
+        a_cfg_all_test_and_feature_compound_out_of_line_mod_is_flagged_test_the_real_blast_radius_eval_shape:
+            assert_eq!(
+            single_test_out_of_line_mod(
+                "#[cfg(all(test, any(feature = \"store\", not(feature = \"core\"))))]\n\
+                 mod blast_radius_eval;\n",
+            )
+            .name,
+            "blast_radius_eval"
         );
-        assert_eq!(core.out_of_line_mods.len(), 1);
-        assert_eq!(core.out_of_line_mods[0].name, "blast_radius_eval");
-        assert!(
-            core.out_of_line_mods[0].is_test,
-            "{:?}",
-            core.out_of_line_mods[0]
-        );
-    }
-
-    #[test]
-    fn a_cfg_all_test_pub_mod_is_flagged_test_the_real_eventstore_contract_shape() {
-        // `src/eventstore/mod.rs`'s real post-spec-93 declaration for `contract`.
-        let core = scan_str_core(
+        /// `src/eventstore/mod.rs`'s real post-spec-93 declaration for `contract`.
+        a_cfg_all_test_pub_mod_is_flagged_test_the_real_eventstore_contract_shape:
+            single_test_out_of_line_mod(
             "#[cfg(all(test, any(feature = \"store\", not(feature = \"core\"))))]\n\
              pub mod contract;\n",
-        );
-        assert_eq!(core.out_of_line_mods.len(), 1);
-        assert!(
-            core.out_of_line_mods[0].is_test,
-            "{:?}",
-            core.out_of_line_mods[0]
         );
     }
 
@@ -7117,12 +7085,11 @@ mod tests {
             assert!(!cfg_all_contains_bare_test("#[other(all(test))]"));
     }
 
-    #[test]
-    fn an_out_of_line_mod_inherits_test_ness_from_an_enclosing_cfg_test_mod() {
-        let core = scan_str_core("#[cfg(test)]\nmod outer {\n    mod inner;\n}\n");
-        assert_eq!(core.out_of_line_mods.len(), 1);
-        assert_eq!(core.out_of_line_mods[0].name, "inner");
-        assert!(core.out_of_line_mods[0].is_test);
+    rigger::test_cases! {
+        an_out_of_line_mod_inherits_test_ness_from_an_enclosing_cfg_test_mod: assert_eq!(
+            single_test_out_of_line_mod("#[cfg(test)]\nmod outer {\n    mod inner;\n}\n").name,
+            "inner"
+        );
     }
 
     #[test]
@@ -7186,25 +7153,28 @@ mod tests {
         assert_eq!(module.as_deref(), Some("dash::tests::supervised_lifecycle"));
     }
 
-    #[test]
-    fn a_method_is_classified_under_its_impl_self_type() {
-        let mut f = conductor_fn("summary");
-        f.enclosing_impl = Some("GateRatchet".to_string());
-        let (module, reason) = classify(&f);
-        assert_eq!(module.as_deref(), Some("conductor::gate_ratchet"));
-        assert!(reason.contains("GateRatchet"), "{reason}");
+    /// Classify conductor method `name`, declared in the impl block headed `impl_header`: it
+    /// must land in `module`. Returns the classification's reason.
+    fn classify_method(name: &str, impl_header: &str, module: &str) -> String {
+        let mut f = conductor_fn(name);
+        f.enclosing_impl = Some(impl_header.to_string());
+        let (proposed, reason) = classify(&f);
+        assert_eq!(proposed.as_deref(), Some(module));
+        reason
     }
 
-    #[test]
-    fn a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics() {
-        // Regression: `impl<'a> RunCtx<'a> { ... }` must classify under `run_ctx`, not under
-        // an empty self-type bucket (the impl's OWN `<'a>` generic list is not the type name).
-        let mut f = conductor_fn("for_test");
-        f.enclosing_impl = Some("<'a> RunCtx<'a>".to_string());
-        let (module, reason) = classify(&f);
-        assert_eq!(module.as_deref(), Some("conductor::run_ctx"));
-        assert!(reason.contains("RunCtx"), "{reason}");
-        assert!(!reason.contains("`` methods"), "{reason}");
+    rigger::test_cases! {
+        a_method_is_classified_under_its_impl_self_type: {
+            let reason = classify_method("summary", "GateRatchet", "conductor::gate_ratchet");
+            assert!(reason.contains("GateRatchet"), "{reason}");
+        };
+        /// Regression: `impl<'a> RunCtx<'a> { ... }` must classify under `run_ctx`, not under an
+        /// empty self-type bucket (the impl's OWN `<'a>` generic list is not the type name).
+        a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics: {
+            let reason = classify_method("for_test", "<'a> RunCtx<'a>", "conductor::run_ctx");
+            assert!(reason.contains("RunCtx"), "{reason}");
+            assert!(!reason.contains("`` methods"), "{reason}");
+        };
     }
 
     #[test]
@@ -7270,12 +7240,9 @@ mod tests {
         assert_eq!(strip_trailing_where_clause("Foo"), "Foo");
     }
 
-    #[test]
-    fn a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait() {
-        let mut f = conductor_fn("spawn");
-        f.enclosing_impl = Some("AgentDriver for Stub".to_string());
-        let (module, _) = classify(&f);
-        assert_eq!(module.as_deref(), Some("conductor::stub"));
+    rigger::test_cases! {
+        a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait:
+            classify_method("spawn", "AgentDriver for Stub", "conductor::stub");
     }
 
     #[test]
@@ -7316,18 +7283,40 @@ mod tests {
         assert_eq!(pluralize(2, "function"), "2 functions");
     }
 
+    /// A non-test `src/conductor.rs` map entry named `name` spanning `lines`, its content hash
+    /// `hash-<name>`.
+    fn conductor_map_entry(
+        name: &str,
+        lines: (usize, usize),
+        proposed_module: Option<&str>,
+        reason: &str,
+    ) -> MapEntry {
+        MapEntry {
+            file: "src/conductor.rs".to_string(),
+            name: name.to_string(),
+            start_line: lines.0,
+            end_line: lines.1,
+            is_test: false,
+            proposed_module: proposed_module.map(str::to_string),
+            reason: reason.to_string(),
+            content_hash: format!("hash-{name}"),
+        }
+    }
+
+    /// Section 1 rendered over `entries`, each citing its own line span.
+    fn render_map(entries: &[MapEntry]) -> String {
+        let lines: Vec<MapEntryLines> = entries.iter().map(map_entry_lines).collect();
+        render_section_1(entries, &lines)
+    }
+
     #[test]
     fn map_to_json_is_byte_identical_across_two_runs_over_the_same_input() {
-        let entries = vec![MapEntry {
-            file: "src/conductor.rs".to_string(),
-            name: "a".to_string(),
-            start_line: 1,
-            end_line: 2,
-            is_test: false,
-            proposed_module: Some("conductor::support".to_string()),
-            reason: "x".to_string(),
-            content_hash: "hash-a".to_string(),
-        }];
+        let entries = vec![conductor_map_entry(
+            "a",
+            (1, 2),
+            Some("conductor::support"),
+            "x",
+        )];
         assert_eq!(
             ledger_json(&entries, map_entry_wire),
             ledger_json(&entries, map_entry_wire)
@@ -7336,30 +7325,10 @@ mod tests {
 
     #[test]
     fn section_1_names_every_module_and_every_unassigned_function() {
-        let entries = vec![
-            MapEntry {
-                file: "src/conductor.rs".to_string(),
-                name: "a".to_string(),
-                start_line: 1,
-                end_line: 2,
-                is_test: false,
-                proposed_module: Some("conductor::support".to_string()),
-                reason: "reason-a".to_string(),
-                content_hash: "hash-a".to_string(),
-            },
-            MapEntry {
-                file: "src/conductor.rs".to_string(),
-                name: "b".to_string(),
-                start_line: 3,
-                end_line: 4,
-                is_test: false,
-                proposed_module: None,
-                reason: "reason-b".to_string(),
-                content_hash: "hash-b".to_string(),
-            },
-        ];
-        let lines: Vec<MapEntryLines> = entries.iter().map(map_entry_lines).collect();
-        let rendered = render_section_1(&entries, &lines);
+        let rendered = render_map(&[
+            conductor_map_entry("a", (1, 2), Some("conductor::support"), "reason-a"),
+            conductor_map_entry("b", (3, 4), None, "reason-b"),
+        ]);
         assert!(rendered.contains("## 1. Responsibility Map"));
         assert!(rendered.contains("conductor::support"));
         assert!(rendered.contains("`a`"));
@@ -7371,18 +7340,12 @@ mod tests {
 
     #[test]
     fn section_1_reports_none_unassigned_explicitly_when_everything_is_assigned() {
-        let entries = vec![MapEntry {
-            file: "src/conductor.rs".to_string(),
-            name: "a".to_string(),
-            start_line: 1,
-            end_line: 2,
-            is_test: false,
-            proposed_module: Some("conductor::support".to_string()),
-            reason: "r".to_string(),
-            content_hash: "hash-a".to_string(),
-        }];
-        let lines: Vec<MapEntryLines> = entries.iter().map(map_entry_lines).collect();
-        let rendered = render_section_1(&entries, &lines);
+        let rendered = render_map(&[conductor_map_entry(
+            "a",
+            (1, 2),
+            Some("conductor::support"),
+            "r",
+        )]);
         assert!(rendered.contains("None - every scanned function"));
     }
 
@@ -7399,13 +7362,30 @@ mod tests {
         assert!(report.contains("_Pending - criterion 4 (`u85c4`)._"));
     }
 
-    #[test]
-    fn replace_section_1_only_touches_section_1_leaving_later_sections_intact() {
-        let existing = "# Title\n\n## 1. Responsibility Map\n\nold body\n\n## 2. Duplication Catalog\n\nfilled in by u85c2\n";
-        let updated = replace_section_1(existing, "## 1. Responsibility Map\n\nnew body\n");
-        assert!(updated.contains("new body"));
-        assert!(!updated.contains("old body"));
-        assert!(updated.contains("filled in by u85c2"));
+    /// A section writer's output `updated` carries every `new` body, none of the `old` ones,
+    /// and every `kept` neighbor byte-for-byte.
+    fn assert_span_replaced(updated: &str, new: &[&str], old: &[&str], kept: &[&str]) {
+        for body in new {
+            assert!(updated.contains(body), "missing new {body:?}");
+        }
+        for body in old {
+            assert!(!updated.contains(body), "kept old {body:?}");
+        }
+        for body in kept {
+            assert!(updated.contains(body), "lost neighbor {body:?}");
+        }
+    }
+
+    rigger::test_cases! {
+        replace_section_1_only_touches_section_1_leaving_later_sections_intact: assert_span_replaced(
+            &replace_section_1(
+                "# Title\n\n## 1. Responsibility Map\n\nold body\n\n## 2. Duplication Catalog\n\nfilled in by u85c2\n",
+                "## 1. Responsibility Map\n\nnew body\n",
+            ),
+            &["new body"],
+            &["old body"],
+            &["filled in by u85c2"],
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -7445,38 +7425,19 @@ mod tests {
         }
     }
 
-    /// THE DRIFT GUARD for `docs/audit/responsibility-map.json`: with `RIGGER_AUDIT_WRITE=1`
-    /// set, regenerate and overwrite it; otherwise regenerate in memory and assert it matches
-    /// the committed file byte-for-byte, so the catalog can never silently drift from the tree
-    /// (spec 85 Design).
-    #[test]
-    fn responsibility_map_json_matches_the_tree_or_is_rewritten() {
-        let root = repo_root();
-        let map = build_map(&root);
-        let json = ledger_json(&map, map_entry_wire);
-        let path = root.join(MAP_PATH);
-        if std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1") {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(&path, &json).unwrap();
-            fs::write(
-                root.join(MAP_LINES_PATH),
-                ledger_json(&map, map_entry_lines),
-            )
-            .unwrap();
-            return;
-        }
-        let committed = fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!(
-                "{MAP_PATH} is missing or unreadable ({e}) - run with RIGGER_AUDIT_WRITE=1 to \
-                 generate it"
-            )
-        });
-        assert_eq!(
-            committed, json,
-            "{MAP_PATH} has drifted from the tree - regenerate with RIGGER_AUDIT_WRITE=1"
-        );
+    rigger::test_cases! {
+        /// THE DRIFT GUARD for `docs/audit/responsibility-map.json`: with `RIGGER_AUDIT_WRITE=1`
+        /// set, regenerate and overwrite it; otherwise regenerate in memory and assert it matches
+        /// the committed file byte-for-byte, so the catalog can never silently drift from the tree
+        /// (spec 85 Design).
+        responsibility_map_json_matches_the_tree_or_is_rewritten:
+            assert_ledger_matches_the_tree_or_rewrite(
+                &build_map(&repo_root()),
+                MAP_PATH,
+                MAP_LINES_PATH,
+                map_entry_wire,
+                map_entry_lines,
+            );
     }
 
     /// Spec 90 criterion 2, CLAIM 1 for `docs/audit/responsibility-map.json`: structurally, no
@@ -7509,37 +7470,25 @@ mod tests {
         }
     }
 
-    /// Spec 90 criterion 2, CLAIM 2 for `docs/audit/responsibility-map.json`: a synthetic
-    /// fixture tree (never the real checked-out one - [`build_map`] requires all three
-    /// [`TARGET_FILES`] to exist, so this writes trivial stand-ins for the two it does not
-    /// exercise) proves a pin bump (5 unrelated comment lines prepended to `src/dash.rs`,
-    /// shifting every entry in it) leaves the guarded map byte-identical, because
-    /// `content_hash` keys on each function's own raw text, never its line number.
-    #[test]
-    fn a_pin_bump_leaves_the_guarded_responsibility_map_byte_identical() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/conductor.rs", "fn one() {}\n");
-        write_fixture(dir.path(), "src/main.rs", "fn two() {}\n");
-        write_fixture(
-            dir.path(),
-            "src/dash.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
-        );
-        let base_json = ledger_json(&build_map(dir.path()), map_entry_wire);
-
-        write_fixture(
-            dir.path(),
-            "src/dash.rs",
-            "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
-             fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
-        );
-        let bumped_json = ledger_json(&build_map(dir.path()), map_entry_wire);
-
-        assert_eq!(
-            base_json, bumped_json,
-            "a pin bump that only shifts every entry's OWN line number must leave the guarded \
-             responsibility map byte-identical (spec 90 criterion 2)"
-        );
+    rigger::test_cases! {
+        /// Spec 90 criterion 2, CLAIM 2 for `docs/audit/responsibility-map.json`: a synthetic
+        /// fixture tree (never the real checked-out one - [`build_map`] requires all three
+        /// [`TARGET_FILES`] to exist, so this writes trivial stand-ins for the two it does not
+        /// exercise) proves a pin bump (5 unrelated comment lines prepended to `src/dash.rs`,
+        /// shifting every entry in it) leaves the guarded map byte-identical, because
+        /// `content_hash` keys on each function's own raw text, never its line number.
+        a_pin_bump_leaves_the_guarded_responsibility_map_byte_identical:
+            assert_a_pin_bump_leaves_the_guarded_json_byte_identical(
+                &[
+                    ("src/conductor.rs", "fn one() {}\n"),
+                    ("src/main.rs", "fn two() {}\n"),
+                    ("src/dash.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
+                ],
+                "src/dash.rs",
+                |root| ledger_json(&build_map(root), map_entry_wire),
+                "a pin bump that only shifts every entry's OWN line number must leave the guarded \
+                 responsibility map byte-identical (spec 90 criterion 2)",
+            );
     }
 
     /// Parses a guarded artifact's bare-array JSON into owned [`serde_json::Value`] elements,
@@ -7552,86 +7501,38 @@ mod tests {
         value.as_array().expect("a bare array").clone()
     }
 
-    /// Spec 90 criterion 2, CLAIM 3 for `docs/audit/responsibility-map.json`, REFRAMED for a
-    /// per-entry artifact - `sdet-lens-u90c2-probe-verified-no-live-defect`'s own empirically-
-    /// verified proposal: CLAIM 3's literal text ("two branches adding tests in different files
-    /// merge it without conflict") does not transfer as byte-identical-across-the-board the way
-    /// it does for the duplication catalog, which lists only DUPLICATE clusters - a genuinely
-    /// new, non-duplicate function correctly ADDS a new array entry here, and that addition is
-    /// not a defect to reject. What carries the merge-safety guarantee for a PER-ENTRY artifact
-    /// is CLAIM 2's own pin-bump property (a pre-existing entry is never perturbed by an
-    /// unrelated edit elsewhere in its file) PLUS this: two branches, each adding one new,
-    /// distinct function to a DIFFERENT target file, leave every pre-existing entry byte-
-    /// identical and each contribute exactly their own one new entry - so a real merge of the
-    /// two branches has nothing to conflict over, even though the guarded file's own byte
-    /// length legitimately changes (unlike the catalog's).
-    #[test]
-    fn two_branches_each_adding_an_unrelated_function_to_a_different_target_file_never_perturb_an_existing_responsibility_map_entry(
-    ) {
-        let base = tempfile::tempdir().expect("base scratch dir");
-        write_fixture(base.path(), "src/conductor.rs", "fn one() {}\n");
-        write_fixture(base.path(), "src/main.rs", "fn two() {}\n");
-        write_fixture(base.path(), "src/dash.rs", "fn three() {}\n");
-        let base_entries =
-            json_array_entries(&ledger_json(&build_map(base.path()), map_entry_wire));
-
-        let branch_a = tempfile::tempdir().expect("branch A scratch dir");
-        write_fixture(
-            branch_a.path(),
-            "src/conductor.rs",
-            "fn one() {}\n\nfn branch_a_only() {\n    let _ = 1;\n}\n",
-        );
-        write_fixture(branch_a.path(), "src/main.rs", "fn two() {}\n");
-        write_fixture(branch_a.path(), "src/dash.rs", "fn three() {}\n");
-        let a_entries =
-            json_array_entries(&ledger_json(&build_map(branch_a.path()), map_entry_wire));
-
-        let branch_b = tempfile::tempdir().expect("branch B scratch dir");
-        write_fixture(branch_b.path(), "src/conductor.rs", "fn one() {}\n");
-        write_fixture(
-            branch_b.path(),
-            "src/main.rs",
-            "fn two() {}\n\nfn branch_b_only() {\n    let _ = 2;\n}\n",
-        );
-        write_fixture(branch_b.path(), "src/dash.rs", "fn three() {}\n");
-        let b_entries =
-            json_array_entries(&ledger_json(&build_map(branch_b.path()), map_entry_wire));
-
-        assert_eq!(
-            a_entries.len(),
-            base_entries.len() + 1,
-            "branch A must contribute exactly one new entry"
-        );
-        assert_eq!(
-            b_entries.len(),
-            base_entries.len() + 1,
-            "branch B must contribute exactly one new entry"
-        );
-        for entry in &base_entries {
-            assert!(
-                a_entries.contains(entry),
-                "branch A perturbed or dropped a pre-existing entry {entry}"
+    rigger::test_cases! {
+        /// Spec 90 criterion 2, CLAIM 3 for `docs/audit/responsibility-map.json`, REFRAMED for a
+        /// per-entry artifact - `sdet-lens-u90c2-probe-verified-no-live-defect`'s own empirically-
+        /// verified proposal: CLAIM 3's literal text ("two branches adding tests in different files
+        /// merge it without conflict") does not transfer as byte-identical-across-the-board the way
+        /// it does for the duplication catalog, which lists only DUPLICATE clusters - a genuinely
+        /// new, non-duplicate function correctly ADDS a new array entry here, and that addition is
+        /// not a defect to reject. What carries the merge-safety guarantee for a PER-ENTRY artifact
+        /// is CLAIM 2's own pin-bump property (a pre-existing entry is never perturbed by an
+        /// unrelated edit elsewhere in its file) PLUS this: two branches, each adding one new,
+        /// distinct function to a DIFFERENT target file, leave every pre-existing entry byte-
+        /// identical and each contribute exactly their own one new entry - so a real merge of the
+        /// two branches has nothing to conflict over, even though the guarded file's own byte
+        /// length legitimately changes (unlike the catalog's).
+        two_branches_each_adding_an_unrelated_function_to_a_different_target_file_never_perturb_an_existing_responsibility_map_entry:
+            assert_two_branches_never_perturb_an_existing_entry(
+                &[
+                    ("src/conductor.rs", "fn one() {}\n"),
+                    ("src/main.rs", "fn two() {}\n"),
+                    ("src/dash.rs", "fn three() {}\n"),
+                ],
+                (
+                    "src/conductor.rs",
+                    "fn one() {}\n\nfn branch_a_only() {\n    let _ = 1;\n}\n",
+                ),
+                (
+                    "src/main.rs",
+                    "fn two() {}\n\nfn branch_b_only() {\n    let _ = 2;\n}\n",
+                ),
+                |root| ledger_json(&build_map(root), map_entry_wire),
+                ("entry", "entries"),
             );
-            assert!(
-                b_entries.contains(entry),
-                "branch B perturbed or dropped a pre-existing entry {entry}"
-            );
-        }
-        let a_new: Vec<&serde_json::Value> = a_entries
-            .iter()
-            .filter(|e| !base_entries.contains(e))
-            .collect();
-        let b_new: Vec<&serde_json::Value> = b_entries
-            .iter()
-            .filter(|e| !base_entries.contains(e))
-            .collect();
-        assert_eq!(a_new.len(), 1, "branch A's own new entry: {a_new:?}");
-        assert_eq!(b_new.len(), 1, "branch B's own new entry: {b_new:?}");
-        assert_ne!(
-            a_new[0], b_new[0],
-            "the two branches' new entries must be distinct - nothing for a real merge to \
-             conflict over"
-        );
     }
 
     /// Spec 90 Design, verbatim: "the report's guard checks structure only (sections present,
@@ -7700,28 +7601,34 @@ mod tests {
     fn report_section_1_matches_the_tree_or_is_rewritten() {
         let root = repo_root();
         let map = build_map(&root);
-        let lines: Vec<MapEntryLines> = map.iter().map(map_entry_lines).collect();
-        let section_1 = render_section_1(&map, &lines);
+        let section_1 = render_map(&map);
         let path = root.join(REPORT_PATH);
-        let write = std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1");
-        if write {
+        if audit_write_mode() {
             let _guard = lock_report_write();
-            let existing = fs::read_to_string(&path).ok();
-            let updated = match &existing {
-                Some(text) => replace_section_1(text, &section_1),
-                None => assemble_fresh_report(&section_1),
+            let updated = match fs::read_to_string(&path) {
+                Ok(text) => replace_section_1(&text, &section_1),
+                Err(_) => assemble_fresh_report(&section_1),
             };
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(&path, updated).unwrap();
+            write_creating_parent(&path, &updated);
             return;
         }
-        let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
-        });
+        let committed = committed_report(&path);
         let span = section_span(&committed, "## 1. ");
         assert_section_1_structurally_matches(&committed[span], &map);
+    }
+
+    /// The report as it stands at `path`, or - absent one - a fresh report around the tree's
+    /// own section 1 (the base every later section's writer patches its own span into).
+    fn report_or_fresh(root: &Path, path: &Path) -> String {
+        fs::read_to_string(path)
+            .unwrap_or_else(|_| assemble_fresh_report(&render_map(&build_map(root))))
+    }
+
+    /// The committed report at `path`, which every drift guard's check mode requires.
+    fn committed_report(path: &Path) -> String {
+        fs::read_to_string(path).unwrap_or_else(|_| {
+            panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
+        })
     }
 
     /// The structural report guard's own pin-bump proof for section 1 (mirrors
@@ -7733,25 +7640,17 @@ mod tests {
     #[test]
     fn a_pin_bump_leaves_the_rendered_report_section_1_structurally_unchanged() {
         let before = vec![MapEntry {
-            file: "src/conductor.rs".to_string(),
-            name: "add_one".to_string(),
-            start_line: 1,
-            end_line: 3,
-            is_test: false,
-            proposed_module: Some("conductor::support".to_string()),
-            reason: "reason-a".to_string(),
             content_hash: "hash-a".to_string(),
+            ..conductor_map_entry("add_one", (1, 3), Some("conductor::support"), "reason-a")
         }];
-        let before_lines: Vec<MapEntryLines> = before.iter().map(map_entry_lines).collect();
-        let before_rendered = render_section_1(&before, &before_lines);
+        let before_rendered = render_map(&before);
 
         let after = vec![MapEntry {
             start_line: 6,
             end_line: 8,
             ..before[0].clone()
         }];
-        let after_lines: Vec<MapEntryLines> = after.iter().map(map_entry_lines).collect();
-        let after_rendered = render_section_1(&after, &after_lines);
+        let after_rendered = render_map(&after);
 
         assert_section_1_structurally_matches(&before_rendered, &before);
         assert_section_1_structurally_matches(&after_rendered, &after);
@@ -7998,6 +7897,148 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
+    /// A fresh scratch fixture tree holding `files` (`(relative path, content)` pairs).
+    fn fixture_tree(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        for (rel, content) in files {
+            write_fixture(dir.path(), rel, content);
+        }
+        dir
+    }
+
+    /// `read` over a fixture tree holding `files`.
+    fn on_fixture<T>(read: impl FnOnce(&Path) -> T, files: &[(&str, &str)]) -> T {
+        read(fixture_tree(files).path())
+    }
+
+    /// `files` with the entry at `edit.0` replaced by `edit.1`'s content.
+    fn with_file<'a>(
+        files: &[(&'a str, &'a str)],
+        edit: (&'a str, &'a str),
+    ) -> Vec<(&'a str, &'a str)> {
+        files
+            .iter()
+            .map(|&(rel, content)| if rel == edit.0 { edit } else { (rel, content) })
+            .collect()
+    }
+
+    /// `RIGGER_AUDIT_WRITE=1`: every drift guard regenerates its artifact instead of checking it.
+    fn audit_write_mode() -> bool {
+        std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1")
+    }
+
+    /// Write `contents` to `path`, creating its parent directory first.
+    fn write_creating_parent(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    /// One guarded ledger's drift guard: in [`audit_write_mode`], regenerate `guarded` (the
+    /// line-free wire JSON of `items`) and its unguarded `lines` sibling; otherwise the committed
+    /// `guarded` file must equal the tree's render byte-for-byte. The `lines` sibling is never
+    /// read back (spec 90 criterion 2 Design: "the guard NEVER compares").
+    fn assert_ledger_matches_the_tree_or_rewrite<T, W: Serialize, L: Serialize>(
+        items: &[T],
+        guarded: &str,
+        lines: &str,
+        to_wire: impl Fn(&T) -> W,
+        to_lines: impl Fn(&T) -> L,
+    ) {
+        let root = repo_root();
+        let json = ledger_json(items, to_wire);
+        let path = root.join(guarded);
+        if audit_write_mode() {
+            write_creating_parent(&path, &json);
+            fs::write(root.join(lines), ledger_json(items, to_lines)).unwrap();
+            return;
+        }
+        let committed = fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "{guarded} is missing or unreadable ({e}) - run with RIGGER_AUDIT_WRITE=1 to \
+                 generate it"
+            )
+        });
+        assert_eq!(
+            committed, json,
+            "{guarded} has drifted from the tree - regenerate with RIGGER_AUDIT_WRITE=1"
+        );
+    }
+
+    /// Five unrelated comment lines a pin bump prepends to a file.
+    const PIN_BUMP: &str = "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n";
+
+    /// Spec 90 criterion 2, CLAIM 2: over the `base` fixture tree, a pin bump of the file at
+    /// `bumped` (shifting every line in it) leaves `render`'s guarded JSON byte-identical.
+    fn assert_a_pin_bump_leaves_the_guarded_json_byte_identical(
+        base: &[(&str, &str)],
+        bumped: &str,
+        render: impl Fn(&Path) -> String,
+        message: &str,
+    ) {
+        let dir = fixture_tree(base);
+        let base_json = render(dir.path());
+        let (_, content) = base.iter().find(|(rel, _)| *rel == bumped).unwrap();
+        write_fixture(dir.path(), bumped, &format!("{PIN_BUMP}{content}"));
+        assert_eq!(base_json, render(dir.path()), "{message}");
+    }
+
+    /// Spec 90 criterion 2, CLAIM 3 for a per-entry artifact: two branches of the `base`
+    /// fixture tree, each replacing one DIFFERENT file (`branch_a`, `branch_b`) to add one
+    /// unrelated function, keep every pre-existing entry of `render`'s JSON array byte-identical
+    /// and each contribute exactly one new, distinct entry - nothing for a real merge to
+    /// conflict over. `(noun, nouns)` names an entry in the failure messages.
+    fn assert_two_branches_never_perturb_an_existing_entry(
+        base: &[(&str, &str)],
+        branch_a: (&str, &str),
+        branch_b: (&str, &str),
+        render: impl Fn(&Path) -> String,
+        (noun, nouns): (&str, &str),
+    ) {
+        let entries_of =
+            |files: &[(&str, &str)]| json_array_entries(&render(fixture_tree(files).path()));
+        let base_entries = entries_of(base);
+        let a_entries = entries_of(&with_file(base, branch_a));
+        let b_entries = entries_of(&with_file(base, branch_b));
+
+        assert_eq!(
+            a_entries.len(),
+            base_entries.len() + 1,
+            "branch A must contribute exactly one new {noun}"
+        );
+        assert_eq!(
+            b_entries.len(),
+            base_entries.len() + 1,
+            "branch B must contribute exactly one new {noun}"
+        );
+        for entry in &base_entries {
+            assert!(
+                a_entries.contains(entry),
+                "branch A perturbed or dropped a pre-existing {noun} {entry}"
+            );
+            assert!(
+                b_entries.contains(entry),
+                "branch B perturbed or dropped a pre-existing {noun} {entry}"
+            );
+        }
+        let a_new: Vec<&serde_json::Value> = a_entries
+            .iter()
+            .filter(|e| !base_entries.contains(e))
+            .collect();
+        let b_new: Vec<&serde_json::Value> = b_entries
+            .iter()
+            .filter(|e| !base_entries.contains(e))
+            .collect();
+        assert_eq!(a_new.len(), 1, "branch A's own new {noun}: {a_new:?}");
+        assert_eq!(b_new.len(), 1, "branch B's own new {noun}: {b_new:?}");
+        assert_ne!(
+            a_new[0], b_new[0],
+            "the two branches' new {nouns} must be distinct - nothing for a real merge to \
+             conflict over"
+        );
+    }
+
     #[test]
     fn scan_tree_finds_functions_under_both_src_and_tests_but_not_elsewhere() {
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
@@ -8131,26 +8172,23 @@ mod tests {
 
     #[test]
     fn three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
         // Same overall shape (read a /proc file, grab a field after the comm's closing paren)
         // but each extracts a DIFFERENT field - near, not exact (spec 78's dash.rs/reap.rs
         // /proc-stat class this catalog's mandatory sweep also names explicitly).
-        write_fixture(
-            dir.path(),
-            "src/one.rs",
-            "fn state_of(pid: u32) -> Option<char> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/two.rs",
-            "fn starttime_of(pid: u32) -> Option<u64> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/three.rs",
-            "fn ppid_of(pid: u32) -> Option<u32> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[
+            (
+                "src/one.rs",
+                "fn state_of(pid: u32) -> Option<char> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\n}\n",
+            ),
+            (
+                "src/two.rs",
+                "fn starttime_of(pid: u32) -> Option<u64> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\n}\n",
+            ),
+            (
+                "src/three.rs",
+                "fn ppid_of(pid: u32) -> Option<u32> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\n}\n",
+            ),
+        ]);
         let clusters = clusters_for(&files);
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].sites.len(), 3);
@@ -8160,18 +8198,13 @@ mod tests {
 
     #[test]
     fn cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/z.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/z.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
+                ("src/a.rs", "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n"),
+            ],
         );
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let files = scan_tree(dir.path());
         let clusters = clusters_for(&files);
         assert_eq!(clusters.len(), 1);
         // src/a.rs sorts before src/z.rs regardless of scan/write order.
@@ -8181,14 +8214,10 @@ mod tests {
 
     #[test]
     fn same_impl_block_duplicate_methods_propose_that_types_home() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
+        let clusters = clusters_for(&on_fixture(scan_tree, &[(
             "src/w.rs",
             "impl Widget {\n    fn add_one(n: u32) -> u32 {\n        n + 1\n    }\n    fn plus_one(m: u32) -> u32 {\n        m + 1\n    }\n}\n",
-        );
-        let files = scan_tree(dir.path());
-        let clusters = clusters_for(&files);
+        )]));
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].proposed_home, "w::widget");
     }
@@ -8199,13 +8228,13 @@ mod tests {
 
     #[test]
     fn command_new_sweep_finds_a_call_site_and_names_it() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn run() {\n    let _ = std::process::Command::new(\"true\").status();\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[(
+                "src/a.rs",
+                "fn run() {\n    let _ = std::process::Command::new(\"true\").status();\n}\n",
+            )],
         );
-        let files = scan_tree(dir.path());
         let hits = find_ident_path_call_sites(&files, "Command", &["new"]);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "Command::new");
@@ -8307,15 +8336,11 @@ mod tests {
 
     #[test]
     fn error_shaping_sweep_requires_both_the_name_shape_and_a_format_call() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
+        let files = on_fixture(scan_tree, &[(
             "src/a.rs",
             "fn shape_error(e: &str) -> String {\n    format!(\"error: {}\", e)\n}\nfn is_err_only(x: &Result<(), ()>) -> bool {\n    x.is_err()\n}\n",
-        );
-        let files = scan_tree(dir.path());
-        let refs = all_fn_refs(&files);
-        let hits = find_error_shaping_fns(&files, &refs);
+        )]);
+        let hits = find_error_shaping_fns(&files, &all_fn_refs(&files));
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "shape_error");
     }
@@ -8336,20 +8361,36 @@ mod tests {
         }
     }
 
-    #[test]
-    fn proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn(
+    /// Over the `files` fixture tree, `sweep` finds exactly the functions named `expected`.
+    fn assert_sweep_finds(
+        files: &[(&str, &str)],
+        sweep: fn(&[FileScan], &[FnRef]) -> Vec<DupSite>,
+        expected: &[&str],
     ) {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn state_of(pid: u32) -> Option<char> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    s.chars().next()\n}\nfn ppid_of(pid: u32) -> Option<u32> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/status\")).ok()?;\n    s.parse().ok()\n}\nfn unrelated() -> u32 {\n    1\n}\n",
-        );
-        let files = scan_tree(dir.path());
-        let refs = all_fn_refs(&files);
-        let hits = find_proc_stat_or_status_readers(&files, &refs);
+        let scanned = on_fixture(scan_tree, files);
+        let hits = sweep(&scanned, &all_fn_refs(&scanned));
         let names: HashSet<&str> = hits.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, HashSet::from(["state_of", "ppid_of"]));
+        assert_eq!(names, expected.iter().copied().collect::<HashSet<&str>>());
+    }
+
+    rigger::test_cases! {
+        proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn:
+            assert_sweep_finds(
+            &[(
+                "src/a.rs",
+                "fn state_of(pid: u32) -> Option<char> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    s.chars().next()\n}\nfn ppid_of(pid: u32) -> Option<u32> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/status\")).ok()?;\n    s.parse().ok()\n}\nfn unrelated() -> u32 {\n    1\n}\n",
+            )],
+            find_proc_stat_or_status_readers,
+            &["state_of", "ppid_of"],
+        );
+    }
+
+    /// The real catalog's cluster holding a site named `name`.
+    fn real_cluster_hosting(name: &str) -> &'static DupCluster {
+        real_catalog()
+            .iter()
+            .find(|c| c.sites.iter().any(|s| s.name == name))
+            .unwrap_or_else(|| panic!("{name} is findable in the real catalog"))
     }
 
     /// THE WORKED EXAMPLE (spec 85 Goal): on the real tree, `dash.rs::process_state` and
@@ -8358,11 +8399,7 @@ mod tests {
     /// exactly why this hand-found sweep exists.
     #[test]
     fn the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster() {
-        let clusters = real_catalog();
-        let hosting = clusters
-            .iter()
-            .find(|c| c.sites.iter().any(|s| s.name == "process_state"))
-            .expect("process_state is findable in the real catalog");
+        let hosting = real_cluster_hosting("process_state");
         let names: Vec<&str> = hosting.sites.iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"pid_starttime"),
@@ -8372,25 +8409,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call() {
-        let toks = tok("fn ok() -> Self { Self { a: 1, b: 2 } }");
-        assert!(constructs_own_type_literal(&toks, "Widget"));
-        let toks2 = tok("fn ok() -> Widget { Widget { a: 1 } }");
-        assert!(constructs_own_type_literal(&toks2, "Widget"));
-        let toks3 = tok("fn ok() -> Widget { other_fn(1, 2) }");
-        assert!(!constructs_own_type_literal(&toks3, "Widget"));
+    /// Each `(src, expected)` case: whether `src` constructs its own `Widget` literal.
+    fn assert_constructs_own_widget_literal(cases: &[(&str, bool)]) {
+        for (src, expected) in cases {
+            assert_eq!(
+                constructs_own_type_literal(&tok(src), "Widget"),
+                *expected,
+                "{src}"
+            );
+        }
     }
 
-    #[test]
-    fn constructs_own_type_literal_matches_shorthand_field_init_too() {
-        // `Self { a, b: 0 }` - the first field is SHORTHAND (no `:`), a real shape
-        // (`SpawnResult`'s own constructors use it) the `:`-only check would miss.
-        let toks = tok("fn ok(a: u32) -> Self { Self { a, b: 0 } }");
-        assert!(constructs_own_type_literal(&toks, "Widget"));
-        // A single-field shorthand literal (`{ a }`) still closes on `}`, not `:`/`,`.
-        let toks2 = tok("fn ok(a: u32) -> Self { Self { a } }");
-        assert!(constructs_own_type_literal(&toks2, "Widget"));
+    rigger::test_cases! {
+        constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call:
+            assert_constructs_own_widget_literal(&[
+            ("fn ok() -> Self { Self { a: 1, b: 2 } }", true),
+            ("fn ok() -> Widget { Widget { a: 1 } }", true),
+            ("fn ok() -> Widget { other_fn(1, 2) }", false),
+        ]);
+        /// `Self { a, b: 0 }` - the first field is SHORTHAND (no `:`), a real shape
+        /// (`SpawnResult`'s own constructors use it) the `:`-only check would miss; and a
+        /// single-field shorthand literal (`{ a }`) still closes on `}`, not `:`/`,`.
+        constructs_own_type_literal_matches_shorthand_field_init_too:
+            assert_constructs_own_widget_literal(&[
+            ("fn ok(a: u32) -> Self { Self { a, b: 0 } }", true),
+            ("fn ok(a: u32) -> Self { Self { a } }", true),
+        ]);
     }
 
     #[test]
@@ -8476,11 +8520,7 @@ mod tests {
     #[test]
     fn the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster(
     ) {
-        let clusters = real_catalog();
-        let hosting = clusters
-            .iter()
-            .find(|c| c.sites.iter().any(|s| s.name == "exploration_graph"))
-            .expect("exploration_graph is findable in the real catalog");
+        let hosting = real_cluster_hosting("exploration_graph");
         let files: HashSet<&str> = hosting.sites.iter().map(|s| s.file.as_str()).collect();
         assert!(
             files.contains("tests/dash_exploration_route_client_contract.rs")
@@ -8491,66 +8531,65 @@ mod tests {
         );
     }
 
-    #[test]
-    fn same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters() {
-        // Three concrete adapters implementing the SAME trait method - required by the trait
-        // contract, not a coincidental duplicate (the adjudicator-upheld precision defect:
-        // `subscribe_all`/`subscribe_stream` across the `EventStore` trait's backend adapters).
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "impl MyPort for AdapterOne {\n    fn do_the_shared_thing(&self) -> u32 {\n        1\n    }\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/b.rs",
-            "impl MyPort for AdapterTwo {\n    fn do_the_shared_thing(&self) -> u32 {\n        2\n    }\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/c.rs",
-            "impl MyPort for AdapterThree {\n    fn do_the_shared_thing(&self) -> u32 {\n        3\n    }\n}\n",
-        );
-        let files = scan_tree(dir.path());
-        let refs = all_fn_refs(&files);
-        let clusters = find_same_named_helper_functions(&files, &refs);
+    /// The same-named-helper sweep's clusters over the `files` fixture tree.
+    fn same_named_helper_clusters(files: &[(&str, &str)]) -> Vec<DupCluster> {
+        let scanned = on_fixture(scan_tree, files);
+        find_same_named_helper_functions(&scanned, &all_fn_refs(&scanned))
+    }
+
+    /// Over the `files` fixture tree, the same-named-helper sweep flags nothing; `why` says
+    /// which trait-required shape it must not flag.
+    fn assert_no_same_named_helper_cluster(files: &[(&str, &str)], why: &str) {
+        let clusters = same_named_helper_clusters(files);
         assert!(
             clusters.is_empty(),
-            "required trait-impl methods across 2+ adapters must not be flagged as \
-             same-named-helper duplication: {clusters:?}"
+            "{why} must not be flagged as same-named-helper duplication: {clusters:?}"
         );
     }
 
-    #[test]
-    fn same_named_helper_sweep_excludes_a_trait_default_method_and_its_override() {
-        // A trait's own DEFAULT method (`enclosing_impl` is `None`) next to a concrete override
-        // and a test double - the adjudicator-upheld precision defect's other committed shape
-        // (`blast_radius` across the `Grounder` trait's default, the symbols grounder's
-        // override, and a test double).
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "trait MyPort {\n    fn compute_the_radius(&self) -> u32 {\n        1\n    }\n}\n",
+    rigger::test_cases! {
+        /// Three concrete adapters implementing the SAME trait method - required by the trait
+        /// contract, not a coincidental duplicate (the adjudicator-upheld precision defect:
+        /// `subscribe_all`/`subscribe_stream` across the `EventStore` trait's backend adapters).
+        same_named_helper_sweep_excludes_required_trait_impl_methods_across_adapters:
+            assert_no_same_named_helper_cluster(
+            &[
+                (
+                    "src/a.rs",
+                    "impl MyPort for AdapterOne {\n    fn do_the_shared_thing(&self) -> u32 {\n        1\n    }\n}\n",
+                ),
+                (
+                    "src/b.rs",
+                    "impl MyPort for AdapterTwo {\n    fn do_the_shared_thing(&self) -> u32 {\n        2\n    }\n}\n",
+                ),
+                (
+                    "src/c.rs",
+                    "impl MyPort for AdapterThree {\n    fn do_the_shared_thing(&self) -> u32 {\n        3\n    }\n}\n",
+                ),
+            ],
+            "required trait-impl methods across 2+ adapters",
         );
-        write_fixture(
-            dir.path(),
-            "src/b.rs",
-            "impl MyPort for RealAdapter {\n    fn compute_the_radius(&self) -> u32 {\n        2\n    }\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "tests/mock.rs",
-            "impl MyPort for MockAdapter {\n    fn compute_the_radius(&self) -> u32 {\n        3\n    }\n}\n",
-        );
-        let files = scan_tree(dir.path());
-        let refs = all_fn_refs(&files);
-        let clusters = find_same_named_helper_functions(&files, &refs);
-        assert!(
-            clusters.is_empty(),
-            "a trait's default method next to its override(s) must not be flagged as \
-             same-named-helper duplication: {clusters:?}"
+        /// A trait's own DEFAULT method (`enclosing_impl` is `None`) next to a concrete override
+        /// and a test double - the adjudicator-upheld precision defect's other committed shape
+        /// (`blast_radius` across the `Grounder` trait's default, the symbols grounder's
+        /// override, and a test double).
+        same_named_helper_sweep_excludes_a_trait_default_method_and_its_override:
+            assert_no_same_named_helper_cluster(
+            &[
+                (
+                    "src/a.rs",
+                    "trait MyPort {\n    fn compute_the_radius(&self) -> u32 {\n        1\n    }\n}\n",
+                ),
+                (
+                    "src/b.rs",
+                    "impl MyPort for RealAdapter {\n    fn compute_the_radius(&self) -> u32 {\n        2\n    }\n}\n",
+                ),
+                (
+                    "tests/mock.rs",
+                    "impl MyPort for MockAdapter {\n    fn compute_the_radius(&self) -> u32 {\n        3\n    }\n}\n",
+                ),
+            ],
+            "a trait's default method next to its override(s)",
         );
     }
 
@@ -8560,20 +8599,16 @@ mod tests {
         // share a long method name are still a real coincidental duplicate - the exclusion above
         // must not blanket-suppress every impl-method same-name hit, only the trait-required
         // shape.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "impl Widget {\n    fn compute_the_layout(&self) -> u32 {\n        1\n    }\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/b.rs",
-            "impl Gadget {\n    fn compute_the_layout(&self) -> u32 {\n        2\n    }\n}\n",
-        );
-        let files = scan_tree(dir.path());
-        let refs = all_fn_refs(&files);
-        let clusters = find_same_named_helper_functions(&files, &refs);
+        let clusters = same_named_helper_clusters(&[
+            (
+                "src/a.rs",
+                "impl Widget {\n    fn compute_the_layout(&self) -> u32 {\n        1\n    }\n}\n",
+            ),
+            (
+                "src/b.rs",
+                "impl Gadget {\n    fn compute_the_layout(&self) -> u32 {\n        2\n    }\n}\n",
+            ),
+        ]);
         assert_eq!(
             clusters.len(),
             1,
@@ -8601,24 +8636,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "tests/simplification_audit.rs",
-            "fn scan_file() {}\nfn tokenize() {}\nfn unrelated() {}\n",
+    rigger::test_cases! {
+        bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn: assert_sweep_finds(
+            &[
+                (
+                    "tests/simplification_audit.rs",
+                    "fn scan_file() {}\nfn tokenize() {}\nfn unrelated() {}\n",
+                ),
+                ("src/grounder/symbols/extract.rs", "pub fn extract() {}\n"),
+            ],
+            find_bespoke_lexer_vs_canonical_extractor,
+            &["scan_file", "tokenize", "extract"],
         );
-        write_fixture(
-            dir.path(),
-            "src/grounder/symbols/extract.rs",
-            "pub fn extract() {}\n",
-        );
-        let files = scan_tree(dir.path());
-        let refs = all_fn_refs(&files);
-        let hits = find_bespoke_lexer_vs_canonical_extractor(&files, &refs);
-        let names: HashSet<&str> = hits.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, HashSet::from(["scan_file", "tokenize", "extract"]));
     }
 
     rigger::test_cases! {
@@ -8848,14 +8877,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn replace_section_2_only_touches_section_2_leaving_neighbors_intact() {
-        let existing = "# Title\n\n## 1. Responsibility Map\n\nsection one body\n\n## 2. Duplication Catalog\n\nold placeholder\n\n## 3. Boundary Violations\n\nsection three body\n";
-        let updated = replace_section_2(existing, "## 2. Duplication Catalog\n\nnew body\n");
-        assert!(updated.contains("new body"));
-        assert!(!updated.contains("old placeholder"));
-        assert!(updated.contains("section one body"));
-        assert!(updated.contains("section three body"));
+    rigger::test_cases! {
+        replace_section_2_only_touches_section_2_leaving_neighbors_intact: assert_span_replaced(
+            &replace_section_2(
+                "# Title\n\n## 1. Responsibility Map\n\nsection one body\n\n## 2. Duplication Catalog\n\nold placeholder\n\n## 3. Boundary Violations\n\nsection three body\n",
+                "## 2. Duplication Catalog\n\nnew body\n",
+            ),
+            &["new body"],
+            &["old placeholder"],
+            &["section one body", "section three body"],
+        );
     }
 
     /// `replace` over a document with no section headings at all panics (each caller pins
@@ -8995,41 +9026,22 @@ mod tests {
         }
     }
 
-    /// THE DRIFT GUARD for `docs/audit/duplication-catalog.json`: with `RIGGER_AUDIT_WRITE=1`
-    /// set, regenerate and overwrite it (and, spec 90 criterion 2, its unguarded
-    /// `.lines.json` sibling alongside it); otherwise regenerate in memory and assert the
-    /// GUARDED file matches the committed bytes byte-for-byte (spec 85 Design) - mirrors
-    /// `responsibility_map_json_matches_the_tree_or_is_rewritten` exactly. The `.lines.json`
-    /// sibling is deliberately NEVER read back or compared here (spec 90 criterion 2 Design:
-    /// "the guard NEVER compares") - it is write-mode-only output.
-    #[test]
-    fn duplication_catalog_json_matches_the_tree_or_is_rewritten() {
-        let root = repo_root();
-        let clusters = real_catalog();
-        let json = ledger_json(clusters, dup_cluster_wire);
-        let path = root.join(CATALOG_PATH);
-        if std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1") {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(&path, &json).unwrap();
-            fs::write(
-                root.join(CATALOG_LINES_PATH),
-                ledger_json(clusters, dup_cluster_lines),
-            )
-            .unwrap();
-            return;
-        }
-        let committed = fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!(
-                "{CATALOG_PATH} is missing or unreadable ({e}) - run with RIGGER_AUDIT_WRITE=1 \
-                 to generate it"
-            )
-        });
-        assert_eq!(
-            committed, json,
-            "{CATALOG_PATH} has drifted from the tree - regenerate with RIGGER_AUDIT_WRITE=1"
-        );
+    rigger::test_cases! {
+        /// THE DRIFT GUARD for `docs/audit/duplication-catalog.json`: with `RIGGER_AUDIT_WRITE=1`
+        /// set, regenerate and overwrite it (and, spec 90 criterion 2, its unguarded
+        /// `.lines.json` sibling alongside it); otherwise regenerate in memory and assert the
+        /// GUARDED file matches the committed bytes byte-for-byte (spec 85 Design) - mirrors
+        /// `responsibility_map_json_matches_the_tree_or_is_rewritten` exactly. The `.lines.json`
+        /// sibling is deliberately NEVER read back or compared here (spec 90 criterion 2 Design:
+        /// "the guard NEVER compares") - it is write-mode-only output.
+        duplication_catalog_json_matches_the_tree_or_is_rewritten:
+            assert_ledger_matches_the_tree_or_rewrite(
+                real_catalog(),
+                CATALOG_PATH,
+                CATALOG_LINES_PATH,
+                dup_cluster_wire,
+                dup_cluster_lines,
+            );
     }
 
     // -------------------------------------------------------------------------------------
@@ -9072,41 +9084,22 @@ mod tests {
         }
     }
 
-    /// CLAIM 2: "a pin bump that shifts every site in a file leaves it byte-identical." A
-    /// synthetic two-file fixture (the same renamed-identical-pair shape
-    /// `build_catalog_orders_clusters_by_their_first_site` uses, so the fixture
-    /// forms a real 2-site cluster), then a "pin bump" - 5 unrelated comment lines prepended to
-    /// ONE file, shifting `add_one`'s own line span by 5 but leaving its text untouched -
-    /// regenerates a byte-IDENTICAL guarded catalog, because content_hash keys on the span's own
-    /// normalized tokens, never its line number.
-    #[test]
-    fn a_pin_bump_that_shifts_every_site_in_a_file_leaves_the_guarded_catalog_byte_identical() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/z.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let base_json = ledger_json(&build_catalog(&scan_tree(dir.path())), dup_cluster_wire);
-
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
-             fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
-        );
-        let bumped_json = ledger_json(&build_catalog(&scan_tree(dir.path())), dup_cluster_wire);
-
-        assert_eq!(
-            base_json, bumped_json,
-            "a pin bump that only shifts an existing site's OWN line number must leave the \
-             guarded catalog byte-identical (spec 90 criterion 2)"
-        );
+    rigger::test_cases! {
+        /// CLAIM 2: "a pin bump that shifts every site in a file leaves it byte-identical." A
+        /// synthetic two-file fixture (the same renamed-identical-pair shape
+        /// `build_catalog_orders_clusters_by_their_first_site` uses, so the fixture
+        /// forms a real 2-site cluster), then a "pin bump" - 5 unrelated comment lines prepended to
+        /// ONE file, shifting `add_one`'s own line span by 5 but leaving its text untouched -
+        /// regenerates a byte-IDENTICAL guarded catalog, because content_hash keys on the span's own
+        /// normalized tokens, never its line number.
+        a_pin_bump_that_shifts_every_site_in_a_file_leaves_the_guarded_catalog_byte_identical:
+            assert_a_pin_bump_leaves_the_guarded_json_byte_identical(
+                &[("src/a.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"), ("src/z.rs", "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n")],
+                "src/a.rs",
+                |root| ledger_json(&build_catalog(&scan_tree(root)), dup_cluster_wire),
+                "a pin bump that only shifts an existing site's OWN line number must leave the \
+                 guarded catalog byte-identical (spec 90 criterion 2)",
+            );
     }
 
     /// CLAIM 3: "two branches adding tests in different files merge it without conflict." Two
@@ -9365,29 +9358,13 @@ mod tests {
         let lines: Vec<DupClusterLines> = clusters.iter().map(dup_cluster_lines).collect();
         let section_2 = render_section_2(real_files(), clusters, &lines);
         let path = root.join(REPORT_PATH);
-        let write = std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1");
-        if write {
+        if audit_write_mode() {
             let _guard = lock_report_write();
-            let existing = fs::read_to_string(&path).ok();
-            let base = match existing {
-                Some(text) => text,
-                None => {
-                    let map = build_map(&root);
-                    let map_lines: Vec<MapEntryLines> = map.iter().map(map_entry_lines).collect();
-                    let section_1 = render_section_1(&map, &map_lines);
-                    assemble_fresh_report(&section_1)
-                }
-            };
-            let updated = replace_section_2(&base, &section_2);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(&path, updated).unwrap();
+            let updated = replace_section_2(&report_or_fresh(&root, &path), &section_2);
+            write_creating_parent(&path, &updated);
             return;
         }
-        let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
-        });
+        let committed = committed_report(&path);
         let span = section_span(&committed, "## 2. ");
         assert_section_2_structurally_matches(&committed[span], clusters);
     }
@@ -9397,51 +9374,45 @@ mod tests {
     // vestigial code, test-suite shape)
     // =====================================================================================
 
-    #[test]
-    fn replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact() {
-        let existing = "# Title\n\n\
-             ## 1. Responsibility Map\n\nsection one body\n\n\
-             ## 2. Duplication Catalog\n\nsection two body\n\n\
-             ## 3. Boundary Violations\n\nold section three\n\n\
-             ## 4. Dead and Vestigial Code\n\nold section four\n\n\
-             ## 5. Test-Suite Shape\n\nold section five\n\n\
-             ## 6. Prioritized Plan\n\n_Pending - criterion 4 (`u85c4`)._\n";
-        let updated = replace_section_3_to_5(
-            existing,
-            "## 3. Boundary Violations\n\nnew section three\n",
-            "## 4. Dead and Vestigial Code\n\nnew section four\n",
-            "## 5. Test-Suite Shape\n\nnew section five\n",
+    rigger::test_cases! {
+        /// Sections 1, 2 and 6 (this criterion's neighbors) survive byte-for-byte.
+        replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact: assert_span_replaced(
+            &replace_section_3_to_5(
+                "# Title\n\n\
+                 ## 1. Responsibility Map\n\nsection one body\n\n\
+                 ## 2. Duplication Catalog\n\nsection two body\n\n\
+                 ## 3. Boundary Violations\n\nold section three\n\n\
+                 ## 4. Dead and Vestigial Code\n\nold section four\n\n\
+                 ## 5. Test-Suite Shape\n\nold section five\n\n\
+                 ## 6. Prioritized Plan\n\n_Pending - criterion 4 (`u85c4`)._\n",
+                "## 3. Boundary Violations\n\nnew section three\n",
+                "## 4. Dead and Vestigial Code\n\nnew section four\n",
+                "## 5. Test-Suite Shape\n\nnew section five\n",
+            ),
+            &["new section three", "new section four", "new section five"],
+            &["old section three", "old section four", "old section five"],
+            &[
+                "section one body",
+                "section two body",
+                "_Pending - criterion 4 (`u85c4`)._",
+            ],
         );
-        assert!(updated.contains("new section three"));
-        assert!(updated.contains("new section four"));
-        assert!(updated.contains("new section five"));
-        assert!(!updated.contains("old section three"));
-        assert!(!updated.contains("old section four"));
-        assert!(!updated.contains("old section five"));
-        // Sections 1, 2 and 6 (this criterion's neighbors) survive byte-for-byte.
-        assert!(updated.contains("section one body"));
-        assert!(updated.contains("section two body"));
-        assert!(updated.contains("_Pending - criterion 4 (`u85c4`)._"));
-    }
-
-    #[test]
-    fn replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists() {
-        // A report that (hypothetically) ends right after section 5 - no `## 6. ` heading
-        // yet to bound the replacement span against.
-        let existing = "# Title\n\n\
-             ## 1. Responsibility Map\n\nsection one body\n\n\
-             ## 3. Boundary Violations\n\nold section three\n";
-        let updated = replace_section_3_to_5(
-            existing,
-            "## 3. Boundary Violations\n\nnew section three\n",
-            "## 4. Dead and Vestigial Code\n\nnew section four\n",
-            "## 5. Test-Suite Shape\n\nnew section five\n",
+        /// A report that (hypothetically) ends right after section 5 - no `## 6. ` heading yet
+        /// to bound the replacement span against.
+        replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists:
+            assert_span_replaced(
+            &replace_section_3_to_5(
+                "# Title\n\n\
+                 ## 1. Responsibility Map\n\nsection one body\n\n\
+                 ## 3. Boundary Violations\n\nold section three\n",
+                "## 3. Boundary Violations\n\nnew section three\n",
+                "## 4. Dead and Vestigial Code\n\nnew section four\n",
+                "## 5. Test-Suite Shape\n\nnew section five\n",
+            ),
+            &["new section three", "new section four", "new section five"],
+            &["old section three"],
+            &["section one body"],
         );
-        assert!(updated.contains("new section three"));
-        assert!(updated.contains("new section four"));
-        assert!(updated.contains("new section five"));
-        assert!(updated.contains("section one body"));
-        assert!(!updated.contains("old section three"));
     }
 
     #[test]
@@ -9477,68 +9448,115 @@ mod tests {
         start..end
     }
 
+    /// A report section whose one cited list embeds live line numbers, isolated for STRUCTURAL
+    /// treatment by [`assert_cited_section_structurally_matches`].
+    struct CitedList {
+        /// The section's number, as its failure messages name it.
+        section: &'static str,
+        /// The section's own top-level heading.
+        heading: &'static str,
+        /// The cited list's own sub-heading, and the prefix of the next heading that bounds it.
+        marker: &'static str,
+        next_prefix: &'static str,
+        /// How failure messages name the list, and everything in the section outside it.
+        label: &'static str,
+        outside: &'static str,
+        /// The list's own marker for a candidate's file grouping, and for a candidate's name.
+        group_marker: fn(&str) -> String,
+        name_marker: fn(&str) -> String,
+    }
+
+    /// Section 4.3's full list (via [`render_dead_code_full_list`]) is the ONLY content anywhere
+    /// in sections 3-5 that embeds a live line number. Everything else in section 4 (4.0-4.2
+    /// including the distribution table, and 4.4) is citation-free and fully deterministic from
+    /// the tree, so it stays byte-exact - and still catches real content drift (e.g. the
+    /// distribution table's own per-file counts).
+    const SECTION_4_CITED_LIST: CitedList = CitedList {
+        section: "4",
+        heading: "## 4. Dead and Vestigial Code",
+        marker: "### 4.3 ",
+        next_prefix: "### ",
+        label: "section 4.3",
+        outside: "4.3's own citation list",
+        group_marker: |file| format!("**`{file}`**"),
+        name_marker: |name| format!("- **{name}**"),
+    };
+
+    /// Item 0's own deletion list (via [`render_dead_code_deletion_list`]) is the ONLY content
+    /// anywhere in section 6 that embeds a live line number - one level deeper than section 4's
+    /// (`#### 0. ` instead of `### 4.3 `). Everything else in section 6 (items 1-19 and the tier
+    /// framing prose) is citation-free and fully deterministic, so it stays byte-exact.
+    const SECTION_6_CITED_LIST: CitedList = CitedList {
+        section: "6",
+        heading: "## 6. Prioritized Plan",
+        marker: "#### 0. ",
+        next_prefix: "#### ",
+        label: "section 6 item 0",
+        outside: "item 0's own deletion list",
+        group_marker: |file| format!("`{file}`: "),
+        name_marker: |name| format!("`{name}`"),
+    };
+
     /// Spec 90 Design, verbatim: "the report's guard checks structure only (sections present,
-    /// counts equal to the catalog) rather than bytes." Section 4.3's full list (via
-    /// [`render_dead_code_full_list`]) is the ONLY content anywhere in sections 3-5 that embeds
-    /// a live line number, so it is the ONLY span this isolates for structural treatment -
-    /// its own file groupings and entry names, never the exact citation bytes, which are free
-    /// to legitimately move between explicit `RIGGER_AUDIT_WRITE=1` regens (a pin bump anywhere
-    /// in `src/`). Everything else in section 4 (4.0-4.2 including the distribution table, and
-    /// 4.4) is citation-free and fully deterministic from the tree, so it stays byte-exact
-    /// against `fresh_section_4` - exactly as strict as this guard was before this fix, and
-    /// still catches real content drift (e.g. the distribution table's own per-file counts).
-    fn assert_section_4_structurally_matches(
-        committed_section_4: &str,
-        fresh_section_4: &str,
+    /// counts equal to the catalog) rather than bytes." The committed section's `list` span
+    /// must carry every candidate's own file grouping and name - never the exact citation
+    /// bytes, which are free to legitimately move between explicit `RIGGER_AUDIT_WRITE=1`
+    /// regens (a pin bump anywhere in `src/`) - while everything outside that span stays
+    /// byte-exact against `fresh_section`, exactly as strict as a whole-section comparison.
+    fn assert_cited_section_structurally_matches(
+        committed_section: &str,
+        fresh_section: &str,
         candidates: &[DeadCodeCandidate],
+        list: &CitedList,
     ) {
+        let CitedList { section, label, .. } = list;
         assert!(
-            committed_section_4.starts_with("## 4. Dead and Vestigial Code"),
-            "{REPORT_PATH} section 4 is missing its own heading"
+            committed_section.starts_with(list.heading),
+            "{REPORT_PATH} section {section} is missing its own heading"
         );
-        let committed_span = heading_bounded_span(committed_section_4, "### 4.3 ", "### ");
-        let fresh_span = heading_bounded_span(fresh_section_4, "### 4.3 ", "### ");
-        let committed_4_3 = &committed_section_4[committed_span.clone()];
+        let committed_span = heading_bounded_span(committed_section, list.marker, list.next_prefix);
+        let fresh_span = heading_bounded_span(fresh_section, list.marker, list.next_prefix);
+        let committed_list = &committed_section[committed_span.clone()];
         let mut files: Vec<&str> = candidates.iter().map(|c| c.file.as_str()).collect();
         files.sort_unstable();
         files.dedup();
         for file in &files {
-            let group_marker = format!("**`{file}`**");
+            let group_marker = (list.group_marker)(file);
             assert!(
-                committed_4_3.contains(&group_marker),
-                "{REPORT_PATH} section 4.3 is missing its own file grouping for `{file}` \
+                committed_list.contains(&group_marker),
+                "{REPORT_PATH} {label} is missing its own file grouping for `{file}` \
                  (expected {group_marker:?}) - regenerate with RIGGER_AUDIT_WRITE=1"
             );
         }
         for c in candidates {
-            let name_marker = format!("- **{}**", c.name);
+            let name_marker = (list.name_marker)(&c.name);
             assert!(
-                committed_4_3.contains(&name_marker),
-                "{REPORT_PATH} section 4.3 is missing or has a stale entry for `{}` (expected \
+                committed_list.contains(&name_marker),
+                "{REPORT_PATH} {label} is missing or has a stale entry for `{}` (expected \
                  {name_marker:?}) - regenerate with RIGGER_AUDIT_WRITE=1",
                 c.name
             );
         }
         let committed_rest = format!(
             "{}{}",
-            &committed_section_4[..committed_span.start],
-            &committed_section_4[committed_span.end..]
+            &committed_section[..committed_span.start],
+            &committed_section[committed_span.end..]
         );
         let fresh_rest = format!(
             "{}{}",
-            &fresh_section_4[..fresh_span.start],
-            &fresh_section_4[fresh_span.end..]
+            &fresh_section[..fresh_span.start],
+            &fresh_section[fresh_span.end..]
         );
         // Trailing newline COUNT is a formatting artifact of the outer document splice (the
-        // top-level `## 4. ` -> `## 5. ` boundary this span was cut from keeps the full
-        // blank-line separator, one more `\n` than `render_section_4`'s own raw return), never
-        // real content - trimmed on both sides before comparing so it cannot produce a false
-        // drift report.
+        // top-level boundary this span was cut from keeps the full blank-line separator, one
+        // more `\n` than the section's own raw render), never real content - trimmed on both
+        // sides before comparing so it cannot produce a false drift report.
         assert_eq!(
             committed_rest.trim_end_matches('\n'),
             fresh_rest.trim_end_matches('\n'),
-            "{REPORT_PATH} section 4 (outside 4.3's own citation list) has drifted from the \
-             tree - regenerate with RIGGER_AUDIT_WRITE=1"
+            "{REPORT_PATH} section {section} (outside {}) has drifted from the tree - \
+             regenerate with RIGGER_AUDIT_WRITE=1",
+            list.outside
         );
     }
 
@@ -9558,39 +9576,29 @@ mod tests {
         let section_4 = render_section_4();
         let section_5 = render_section_5();
         let path = root.join(REPORT_PATH);
-        let write = std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1");
-        if write {
+        if audit_write_mode() {
             let _guard = lock_report_write();
-            let existing = fs::read_to_string(&path).ok();
-            let base = match existing {
-                Some(text) => text,
-                None => {
-                    let map = build_map(&root);
-                    let map_lines: Vec<MapEntryLines> = map.iter().map(map_entry_lines).collect();
-                    let section_1 = render_section_1(&map, &map_lines);
-                    assemble_fresh_report(&section_1)
-                }
-            };
-            let updated = replace_section_3_to_5(&base, &section_3, &section_4, &section_5);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(&path, updated).unwrap();
+            let updated = replace_section_3_to_5(
+                &report_or_fresh(&root, &path),
+                &section_3,
+                &section_4,
+                &section_5,
+            );
+            write_creating_parent(&path, &updated);
             return;
         }
-        let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
-        });
+        let committed = committed_report(&path);
         assert!(
             committed.contains(&section_3),
             "{REPORT_PATH} section 3 has drifted from the tree - regenerate with \
              RIGGER_AUDIT_WRITE=1"
         );
         let span = section_span(&committed, "## 4. ");
-        assert_section_4_structurally_matches(
+        assert_cited_section_structurally_matches(
             &committed[span],
             &section_4,
             real_dead_code_candidates(),
+            &SECTION_4_CITED_LIST,
         );
         assert!(
             committed.contains(&section_5),
@@ -9703,24 +9711,29 @@ mod tests {
         assert_eq!(find_heading(haystack, "## 3. "), None);
     }
 
-    #[test]
-    fn replace_section_6_only_touches_that_span_leaving_earlier_sections_intact() {
-        let existing = "# Title\n\n\
-             ## 1. Responsibility Map\n\nsection one body\n\n\
-             ## 2. Duplication Catalog\n\nsection two body\n\n\
-             ## 3. Boundary Violations\n\nsection three body\n\n\
-             ## 4. Dead and Vestigial Code\n\nsection four body\n\n\
-             ## 5. Test-Suite Shape\n\nsection five body\n\n\
-             ## 6. Prioritized Plan\n\n_Pending - criterion 4 (`u85c4`)._\n";
-        let updated = replace_section_6(existing, "## 6. Prioritized Plan\n\nnew section six\n");
-        assert!(updated.contains("new section six"));
-        assert!(!updated.contains("_Pending - criterion 4"));
-        // Every earlier section (not this criterion's own) survives byte-for-byte.
-        assert!(updated.contains("section one body"));
-        assert!(updated.contains("section two body"));
-        assert!(updated.contains("section three body"));
-        assert!(updated.contains("section four body"));
-        assert!(updated.contains("section five body"));
+    rigger::test_cases! {
+        /// Every earlier section (not this criterion's own) survives byte-for-byte.
+        replace_section_6_only_touches_that_span_leaving_earlier_sections_intact: assert_span_replaced(
+            &replace_section_6(
+                "# Title\n\n\
+                 ## 1. Responsibility Map\n\nsection one body\n\n\
+                 ## 2. Duplication Catalog\n\nsection two body\n\n\
+                 ## 3. Boundary Violations\n\nsection three body\n\n\
+                 ## 4. Dead and Vestigial Code\n\nsection four body\n\n\
+                 ## 5. Test-Suite Shape\n\nsection five body\n\n\
+                 ## 6. Prioritized Plan\n\n_Pending - criterion 4 (`u85c4`)._\n",
+                "## 6. Prioritized Plan\n\nnew section six\n",
+            ),
+            &["new section six"],
+            &["_Pending - criterion 4"],
+            &[
+                "section one body",
+                "section two body",
+                "section three body",
+                "section four body",
+                "section five body",
+            ],
+        );
     }
 
     #[test]
@@ -9790,70 +9803,6 @@ mod tests {
         assert!(rendered.contains("section 4.2's rule no entry is kept"));
     }
 
-    /// Spec 90 Design, verbatim: "the report's guard checks structure only (sections present,
-    /// counts equal to the catalog) rather than bytes." Item 0's own deletion list (via
-    /// [`render_dead_code_deletion_list`]) is the ONLY content anywhere in section 6 that
-    /// embeds a live line number, so it is the ONLY span this isolates for structural
-    /// treatment, mirroring `assert_section_4_structurally_matches` exactly (same pattern, one
-    /// level deeper: `#### 0. ` instead of `### 4.3 `). Everything else in section 6 (items
-    /// 1-19 and the tier framing prose) is citation-free and fully deterministic, so it stays
-    /// byte-exact against `fresh_section_6` - exactly as strict as this guard was before this
-    /// fix.
-    fn assert_section_6_structurally_matches(
-        committed_section_6: &str,
-        fresh_section_6: &str,
-        candidates: &[DeadCodeCandidate],
-    ) {
-        assert!(
-            committed_section_6.starts_with("## 6. Prioritized Plan"),
-            "{REPORT_PATH} section 6 is missing its own heading"
-        );
-        let committed_span = heading_bounded_span(committed_section_6, "#### 0. ", "#### ");
-        let fresh_span = heading_bounded_span(fresh_section_6, "#### 0. ", "#### ");
-        let committed_item_0 = &committed_section_6[committed_span.clone()];
-        let deletes: Vec<&DeadCodeCandidate> = candidates.iter().collect();
-        let mut files: Vec<&str> = deletes.iter().map(|c| c.file.as_str()).collect();
-        files.sort_unstable();
-        files.dedup();
-        for file in &files {
-            let group_marker = format!("`{file}`: ");
-            assert!(
-                committed_item_0.contains(&group_marker),
-                "{REPORT_PATH} section 6 item 0 is missing its own file grouping for `{file}` \
-                 (expected {group_marker:?}) - regenerate with RIGGER_AUDIT_WRITE=1"
-            );
-        }
-        for c in &deletes {
-            let name_marker = format!("`{}`", c.name);
-            assert!(
-                committed_item_0.contains(&name_marker),
-                "{REPORT_PATH} section 6 item 0 is missing or has a stale entry for `{}` \
-                 (expected {name_marker:?}) - regenerate with RIGGER_AUDIT_WRITE=1",
-                c.name
-            );
-        }
-        let committed_rest = format!(
-            "{}{}",
-            &committed_section_6[..committed_span.start],
-            &committed_section_6[committed_span.end..]
-        );
-        let fresh_rest = format!(
-            "{}{}",
-            &fresh_section_6[..fresh_span.start],
-            &fresh_section_6[fresh_span.end..]
-        );
-        // Trailing newline COUNT is a formatting artifact, never real content (mirrors
-        // `assert_section_4_structurally_matches`'s own identical trim) - trimmed on both sides
-        // so it cannot produce a false drift report regardless of which document-splice path
-        // produced each side.
-        assert_eq!(
-            committed_rest.trim_end_matches('\n'),
-            fresh_rest.trim_end_matches('\n'),
-            "{REPORT_PATH} section 6 (outside item 0's own deletion list) has drifted from the \
-             tree - regenerate with RIGGER_AUDIT_WRITE=1"
-        );
-    }
-
     /// THE DRIFT GUARD for section 6 of the report: with `RIGGER_AUDIT_WRITE=1` set, patch
     /// section 6's span in place (guarded by [`REPORT_WRITE_LOCK`] since criteria 1-3's own
     /// drift guards write the SAME file); otherwise assert the committed report's section 6
@@ -9871,8 +9820,7 @@ mod tests {
         let root = repo_root();
         let section_6 = render_section_6();
         let path = root.join(REPORT_PATH);
-        let write = std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1");
-        if write {
+        if audit_write_mode() {
             let _guard = lock_report_write();
             let existing = fs::read_to_string(&path).unwrap_or_else(|_| {
                 panic!(
@@ -9880,21 +9828,16 @@ mod tests {
                      (RIGGER_AUDIT_WRITE=1)"
                 )
             });
-            let updated = replace_section_6(&existing, &section_6);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(&path, updated).unwrap();
+            write_creating_parent(&path, &replace_section_6(&existing, &section_6));
             return;
         }
-        let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
-        });
+        let committed = committed_report(&path);
         let span = section_span(&committed, "## 6. ");
-        assert_section_6_structurally_matches(
+        assert_cited_section_structurally_matches(
             &committed[span],
             &section_6,
             real_dead_code_candidates(),
+            &SECTION_6_CITED_LIST,
         );
     }
 
@@ -9918,97 +9861,72 @@ mod tests {
     // resolve_out_of_line_test_files: the three resolution forms + transitive closure
     // -------------------------------------------------------------------------------------
 
-    #[test]
-    fn resolves_a_same_name_dot_rs_target() {
-        let files = vec![
-            (
-                "src/lib.rs".to_string(),
-                "#[cfg(test)]\nmod probe;\n".to_string(),
-            ),
-            ("src/probe.rs".to_string(), "fn helper() {}\n".to_string()),
-        ];
-        let test_files = resolve_out_of_line_test_files(&files);
-        assert!(test_files.contains("src/probe.rs"), "{test_files:?}");
+    /// `files` as the owned `(path, content)` pairs the resolvers take.
+    fn owned_files(files: &[(&str, &str)]) -> Vec<(String, String)> {
+        files
+            .iter()
+            .map(|(rel, content)| (rel.to_string(), content.to_string()))
+            .collect()
     }
 
-    #[test]
-    fn resolves_a_name_slash_mod_rs_target_when_the_flat_file_does_not_exist() {
-        let files = vec![
-            (
-                "src/lib.rs".to_string(),
-                "#[cfg(test)]\nmod probe;\n".to_string(),
-            ),
-            (
-                "src/probe/mod.rs".to_string(),
-                "fn helper() {}\n".to_string(),
-            ),
-        ];
-        let test_files = resolve_out_of_line_test_files(&files);
-        assert!(test_files.contains("src/probe/mod.rs"), "{test_files:?}");
+    /// Over `files`, the out-of-line resolution pulls in every one of `expected` as test.
+    fn assert_resolves_as_test(files: &[(&str, &str)], expected: &[&str]) {
+        let test_files = resolve_out_of_line_test_files(&owned_files(files));
+        for path in expected {
+            assert!(test_files.contains(*path), "{test_files:?}");
+        }
     }
 
-    #[test]
-    fn resolves_a_path_override_target() {
-        let files = vec![
-            (
-                "src/lib.rs".to_string(),
-                "#[cfg(test)]\n#[path = \"generated/probe.rs\"]\nmod probe;\n".to_string(),
-            ),
-            (
-                "src/generated/probe.rs".to_string(),
-                "fn helper() {}\n".to_string(),
-            ),
-        ];
-        let test_files = resolve_out_of_line_test_files(&files);
-        assert!(
-            test_files.contains("src/generated/probe.rs"),
-            "{test_files:?}"
+    rigger::test_cases! {
+        resolves_a_same_name_dot_rs_target: assert_resolves_as_test(
+            &[
+                ("src/lib.rs", "#[cfg(test)]\nmod probe;\n"),
+                ("src/probe.rs", "fn helper() {}\n"),
+            ],
+            &["src/probe.rs"],
         );
-    }
-
-    #[test]
-    fn the_real_eventstore_mod_rs_shape_resolves_contract_rs_as_test() {
-        // The exact real-tree case spec 87's Goal names: `pub mod contract;` sits under
-        // `#[cfg(test)]` in `src/eventstore/mod.rs`.
-        let files = vec![
-            (
-                "src/eventstore/mod.rs".to_string(),
-                "#[cfg(test)]\npub mod contract;\n".to_string(),
-            ),
-            (
-                "src/eventstore/contract.rs".to_string(),
-                "pub fn assert_contract() {}\n".to_string(),
-            ),
-        ];
-        let test_files = resolve_out_of_line_test_files(&files);
-        assert!(
-            test_files.contains("src/eventstore/contract.rs"),
-            "{test_files:?}"
+        resolves_a_name_slash_mod_rs_target_when_the_flat_file_does_not_exist:
+            assert_resolves_as_test(
+            &[
+                ("src/lib.rs", "#[cfg(test)]\nmod probe;\n"),
+                ("src/probe/mod.rs", "fn helper() {}\n"),
+            ],
+            &["src/probe/mod.rs"],
         );
-    }
-
-    #[test]
-    fn transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute() {
-        // outer.rs is test (declared #[cfg(test)] from lib.rs); outer.rs's OWN `mod inner;` has
-        // no local #[cfg(test)] at all, but the whole file is already test, so inner.rs must be
-        // pulled in too. `outer.rs`'s own children resolve under `src/outer/` (rustc's real
-        // file-per-module convention for a non-`mod.rs` declaring file), never a `src/inner.rs`
-        // sibling - `declaring_file_module_dir`'s own doc names the earlier version of this
-        // resolver that got this wrong.
-        let files = vec![
-            (
-                "src/lib.rs".to_string(),
-                "#[cfg(test)]\nmod outer;\n".to_string(),
-            ),
-            ("src/outer.rs".to_string(), "mod inner;\n".to_string()),
-            (
-                "src/outer/inner.rs".to_string(),
-                "fn helper() {}\n".to_string(),
-            ),
-        ];
-        let test_files = resolve_out_of_line_test_files(&files);
-        assert!(test_files.contains("src/outer.rs"));
-        assert!(test_files.contains("src/outer/inner.rs"), "{test_files:?}");
+        resolves_a_path_override_target: assert_resolves_as_test(
+            &[
+                (
+                    "src/lib.rs",
+                    "#[cfg(test)]\n#[path = \"generated/probe.rs\"]\nmod probe;\n",
+                ),
+                ("src/generated/probe.rs", "fn helper() {}\n"),
+            ],
+            &["src/generated/probe.rs"],
+        );
+        /// The exact real-tree case spec 87's Goal names: `pub mod contract;` sits under
+        /// `#[cfg(test)]` in `src/eventstore/mod.rs`.
+        the_real_eventstore_mod_rs_shape_resolves_contract_rs_as_test: assert_resolves_as_test(
+            &[
+                ("src/eventstore/mod.rs", "#[cfg(test)]\npub mod contract;\n"),
+                ("src/eventstore/contract.rs", "pub fn assert_contract() {}\n"),
+            ],
+            &["src/eventstore/contract.rs"],
+        );
+        /// outer.rs is test (declared #[cfg(test)] from lib.rs); outer.rs's OWN `mod inner;` has
+        /// no local #[cfg(test)] at all, but the whole file is already test, so inner.rs must be
+        /// pulled in too. `outer.rs`'s own children resolve under `src/outer/` (rustc's real
+        /// file-per-module convention for a non-`mod.rs` declaring file), never a `src/inner.rs`
+        /// sibling - `declaring_file_module_dir`'s own doc names the earlier version of this
+        /// resolver that got this wrong.
+        transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute:
+            assert_resolves_as_test(
+            &[
+                ("src/lib.rs", "#[cfg(test)]\nmod outer;\n"),
+                ("src/outer.rs", "mod inner;\n"),
+                ("src/outer/inner.rs", "fn helper() {}\n"),
+            ],
+            &["src/outer.rs", "src/outer/inner.rs"],
+        );
     }
 
     #[test]
@@ -10052,12 +9970,9 @@ mod tests {
     }
 
     #[cfg(feature = "symbols")]
-    fn assert_resolvers_agree(files: &[(String, String)]) {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        for (rel, content) in files {
-            write_fixture(dir.path(), rel, content);
-        }
-        let bespoke = resolve_out_of_line_test_files(files);
+    fn assert_resolvers_agree(files: &[(&str, &str)]) {
+        let dir = fixture_tree(files);
+        let bespoke = resolve_out_of_line_test_files(&owned_files(files));
         let production = production_out_of_line_exclusion_set(dir.path());
         assert_eq!(
             bespoke, production,
@@ -10065,65 +9980,34 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn resolvers_agree_on_a_same_name_dot_rs_target() {
-        assert_resolvers_agree(&[
-            (
-                "src/lib.rs".to_string(),
-                "#[cfg(test)]\nmod probe;\n".to_string(),
-            ),
-            (
-                "src/probe.rs".to_string(),
-                "pub fn helper() {}\n".to_string(),
-            ),
+    rigger::test_cases! {
+        #[cfg(feature = "symbols")]
+        resolvers_agree_on_a_same_name_dot_rs_target: assert_resolvers_agree(&[
+            ("src/lib.rs", "#[cfg(test)]\nmod probe;\n"),
+            ("src/probe.rs", "pub fn helper() {}\n"),
         ]);
-    }
-
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn resolvers_agree_on_a_path_override_target() {
-        assert_resolvers_agree(&[
+        #[cfg(feature = "symbols")]
+        resolvers_agree_on_a_path_override_target: assert_resolvers_agree(&[
             (
-                "src/lib.rs".to_string(),
-                "#[cfg(test)]\n#[path = \"generated/probe.rs\"]\nmod probe;\n".to_string(),
+                "src/lib.rs",
+                "#[cfg(test)]\n#[path = \"generated/probe.rs\"]\nmod probe;\n",
             ),
-            (
-                "src/generated/probe.rs".to_string(),
-                "pub fn helper() {}\n".to_string(),
-            ),
+            ("src/generated/probe.rs", "pub fn helper() {}\n"),
         ]);
-    }
-
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn resolvers_agree_on_a_transitive_second_hop() {
-        // `outer.rs`'s own children resolve under `src/outer/` (rustc's real file-per-module
-        // convention for a non-`mod.rs` declaring file) - this fixture caught a real bug in
-        // `resolve_mod_target`'s prior (sibling-directory) resolution, fixed alongside adding
-        // this test; see `declaring_file_module_dir`'s own doc.
-        assert_resolvers_agree(&[
-            (
-                "src/lib.rs".to_string(),
-                "#[cfg(test)]\nmod outer;\n".to_string(),
-            ),
-            ("src/outer.rs".to_string(), "mod inner;\n".to_string()),
-            (
-                "src/outer/inner.rs".to_string(),
-                "pub fn helper() {}\n".to_string(),
-            ),
+        /// `outer.rs`'s own children resolve under `src/outer/` (rustc's real file-per-module
+        /// convention for a non-`mod.rs` declaring file) - this fixture caught a real bug in
+        /// `resolve_mod_target`'s prior (sibling-directory) resolution, fixed alongside adding
+        /// this test; see `declaring_file_module_dir`'s own doc.
+        #[cfg(feature = "symbols")]
+        resolvers_agree_on_a_transitive_second_hop: assert_resolvers_agree(&[
+            ("src/lib.rs", "#[cfg(test)]\nmod outer;\n"),
+            ("src/outer.rs", "mod inner;\n"),
+            ("src/outer/inner.rs", "pub fn helper() {}\n"),
         ]);
-    }
-
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn resolvers_agree_on_a_non_test_out_of_line_mod() {
-        assert_resolvers_agree(&[
-            ("src/lib.rs".to_string(), "mod normal;\n".to_string()),
-            (
-                "src/normal.rs".to_string(),
-                "pub fn helper() {}\n".to_string(),
-            ),
+        #[cfg(feature = "symbols")]
+        resolvers_agree_on_a_non_test_out_of_line_mod: assert_resolvers_agree(&[
+            ("src/lib.rs", "mod normal;\n"),
+            ("src/normal.rs", "pub fn helper() {}\n"),
         ]);
     }
 
@@ -10153,38 +10037,89 @@ mod tests {
         build_dead_code_candidates(&files, &whole_file_test)
     }
 
-    #[test]
-    fn a_fn_referenced_only_by_its_own_test_is_listed() {
-        // Spec 87 Done-when criterion 2, fixture 1.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/lonely.rs",
-            "fn orphan() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn calls_orphan() {\n        orphan();\n    }\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"orphan"), "{names:?}");
-        let orphan = candidates.iter().find(|c| c.name == "orphan").unwrap();
-        assert_eq!(orphan.test_only_references.len(), 1);
-        assert_eq!(orphan.test_only_references[0].file, "src/lonely.rs");
+    /// Over a one-file fixture `(file, src)`, `orphan` is a dead-code candidate; returns its
+    /// test-only references.
+    fn orphan_test_only_references(file: &str, src: &str) -> Vec<TestOnlyRef> {
+        assert_candidates(&[(file, src)], &["orphan"], &[])
+            .into_iter()
+            .find(|c| c.name == "orphan")
+            .unwrap()
+            .test_only_references
     }
 
-    #[test]
-    fn a_fn_referenced_from_a_production_caller_does_not_appear() {
-        // Spec 87 Done-when criterion 2, fixture 2.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/used.rs",
-            "fn helper() {}\n\nfn caller() {\n    helper();\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
+    rigger::test_cases! {
+        /// Spec 87 Done-when criterion 2, fixture 1.
+        a_fn_referenced_only_by_its_own_test_is_listed: {
+            let refs = orphan_test_only_references(
+                "src/lonely.rs",
+                "fn orphan() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn calls_orphan() {\n        orphan();\n    }\n}\n",
+            );
+            assert_eq!(refs.len(), 1);
+            assert_eq!(refs[0].file, "src/lonely.rs");
+        };
+        /// Class 1 ("TEST REGIONS ARE MOD SPANS"): the real `src/grounder/symbols/events.rs`
+        /// shape (`sdet-u87c2-mod-body-level-test-statements-leak-as-production-refs`) - a named
+        /// `use` import sits directly inside `#[cfg(test)] mod tests { .. }`, ABOVE its `#[test]`
+        /// fn (never itself a `ScannedFn`), naming `orphan`. Before round 1, `in_test_range` was
+        /// built from fn spans alone, so this line misclassified `orphan` as production-
+        /// referenced and it never appeared in the JSON at all - the exact false negative that
+        /// defeated criterion 2's own Done-when on spec 87's own Goal-cited worked example.
+        a_named_use_import_at_mod_test_top_level_does_not_leak_as_a_production_reference: {
+            let refs = orphan_test_only_references(
+                "src/orphan.rs",
+                "pub fn orphan() {}\n\n#[cfg(test)]\nmod tests {\n    use crate::orphan::orphan;\n\n    #[test]\n    fn calls_orphan() {\n        orphan();\n    }\n}\n",
+            );
+            assert_eq!(refs.len(), 2, "{refs:?}");
+        };
+    }
+
+    /// Over the `files` fixture tree, every name in `listed` is a dead-code candidate and none
+    /// in `unlisted` is. Returns the candidates.
+    fn assert_candidates(
+        files: &[(&str, &str)],
+        listed: &[&str],
+        unlisted: &[&str],
+    ) -> Vec<DeadCodeCandidate> {
+        let candidates = on_fixture(candidates_for, files);
         let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"helper"), "{names:?}");
-        // `caller` itself has no callers, so it legitimately DOES appear - this fixture's
-        // point is only that `helper`, which IS called from production code, does not.
-        assert!(names.contains(&"caller"), "{names:?}");
+        for name in listed {
+            assert!(names.contains(name), "{name}: {names:?}");
+        }
+        for name in unlisted {
+            assert!(!names.contains(name), "{name}: {names:?}");
+        }
+        candidates
+    }
+
+    /// Over the `files` fixture tree, exactly `count` candidates are named `name`, every one
+    /// flagged ambiguous. Returns them.
+    fn ambiguous_sharers(
+        files: &[(&str, &str)],
+        name: &str,
+        count: usize,
+    ) -> Vec<DeadCodeCandidate> {
+        let candidates = on_fixture(candidates_for, files);
+        let sharers: Vec<DeadCodeCandidate> = candidates
+            .iter()
+            .filter(|c| c.name == name)
+            .cloned()
+            .collect();
+        assert_eq!(sharers.len(), count, "{candidates:?}");
+        assert!(sharers.iter().all(|c| c.ambiguous), "{sharers:?}");
+        sharers
+    }
+
+    rigger::test_cases! {
+        /// Spec 87 Done-when criterion 2, fixture 2.
+        /// `caller` itself has no callers, so it legitimately DOES appear - this fixture's
+        /// point is only that `helper`, which IS called from production code, does not.
+        a_fn_referenced_from_a_production_caller_does_not_appear: assert_candidates(
+            &[
+                ("src/used.rs", "fn helper() {}\n\nfn caller() {\n    helper();\n}\n"),
+            ],
+            &["caller"],
+            &["helper"],
+        );
     }
 
     #[test]
@@ -10233,32 +10168,26 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_path_qualified_reference_with_no_call_parens_still_counts() {
-        // "or used as a path segment" (spec 87 Design) - a fn passed by name, e.g. as a
-        // function pointer, with no trailing `(`.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/ptr.rs",
-            "pub fn target() {}\n\nmod user {\n    fn takes_ptr(_f: fn()) {}\n    fn wire() {\n        takes_ptr(super::target);\n    }\n}\n",
+    rigger::test_cases! {
+        /// "or used as a path segment" (spec 87 Design) - a fn passed by name, e.g. as a
+        /// function pointer, with no trailing `(`.
+        a_path_qualified_reference_with_no_call_parens_still_counts: assert_candidates(
+            &[
+                ("src/ptr.rs", "pub fn target() {}\n\nmod user {\n    fn takes_ptr(_f: fn()) {}\n    fn wire() {\n        takes_ptr(super::target);\n    }\n}\n"),
+            ],
+            &[],
+            &["target"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"target"), "{names:?}");
     }
 
-    #[test]
-    fn a_mention_inside_a_comment_does_not_count_as_a_reference() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/commented.rs",
-            "fn orphan() {}\n\n// this comment happens to say orphan() but never calls it\nfn other() {\n    let _ = 1;\n}\n",
+    rigger::test_cases! {
+        a_mention_inside_a_comment_does_not_count_as_a_reference: assert_candidates(
+            &[
+                ("src/commented.rs", "fn orphan() {}\n\n// this comment happens to say orphan() but never calls it\nfn other() {\n    let _ = 1;\n}\n"),
+            ],
+            &["orphan"],
+            &[],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"orphan"), "{names:?}");
     }
 
     #[test]
@@ -10270,49 +10199,38 @@ mod tests {
         assert_eq!(orphan.visibility, "pub(crate)");
     }
 
-    #[test]
-    fn recursion_through_the_fns_own_body_still_counts_as_a_reference() {
-        // Spec 87 Design: the excluded "definition span" is "doc comment, attributes,
-        // signature" - NOT the body, so a self-call inside the body is a real reference.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/rec.rs",
-            "fn countdown(n: u32) {\n    if n > 0 {\n        countdown(n - 1);\n    }\n}\n",
+    rigger::test_cases! {
+        /// Spec 87 Design: the excluded "definition span" is "doc comment, attributes,
+        /// signature" - NOT the body, so a self-call inside the body is a real reference.
+        recursion_through_the_fns_own_body_still_counts_as_a_reference: assert_candidates(
+            &[
+                ("src/rec.rs", "fn countdown(n: u32) {\n    if n > 0 {\n        countdown(n - 1);\n    }\n}\n"),
+            ],
+            &[],
+            &["countdown"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"countdown"), "{names:?}");
     }
 
-    #[test]
-    fn a_whole_file_test_via_out_of_line_resolution_is_never_a_candidate() {
-        // The real `src/eventstore/contract.rs` shape: `assert_contract` has no LOCAL
-        // #[cfg(test)] at all, but the whole file is pulled in as test by `mod.rs`.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/es/mod.rs",
-            "#[cfg(test)]\npub mod contract;\n",
+    rigger::test_cases! {
+        /// The real `src/eventstore/contract.rs` shape: `assert_contract` has no LOCAL
+        /// #[cfg(test)] at all, but the whole file is pulled in as test by `mod.rs`.
+        a_whole_file_test_via_out_of_line_resolution_is_never_a_candidate: assert_candidates(
+            &[
+                ("src/es/mod.rs", "#[cfg(test)]\npub mod contract;\n"),
+                ("src/es/contract.rs", "pub fn assert_contract() {}\n"),
+            ],
+            &[],
+            &["assert_contract"],
         );
-        write_fixture(
-            dir.path(),
-            "src/es/contract.rs",
-            "pub fn assert_contract() {}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"assert_contract"), "{names:?}");
     }
 
-    #[test]
-    fn main_is_exempted_as_an_entry_point() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/main.rs", "fn main() {}\n");
-        let candidates = candidates_for(dir.path());
-        assert!(
-            candidates.iter().all(|c| c.name != "main"),
-            "{candidates:?}"
+    rigger::test_cases! {
+        main_is_exempted_as_an_entry_point: assert_candidates(
+            &[
+                ("src/main.rs", "fn main() {}\n"),
+            ],
+            &[],
+            &["main"],
         );
     }
 
@@ -10322,214 +10240,122 @@ mod tests {
     // shape.
     // -------------------------------------------------------------------------------------
 
-    #[test]
-    fn a_named_use_import_at_mod_test_top_level_does_not_leak_as_a_production_reference() {
-        // Class 1 ("TEST REGIONS ARE MOD SPANS"): the real `src/grounder/symbols/events.rs`
-        // shape (`sdet-u87c2-mod-body-level-test-statements-leak-as-production-refs`) - a named
-        // `use` import sits directly inside `#[cfg(test)] mod tests { .. }`, ABOVE its `#[test]`
-        // fn (never itself a `ScannedFn`), naming `orphan`. Before round 1, `in_test_range` was
-        // built from fn spans alone, so this line misclassified `orphan` as production-
-        // referenced and it never appeared in the JSON at all - the exact false negative that
-        // defeated criterion 2's own Done-when on spec 87's own Goal-cited worked example.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/orphan.rs",
-            "pub fn orphan() {}\n\n#[cfg(test)]\nmod tests {\n    use crate::orphan::orphan;\n\n    #[test]\n    fn calls_orphan() {\n        orphan();\n    }\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"orphan"), "{names:?}");
-        let orphan = candidates.iter().find(|c| c.name == "orphan").unwrap();
-        assert_eq!(orphan.test_only_references.len(), 2, "{orphan:?}");
-    }
-
-    #[test]
-    fn a_serde_default_attribute_string_names_a_real_production_reference() {
-        // Class 2 ("ATTRIBUTE TOKEN TREES ARE REFERENCES"): the real `src/config.rs` shape
-        // (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) -
-        // `default_build_config` is referenced ONLY through `#[serde(default = "..")]`'s string
-        // literal, a shape no call-site rule (`followed by (`, `::`, `.`, `<`) ever matches.
-        // Before round 1 this was a false positive: a genuinely live fn sat in the JSON as dead.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/cfg.rs",
-            "#[derive(serde::Deserialize)]\nstruct Cfg {\n    #[serde(default = \"default_build_config\")]\n    build: String,\n}\n\nfn default_build_config() -> String {\n    String::new()\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"default_build_config"), "{names:?}");
-    }
-
-    #[test]
-    fn an_attribute_reference_to_an_ambiguous_shared_name_credits_every_sharer() {
-        // The `via_attribute` exemption from ambiguity attribution: an attribute mention cannot
-        // be qualifier-resolved (it names no `Type::`/`module::` prefix at all), and the design's
-        // conservative direction says it must still keep BOTH same-named sharers alive rather
-        // than resolve one of them dead just because the attribute could not name which it meant.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/attr_amb.rs",
-            "mod a {\n    pub fn make_default() -> u32 {\n        0\n    }\n}\nmod b {\n    pub fn make_default() -> u32 {\n        1\n    }\n}\n#[derive(serde::Deserialize)]\nstruct Cfg {\n    #[serde(default = \"make_default\")]\n    n: u32,\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        assert!(
-            candidates.iter().all(|c| c.name != "make_default"),
-            "{candidates:?}"
+    rigger::test_cases! {
+        /// Class 2 ("ATTRIBUTE TOKEN TREES ARE REFERENCES"): the real `src/config.rs` shape
+        /// (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) -
+        /// `default_build_config` is referenced ONLY through `#[serde(default = "..")]`'s string
+        /// literal, a shape no call-site rule (`followed by (`, `::`, `.`, `<`) ever matches.
+        /// Before round 1 this was a false positive: a genuinely live fn sat in the JSON as dead.
+        a_serde_default_attribute_string_names_a_real_production_reference: assert_candidates(
+            &[
+                ("src/cfg.rs", "#[derive(serde::Deserialize)]\nstruct Cfg {\n    #[serde(default = \"default_build_config\")]\n    build: String,\n}\n\nfn default_build_config() -> String {\n    String::new()\n}\n"),
+            ],
+            &[],
+            &["default_build_config"],
         );
     }
 
-    #[test]
-    fn a_free_fn_bare_name_collision_where_only_one_sharer_has_a_real_caller_flags_the_other() {
-        // Class 4, the adversary's `distiller::rebuild`/`playbooks::rebuild` finding
-        // (`adv-u87c2-r0-free-fn-bare-name-collision-hides-a-genuinely-dead-fn`): two UNRELATED
-        // top-level free fns share the bare name `rebuild`; only one has a real, `::`-qualified
-        // caller. Before round 1, bare-name-only resolution silently counted BOTH alive because
-        // is the aggregate `rebuild(` reference set was non-empty; round 1's per-definition
-        // qualifier attribution now correctly excludes the called one and flags the other.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/distiller.rs",
-            "pub fn rebuild() -> u32 {\n    1\n}\n",
+    rigger::test_cases! {
+        /// The `via_attribute` exemption from ambiguity attribution: an attribute mention cannot
+        /// be qualifier-resolved (it names no `Type::`/`module::` prefix at all), and the design's
+        /// conservative direction says it must still keep BOTH same-named sharers alive rather
+        /// than resolve one of them dead just because the attribute could not name which it meant.
+        an_attribute_reference_to_an_ambiguous_shared_name_credits_every_sharer: assert_candidates(
+            &[
+                ("src/attr_amb.rs", "mod a {\n    pub fn make_default() -> u32 {\n        0\n    }\n}\nmod b {\n    pub fn make_default() -> u32 {\n        1\n    }\n}\n#[derive(serde::Deserialize)]\nstruct Cfg {\n    #[serde(default = \"make_default\")]\n    n: u32,\n}\n"),
+            ],
+            &[],
+            &["make_default"],
         );
-        write_fixture(
-            dir.path(),
-            "src/playbooks.rs",
-            "pub fn rebuild() -> u32 {\n    2\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/main.rs",
-            "fn main() {\n    let _ = playbooks::rebuild();\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let rebuilds: Vec<&DeadCodeCandidate> =
-            candidates.iter().filter(|c| c.name == "rebuild").collect();
-        assert_eq!(rebuilds.len(), 1, "{candidates:?}");
-        assert_eq!(rebuilds[0].file, "src/distiller.rs", "{rebuilds:?}");
-        assert!(rebuilds[0].ambiguous, "{rebuilds:?}");
-        assert_eq!(
-            rebuilds[0].ambiguous_with,
+    }
+
+    /// Over the `files` fixture tree, exactly one `rebuild` is flagged (ambiguous) - the one in
+    /// `file`. Returns it.
+    fn the_one_flagged_rebuild(files: &[(&str, &str)], file: &str) -> DeadCodeCandidate {
+        let sharers = ambiguous_sharers(files, "rebuild", 1);
+        assert_eq!(sharers[0].file, file, "{sharers:?}");
+        sharers.into_iter().next().unwrap()
+    }
+
+    rigger::test_cases! {
+        /// Class 4, the adversary's `distiller::rebuild`/`playbooks::rebuild` finding
+        /// (`adv-u87c2-r0-free-fn-bare-name-collision-hides-a-genuinely-dead-fn`): two UNRELATED
+        /// top-level free fns share the bare name `rebuild`; only one has a real, `::`-qualified
+        /// caller. Before round 1, bare-name-only resolution silently counted BOTH alive because
+        /// is the aggregate `rebuild(` reference set was non-empty; round 1's per-definition
+        /// qualifier attribution now correctly excludes the called one and flags the other.
+        a_free_fn_bare_name_collision_where_only_one_sharer_has_a_real_caller_flags_the_other: assert_eq!(
+            the_one_flagged_rebuild(
+            &[
+                ("src/distiller.rs", "pub fn rebuild() -> u32 {\n    1\n}\n"),
+                ("src/playbooks.rs", "pub fn rebuild() -> u32 {\n    2\n}\n"),
+                ("src/main.rs", "fn main() {\n    let _ = playbooks::rebuild();\n}\n"),
+            ],
+                "src/distiller.rs",
+            )
+            .ambiguous_with,
             vec!["src/playbooks.rs:1".to_string()]
         );
-    }
-
-    #[test]
-    fn a_bare_call_in_the_same_file_as_its_definition_attributes_locally_with_no_import_needed() {
-        // Attribution path 3: Rust's own lexical scoping resolves an unqualified sibling call
-        // with no `use` needed at all when the call sits in the SAME file as the definition -
-        // `two.rs`'s own bare `rebuild()` call attributes to `two.rs`'s own `rebuild`, leaving
-        // the unrelated `one.rs` sharer (zero callers of its own) correctly flagged ambiguous.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
+        /// Attribution path 3: Rust's own lexical scoping resolves an unqualified sibling call
+        /// with no `use` needed at all when the call sits in the SAME file as the definition -
+        /// `two.rs`'s own bare `rebuild()` call attributes to `two.rs`'s own `rebuild`, leaving
+        /// the unrelated `one.rs` sharer (zero callers of its own) correctly flagged ambiguous.
+        a_bare_call_in_the_same_file_as_its_definition_attributes_locally_with_no_import_needed: the_one_flagged_rebuild(
+            &[
+                ("src/one.rs", "pub fn rebuild() -> u32 {\n    1\n}\n"),
+                ("src/two.rs", "pub fn rebuild() -> u32 {\n    2\n}\nfn use_it() -> u32 {\n    rebuild()\n}\n"),
+            ],
             "src/one.rs",
-            "pub fn rebuild() -> u32 {\n    1\n}\n",
         );
-        write_fixture(
-            dir.path(),
-            "src/two.rs",
-            "pub fn rebuild() -> u32 {\n    2\n}\nfn use_it() -> u32 {\n    rebuild()\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let rebuilds: Vec<&DeadCodeCandidate> =
-            candidates.iter().filter(|c| c.name == "rebuild").collect();
-        assert_eq!(rebuilds.len(), 1, "{candidates:?}");
-        assert_eq!(rebuilds[0].file, "src/one.rs", "{rebuilds:?}");
-        assert!(rebuilds[0].ambiguous, "{rebuilds:?}");
-    }
-
-    #[test]
-    fn a_bare_unqualified_call_from_a_third_unrelated_file_credits_neither_sharer() {
-        // The addendum's literal "credited to NO definition" case: a BARE `rebuild()` call from
-        // a THIRD file (neither sharer's own, and no `use` import resolving it) cannot be
-        // attributed to either, so BOTH remain zero-attributed and BOTH are flagged ambiguous -
-        // never a false "somebody calls it somewhere" pass for either one.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/one.rs",
-            "pub fn rebuild() -> u32 {\n    1\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/two.rs",
-            "pub fn rebuild() -> u32 {\n    2\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/three.rs",
-            "fn use_it() -> u32 {\n    rebuild()\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let rebuilds: Vec<&DeadCodeCandidate> =
-            candidates.iter().filter(|c| c.name == "rebuild").collect();
-        assert_eq!(rebuilds.len(), 2, "{candidates:?}");
-        assert!(rebuilds.iter().all(|c| c.ambiguous), "{rebuilds:?}");
-    }
-
-    #[test]
-    fn a_bare_call_resolved_through_a_use_import_attributes_to_the_imported_definition() {
-        // The addendum's other attribution path: "a `use module::name;` in the referencing file
-        // resolving to it" - a BARE `rebuild()` call in a file that imports it by qualified path
-        // attributes to that specific definition, same as a `module::rebuild()` call site would.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
+        /// The addendum's other attribution path: "a `use module::name;` in the referencing file
+        /// resolving to it" - a BARE `rebuild()` call in a file that imports it by qualified path
+        /// attributes to that specific definition, same as a `module::rebuild()` call site would.
+        a_bare_call_resolved_through_a_use_import_attributes_to_the_imported_definition: the_one_flagged_rebuild(
+            &[
+                ("src/distiller.rs", "pub fn rebuild() -> u32 {\n    1\n}\n"),
+                ("src/playbooks.rs", "pub fn rebuild() -> u32 {\n    2\n}\n"),
+                ("src/main.rs", "use crate::playbooks::rebuild;\nfn main() {\n    let _ = rebuild();\n}\n"),
+            ],
             "src/distiller.rs",
-            "pub fn rebuild() -> u32 {\n    1\n}\n",
         );
-        write_fixture(
-            dir.path(),
-            "src/playbooks.rs",
-            "pub fn rebuild() -> u32 {\n    2\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/main.rs",
-            "use crate::playbooks::rebuild;\nfn main() {\n    let _ = rebuild();\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let rebuilds: Vec<&DeadCodeCandidate> =
-            candidates.iter().filter(|c| c.name == "rebuild").collect();
-        assert_eq!(rebuilds.len(), 1, "{candidates:?}");
-        assert_eq!(rebuilds[0].file, "src/distiller.rs", "{rebuilds:?}");
-        assert!(rebuilds[0].ambiguous, "{rebuilds:?}");
     }
 
-    #[test]
-    fn a_method_name_shared_by_two_impls_with_zero_calls_is_flagged_ambiguous() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/amb.rs",
-            "struct A;\nstruct B;\nimpl A {\n    fn reset(&mut self) {}\n}\nimpl B {\n    fn reset(&mut self) {}\n}\n",
+    rigger::test_cases! {
+        /// The addendum's literal "credited to NO definition" case: a BARE `rebuild()` call from
+        /// a THIRD file (neither sharer's own, and no `use` import resolving it) cannot be
+        /// attributed to either, so BOTH remain zero-attributed and BOTH are flagged ambiguous -
+        /// never a false "somebody calls it somewhere" pass for either one.
+        a_bare_unqualified_call_from_a_third_unrelated_file_credits_neither_sharer: ambiguous_sharers(
+            &[
+                ("src/one.rs", "pub fn rebuild() -> u32 {\n    1\n}\n"),
+                ("src/two.rs", "pub fn rebuild() -> u32 {\n    2\n}\n"),
+                ("src/three.rs", "fn use_it() -> u32 {\n    rebuild()\n}\n"),
+            ],
+            "rebuild",
+            2,
         );
-        let candidates = candidates_for(dir.path());
-        let resets: Vec<&DeadCodeCandidate> =
-            candidates.iter().filter(|c| c.name == "reset").collect();
-        assert_eq!(resets.len(), 2, "{candidates:?}");
-        assert!(resets.iter().all(|c| c.ambiguous), "{resets:?}");
     }
 
-    #[test]
-    fn a_method_name_shared_by_two_impls_with_an_unresolvable_receiver_excludes_both() {
-        // A `.reset()` call whose receiver's type the scanner cannot read (here a `for` loop
-        // binding) could target either `reset`, so it keeps both sharers alive - the
-        // conservative direction: a false negative, never a live method reported dead.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/amb2.rs",
-            "struct A;\nstruct B;\nimpl A {\n    fn reset(&mut self) {}\n}\nimpl B {\n    fn reset(&mut self) {}\n}\nfn use_all(xs: Vec<A>) {\n    for mut a in xs {\n        a.reset();\n    }\n}\n",
+    rigger::test_cases! {
+        a_method_name_shared_by_two_impls_with_zero_calls_is_flagged_ambiguous: ambiguous_sharers(
+            &[
+                ("src/amb.rs", "struct A;\nstruct B;\nimpl A {\n    fn reset(&mut self) {}\n}\nimpl B {\n    fn reset(&mut self) {}\n}\n"),
+            ],
+            "reset",
+            2,
         );
-        let candidates = candidates_for(dir.path());
-        assert!(
-            candidates.iter().all(|c| c.name != "reset"),
-            "{candidates:?}"
+    }
+
+    rigger::test_cases! {
+        /// A `.reset()` call whose receiver's type the scanner cannot read (here a `for` loop
+        /// binding) could target either `reset`, so it keeps both sharers alive - the
+        /// conservative direction: a false negative, never a live method reported dead.
+        a_method_name_shared_by_two_impls_with_an_unresolvable_receiver_excludes_both: assert_candidates(
+            &[
+                ("src/amb2.rs", "struct A;\nstruct B;\nimpl A {\n    fn reset(&mut self) {}\n}\nimpl B {\n    fn reset(&mut self) {}\n}\nfn use_all(xs: Vec<A>) {\n    for mut a in xs {\n        a.reset();\n    }\n}\n"),
+            ],
+            &[],
+            &["reset"],
         );
     }
 
@@ -10631,145 +10457,110 @@ mod tests {
         assert!(!reset.ambiguous, "{reset:?}");
     }
 
-    #[test]
-    fn a_dot_call_through_an_inherent_method_on_any_receiver_counts_receiver_agnostically() {
-        // The Constraints Walk's "called only through a trait object" case, using an INHERENT
-        // impl so this exercises a plain `.name(` occurrence, not the separate trait-impl
-        // exemption below.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/dyn_dispatch.rs",
-            "struct Real;\nimpl Real {\n    fn spawn(&self) {}\n}\nfn run(r: &Real) {\n    r.spawn();\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"spawn"), "{names:?}");
-    }
-
-    #[test]
-    fn a_trait_impl_method_is_exempted_even_with_zero_textual_call_sites() {
-        // Drop::drop shape - invoked by the compiler at scope end, never via an explicit
-        // `.drop(` call site anywhere in real source text. Without the trait-impl exemption
-        // this would be a false-positive dead-code candidate on every real `impl Drop`.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/droppable.rs",
-            "struct Guard;\nimpl Drop for Guard {\n    fn drop(&mut self) {}\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        assert!(
-            candidates.iter().all(|c| c.name != "drop"),
-            "{candidates:?}"
+    rigger::test_cases! {
+        /// The Constraints Walk's "called only through a trait object" case, using an INHERENT
+        /// impl so this exercises a plain `.name(` occurrence, not the separate trait-impl
+        /// exemption below.
+        a_dot_call_through_an_inherent_method_on_any_receiver_counts_receiver_agnostically: assert_candidates(
+            &[
+                ("src/dyn_dispatch.rs", "struct Real;\nimpl Real {\n    fn spawn(&self) {}\n}\nfn run(r: &Real) {\n    r.spawn();\n}\n"),
+            ],
+            &[],
+            &["spawn"],
         );
     }
 
-    #[test]
-    fn an_inherent_associated_function_is_matched_via_path_shape_not_dot_shape() {
-        // `Type::new()` has no preceding `.` - historically a fn taking no `self` had to be
-        // matched via a separate `::`-preceded rule from a method's `.name(` rule; round 3
-        // dropped that distinction for "is this a reference at all" (any occurrence counts
-        // regardless), but `ImplAssoc` still needs its own qualifier-based attribution when a
-        // name is shared - this pins the base case, `Foo::new()` keeping `new` alive at all.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/ctor.rs",
-            "struct Foo;\nimpl Foo {\n    fn new() -> Self {\n        Foo\n    }\n}\nfn make() -> Foo {\n    Foo::new()\n}\n",
+    rigger::test_cases! {
+        /// Drop::drop shape - invoked by the compiler at scope end, never via an explicit
+        /// `.drop(` call site anywhere in real source text. Without the trait-impl exemption
+        /// this would be a false-positive dead-code candidate on every real `impl Drop`.
+        a_trait_impl_method_is_exempted_even_with_zero_textual_call_sites: assert_candidates(
+            &[
+                ("src/droppable.rs", "struct Guard;\nimpl Drop for Guard {\n    fn drop(&mut self) {}\n}\n"),
+            ],
+            &[],
+            &["drop"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"new"), "{names:?}");
     }
 
-    #[test]
-    fn an_inherent_associated_fn_name_shared_by_two_types_with_zero_calls_is_ambiguous() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/ctors.rs",
-            "struct A;\nstruct B;\nimpl A {\n    fn new() -> Self {\n        A\n    }\n}\nimpl B {\n    fn new() -> Self {\n        B\n    }\n}\n",
+    rigger::test_cases! {
+        /// `Type::new()` has no preceding `.` - historically a fn taking no `self` had to be
+        /// matched via a separate `::`-preceded rule from a method's `.name(` rule; round 3
+        /// dropped that distinction for "is this a reference at all" (any occurrence counts
+        /// regardless), but `ImplAssoc` still needs its own qualifier-based attribution when a
+        /// name is shared - this pins the base case, `Foo::new()` keeping `new` alive at all.
+        an_inherent_associated_function_is_matched_via_path_shape_not_dot_shape: assert_candidates(
+            &[
+                ("src/ctor.rs", "struct Foo;\nimpl Foo {\n    fn new() -> Self {\n        Foo\n    }\n}\nfn make() -> Foo {\n    Foo::new()\n}\n"),
+            ],
+            &[],
+            &["new"],
         );
-        let candidates = candidates_for(dir.path());
-        let news: Vec<&DeadCodeCandidate> = candidates.iter().filter(|c| c.name == "new").collect();
-        assert_eq!(news.len(), 2, "{candidates:?}");
-        assert!(news.iter().all(|c| c.ambiguous), "{news:?}");
     }
 
-    #[test]
-    fn a_qualified_call_site_attributes_only_to_the_sharer_it_names() {
-        // Round 1 (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): a `Type::new()`-qualified
-        // call site is now ATTRIBUTED to the ONE sharer it names, not credited to every sharer
-        // the way an unattributable bare mention would be - `A::new()` proves `A::new` alive
-        // (excluded) while `B::new`, with zero calls of its own, is correctly flagged ambiguous
-        // rather than silently hidden behind `A::new`'s real caller (the same failure shape the
-        // adversary's `distiller::rebuild`/`playbooks::rebuild` finding named for free fns).
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
+    rigger::test_cases! {
+        an_inherent_associated_fn_name_shared_by_two_types_with_zero_calls_is_ambiguous: ambiguous_sharers(
+            &[
+                ("src/ctors.rs", "struct A;\nstruct B;\nimpl A {\n    fn new() -> Self {\n        A\n    }\n}\nimpl B {\n    fn new() -> Self {\n        B\n    }\n}\n"),
+            ],
+            "new",
+            2,
+        );
+    }
+
+    /// Over a one-file fixture `(file, src)` declaring two `new`s (line 4, called through its
+    /// own qualifier, and line 9, uncalled), only the uncalled one is flagged - ambiguous with
+    /// the called one. `expected` names it in the failure message.
+    fn assert_only_the_uncalled_new_is_flagged(file: &str, src: &str, expected: &str) {
+        let sharers = ambiguous_sharers(&[(file, src)], "new", 1);
+        assert_eq!(sharers[0].file, file);
+        assert_eq!(sharers[0].line, 9, "{expected}; {sharers:?}");
+        assert_eq!(sharers[0].ambiguous_with, vec![format!("{file}:4")]);
+    }
+
+    rigger::test_cases! {
+        /// Round 1 (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): a `Type::new()`-qualified
+        /// call site is now ATTRIBUTED to the ONE sharer it names, not credited to every sharer
+        /// the way an unattributable bare mention would be - `A::new()` proves `A::new` alive
+        /// (excluded) while `B::new`, with zero calls of its own, is correctly flagged ambiguous
+        /// rather than silently hidden behind `A::new`'s real caller (the same failure shape the
+        /// adversary's `distiller::rebuild`/`playbooks::rebuild` finding named for free fns).
+        a_qualified_call_site_attributes_only_to_the_sharer_it_names: assert_only_the_uncalled_new_is_flagged(
             "src/ctors2.rs",
             "struct A;\nstruct B;\nimpl A {\n    fn new() -> Self {\n        A\n    }\n}\nimpl B {\n    fn new() -> Self {\n        B\n    }\n}\nfn make() -> A {\n    A::new()\n}\n",
+            "expected B::new specifically",
         );
-        let candidates = candidates_for(dir.path());
-        let news: Vec<&DeadCodeCandidate> = candidates.iter().filter(|c| c.name == "new").collect();
-        assert_eq!(news.len(), 1, "{candidates:?}");
-        assert_eq!(news[0].file, "src/ctors2.rs");
-        assert_eq!(news[0].line, 9, "expected B::new specifically; {news:?}");
-        assert!(news[0].ambiguous, "{news:?}");
-        assert_eq!(news[0].ambiguous_with, vec!["src/ctors2.rs:4".to_string()]);
-    }
-
-    #[test]
-    fn a_qualified_call_site_on_an_impls_own_generic_self_type_attributes_correctly() {
-        // Regression for round-1's own defect (sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-
-        // impl-generics-reintroduces-false-positives, upheld by the round-1 adjudication reject):
-        // when the impl block declares ITS OWN leading generic/lifetime parameters
-        // (`impl<'a> Widget<'a>`), `enclosing_impl`'s header text starts with `<` itself (the
-        // `impl` keyword is never stored). The old naive
-        // `header.split(|c| c == '<' || c.is_whitespace()).next()` therefore returned an EMPTY
-        // qualifier for `Widget::new`, which could never equal the real `Widget::new()` call
-        // site's resolved qualifier `Some("Widget")` - so the genuinely-alive `Widget::new` was
-        // wrongly flagged ambiguous with zero references, exactly the false-positive shape found
-        // in the committed `dead-code.json` for `Namespaced::new`/`ReplayDriver::new`/
-        // `Buckets::new`/`Server::new`. `Other::new`, with zero callers of its own, is the one
-        // that must remain correctly flagged.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
+        /// Regression for round-1's own defect (sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-
+        /// impl-generics-reintroduces-false-positives, upheld by the round-1 adjudication reject):
+        /// when the impl block declares ITS OWN leading generic/lifetime parameters
+        /// (`impl<'a> Widget<'a>`), `enclosing_impl`'s header text starts with `<` itself (the
+        /// `impl` keyword is never stored). The old naive
+        /// `header.split(|c| c == '<' || c.is_whitespace()).next()` therefore returned an EMPTY
+        /// qualifier for `Widget::new`, which could never equal the real `Widget::new()` call
+        /// site's resolved qualifier `Some("Widget")` - so the genuinely-alive `Widget::new` was
+        /// wrongly flagged ambiguous with zero references, exactly the false-positive shape found
+        /// in the committed `dead-code.json` for `Namespaced::new`/`ReplayDriver::new`/
+        /// `Buckets::new`/`Server::new`. `Other::new`, with zero callers of its own, is the one
+        /// that must remain correctly flagged.
+        a_qualified_call_site_on_an_impls_own_generic_self_type_attributes_correctly: assert_only_the_uncalled_new_is_flagged(
             "src/generic_ctors.rs",
             "struct Widget<'a>(std::marker::PhantomData<&'a ()>);\nstruct Other;\nimpl<'a> Widget<'a> {\n    fn new() -> Self {\n        Widget(std::marker::PhantomData)\n    }\n}\nimpl Other {\n    fn new() -> Self {\n        Other\n    }\n}\nfn make() -> Widget<'static> {\n    Widget::new()\n}\n",
-        );
-        let candidates = candidates_for(dir.path());
-        let news: Vec<&DeadCodeCandidate> = candidates.iter().filter(|c| c.name == "new").collect();
-        assert_eq!(news.len(), 1, "{candidates:?}");
-        assert_eq!(news[0].file, "src/generic_ctors.rs");
-        assert_eq!(
-            news[0].line, 9,
-            "expected Other::new specifically (Widget::new has a real qualified caller); {news:?}"
-        );
-        assert!(news[0].ambiguous, "{news:?}");
-        assert_eq!(
-            news[0].ambiguous_with,
-            vec!["src/generic_ctors.rs:4".to_string()]
+            "expected Other::new specifically (Widget::new has a real qualified caller)",
         );
     }
 
-    #[test]
-    fn a_fn_passed_by_value_as_a_bare_call_argument_counts_as_a_reference() {
-        // The real bug this fixture pins: `.map_err(be)` (found live in
-        // `src/contextgraph/sqlite.rs`) passes `be` BY NAME with no call syntax, `.`, or `::`
-        // of its own at all. THE RULE (round 3) makes this one case among many value-position
-        // shapes below - no dedicated argument-slot rule is left to name.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/map_err.rs",
-            "struct Error(String);\nfn be<E: std::fmt::Display>(e: E) -> Error {\n    Error(e.to_string())\n}\nfn open() -> Result<(), Error> {\n    std::fs::metadata(\"x\").map(|_| ()).map_err(be)\n}\n",
+    rigger::test_cases! {
+        /// The real bug this fixture pins: `.map_err(be)` (found live in
+        /// `src/contextgraph/sqlite.rs`) passes `be` BY NAME with no call syntax, `.`, or `::`
+        /// of its own at all. THE RULE (round 3) makes this one case among many value-position
+        /// shapes below - no dedicated argument-slot rule is left to name.
+        a_fn_passed_by_value_as_a_bare_call_argument_counts_as_a_reference: assert_candidates(
+            &[
+                ("src/map_err.rs", "struct Error(String);\nfn be<E: std::fmt::Display>(e: E) -> Error {\n    Error(e.to_string())\n}\nfn open() -> Result<(), Error> {\n    std::fs::metadata(\"x\").map(|_| ()).map_err(be)\n}\n"),
+            ],
+            &[],
+            &["be"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"be"), "{names:?}");
     }
 
     // -------------------------------------------------------------------------------------
@@ -10786,108 +10577,85 @@ mod tests {
     // is caught immediately rather than rediscovered one shape at a time.
     // -------------------------------------------------------------------------------------
 
-    #[test]
-    fn a_fn_pointer_used_as_a_struct_literal_field_value_counts_as_a_reference() {
-        // Real production shape this pins: `src/docs.rs`'s `skill_registry()`, e.g.
-        // `SkillEntry { name: "x", render_body: render_x_skill }` - `render_x_skill` is a bare
-        // identifier VALUE in struct-literal field position, no call/dot/`::`/`<` of its own.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/registry.rs",
-            "struct Entry {\n    name: &'static str,\n    render_body: fn() -> String,\n}\nfn render_a() -> String {\n    String::new()\n}\nfn registry() -> Vec<Entry> {\n    vec![Entry {\n        name: \"a\",\n        render_body: render_a,\n    }]\n}\n",
+    rigger::test_cases! {
+        /// Real production shape this pins: `src/docs.rs`'s `skill_registry()`, e.g.
+        /// `SkillEntry { name: "x", render_body: render_x_skill }` - `render_x_skill` is a bare
+        /// identifier VALUE in struct-literal field position, no call/dot/`::`/`<` of its own.
+        a_fn_pointer_used_as_a_struct_literal_field_value_counts_as_a_reference: assert_candidates(
+            &[
+                ("src/registry.rs", "struct Entry {\n    name: &'static str,\n    render_body: fn() -> String,\n}\nfn render_a() -> String {\n    String::new()\n}\nfn registry() -> Vec<Entry> {\n    vec![Entry {\n        name: \"a\",\n        render_body: render_a,\n    }]\n}\n"),
+            ],
+            &[],
+            &["render_a"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"render_a"), "{names:?}");
     }
 
-    #[test]
-    fn a_ufcs_qualified_value_passed_to_a_combinator_counts_as_a_reference_for_a_method() {
-        // Real production shape this pins: `src/config.rs`'s
-        // `.map(FailureRuleDef::to_rule)` - `to_rule` takes `&self` (DispatchCategory::Method,
-        // dispatched receiver-agnostically via `.to_rule(`) but here is referenced by its own
-        // UFCS PATH as a bare value with no call of its own - round 2's `relevant()` filter
-        // checked only `method_shaped` for `Method` and dropped this site entirely.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/ufcs_method.rs",
-            "struct Rule;\nimpl Rule {\n    fn to_rule(&self) -> i32 {\n        0\n    }\n}\nfn apply(rules: Vec<Rule>) -> Vec<i32> {\n    rules.iter().map(Rule::to_rule).collect()\n}\n",
+    rigger::test_cases! {
+        /// Real production shape this pins: `src/config.rs`'s
+        /// `.map(FailureRuleDef::to_rule)` - `to_rule` takes `&self` (DispatchCategory::Method,
+        /// dispatched receiver-agnostically via `.to_rule(`) but here is referenced by its own
+        /// UFCS PATH as a bare value with no call of its own - round 2's `relevant()` filter
+        /// checked only `method_shaped` for `Method` and dropped this site entirely.
+        a_ufcs_qualified_value_passed_to_a_combinator_counts_as_a_reference_for_a_method: assert_candidates(
+            &[
+                ("src/ufcs_method.rs", "struct Rule;\nimpl Rule {\n    fn to_rule(&self) -> i32 {\n        0\n    }\n}\nfn apply(rules: Vec<Rule>) -> Vec<i32> {\n    rules.iter().map(Rule::to_rule).collect()\n}\n"),
+            ],
+            &[],
+            &["to_rule"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"to_rule"), "{names:?}");
     }
 
-    #[test]
-    fn a_fn_named_by_a_let_initializer_counts_as_a_reference() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/let_init.rs",
-            "fn handler() -> i32 {\n    0\n}\nfn wire() -> fn() -> i32 {\n    let f = handler;\n    f\n}\n",
+    rigger::test_cases! {
+        a_fn_named_by_a_let_initializer_counts_as_a_reference: assert_candidates(
+            &[
+                ("src/let_init.rs", "fn handler() -> i32 {\n    0\n}\nfn wire() -> fn() -> i32 {\n    let f = handler;\n    f\n}\n"),
+            ],
+            &[],
+            &["handler"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"handler"), "{names:?}");
     }
 
-    #[test]
-    fn a_fn_named_as_an_array_element_counts_as_a_reference() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/array_elem.rs",
-            "fn step_one() {}\nfn step_two() {}\nfn pipeline() -> [fn(); 2] {\n    [step_one, step_two]\n}\n",
+    rigger::test_cases! {
+        a_fn_named_as_an_array_element_counts_as_a_reference: assert_candidates(
+            &[
+                ("src/array_elem.rs", "fn step_one() {}\nfn step_two() {}\nfn pipeline() -> [fn(); 2] {\n    [step_one, step_two]\n}\n"),
+            ],
+            &[],
+            &["step_one", "step_two"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"step_one"), "{names:?}");
-        assert!(!names.contains(&"step_two"), "{names:?}");
     }
 
-    #[test]
-    fn a_fn_named_in_a_match_arm_value_counts_as_a_reference() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/match_arm.rs",
-            "fn plan_a() {}\nfn plan_b() {}\nfn choose(n: u8) -> fn() {\n    match n {\n        0 => plan_a,\n        _ => plan_b,\n    }\n}\n",
+    rigger::test_cases! {
+        a_fn_named_in_a_match_arm_value_counts_as_a_reference: assert_candidates(
+            &[
+                ("src/match_arm.rs", "fn plan_a() {}\nfn plan_b() {}\nfn choose(n: u8) -> fn() {\n    match n {\n        0 => plan_a,\n        _ => plan_b,\n    }\n}\n"),
+            ],
+            &[],
+            &["plan_a", "plan_b"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"plan_a"), "{names:?}");
-        assert!(!names.contains(&"plan_b"), "{names:?}");
     }
 
-    #[test]
-    fn a_fn_named_in_a_return_expression_counts_as_a_reference() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/return_expr.rs",
-            "fn default_handler() {}\nfn get_handler() -> fn() {\n    return default_handler;\n}\n",
+    rigger::test_cases! {
+        a_fn_named_in_a_return_expression_counts_as_a_reference: assert_candidates(
+            &[
+                ("src/return_expr.rs", "fn default_handler() {}\nfn get_handler() -> fn() {\n    return default_handler;\n}\n"),
+            ],
+            &[],
+            &["default_handler"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"default_handler"), "{names:?}");
     }
 
-    #[test]
-    fn a_fn_named_as_a_generic_argument_to_another_type_counts_as_a_reference() {
-        // `token(&self, i)` never called, never assigned - only NAMED, as another type's own
-        // generic parameter (`Holder<marker_fn>`), a shape no call/dot/`::`/`<`-of-its-own rule
-        // would ever see since `marker_fn` itself is followed by `>`, not `(`/`.`/`::`/`<`.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/generic_arg.rs",
-            "fn marker_fn() {}\nstruct Holder<F>(std::marker::PhantomData<F>);\nfn make() -> Holder<marker_fn> {\n    Holder(std::marker::PhantomData)\n}\n",
+    rigger::test_cases! {
+        /// `token(&self, i)` never called, never assigned - only NAMED, as another type's own
+        /// generic parameter (`Holder<marker_fn>`), a shape no call/dot/`::`/`<`-of-its-own rule
+        /// would ever see since `marker_fn` itself is followed by `>`, not `(`/`.`/`::`/`<`.
+        a_fn_named_as_a_generic_argument_to_another_type_counts_as_a_reference: assert_candidates(
+            &[
+                ("src/generic_arg.rs", "fn marker_fn() {}\nstruct Holder<F>(std::marker::PhantomData<F>);\nfn make() -> Holder<marker_fn> {\n    Holder(std::marker::PhantomData)\n}\n"),
+            ],
+            &[],
+            &["marker_fn"],
         );
-        let candidates = candidates_for(dir.path());
-        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-        assert!(!names.contains(&"marker_fn"), "{names:?}");
     }
 
     #[test]
@@ -10949,38 +10717,19 @@ mod tests {
     // THE DRIFT GUARD for `docs/audit/dead-code.json`
     // -------------------------------------------------------------------------------------
 
-    /// THE DRIFT GUARD for `docs/audit/dead-code.json`: with `RIGGER_AUDIT_WRITE=1` set,
-    /// regenerate and overwrite it; otherwise regenerate in memory and assert it matches the
-    /// committed file byte-for-byte. Mirrors `duplication_catalog_json_matches_the_tree_or_
-    /// is_rewritten` exactly.
-    #[test]
-    fn dead_code_json_matches_the_tree_or_is_rewritten() {
-        let root = repo_root();
-        let candidates = real_dead_code_candidates();
-        let json = ledger_json(candidates, dead_code_candidate_wire);
-        let path = root.join(DEAD_CODE_PATH);
-        if std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1") {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(&path, &json).unwrap();
-            fs::write(
-                root.join(DEAD_CODE_LINES_PATH),
-                ledger_json(candidates, dead_code_candidate_lines),
-            )
-            .unwrap();
-            return;
-        }
-        let committed = fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!(
-                "{DEAD_CODE_PATH} is missing or unreadable ({e}) - run with RIGGER_AUDIT_WRITE=1 \
-                 to generate it"
-            )
-        });
-        assert_eq!(
-            committed, json,
-            "{DEAD_CODE_PATH} has drifted from the tree - regenerate with RIGGER_AUDIT_WRITE=1"
-        );
+    rigger::test_cases! {
+        /// THE DRIFT GUARD for `docs/audit/dead-code.json`: with `RIGGER_AUDIT_WRITE=1` set,
+        /// regenerate and overwrite it; otherwise regenerate in memory and assert it matches the
+        /// committed file byte-for-byte. Mirrors `duplication_catalog_json_matches_the_tree_or_
+        /// is_rewritten` exactly.
+        dead_code_json_matches_the_tree_or_is_rewritten:
+            assert_ledger_matches_the_tree_or_rewrite(
+                real_dead_code_candidates(),
+                DEAD_CODE_PATH,
+                DEAD_CODE_LINES_PATH,
+                dead_code_candidate_wire,
+                dead_code_candidate_lines,
+            );
     }
 
     /// Spec 90 criterion 2, CLAIM 1 for `docs/audit/dead-code.json`, over a synthetic ledger (the
@@ -11043,138 +10792,48 @@ mod tests {
         }
     }
 
-    /// Spec 90 criterion 2, CLAIM 2 for `docs/audit/dead-code.json`: a synthetic fixture tree
-    /// proves a pin bump (5 unrelated comment lines prepended to one file, shifting that file's
-    /// own candidate's line span) leaves the guarded dead-code JSON byte-identical, because
-    /// `content_hash` keys on each candidate's own span text, never its line number. Closes
-    /// `sdet-u90c2-surface-accounting`/`sdet-u90c2-deadcode-map-missing-claim2-claim3-tests` -
-    /// sdet's own reverted probe already empirically confirmed this property; this test is that
-    /// probe made permanent, using the file's own [`candidates_for`] fixture helper.
-    #[test]
-    fn a_pin_bump_leaves_the_guarded_dead_code_json_byte_identical() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/z.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let base_json = ledger_json(&candidates_for(dir.path()), dead_code_candidate_wire);
-
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
-             fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
-        );
-        let bumped_json = ledger_json(&candidates_for(dir.path()), dead_code_candidate_wire);
-
-        assert_eq!(
-            base_json, bumped_json,
-            "a pin bump that only shifts a candidate's OWN line number must leave the guarded \
-             dead-code JSON byte-identical (spec 90 criterion 2)"
-        );
+    rigger::test_cases! {
+        /// Spec 90 criterion 2, CLAIM 2 for `docs/audit/dead-code.json`: a synthetic fixture tree
+        /// proves a pin bump (5 unrelated comment lines prepended to one file, shifting that file's
+        /// own candidate's line span) leaves the guarded dead-code JSON byte-identical, because
+        /// `content_hash` keys on each candidate's own span text, never its line number. Closes
+        /// `sdet-u90c2-surface-accounting`/`sdet-u90c2-deadcode-map-missing-claim2-claim3-tests` -
+        /// sdet's own reverted probe already empirically confirmed this property; this test is that
+        /// probe made permanent, using the file's own [`candidates_for`] fixture helper.
+        a_pin_bump_leaves_the_guarded_dead_code_json_byte_identical:
+            assert_a_pin_bump_leaves_the_guarded_json_byte_identical(
+                &[("src/a.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"), ("src/z.rs", "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n")],
+                "src/a.rs",
+                |root| ledger_json(&candidates_for(root), dead_code_candidate_wire),
+                "a pin bump that only shifts a candidate's OWN line number must leave the guarded \
+                 dead-code JSON byte-identical (spec 90 criterion 2)",
+            );
     }
 
-    /// Spec 90 criterion 2, CLAIM 3 for `docs/audit/dead-code.json`, REFRAMED for a per-entry
-    /// artifact - see the identical reframing on
-    /// `two_branches_each_adding_an_unrelated_function_to_a_different_target_file_never_perturb_an_existing_responsibility_map_entry`
-    /// for the full rationale (this file's own `json_array_entries` helper is shared with that
-    /// test). Two branches, each adding one new, unreferenced (hence dead-code-candidate)
-    /// function to a DIFFERENT file, leave every pre-existing candidate byte-identical and each
-    /// contribute exactly their own one new entry.
-    #[test]
-    fn two_branches_each_adding_an_unrelated_function_to_a_different_file_never_perturb_an_existing_dead_code_entry(
-    ) {
-        let base = tempfile::tempdir().expect("base scratch dir");
-        write_fixture(
-            base.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
-        );
-        write_fixture(
-            base.path(),
-            "src/z.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let base_entries = json_array_entries(&ledger_json(
-            &candidates_for(base.path()),
-            dead_code_candidate_wire,
-        ));
-
-        let branch_a = tempfile::tempdir().expect("branch A scratch dir");
-        write_fixture(
-            branch_a.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n\n\
-             fn branch_a_only(x: i64) -> i64 {\n    x * 3 - 7\n}\n",
-        );
-        write_fixture(
-            branch_a.path(),
-            "src/z.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let a_entries = json_array_entries(&ledger_json(
-            &candidates_for(branch_a.path()),
-            dead_code_candidate_wire,
-        ));
-
-        let branch_b = tempfile::tempdir().expect("branch B scratch dir");
-        write_fixture(
-            branch_b.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
-        );
-        write_fixture(
-            branch_b.path(),
-            "src/z.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n\n\
-             fn branch_b_only(y: i64) -> i64 {\n    y / 2 + 11\n}\n",
-        );
-        let b_entries = json_array_entries(&ledger_json(
-            &candidates_for(branch_b.path()),
-            dead_code_candidate_wire,
-        ));
-
-        assert_eq!(
-            a_entries.len(),
-            base_entries.len() + 1,
-            "branch A must contribute exactly one new candidate"
-        );
-        assert_eq!(
-            b_entries.len(),
-            base_entries.len() + 1,
-            "branch B must contribute exactly one new candidate"
-        );
-        for entry in &base_entries {
-            assert!(
-                a_entries.contains(entry),
-                "branch A perturbed or dropped a pre-existing candidate {entry}"
+    rigger::test_cases! {
+        /// Spec 90 criterion 2, CLAIM 3 for `docs/audit/dead-code.json`, REFRAMED for a per-entry
+        /// artifact - see the identical reframing on
+        /// `two_branches_each_adding_an_unrelated_function_to_a_different_target_file_never_perturb_an_existing_responsibility_map_entry`
+        /// for the full rationale (this file's own `json_array_entries` helper is shared with that
+        /// test). Two branches, each adding one new, unreferenced (hence dead-code-candidate)
+        /// function to a DIFFERENT file, leave every pre-existing candidate byte-identical and each
+        /// contribute exactly their own one new entry.
+        two_branches_each_adding_an_unrelated_function_to_a_different_file_never_perturb_an_existing_dead_code_entry:
+            assert_two_branches_never_perturb_an_existing_entry(
+                &[("src/a.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"), ("src/z.rs", "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n")],
+                (
+                    "src/a.rs",
+                    "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n\n\
+                     fn branch_a_only(x: i64) -> i64 {\n    x * 3 - 7\n}\n",
+                ),
+                (
+                    "src/z.rs",
+                    "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n\n\
+                     fn branch_b_only(y: i64) -> i64 {\n    y / 2 + 11\n}\n",
+                ),
+                |root| ledger_json(&candidates_for(root), dead_code_candidate_wire),
+                ("candidate", "candidates"),
             );
-            assert!(
-                b_entries.contains(entry),
-                "branch B perturbed or dropped a pre-existing candidate {entry}"
-            );
-        }
-        let a_new: Vec<&serde_json::Value> = a_entries
-            .iter()
-            .filter(|e| !base_entries.contains(e))
-            .collect();
-        let b_new: Vec<&serde_json::Value> = b_entries
-            .iter()
-            .filter(|e| !base_entries.contains(e))
-            .collect();
-        assert_eq!(a_new.len(), 1, "branch A's own new candidate: {a_new:?}");
-        assert_eq!(b_new.len(), 1, "branch B's own new candidate: {b_new:?}");
-        assert_ne!(
-            a_new[0], b_new[0],
-            "the two branches' new candidates must be distinct - nothing for a real merge to \
-             conflict over"
-        );
     }
 }
 

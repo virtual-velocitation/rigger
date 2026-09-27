@@ -74,3 +74,24 @@ pub fn mk_stage(name: &str, gate: &str) -> Stage {
         ..Default::default()
     }
 }
+
+/// A config over the fixture repo at `repo_path` declaring the `worker`, `lens` and `judge`
+/// agents, its scratch/worktree root nested inside that repo.
+///
+/// Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own repo tree
+/// onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture that leaves
+/// `defaults.workdir` unconfigured shares that ONE real location with every other
+/// concurrently-running fixture and agent on the machine - a real conductor run a test
+/// drives in-process creates real git worktrees there, and an unrelated process's residue/reap
+/// scan over that same shared root can legitimately (from its own logic's view) remove a live
+/// one mid-test. Nesting the workdir inside THIS fixture's own unique repo tempdir restores the
+/// isolation (unique per test, cleaned up when `repo` drops) without depending on any shared
+/// machine state.
+pub fn scratch_cfg(repo_path: &str) -> Config {
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg
+}
