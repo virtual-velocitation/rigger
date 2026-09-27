@@ -23,8 +23,13 @@
 //!    `build_index` entry point through the real tree-sitter extraction pass, so it lives in the
 //!    `symbols` lane only.
 
-use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
-use rigger::grounder::symbols::store;
+#[path = "common/symbol_index.rs"]
+mod symbol_index;
+
+use rigger::grounder::symbols::model::{Kind, Lang};
+use symbol_index::{
+    assert_saved_without_key, def, legacy_file, rust_file, saved_with_key, sym_ref,
+};
 
 // ---- serialized-form / back-compat contract (parser-free model + store: BOTH feature lanes) ----
 
@@ -35,45 +40,15 @@ fn a_caller_less_reference_serializes_byte_identically_to_the_pre37_form() {
     // pre-37 binary wrote. A regression dropping `skip_serializing_if` would emit `"enclosing":
     // null` on every reference and rewrite every historical index's bytes - defeating the field's
     // whole "wholly additive, no re-serialization churn" contract (spec 37).
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_str().unwrap();
-    let mut idx = SymbolIndex::default();
-    idx.insert_file(
-        "a.rs".into(),
-        FileSymbols {
-            lang: Lang::Rust,
-            defs: vec![Def {
-                kind: Kind::Function,
-                name: "f".into(),
-                line: 1,
-                is_test: false,
-                is_out_of_line_module: false,
-                path_override: None,
-                enclosing_inline_module_path: None,
-            }],
-            refs: vec![
-                SymRef {
-                    name: "G".into(),
-                    line: 2,
-                    enclosing: None,
-                    is_test: false,
-                },
-                SymRef {
-                    name: "H".into(),
-                    line: 3,
-                    enclosing: None,
-                    is_test: false,
-                },
-            ],
-            partial: false,
-        },
-    );
-    store::save(&idx, root).unwrap();
-    let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
-    assert!(
-        !bytes.contains("enclosing"),
+    assert_saved_without_key(
+        "a.rs",
+        rust_file(
+            vec![def(Kind::Function, "f")],
+            vec![sym_ref("G", 2, None, false), sym_ref("H", 3, None, false)],
+        ),
+        "enclosing",
         "a caller-less index must omit the enclosing key entirely (byte-identical to the pre-37 \
-         on-disk form); got:\n{bytes}"
+         on-disk form)",
     );
 }
 
@@ -84,38 +59,15 @@ fn a_caller_attributed_reference_serializes_and_reloads_its_enclosing_name() {
     // with the caller-less test above this pins BOTH serde attributes on the field: drop
     // `skip_serializing_if` and the caller-less test reds; drop the field's persistence and this
     // one reds.
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_str().unwrap();
-    let mut idx = SymbolIndex::default();
-    idx.insert_file(
-        "a.rs".into(),
-        FileSymbols {
-            lang: Lang::Rust,
-            defs: vec![Def {
-                kind: Kind::Function,
-                name: "f".into(),
-                line: 1,
-                is_test: false,
-                is_out_of_line_module: false,
-                path_override: None,
-                enclosing_inline_module_path: None,
-            }],
-            refs: vec![SymRef {
-                name: "G".into(),
-                line: 2,
-                enclosing: Some("f".into()),
-                is_test: false,
-            }],
-            partial: false,
-        },
+    let loaded = saved_with_key(
+        "a.rs",
+        rust_file(
+            vec![def(Kind::Function, "f")],
+            vec![sym_ref("G", 2, Some("f"), false)],
+        ),
+        "enclosing",
+        "a caller-attributed reference must serialize its enclosing key",
     );
-    store::save(&idx, root).unwrap();
-    let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
-    assert!(
-        bytes.contains("enclosing"),
-        "a caller-attributed reference must serialize its enclosing key; got:\n{bytes}"
-    );
-    let loaded = store::load(root).expect("the persisted index loads");
     let refs = &loaded.files()["a.rs"].refs;
     assert_eq!(
         refs.iter()
@@ -135,10 +87,6 @@ fn a_pre37_persisted_index_loads_folding_references_caller_less() {
     // exactly `{ "name", "line" }`). `store::load` must still deserialize it - NOT return `None`
     // from a missing-field error - folding every reference caller-less. This pins the raw on-disk
     // JSON contract a rebuild replays, deliberately as bytes rather than through the Rust type.
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_str().unwrap();
-    let path = store::index_path(root);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     // A pre-37 index: two references carrying only `name` + `line`, no `enclosing` key.
     let legacy = r#"{
   "files": {
@@ -154,14 +102,11 @@ fn a_pre37_persisted_index_loads_folding_references_caller_less() {
     }
   }
 }"#;
-    std::fs::write(&path, legacy).unwrap();
-
-    let loaded = store::load(root)
-        .expect("a pre-37 index (references without an enclosing key) must still load, not error");
-    let file = loaded
-        .files()
-        .get("legacy.rs")
-        .expect("the legacy file entry is present");
+    let file = legacy_file(
+        legacy,
+        "legacy.rs",
+        "a pre-37 index (references without an enclosing key) must still load, not error",
+    );
     // Every reference folds caller-less - the missing key defaults to `None`.
     assert_eq!(
         file.refs.len(),
@@ -192,6 +137,7 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
     // caller-less across the round-trip. A regression that lost the attribution, or a serde change
     // that dropped the field on save/load, reds here.
     use rigger::grounder::symbols::build_index;
+    use rigger::grounder::symbols::store;
     let dir = tempfile::tempdir().unwrap();
     // `fn f` calls `G()`; the `impl Draw for Widget` header's `Draw` bound is a top-level reference
     // belonging to no function body. (The Rust tags query captures an impl-header trait bound as a
