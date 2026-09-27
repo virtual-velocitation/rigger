@@ -45,6 +45,7 @@
 mod common;
 
 use common::repo::assert_doc_carries_none_of;
+use common::repo::missing_rows;
 use common::repo::repo_text;
 
 /// The return type `EventStore::append` is declared with inside `text`, extracted rather
@@ -137,11 +138,7 @@ const WRONG_DEFAULT_OR_RETIRED_PHRASINGS: &[&str] = &[
 fn architecture_names_the_current_store_and_inspector_surface() {
     let text = repo_text("docs/architecture.md");
 
-    let missing: Vec<String> = CURRENT_SURFACE_TOKENS
-        .iter()
-        .filter(|(_, token)| !text.contains(token))
-        .map(|(surface, token)| format!("{surface}  (missing token: {token:?})"))
-        .collect();
+    let missing = missing_rows(&text, CURRENT_SURFACE_TOKENS, "missing token");
 
     assert!(
         missing.is_empty(),

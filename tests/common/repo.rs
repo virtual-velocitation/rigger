@@ -131,3 +131,13 @@ pub fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
+
+/// The `(name, needle)` rows of `table` whose needle `text` does not contain, each rendered as
+/// `{name}  ({label}: {needle:?})`.
+pub fn missing_rows(text: &str, table: &[(&str, &str)], label: &str) -> Vec<String> {
+    table
+        .iter()
+        .filter(|(_, needle)| !text.contains(needle))
+        .map(|(name, needle)| format!("{name}  ({label}: {needle:?})"))
+        .collect()
+}
