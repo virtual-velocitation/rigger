@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
+use super::query::name_suffix;
 use super::{
     CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, Error, Graph, Located,
     Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
@@ -1906,17 +1907,6 @@ fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
 /// same-file reference's target, so a reference to a locally-defined name lands on its definition.
 fn code_entity_id(file: &str, name: &str) -> String {
     format!("{file}::{name}")
-}
-
-/// The entity-name suffix of a `<file>::<name>` id (spec 52): everything after the FIRST `::`. A
-/// file path never contains `::`, so this is exactly the callee/definition name - the twin of the
-/// SQL `substr(id, instr(id, '::') + 2)` the name-suffix expression index is built on. An id with
-/// no `::` (never a code-entity id) is returned whole.
-fn name_suffix(id: &str) -> &str {
-    match id.find("::") {
-        Some(i) => &id[i + 2..],
-        None => id,
-    }
 }
 
 /// The file prefix of a `<file>::<name>` id (spec 58): everything BEFORE the first `::` - the twin
