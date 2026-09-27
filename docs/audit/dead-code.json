@@ -14,9 +14,7 @@
         "file": "src/canary_store.rs",
         "content_hash": "99d81069c44251eb"
       }
-    ],
-    "disposition": "delete",
-    "reason": "cataloged_classes has no production caller anywhere in src/ (checked whole-tree, recursively). Its only two references are its own inline tests, now in this file after spec 93 criterion 1's read/write split of the old canary.rs moved every disk/store-touching function here (cataloged_classes_counts_only_planted_distinct_classes, canary_store.rs:1150; the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes, canary_store.rs:1164); the latter is the one behavior it exists to prove - the shipped corpus catalogs >= 3 defect classes (spec 13 unit 5) - and would go dead with it. run_canary (the real production review-panel loop) never consults it: corpus diversity is a load-time authoring check, not a runtime one. This entry carries forward the original disposition and reasoning unchanged, only relocated to this candidate's new file:name key."
+    ]
   },
   {
     "name": "should_relaunch",
@@ -41,9 +39,7 @@
         "file": "src/conductor.rs",
         "content_hash": "07f9ef7d5b6e4504"
       }
-    ],
-    "disposition": "keep-pending",
-    "reason": "should_relaunch (spec 104 criterion 5, Design's THE BOUND: 'the spawn is relaunched at most twice, then the run halts naming the class') RELOCATED here from src/driver/claude_code.rs by the same adj-u104c5 REQUIRED FIX 3 - the disposition itself carries forward unchanged, only the file:name key moves. Still has no production caller: it is a pure decision primitive ('every AgentFailure variant shares this ONE bound ... the class itself is not an input', this function's own doc) that spec 105's hold controller is the only production caller of, once the composition root swaps `rigger run` onto this driver - unchanged on this branch (`cli::Driver` never relaunches a live session, `driver::claude_code`'s own module doc). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism the criterion's own Done-when text specifies ('relaunches the spawn at most twice, then halts the run naming the class ... This criterion OWNS the class, its sources and the bound') - deleting it would delete the one place that bound is proven correct in isolation. keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS: 'the bound') and spec 105 (the hold controller that enforces it, per this criterion's own Goal sentence)."
+    ]
   },
   {
     "name": "failure_class",
@@ -92,9 +88,7 @@
         "file": "tests/claude_code_stream_periphery.rs",
         "content_hash": "b4b6a5cf043fec43"
       }
-    ],
-    "disposition": "keep-pending",
-    "reason": "failure_class (spec 104 criterion 5, FAILURE CLASS's data-recovery half: 'the port returns the class as data') RELOCATED here from src/driver/claude_code.rs (adj- u104c5 REQUIRED FIX 3, arch-u104c5-failure-class-belongs-in-conductor-not-driver: a port-crossing sentinel-plus-typed-class pair belongs beside `Error`/`AgentDriver`/ `PARKED_MARKER`/`is_parked`, the SAME shape, rather than in one particular adapter) - the disposition itself carries forward unchanged, only the file:name key moves. Still has no production caller: it is the reader half of the [`no_result_error`]/[`failure_class`] sentinel pair `read_stream`'s own no-result path writes through `classify_no_result` (a real, non-test call, so the WRITER is exercised end to end - see the criterion's own periphery tests), but the READER exists to let a caller recover the embedded class from an `Err`, and the only caller with an `Err` to recover it from is spec 105's hold controller, which does not exist on this branch (`rigger run` still composes agents through `cli::Driver`, unchanged - `driver::claude_code`'s own module doc). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism the criterion's own Done-when text specifies ('a test proves A FAILURE HAS A CLASS ... This criterion OWNS the class, its sources and the bound') - deleting it would delete the one way anything outside this file can ever learn the class `classify_no_result` computed. keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS) and spec 105 (the hold controller that consumes it, per this criterion's own Goal sentence: 'the hold that consumes its failure classes ... are spec 105's')."
+    ]
   },
   {
     "name": "sdet_author_enabled",
@@ -123,9 +117,7 @@
         "file": "src/config_store.rs",
         "content_hash": "51460f61d0ac1cbe"
       }
-    ],
-    "disposition": "keep-pending",
-    "reason": "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET periphery-test author ONLY on whether an sdet-author agent is configured (self.cfg.agents.get(ROLE_SDET_AUTHOR)) and never consults self.cfg.defaults.sdet_author_enabled() at all, so today an explicit sdet_author: false in a workflow's defaults: block does nothing - the on-by-default opt-out spec 32 documents and this very method's own doc comment claims ('the conductor's build-seam reads through here') is not actually true of the shipped code. keep-pending, citing spec 32 (the sdet-author feature this toggle governs, already landed): deleting the method would delete the documented resolution authority for an already-shipped, still-referenced config field (Defaults::sdet_author) before a follow-up wires spawn_sdet_author to call it - the correct fix is wiring the call site, out of scope here (no production code changes this criterion)."
+    ]
   },
   {
     "name": "pid_is_alive",
@@ -162,9 +154,7 @@
         "file": "tests/cli.rs",
         "content_hash": "72c2747f506cd564"
       }
-    ],
-    "disposition": "delete",
-    "reason": "pid_is_alive has no production caller. It is the RETIRED predecessor of the real marker-serving check: dash_marker_serving (main.rs:5711, the production predicate ensure_run_dashboard_at is called with) calls dash::dash_serving_on - a REAL network probe of the port - and its own doc comment explains why by name: 'A REAL network probe of the port, never a bare pid-liveness check: a marker left by a self-reaped or pid-recycled dash must never masquerade as still serving just because its pid happens to be alive'. pid_is_alive's only references are its own unit test (dash.rs:9304) and an older fixture test (main.rs:12795-12841) that injects it as a simplified closure for readability, not a claim about production behavior."
+    ]
   },
   {
     "name": "serve",
@@ -181,9 +171,7 @@
         "file": "src/mcpserver.rs",
         "content_hash": "809a0c685a6290d0"
       }
-    ],
-    "disposition": "delete",
-    "reason": "serve (the blocking, self-binding accept-loop entry point) has no production caller. The real dash-serving CLI path (main.rs::cmd_dash) calls dash::serve_on (main.rs:6493) with the listener bind_singleton already bound, never dash::serve, which would bind its own listener and so cannot participate in spec 62's singleton-bind-then-serve flow. (main.rs:6574's doc comment still names '[`dash::serve`]' as the accept loop that terminates - a stale intra-doc reference worth a follow-up fixing it to name serve_on, disclosed here rather than silently left.) serve's 2 references are its own smoke tests."
+    ]
   },
   {
     "name": "rebuild",
@@ -211,9 +199,7 @@
         "file": "tests/cli.rs",
         "content_hash": "ec3c05273a03cca1"
       }
-    ],
-    "disposition": "keep-pending",
-    "reason": "rebuild (the digest-pool projection rebuild, spec 27) has no production caller anywhere - src/lib.rs's mod distiller; declaration is the only mention of the module outside distiller.rs itself, confirmed by a whole-tree recursive grep. Unlike a mere convenience wrapper, rebuild's own tested behavior IS spec 27's already-landed Done-when contract (clearing and re-deriving the digest pool, run-boundary scoping, determinism) - deleting it would delete the shipped mechanism those criteria proved, not an unused alternative to one. keep-pending, citing spec 27: it is modeled directly on playbooks::rebuild, which IS wired to a CLI surface (rigger playbooks --rebuild); distiller::rebuild is the equivalent primitive awaiting its own call site (a rigger distill command, or a hook into rigger reset), never spec'd as a Done-when criterion of spec 27 itself, which is why it shipped unwired."
+    ]
   },
   {
     "name": "reconcile_on_start",
@@ -250,9 +236,7 @@
         "file": "tests/claude_code_stream_periphery.rs",
         "content_hash": "1edc972a51e71931"
       }
-    ],
-    "disposition": "keep-pending",
-    "reason": "reconcile_on_start (spec 104 criterion 6, STOP's supervisor start-up reconciliation half: 'on start the supervisor closes any SpawnLaunched left open as interrupted and reaps processes still rooted in that spawn's worktree before it relaunches') has no production caller yet, the SAME already-disclosed shape install_write_guard_hook's own entry above documents for criterion 4: `rigger run` still composes agents through cli::Driver (main.rs:3667), and no supervisor loop yet calls a claude_code::Driver method at start-up - that call site is spec 105's own composition-root swap, not this criterion's (spec 104's own Design, THE COMPOSITION ROOT paragraph: 'the swap that makes rigger run build claude_code::Driver is spec 105's first unit'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism criterion 6's own Done-when text specifies ('a supervisor start closes an open launch record and reaps the spawn's worktree before relaunching') - deleting it would delete the criterion's own start-up half before the supervisor loop that calls it once per boot lands. keep-pending, citing spec 104 criterion 6 (this criterion's own OWNS: 'stop and start-up reconciliation only') and spec 105 (the composition-root swap that will call it)."
+    ]
   },
   {
     "name": "install_write_guard_hook",
@@ -293,9 +277,7 @@
         "file": "tests/write_guard_hook_periphery.rs",
         "content_hash": "9cc4408300ed086b"
       }
-    ],
-    "disposition": "keep-pending",
-    "reason": "install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) has no production caller yet: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until criterion 2's stream reader completes `impl AgentDriver for claude_code::Driver` (this file's own module doc: 'until it lands ... rigger run ... keeps using cli::Driver'), and no unit yet builds a live spawn's --settings string from this criterion's own hook fragment plus criterion 5's StopFailure one (spec 104 Design's THE HOOKS paragraph: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism THE WRITE GUARD's own Done-when text specifies ('the host injects it as the PreToolUse hook for Edit|Write|NotebookEdit') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it (assembling opts.settings_json from both hook owners) lands, mirroring SpawnOpts.settings_json's own already-disclosed inert-until-wired state (spec 104 criterion 1's own accounting: 'no live driver reads these fields yet'). keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard command and its injection') and THE HOOKS, which names criterion 4 this hook family's sole owner."
+    ]
   },
   {
     "name": "install_stop_failure_hooks",
@@ -328,9 +310,7 @@
         "file": "tests/stop_failure_hook_periphery.rs",
         "content_hash": "9cc4408300ed086b"
       }
-    ],
-    "disposition": "keep-pending",
-    "reason": "install_stop_failure_hooks (spec 104 criterion 5, THE HOOKS' `StopFailure` family injection half: 'criterion 5's, command, record and injection both') has no production caller yet, for the identical reason install_write_guard_hook (criterion 4's own injection half, immediately below) does not: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until spec 105's composition- root swap builds a live spawn's --settings string from this criterion's own `StopFailure` family plus criterion 4's `PreToolUse` one (Design's THE HOOKS: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism Design specifies ('one entry per error category') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it lands, mirroring install_write_guard_hook's own already-disclosed inert-until-wired state one entry below. keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS: 'command, record and injection both') and THE HOOKS, which names criterion 5 the `StopFailure` family's sole owner."
+    ]
   },
   {
     "name": "with_content_identity",
@@ -515,9 +495,7 @@
         "file": "tests/store_content_identity_periphery.rs",
         "content_hash": "507c0211c6f0151d"
       }
-    ],
-    "disposition": "keep-pending",
-    "reason": "with_content_identity (the storage-level idempotency append-guard builder, spec 60) has no production caller: open_sqlite_store (main.rs:444), the crate's ONE sqlite event-log constructor, is a bare Store::open(path) with no guard chained, and derived_index_identity() (ingest.rs:368, the production ContentIdentity value) is only ever passed to maintenance operations (count_derived_duplicates, prune_derived_index) that take it as a query-time parameter, never to with_content_identity itself. Its 44 references are all test fixtures exercising the guard directly against a Store they construct, per spec 60 criterion 4's own Done-when text: 'it DOES prove itself by driving the STORE PORT directly'. keep-pending, citing spec 60 (already landed): this is the documented, deliberately injected-at-the-composition-root 'defense in depth so a regression upstream can never re-bloat the log' criterion 4 shipped and tested - deleting it removes a proven backstop the composition root is architecturally meant to wire in, not dead weight. Disclosed plainly: whether main.rs's real store-open path SHOULD chain it is an open question this criterion does not resolve (no production code changes here) - a follow-up spec should either wire it into open_sqlite_store or explicitly retire it, rather than let it sit silently unwired indefinitely."
+    ]
   },
   {
     "name": "resolve_wrapper_name",
@@ -542,9 +520,7 @@
         "file": "tests/build_env_authority_periphery.rs",
         "content_hash": "ce3afae8f8065607"
       }
-    ],
-    "disposition": "delete",
-    "reason": "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by hand: 'resolve_build_layer duplicates its ambient-PATH read inline rather than calling it'). resolve_build_layer (gate.rs:581), its own doc comment's named sole intended caller ('kept pub as the wrapper-only building block ... resolve_build_layer composes'), instead reads std::env::var_os(\"PATH\") itself (gate.rs:588) rather than calling resolve_wrapper_name(wrapper) - a small, confirmed duplicate-glue defect (worth folding into section 2's duplication catalog on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 references are its own tests."
+    ]
   },
   {
     "name": "index_events",
@@ -813,9 +789,7 @@
         "file": "tests/simplification_audit.rs",
         "content_hash": "ddf9361d84df7cbb"
       }
-    ],
-    "disposition": "delete",
-    "reason": "index_events is spec 87's own Goal-worked example of the false negative this whole spec exists to fix ('a function whose only caller is its own test reads as alive: the false negative the operator predicted... e.g. src/grounder/symbols/events.rs:17 index_events, 21 test references'). Confirmed again on the current tree (now 64 test references at line 29, having grown with the test suite): no production caller anywhere."
+    ]
   },
   {
     "name": "definitions_named",
@@ -856,9 +830,7 @@
         "file": "src/grounder/symbols/model.rs",
         "content_hash": "59f8820c2c73d774"
       }
-    ],
-    "disposition": "delete",
-    "reason": "definitions_named has no production caller - only its own module's assertion-style tests (symbols/mod.rs) use it to check index state after a build/update, never a production edge-resolution path."
+    ]
   },
   {
     "name": "references_named",
@@ -875,9 +847,7 @@
         "file": "src/grounder/symbols/model.rs",
         "content_hash": "196da7bb828b5b03"
       }
-    ],
-    "disposition": "delete",
-    "reason": "references_named has no production caller - the same test-only accessor shape as its sibling definitions_named immediately above it."
+    ]
   },
   {
     "name": "ingest_project",
@@ -909,9 +879,7 @@
         "file": "tests/parallel_ordered_emit.rs",
         "content_hash": "b007baf7d7e8d032"
       }
-    ],
-    "disposition": "delete",
-    "reason": "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated sites - has no production caller on either lane. Production calls ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession."
+    ]
   },
   {
     "name": "ingest_project",
@@ -943,9 +911,7 @@
         "file": "tests/parallel_ordered_emit.rs",
         "content_hash": "b007baf7d7e8d032"
       }
-    ],
-    "disposition": "delete",
-    "reason": "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated sites - has no production caller on either lane. Production calls ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession."
+    ]
   },
   {
     "name": "fully_done",
@@ -986,9 +952,7 @@
         "file": "src/ledger.rs",
         "content_hash": "5b392a63a53e225c"
       }
-    ],
-    "disposition": "delete",
-    "reason": "fully_done has no production caller. Its own doc comment's three-conjunct completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it (confirmed whole-tree, recursively) - the wired run-completion checks it was apparently meant to serve use done() and the per-unit is_terminal predicate instead. (Line shifted 500 -> 506 -> 574: spec 88 round 3's prior_criterion_unit spec-scoping fix added 6 lines above spec_stem, then merging rigger-run's spec 88 criterion 3 (ESCALATION RESUMES) added resume_bound/ResumeGrant/UnitResumed earlier in this same file.)"
+    ]
   },
   {
     "name": "is_integrated",
@@ -1005,9 +969,7 @@
         "file": "src/ledger.rs",
         "content_hash": "4060adb46078196c"
       }
-    ],
-    "disposition": "delete",
-    "reason": "is_integrated has no production caller, though its doc comment claims one ('used by resume to skip completed work'): the real resume-skip logic uses is_terminal (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:643, main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only check (a resume must also skip an Escalated unit, which is_integrated alone would wrongly re-attempt). Superseded, not merely unused. (Line shifted 577 -> 583 -> 651: same round-3 doc-comment addition, then the same rigger-run merge shift above.)"
+    ]
   },
   {
     "name": "new",
@@ -1604,9 +1566,7 @@
         "file": "tests/worktree_liveness_fence_periphery.rs",
         "content_hash": "572defa6902d294e"
       }
-    ],
-    "disposition": "delete",
-    "reason": "SpawnRequest::new and its 7 builder methods (with_system_prompt/with_model/ with_tools/with_dir/with_blast_radius/with_title/with_reviews) plus the park convenience wrapper are ALL dead together, same root cause: the real production spawn path (driver/replay.rs:251-252 fn spawn_request(...) -> SpawnRequest { SpawnRequest { ... } }) constructs the struct via a direct struct literal and calls park_in_run(store, &req, &opts.run_id) directly (driver/replay.rs:338) - it never touches the builder or the zero-run-id park() wrapper at all. Every one of these 9 fns' references is a test fixture building a SpawnRequest by hand; spec 87's own Goal text names four of the seven builders (with_title/with_reviews/with_model/ with_blast_radius) as its worked example of confirmed dead code."
+    ]
   },
   {
     "name": "with_system_prompt",
@@ -1623,9 +1583,7 @@
         "file": "src/spawn.rs",
         "content_hash": "0a68549443b7c66d"
       }
-    ],
-    "disposition": "delete",
-    "reason": "with_system_prompt - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+    ]
   },
   {
     "name": "with_model",
@@ -1650,9 +1608,7 @@
         "file": "src/spawn_store.rs",
         "content_hash": "0a68549443b7c66d"
       }
-    ],
-    "disposition": "delete",
-    "reason": "with_model - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+    ]
   },
   {
     "name": "with_tools",
@@ -1669,9 +1625,7 @@
         "file": "src/spawn.rs",
         "content_hash": "8dc4ec749d386297"
       }
-    ],
-    "disposition": "delete",
-    "reason": "with_tools - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+    ]
   },
   {
     "name": "with_dir",
@@ -1688,9 +1642,7 @@
         "file": "src/spawn.rs",
         "content_hash": "0a68549443b7c66d"
       }
-    ],
-    "disposition": "delete",
-    "reason": "with_dir - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+    ]
   },
   {
     "name": "with_blast_radius",
@@ -1715,9 +1667,7 @@
         "file": "src/spawn_store.rs",
         "content_hash": "ca283b86f29ebcbb"
       }
-    ],
-    "disposition": "delete",
-    "reason": "with_blast_radius - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+    ]
   },
   {
     "name": "with_title",
@@ -1738,9 +1688,7 @@
         "file": "src/spawn.rs",
         "content_hash": "6330ce3a5a38ef8d"
       }
-    ],
-    "disposition": "delete",
-    "reason": "with_title - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+    ]
   },
   {
     "name": "with_reviews",
@@ -1761,9 +1709,7 @@
         "file": "src/spawn.rs",
         "content_hash": "ca283b86f29ebcbb"
       }
-    ],
-    "disposition": "delete",
-    "reason": "with_reviews - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+    ]
   },
   {
     "name": "park",
@@ -1888,9 +1834,7 @@
         "file": "tests/cli.rs",
         "content_hash": "446ab234af65a4ac"
       }
-    ],
-    "disposition": "delete",
-    "reason": "park (the zero-run-id convenience wrapper around park_in_run) - part of the SpawnRequest-construction dead set; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation. This entry's file:name key moved from src/spawn.rs to src/spawn_store.rs (unchanged reasoning) when spec 93 criterion 1's read/write split relocated both park and park_in_run into the new store-only sibling file; park_in_run itself (spawn_store.rs:36, the real park authority) is correctly NOT a candidate: its own body is the one real production reference driver/replay.rs:339 needs - this scanner counts direct references, not reachability, so park_in_run reads alive even though its only OTHER caller (park) is itself dead."
+    ]
   },
   {
     "name": "is_dirty",
@@ -1935,8 +1879,6 @@
         "file": "src/worktree.rs",
         "content_hash": "dc00505c458a3b7e"
       }
-    ],
-    "disposition": "delete",
-    "reason": "is_dirty has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 3 references (src/conductor.rs and worktree.rs's own `mod tests`) are all test-only; its own body now delegates to `path_is_dirty` (spec 89 round 3), but that internal call is not a caller of `is_dirty` itself. Line shifted again, this time by spec 89 criterion 1's round 3 fix (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`): `is_dirty`'s body was replaced with a one-line delegation to the new shared `path_is_dirty` free fn (built on the pre-existing `git`/`run_git` primitives, and now also called directly by `sweep_terminal_logged` and `main.rs`'s `reclaim_orphan_scratch` so the two no longer risk diverging on how a git-status failure is read), and the doc comment naming that delegation pushes the line down 8 more, 627->635. expect_merged itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - now calls those two split methods directly for its own row-level durable recording and has no caller left for the combined form) - a test-scoped item is not a production dead-code candidate by this scanner's own definition, closing the finding at its root rather than re-dispositioning it in place."
+    ]
   }
 ]

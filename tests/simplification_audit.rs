@@ -3833,262 +3833,8 @@ fn render_section_3() -> String {
     out
 }
 
-/// Criterion 3's own KG-degree lookup, hand-run via `rigger graph --show <entity>` for every real
-/// candidate (spec 87 Design's THE KNOWLEDGE GRAPH CROSS-CHECK) and hardcoded here - a report-
-/// rendering annotation, never a JSON field (spec 87 OUTPUT names no degree field for
-/// `dead-code.json`), so it lives beside the rendering, not the instrument. `src/ingest.rs`'s two
-/// `#[cfg(feature)]`-gated `ingest_project` sites share one lookup: the graph's own entity
-/// resolution for this shared name only ever returns the light-lane (`:615`) definition
-/// regardless of which line is asked for - a disclosed instrument-boundary quirk (section 4.2
-/// discloses it), not this function's own imprecision.
-fn kg_degree_for(file: &str, name: &str) -> u32 {
-    match (file, name) {
-        // Spec 93 criterion 1's read/write file split relocated cataloged_classes into
-        // canary_store.rs and reduced its live reference count (2 test-only refs, 0 local
-        // outgoing calls - a pure BTreeSet-collecting iterator chain) - re-derived by the same
-        // two-part count the is_dirty entry below documents (test_only_references + call-out),
-        // not a live `rigger graph --show` run (the tool reflects the checked-out base branch,
-        // which cannot see this unmerged unit branch's new file split).
-        ("src/canary_store.rs", "cataloged_classes") => 2,
-        // failure_class (src/conductor.rs, spec 104 criterion 5, RELOCATED here from
-        // src/driver/claude_code.rs by adj-u104c5 REQUIRED FIX 3 - arch-u104c5-failure-class-
-        // belongs-in-conductor-not-driver - unmerged): 2 test-only call sites in this file's own
-        // #[cfg(test)] mod tests (no_result_error_round_trips_through_failure_class,
-        // failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced - same two
-        // tests, now colocated with the moved code), plus 3 NEW test-only call sites in
-        // src/driver/claude_code.rs's own #[cfg(test)] mod tests
-        // (classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails,
-        // classify_no_result_ignores_a_stopfailure_record_from_a_different_run,
-        // classify_no_result_still_honors_a_stopfailure_record_from_the_same_run - the run-
-        // scoping/degrade-branch tests adj-u104c5 REQUIRED FIX 1 added, now calling this
-        // function cross-module via `use crate::conductor::failure_class`), plus 4 test-only
-        // call sites in tests/claude_code_stream_periphery.rs (one more than the prior round's
-        // 3 - REQUIRED FIX 1's new run-boundary periphery test), for 9 test-only references,
-        // plus 1 local outgoing call (AgentFailure::from_category) = 10. Hand-derived the same
-        // way install_write_guard_hook's own precedent documents (`rigger graph --show` cannot
-        // see this unmerged unit branch's new lines), not a live tool run.
-        ("src/conductor.rs", "failure_class") => 10,
-        // should_relaunch (src/conductor.rs, spec 104 criterion 5, RELOCATED here from
-        // src/driver/claude_code.rs by the same adj-u104c5 REQUIRED FIX 3 - unmerged): 4
-        // test-only call sites in this file's own #[cfg(test)] mod tests
-        // (should_relaunch_allows_up_to_two_relaunches_then_stops - 4 calls, same test now
-        // colocated with the moved code), for 4 test-only references, plus 0 local outgoing
-        // calls (a bare `prior_relaunches < 2` comparison) = 4 - the total is unchanged by the
-        // move, only the file it is hand-derived against. Hand-derived the same way
-        // install_write_guard_hook's own precedent documents, not a live tool run.
-        ("src/conductor.rs", "should_relaunch") => 4,
-        ("src/config.rs", "sdet_author_enabled") => 3,
-        ("src/contextgraph/query.rs", "graph_load") => 3,
-        ("src/contextgraph/query.rs", "graph_query") => 8,
-        ("src/dash.rs", "pid_is_alive") => 5,
-        ("src/dash.rs", "serve") => 3,
-        ("src/distiller.rs", "rebuild") => 15,
-        // install_write_guard_hook (src/driver/claude_code.rs, spec 104 criterion 4, new,
-        // unmerged): 5 test-only call sites in this file's own `#[cfg(test)] mod tests`
-        // (install_write_guard_hook_merges_the_pretooluse_entry_into_empty_settings,
-        // install_write_guard_hook_passes_both_the_dir_and_the_scratch_container_as_roots,
-        // install_write_guard_hook_composes_with_an_existing_stopfailure_family,
-        // install_write_guard_hook_is_idempotent - 2 calls, first and second), plus 2 more
-        // test-only references added by this criterion's own periphery layer
-        // (tests/write_guard_hook_periphery.rs's `use` import line and its one call
-        // expression, inside write_guard_hook_command - itself called from every test in
-        // that file, but one call EXPRESSION is one line-span reference), for 7 test-only
-        // references, plus 2 local outgoing calls (write_guard_command,
-        // hooks::install_pretooluse_hook) = 9. Hand-derived the same two-part way frame/hit's
-        // own precedent above documents (`rigger graph --show` cannot see this unmerged unit
-        // branch's new files), not a live tool run.
-        // install_stop_failure_hooks (src/driver/claude_code.rs, spec 104 criterion 5, new,
-        // unmerged): 4 test-only call sites in this file's own #[cfg(test)] mod tests
-        // (install_stop_failure_hooks_merges_one_block_per_category,
-        // install_stop_failure_hooks_is_idempotent - 2 calls, first and second,
-        // install_stop_failure_hooks_composes_with_the_write_guard_family), for 4 test-only
-        // references, plus 2 local outgoing calls (stop_failure_command,
-        // hooks::install_stopfailure_hook) = 6. Hand-derived the same way install_write_guard_
-        // hook's own precedent above documents, not a live tool run.
-        ("src/driver/claude_code.rs", "install_stop_failure_hooks") => 6,
-        ("src/driver/claude_code.rs", "install_write_guard_hook") => 9,
-        // reconcile_on_start (src/driver/claude_code.rs, spec 104 criterion 6, new,
-        // unmerged): 6 test-only call sites, all in this file's own `#[cfg(test)] mod
-        // tests`, one call each (reconcile_on_start_closes_every_open_launch_as_interrupted,
-        // reconcile_on_start_is_a_noop_when_nothing_is_open,
-        // reconcile_on_start_leaves_an_already_closed_launch_alone,
-        // reconcile_on_start_skips_reaping_a_malformed_spawn_id_but_still_closes_it,
-        // reconcile_on_start_reaps_a_process_still_rooted_in_the_spawns_worktree,
-        // reconcile_on_start_reaps_nothing_when_no_scratch_root_is_configured), plus 6
-        // local outgoing calls (progress::open_launches, progress_store::record_launch,
-        // SpawnLaunched::closed, spawn::unit_of, conductor::unit_worktree_dir,
-        // reap::reap_processes_rooted_under) = 12. Hand-derived the same two-part way
-        // install_write_guard_hook's own precedent immediately above documents (`rigger
-        // graph --show` cannot see this unmerged unit branch's new function), not a live
-        // tool run.
-        ("src/driver/claude_code.rs", "reconcile_on_start") => 12,
-        ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
-        ("src/gate.rs", "resolve_wrapper_name") => 3,
-        ("src/grounder/symbols/events.rs", "index_events") => 17,
-        ("src/grounder/symbols/model.rs", "definitions_named") => 7,
-        ("src/grounder/symbols/model.rs", "references_named") => 10,
-        ("src/ingest.rs", "ingest_project") => 3,
-        ("src/ledger.rs", "fully_done") => 6,
-        ("src/ledger.rs", "is_integrated") => 3,
-        ("src/spawn.rs", "new") => 5,
-        ("src/spawn.rs", "with_system_prompt") => 6,
-        ("src/spawn.rs", "with_model") => 7,
-        ("src/spawn.rs", "with_tools") => 5,
-        ("src/spawn.rs", "with_dir") => 6,
-        ("src/spawn.rs", "with_blast_radius") => 6,
-        ("src/spawn.rs", "with_title") => 7,
-        ("src/spawn.rs", "with_reviews") => 5,
-        // Spec 93 criterion 1's read/write file split relocated park (and park_in_run) into
-        // spawn_store.rs; re-counted on the current tree (20 test-only refs across
-        // conductor.rs/driver/replay.rs/liveness.rs/spawn_store.rs's own test module + 1 local
-        // outgoing call, park_in_run) rather than a live `rigger graph --show` run, for the
-        // same reason cataloged_classes above gives.
-        ("src/spawn_store.rs", "park") => 21,
-        // Spec 93 criterion 1's read/write splits (canary.rs/canary_store.rs,
-        // progress.rs/progress_store.rs, run.rs/run_store.rs) made each of these `to_event`
-        // methods `pub(crate)` so a sibling store-only file could reach them, dropping their
-        // local (same-file) reference count to zero - the FILE-AWARE scan above only sees a
-        // reference within the same file, so a real cross-file production caller
-        // (canary_store::append, progress_store::record, run_store::start_fresh; see
-        // disposition_for above) does not count here. Each degree is 0 test-only refs plus its
-        // own body's local outgoing calls (Event::new, and one or two Event::with_meta calls).
-        // canary.rs has two distinct `to_event` methods (CanaryOutcome's and CanaryHeader's) at
-        // different lines sharing this one (file, name) key; both happen to compute the same
-        // degree (2), so the shared key is not ambiguous in practice.
-        ("src/canary.rs", "to_event") => 2,
-        ("src/progress.rs", "to_event") => 2,
-        ("src/run.rs", "to_event") => 3,
-        // Round 3 (spec 89 criterion 1, `arch-u89c1r2-dirty-check-duplicated-and-diverges-
-        // fail-direction`) shifts `is_dirty` to line 635 AND changes its body (a one-line
-        // delegation to the new `path_is_dirty` free fn, replacing the direct `git(...)` call).
-        // `rigger graph --show` only reflects `.`'s own checked-out ref (the main repo's base
-        // branch), which cannot see an unmerged unit branch's edits - reconfirmed live: it still
-        // reports the PRE-spec-89 body at line 544. Degree re-derived by the same two-part count
-        // the live tool's own output visibly used at that base snapshot (test_only_references
-        // count + call-out count, 4 + 1 = 5): `is_dirty`'s callers are its same 4 test-only call
-        // sites, untouched by this round (see this file's `disposition_for`), and its body still
-        // makes exactly ONE outgoing call - `path_is_dirty` in place of `git` - so the edge count
-        // is unchanged at 5.
-        ("src/worktree.rs", "is_dirty") => 5,
-        // frame (src/console/map.rs, spec 84 criterion 1) is NO LONGER a real candidate as of
-        // criterion 2's own diff - see disposition_for's own comment on this same removal - so
-        // it carries no degree entry here any more either; a stale entry for a name that can
-        // never reach this match would itself be exactly the kind of unverifiable residue this
-        // file's own discipline rejects.
-        //
-        // spec 84 criterion 2's own new functions, hand-derived the same two-part way (test-
-        // only call sites within THIS file's own `#[cfg(test)] mod tests`, syntactic call
-        // expressions - not runtime call count, matching frame's own methodology above - plus
-        // each fn's own body's local outgoing calls to another same-file fn; a struct
-        // construction or enum-variant build is not counted as a call edge, matching frame's own
-        // "project is a local closure, not a graph entity" exclusion).
-        //
-        // hit: 4 test-only call sites (hit_finds_the_nearest_entity_within_radius,
-        // hit_returns_none_far_from_everything,
-        // hit_falls_back_to_a_district_when_no_entity_is_near_but_the_click_is_inside_its_hull,
-        // hit_prefers_an_entity_dot_over_the_district_hull_beneath_it) plus 1 local outgoing call
-        // (frame) = 5.
-        ("src/console/map.rs", "hit") => 5,
-        // landmarks: 3 test-only call sites (landmarks_ranks_by_whole_map_degree_descending (1
-        // call), landmarks_respects_the_limit (2 calls)) plus 1 local outgoing call
-        // (as_candidate) = 4.
-        ("src/console/map.rs", "landmarks") => 4,
-        // bridges_between_districts: 1 test-only call site
-        // (bridges_between_districts_only_includes_entities_with_a_cross_district_edge) plus 1
-        // local outgoing call (as_candidate) = 2.
-        ("src/console/map.rs", "bridges_between_districts") => 2,
-        // changing_right_now: 2 test-only call sites
-        // (changing_right_now_filters_to_the_touched_set,
-        // changing_right_now_is_empty_when_nothing_is_touched) plus 1 local outgoing call
-        // (as_candidate) = 3.
-        ("src/console/map.rs", "changing_right_now") => 3,
-        // argued_about_in_review: 2 test-only call sites
-        // (argued_about_in_review_ranks_entities_by_pinned_finding_count (1 call),
-        // argued_about_in_review_is_empty_when_no_findings_are_pinned (1 call)) plus 1 local
-        // outgoing call (as_candidate) = 3.
-        ("src/console/map.rs", "argued_about_in_review") => 3,
-        // search: 4 test-only call sites (search_ranks_prefix_hits_above_substring_only_hits,
-        // search_is_case_insensitive, search_of_an_empty_query_answers_no_hits,
-        // search_hit_carries_kind_and_degree_beside_the_name) plus 0 local outgoing calls (its
-        // body builds a SearchHit struct literal, not a call to another same-file fn) = 4.
-        ("src/console/map.rs", "search") => 4,
-        // fit_whole_map: 1 test-only call site
-        // (fit_whole_map_is_the_full_extent_sentinel_centered_on_the_bounds) plus 0 local
-        // outgoing calls (its body builds a Camera struct literal) = 1.
-        ("src/console/map.rs", "fit_whole_map") => 1,
-        // fit_district: 2 test-only call sites
-        // (fit_district_centers_on_the_named_district_at_a_positive_zoom (1 call),
-        // fit_district_of_an_unknown_purpose_is_none (1 call)) plus 0 local outgoing calls (its
-        // body is arithmetic over `model.districts`/`model.bounds` and a Camera struct literal)
-        // = 2. Round 2 (spec 84 c2's own rejection-fix round) also adds 1 local outgoing call
-        // from the new fit_entity (below) - fit_district's own count is unaffected, an outgoing
-        // call from elsewhere does not add to ITS degree, only to the caller's.
-        ("src/console/map.rs", "fit_district") => 2,
-        // fit_entity (round 2, new): 2 test-only call sites
-        // (fit_entity_centers_on_the_named_entitys_own_coordinates_at_its_districts_fit_zoom (1
-        // call), fit_entity_of_an_unknown_id_is_none (1 call)) plus 1 local outgoing call
-        // (fit_district, reused for its own zoom rather than a second formula) = 3.
-        ("src/console/map.rs", "fit_entity") => 3,
-        // legend (spec 84 criterion 3, new): 6 test-only call sites
-        // (legend_has_exactly_the_documented_rows_in_design_order,
-        // legend_kind_rows_carry_the_same_colour_kind_colour_answers,
-        // legend_blast_radius_row_is_amber_and_named,
-        // legend_district_pill_row_is_small_caps_with_no_fixed_colour,
-        // legend_selection_row_names_underline_and_italic_relation_treatment,
-        // legend_edge_row_names_the_real_relation_types_frame_actually_draws - 1 call each) plus
-        // 1 local outgoing call (kind_colour, read through it for every kind row rather than a
-        // second copy of the colour literal - see legend's own doc) = 7. kind_colour itself
-        // carries no degree entry here: it is not a candidate at all (see disposition_for's own
-        // comment on this same fn), matching frame/hit's own precedent above.
-        ("src/console/map.rs", "legend") => 7,
-        // scrub_track (src/console/mod.rs, spec 94 criterion 3, new): 7 test-only call sites
-        // (scrub_track_marks_an_integration_accent_and_tall,
-        // scrub_track_marks_unit_verdicts_red_and_green,
-        // scrub_track_marks_the_plan_critique_approval_distinctly,
-        // scrub_track_ignores_a_non_adjudicator_result,
-        // scrub_track_ticks_one_per_hour_boundary_crossed,
-        // scrub_track_ticks_are_silent_on_events_with_no_real_timestamp,
-        // scrub_track_marks_are_position_ordered_regardless_of_input_order - 1 call each) plus 3
-        // local outgoing calls (verdict_mark, integration_mark, hour_ticks - struct-literal
-        // construction of ScrubTrack itself is not counted, matching frame/hit's own "struct
-        // literal, not a call edge" exclusion above) = 10.
-        ("src/console/mod.rs", "scrub_track") => 10,
-        // palette_commands (src/console/mod.rs, spec 94 criterion 4, new): 6 test-only call
-        // sites (palette_commands_lists_the_seven_views_in_tab_order,
-        // palette_commands_lists_every_units_courtroom,
-        // palette_commands_lists_every_distinct_recorded_agent,
-        // palette_commands_includes_jump_to_live_and_replay_from_start,
-        // palette_commands_omits_only_a_malformed_spawn_requested_entry (round 3's rename of
-        // the prior palette_commands_propagates_a_malformed_spawn_requested_event, when the
-        // degrade-not-fail fix landed), palette_commands_keeps_a_valid_spawn_alongside_a_
-        // malformed_one (round 3, new) - 1 call each) plus 1 local outgoing call
-        // (spawn::recorded_lenient, read through it for every recorded agent id rather than a
-        // second parser of SpawnRequested - see palette_commands's own doc; round 4 swapped
-        // this in for the prior spawn::recorded call this comment used to cite, once
-        // spawn::recorded_lenient was added as recorded's degrade-tolerant sibling so the
-        // enumeration lives in exactly one place) = 7.
-        ("src/console/mod.rs", "palette_commands") => 7,
-        (other_file, other_name) => panic!(
-            "dead-code candidate {other_file}::{other_name} has no recorded knowledge-graph \
-             degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
-             Design's THE KNOWLEDGE GRAPH CROSS-CHECK)"
-        ),
-    }
-}
-
-/// The wire spelling of a [`Disposition`] (matches `#[serde(rename_all = \"kebab-case\")]`
-/// exactly) - the report renders the same literal word the committed JSON carries.
-fn disposition_label(d: Disposition) -> &'static str {
-    match d {
-        Disposition::Delete => "delete",
-        Disposition::KeepPublicSurface => "keep-public-surface",
-        Disposition::KeepPending => "keep-pending",
-    }
-}
-
-/// Section 4.2's per-file distribution table, rendered from [`real_dead_code_candidates`] (file
-/// order, already `(file, line)`-sorted) so it can never drift from the committed JSON by a hand-
-/// transcription error - 26 entries across 12 files invite exactly that.
+/// Section 4.3's per-file distribution table, rendered from [`real_dead_code_candidates`] (file
+/// order, already `(file, line)`-sorted) so it can never drift from the committed JSON.
 fn render_dead_code_distribution_table() -> String {
     let mut out = String::new();
     out.push_str("| File | Count |\n|---|---|\n");
@@ -4105,19 +3851,12 @@ fn render_dead_code_distribution_table() -> String {
 }
 
 /// Section 4.3's full list, rendered from [`real_dead_code_candidates`] grouped by file - name,
-/// line, visibility, ambiguity, KG degree ([`kg_degree_for`]), disposition
-/// ([`disposition_label`]) and the full cited reason ([`disposition_for`]) - so the report and
-/// the committed JSON can never state two different reasons for one candidate: both read the
-/// SAME lookup table. Spec 90 criterion 2: `lines` carries each candidate's own line data in
-/// the SAME order as `real_dead_code_candidates()` ([`dead_code_candidate_lines`] - joined by
-/// array position, exactly like [`DEAD_CODE_LINES_PATH`] itself). Every `file:line` citation
-/// below - including `ambiguous_with`'s own citations - reads from `lines`, never from a
-/// [`DeadCodeCandidate`]'s own `line`/`ambiguous_with` directly - mirrors [`render_section_2`]'s
-/// own `lines` param exactly (spec 90 Design: "the report keeps its `file:line` citations ...
-/// rendered from that file"). ONE exception, deliberate: [`kg_degree_for`]'s own `(file, line)`
-/// arguments are a LOOKUP KEY into a hand-maintained table keyed on the tree's real definition
-/// sites, never a rendered citation (its OUTPUT, the degree number, is what the report shows) -
-/// those read the candidate's own live field, like every other non-citation field here.
+/// line, visibility and ambiguity. `lines` carries each candidate's own line data in the SAME
+/// order as `real_dead_code_candidates()` ([`dead_code_candidate_lines`] - joined by array
+/// position, exactly like [`DEAD_CODE_LINES_PATH`] itself), and every `file:line` citation
+/// below, `ambiguous_with`'s own included, reads from `lines`, never from a
+/// [`DeadCodeCandidate`]'s own `line`/`ambiguous_with`, mirroring [`render_section_2`]'s own
+/// `lines` param.
 fn render_dead_code_full_list(lines: &[DeadCodeCandidateLines]) -> String {
     let candidates = real_dead_code_candidates();
     assert_eq!(
@@ -4146,21 +3885,8 @@ fn render_dead_code_full_list(lines: &[DeadCodeCandidateLines]) -> String {
             String::new()
         };
         out.push_str(&format!(
-            "- **{}** (`{}:{}`, `{}`{}, KG degree {}): `{}`. {}\n",
-            c.name,
-            cl.file,
-            cl.line,
-            c.visibility,
-            amb,
-            // `kg_degree_for`'s own (file, line) pair is a LOOKUP KEY into a hand-maintained
-            // table keyed on the tree's real definition sites (see its own panic message: "run
-            // `rigger graph --show <file>::<name>` and add it here") - internal plumbing, never
-            // a rendered citation, so it reads the candidate's own live field like every other
-            // non-citation field above (`c.visibility`, `c.disposition`, `c.reason`), not the
-            // unguarded `lines` sidecar.
-            kg_degree_for(&c.file, &c.name),
-            disposition_label(c.disposition),
-            c.reason
+            "- **{}** (`{}:{}`, `{}`{})\n",
+            c.name, cl.file, cl.line, c.visibility, amb,
         ));
     }
     out.push('\n');
@@ -4168,10 +3894,8 @@ fn render_dead_code_full_list(lines: &[DeadCodeCandidateLines]) -> String {
 }
 
 /// Section 6 item 0's own per-file deletion list: each entry's name AND its own `(line N)`
-/// citation (corrected round 3 - a prior doc comment here claimed "names only", contradicted by
-/// this function's own body, which has always rendered a citation too), rendered from
-/// [`real_dead_code_candidates`] filtered to [`Disposition::Delete`] so it can never list a
-/// `keep-pending` entry by transcription error, paired with `lines`
+/// citation, rendered from [`real_dead_code_candidates`] (every entry is to be deleted), paired
+/// with `lines`
 /// ([`DeadCodeCandidateLines`], the SAME sidecar section 4.3 reads) so this list's own citation
 /// is never a second, independent read of the live scan - spec 90 criterion 2, mirroring
 /// [`render_dead_code_full_list`] exactly.
@@ -4184,11 +3908,7 @@ fn render_dead_code_deletion_list(lines: &[DeadCodeCandidateLines]) -> String {
     );
     let mut out = String::new();
     let mut current_file: Option<&str> = None;
-    for (c, cl) in candidates
-        .iter()
-        .zip(lines)
-        .filter(|(c, _)| c.disposition == Disposition::Delete)
-    {
+    for (c, cl) in candidates.iter().zip(lines) {
         debug_assert_eq!(
             c.file, cl.file,
             "candidates and lines must share order/identity"
@@ -4212,17 +3932,10 @@ fn render_dead_code_deletion_list(lines: &[DeadCodeCandidateLines]) -> String {
     out
 }
 
-/// Section 4, DEAD AND VESTIGIAL CODE. 4.0 is stage 1 (criterion 1, `u87c1`): the compiler-driven
-/// pass, additive and preserved verbatim. 4.1-4.3 are stages 2-3 (criteria 2-3, `u87c2`/`u87c3`,
-/// THIS unit owns 4.2-4.3): the whole-`src/`-tree production-reference sweep replaces the STALE
-/// prior finding this doc comment used to make ("zero live dead functions" - true only of the
-/// 596-function three-god-file scope stage 1 inherited from spec 85, and only because that
-/// scope's own scanner counted `tests/` and every `#[cfg(test)]` body as a live reference, the
-/// exact false negative spec 87's own Goal names) with 26 real candidates, each carrying one of
-/// three dispositions with a cited reason (decision `u87c3-self-colon-colon-qualifier-false-
-/// positive` fixed one real scanner bug the research found along the way). 4.4 (retired-feature
-/// remnants, stale doc claims) is criterion-1-era content, re-verified unchanged by this
-/// criterion's own research and carried forward verbatim.
+/// Section 4, DEAD AND VESTIGIAL CODE. 4.0 is stage 1, the compiler-driven pass; 4.1 is the
+/// workspace production-reference sweep; 4.2 states the live-or-deleted rule; 4.3 renders the
+/// ledger from [`real_dead_code_candidates`]; 4.4 (retired-feature remnants, stale doc claims)
+/// is carried forward verbatim.
 fn render_section_4() -> String {
     let mut out = String::new();
     out.push_str("## 4. Dead and Vestigial Code\n\n");
@@ -4286,95 +3999,49 @@ fn render_section_4() -> String {
         criterion's Done-when names by name - unaffected, since this stage's only change \
         touches a compile-time version string, never process lifecycle.\n\n",
     );
+    out.push_str("### 4.1 Stage 2: the workspace production-reference sweep\n\n");
     out.push_str(
-        "### 4.1 Stage 2 (spec 87 criterion 2): the whole-tree production-reference sweep\n\n",
+        "A compiler lint never fires on a `pub` item of a crate that is both a library and a \
+        binary, so stage 1 cannot see a `pub` function nothing calls. Stage 2 is a reference \
+        sweep over the whole workspace instead: the root package's `src/` and every member \
+        crate's `crates/<name>/src/`, since a member crate calling into the library is as much a \
+        production caller as the library's own binary. Every function defined in that \
+        production source is a candidate unless it is test code (a `#[cfg(test)]` span, or a \
+        file reached only through a `#[cfg(test)] mod` declaration, transitively), an entry \
+        point the language or a foreign caller invokes (a top-level `fn main`, an `extern \
+        \"C\"` export), or a trait-impl method (the language calls `Drop`, formatting, \
+        operator and iterator methods with no call site in the text).\n\n\
+        THE RULE: a candidate is live when an identifier token equal to its name appears in \
+        production code outside its own signature - any token, whatever surrounds it, so a \
+        function passed by value, named in an attribute string or used as a path segment \
+        counts exactly like a call. `tests/` directories and test spans never count. When \
+        several candidates share a name, a reference is attributed to the one it names: a free \
+        or associated function by its path qualifier, the referencing file's `use` import, or \
+        (for a free function) a bare call in its own file; a method by its receiver's type - \
+        the `T` of a `T::name` path, the enclosing impl's type for `self.name` or \
+        `Self::name`, or the declared type of a local receiver (a typed parameter, a typed \
+        `let`, a struct-literal `let`). A method call whose receiver type cannot be read from \
+        the text (a field, a call result, a pattern binding) is credited to every method of \
+        that name, so the sweep can miss dead code but never reports live code as dead. \
+        Output: `docs/audit/dead-code.json` (line-free, drift-guarded like the duplication \
+        catalog) and `docs/audit/dead-code.lines.json` (each entry's line numbers).\n\n",
     );
+    out.push_str("### 4.2 The rule: live or deleted\n\n");
     out.push_str(
-        "Stage 1's own near-empty yield (`delete_compiler` is the empty list) is the exact known \
-        blind spot the Design section predicts: `rustc`'s `dead_code` lint never fires on a \
-        `pub` item in a crate that is both a library and a binary. STAGE 2, criterion 2's own \
-        unit (`u87c2`, four review rounds, approved `adj-u87c2-r3-verdict-approve`), replaces \
-        the prior report's name-reference sweep - scoped to only the 596 production fns of the \
-        three god files and counting WHOLE-TREE name occurrences including every `#[cfg(test)]` \
-        body - with a whole-`src/`-tree, FILE-AWARE (an out-of-line `#[cfg(test)] mod name;` \
-        target is test code in full, transitively) production-only reference sweep, extending \
-        `tests/simplification_audit.rs`'s existing scanner rather than adding a third lexer. \
-        Four rounds each found and closed a genuine false-positive-class defect (a mod-body test \
-        leak, a `serde(default = \"..\")` attribute string, an impl-generics-dropping qualifier, \
-        a struct-literal-field-value/UFCS-value invisible shape) before converging on THE RULE: \
-        a production reference to fn F is any identifier token equal to F's name in production \
-        code, whatever token precedes or follows it - no reference SHAPE is enumerated at all \
-        any more, closing the whole class of \"the next invisible shape\" false positives the \
-        first three rounds kept finding one at a time. Output: `docs/audit/dead-code.json`, one \
-        entry per production fn with zero production references (name, file:line, visibility, \
-        ambiguity, the test-only references that kept it looking alive), drift-guarded exactly \
-        like the duplication catalog.\n\n",
+        "A function is either live or deleted; there is no third state. rigger's library has \
+        no consumer outside this workspace - its binary, its integration tests and its member \
+        crates all sit inside the sweep's scope - so a function with no production caller has \
+        no public surface to protect and no reason to stay: it is deleted together with the \
+        tests that exercise only it. Code a future change needs is added by that change, \
+        together with its caller.\n\n",
     );
-    out.push_str("### 4.2 Stage 3 (spec 87 criterion 3, THIS): the dispositions\n\n");
-    out.push_str(
-        "This criterion (`u87c3`) OWNS section 4's text, the dispositions, and section 6's item \
-        0 - not a new instrument. While researching dispositions it found and fixed one real \
-        defect IN the stage-2 instrument, disclosed rather than silently folded in: an ambiguous \
-        `ImplAssoc` fn (ambiguity = a bare name shared by >= 2 production fns of the same kind, \
-        e.g. `parse`, shared here by `dash.rs`/`gate.rs`/`ledger.rs` x2/`failure.rs`) referenced \
-        ONLY via `Self::name(` from within its OWN impl block was never attributed correctly - \
-        the qualifier-resolution step captures the literal token text in front of `::`, and for \
-        `Self::parse(` that text is the keyword `Self`, never the enclosing type's own name, so \
-        the `resolved == my_qualifier` match always failed. Concretely: `DashMarker::parse` \
-        (`src/dash.rs:398`) is called only via `Self::parse(s)` inside `DashMarker::read` \
-        (`dash.rs:408`) - itself called from real production code at `main.rs:5731`, `7313` and \
-        `7629` - so it read as dead when it is genuinely alive: the dangerous false-positive \
-        direction this whole unit's own precision discipline forbids (\"a false-positive dead \
-        verdict is the dangerous direction\"), and one this criterion's own disposition work \
-        would have shipped as a recommended deletion of live code had it gone unnoticed. FIX \
-        (same shared instrument, not a parallel one): a `Self::name(` occurrence in the SAME \
-        FILE as the candidate's own definition now resolves to it directly - the identical \
-        same-file lexical-scope approximation the sweep already applies to a bare `Free`-fn \
-        sibling call, widened to cover the keyword `Self` too. Verified against every OTHER \
-        ambiguous name in the final candidate set (`rebuild`/`distiller.rs`, `ingest_project` x2 \
-        /`ingest.rs`, `new`/`spawn.rs`): none has a same-file `Self::name(` call, so the fix's \
-        blast radius is exactly the one candidate it removes. The committed candidate count \
-        drops from 27 to 26 as a result.\n\n\
-        THE COUNT AND PER-FILE DISTRIBUTION (26 candidates across 12 files):\n\n",
-    );
-    out.push_str(&render_dead_code_distribution_table());
-    out.push_str(
-        "\nMETHODOLOGY: every one of the 26 was independently re-verified by hand (NOT taken on \
-        the instrument's word alone, per this whole audit's own \"green was never sufficient\" \
-        discipline) - a recursive `grep -rn` for the fn's own call-shaped name across the WHOLE \
-        `src/` tree (never scoped to a single file or glob, closing the exact \
-        `src/*.rs`-vs-`src/**/*.rs` gap this criterion's own research hit once and fixed before \
-        it could hide a real caller) to confirm no production caller exists anywhere, then a \
-        read of the doc-claimed OR actually-wired real caller/consumer to establish why. Every \
-        entry carries exactly one of three dispositions (spec 87 DISPOSITIONS): `delete` (23 \
-        entries) - the fn and the tests that reference only it, safe to remove because a \
-        genuinely EQUIVALENT, ACTUALLY-WIRED replacement already exists in production (a batched \
-        entry point, a multi-seed core, a real network probe, a direct struct literal - never \
-        \"nothing needs this\" alone); `keep-public-surface` (0 entries today - none of the 26 \
-        cites a real MCP/workflow-template/CLI-contract consumer, the only citations this \
-        disposition accepts); `keep-pending` (3 entries) - a shipped, spec-tested mechanism with \
-        no call site wired in yet, each citing the ALREADY-LANDED spec whose Done-when criteria \
-        the candidate's own tests prove (spec 27's digest-pool rebuild, spec 32's SDET-author \
-        toggle, spec 60's storage-level idempotency guard) - none invents a future spec number \
-        that does not exist. THE KNOWLEDGE GRAPH CROSS-CHECK (spec 85's second instrument for \
-        this section, spec 87 Design's own explicit follow-up): `rigger graph --show <entity>` \
-        degree, run for all 26 real candidates and reported per-entry in the full list below, \
-        does NOT cleanly read as \"agrees (zero)\" the way spec 87's Design anticipated post-spec-\
-        86 - every one of the 26 shows a non-zero degree, because the graph's `degree` counts \
-        every edge touching the node, GOVERNS edges from this very audit's own `DecisionMade`/ \
-        `ReviewFinding` events about the host FILE included, not code-call edges alone (the same \
-        depth-2-traversal GOVERNS-edge inflation this report's own section 4.0 already disclosed \
-        for `rigger graph --around`). Disclosed plainly rather than silently worked around, \
-        matching this section's own established discipline: the cross-check's real, useful \
-        signal here is not \"zero\" but \"no candidate's degree is disproportionately large \
-        relative to its file's decision/finding volume in a way that would suggest a hidden real \
-        code-structure edge the reference sweep missed\" - none does; `src/eventstore/sqlite.rs`'s \
-        `with_content_identity` (degree 32, the highest) is explained entirely by its 44 own \
-        test-only references and spec 60's own extensive documentation, not by an undiscovered \
-        caller.\n\n",
-    );
-    out.push_str("### 4.3 The full list, dispositioned\n\n");
-    out.push_str(&render_dead_code_full_list(&real_dead_code_lines()));
+    out.push_str("### 4.3 The ledger\n\n");
+    if real_dead_code_candidates().is_empty() {
+        out.push_str("The ledger is empty.\n\n");
+    } else {
+        out.push_str(&render_dead_code_distribution_table());
+        out.push_str(&render_dead_code_full_list(&real_dead_code_lines()));
+    }
     out.push_str("### 4.4 Retired-feature remnants and stale doc claims\n\n");
     out.push_str(
         "RETIRED-FEATURE REMNANTS. `turbovec` (spec 57, \"Retire turbovec\"): grepped \
@@ -4744,11 +4411,8 @@ fn replace_section_6(existing: &str, section_6: &str) -> String {
 /// Section 6, PRIORITIZED PLAN: twenty follow-up refactoring-spec stubs across six
 /// risk-reduction tiers. See decision `u85c4-section6-plan-structure` for the tier rationale and
 /// the reconciled cluster-id accounting (340 test-only + 7 named + 327 remaining src-touching =
-/// 674 total clusters). Spec 87 criterion 3 (`u87c3`, its own explicit Done-when: "section 6
-/// gains item 0") added Tier 1 item 0, "Delete the dead-code set", once its own section-4
-/// rewrite turned what was an empty, no-follow-up-needed category (under the OLD three-god-file-
-/// scoped scanner) into a real, cited 23-function deletion list; item 0 cites section 4.3 only,
-/// the same "adds no new findings" discipline every other section-6 entry already follows.
+/// 674 total clusters). Tier 1 item 0, "Delete the dead-code set", cites section 4.3's ledger
+/// only, the same "adds no new findings" discipline every other section-6 entry follows.
 fn render_section_6() -> String {
     let mut out = String::new();
     out.push_str("## 6. Prioritized Plan\n\n");
@@ -4756,13 +4420,13 @@ fn render_section_6() -> String {
         "Twenty follow-up refactoring specs, ordered largest risk-reduction first. This \
         section adds no new findings: every citation below points at a claim already \
         recorded in section 1 (`docs/audit/responsibility-map.json`), section 2 \
-        (`docs/audit/duplication-catalog.json`), section 4.3 (`docs/audit/dead-code.json`, \
-        dispositioned), or sections 3 and 5's own prose. Three instruments ground every \
+        (`docs/audit/duplication-catalog.json`), section 4.3 (`docs/audit/dead-code.json`), \
+        or sections 3 and 5's own prose. Three instruments ground every \
         count below: the three committed JSON files (queried directly, never re-scanned) \
         and, where a god file's own `#[cfg(test)] mod tests` boundary line is cited, a \
         direct read of that file - the boundary line itself is not a scanner output, it is \
         where in the file the earliest `is_test: true` entry begins. Item 0 (Tier 1) \
-        deletes 23 dead functions across 12 files (section 4.3); six of the remaining \
+        deletes the dead-code ledger (section 4.3); six of the remaining \
         nineteen entries split a god file (tiers 2 and 3, two phases times three files); the \
         other thirteen retire duplication or close a port gap (tiers 1, 4 and 5) - kept as \
         separate entries throughout, per spec 85's own instruction that \"the god-file \
@@ -4777,13 +4441,10 @@ fn render_section_6() -> String {
         wrong concretion, or two independent implementations of one concern can already \
         drift apart silently (section 3's two boundary violations; the one already-drifted \
         `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \
-        Item 0 (deleting the 23-function dead-code set, section 4.3) is placed here too, \
-        first of all: not a live-gap risk itself, but the cheapest, zero-behavior-change, \
-        guaranteed-safe move available (spec 87's own Done-when: \"Tier 1 item 0\"), and it \
-        shrinks the exact three god files tiers 2 and 3 operate on before either touches \
-        them - ordered before items 1 and 2 for that reason, per this section's own \
-        largest-first-within-a-tier rule (item 0's line delta exceeds either boundary-fix \
-        item's, section 4.3).\n\
+        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \
+        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \
+        available, and it shrinks the files tiers 2 and 3 operate on before either touches \
+        them.\n\
         2. Tier 2 - god-file test-module extraction: each of the three god files' own \
         inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by \
         boundary-line count, per a direct read of each file), and moving it is a pure \
@@ -4814,46 +4475,23 @@ fn render_section_6() -> String {
     out.push_str("### 6.2 Tier 1: active correctness risk\n\n");
     out.push_str("#### 0. Delete the dead-code set\n\n");
     out.push_str(
-        "- Scope: the 23 `delete`-dispositioned entries of section 4.3 (`docs/audit/dead-code.json`) \
-        and the tests that reference only them. Every entry was independently re-verified by \
-        hand to have a real, ACTUALLY-WIRED replacement already in production - never removed \
-        merely for having zero references - so this is a pure subtraction, not a behavior \
-        change: `pid_is_alive` -> `dash_serving_on`, `neighborhood`/both `ingest_project` lanes \
-        -> their already-wired batched/multi-seed cores, `serve` -> `serve_on`, the whole \
-        `SpawnRequest` builder family (`new` + 7 `with_*` + `park`) -> `driver/replay.rs`'s \
-        direct struct literal, `is_integrated` -> `is_terminal`, `fully_done` -> `done()`, \
-        `resolve_wrapper_name`/`cataloged_classes`/`definitions_named`/`references_named`/ \
-        `expect_merged`/`is_dirty` -> confirmed genuinely unreferenced anywhere. The full \
-        per-file deletion list, by name:\n\n",
+        "- Scope: every entry of section 4.3's ledger (`docs/audit/dead-code.json`) and the \
+        tests that exercise only it; a test that also exercises live code is trimmed, not \
+        deleted. Under section 4.2's rule no entry is kept, and a function whose only caller \
+        was a deleted entry is deleted in the same pass.\n",
     );
-    out.push_str(&render_dead_code_deletion_list(&real_dead_code_lines()));
+    if real_dead_code_candidates().is_empty() {
+        out.push_str("- Status: complete - the ledger is empty.\n");
+    } else {
+        out.push_str("- Deletion list:\n\n");
+        out.push_str(&render_dead_code_deletion_list(&real_dead_code_lines()));
+        out.push('\n');
+    }
     out.push_str(
-        "\n- Files: `src/canary.rs`, `src/dash.rs`, `src/gate.rs`, \
-        `src/grounder/symbols/events.rs`, `src/grounder/symbols/model.rs`, `src/ingest.rs`, \
-        `src/ledger.rs`, `src/spawn.rs`, `src/worktree.rs`, plus every test file that \
-        references ONLY a deleted fn (each entry's own `test_only_references` in \
-        `docs/audit/dead-code.json` names them precisely).\n\
-        - Expected line delta: negative, at least -284 production lines (the 23 function \
-        definitions measured directly - signature, doc comment, and body, walking upward over \
-        contiguous `///`/`#[...]`/blank lines the same way this audit's own scanner excludes a \
-        definition's own signature span - `src/spawn.rs` alone accounts for 74 of the 284 \
-        across its 9-function builder family), MORE negative once each entry's orphaned tests \
-        are removed too - deliberately NOT measured here: a test whose ONLY purpose is exercising \
-        a deleted fn is removed outright, but several of the 156 test files touch a candidate as \
-        ONE part of a larger fixture (e.g. `pid_is_alive` injected as a closure inside \
-        `ensure_run_dashboard_at`'s own idempotency tests, which test OTHER production behavior \
-        too) and need editing, not deletion - that per-test triage is this item's own first task, \
-        not a number this criterion's own no-production-code-changes scope should estimate.\n\
-        - Risk: low. Every deletion target already has a confirmed, wired, tested replacement in \
-        production (never \"nothing needs this\" alone - the disposition citations name the \
-        replacement or the confirming grep); `cargo build`/`clippy -D warnings` catches any \
-        missed reference immediately (a still-referenced item cannot compile away silently), and \
-        the ambiguous `ingest_project` pair's two `#[cfg(feature)]` lanes must both be edited \
-        together or a lane-specific build breaks.\n\
-        - Unblocks: shrinks `src/dash.rs`, `src/spawn.rs`, `src/ledger.rs` and the other six \
-        touched files before tiers 2-3 (god-file splits) and tier 4 (duplication sweeps, several \
-        of which touch these SAME files) operate on them; the largest, safest, zero-behavior-\
-        change line-count reduction available anywhere in this plan, so it runs first.\n\n",
+        "- Risk: low. A deletion is a pure subtraction: `cargo build` and `clippy -D warnings` \
+        on both feature lanes catch any missed reference immediately.\n\
+        - Unblocks: shrinks the files tiers 2-4 operate on before they touch them, so it runs \
+        first.\n\n",
     );
     out.push_str("#### 1. Close the `AgentDriver` port gap around mutation-scratch reclaim\n\n");
     out.push_str(
@@ -5287,23 +4925,10 @@ fn render_section_6() -> String {
     );
     out.push_str("### 6.8 Dead and vestigial code beyond item 0: no further follow-up\n\n");
     out.push_str(
-        "Spec 87 redid section 4 (item 0, Tier 1, above, is that redo's own real follow-up: \
-        delete the 23 `delete`-dispositioned candidates). Of section 4.3's remaining 3 \
-        candidates, all `keep-pending`, NONE gets a new refactoring-spec stub here: each already \
-        cites its own governing, ALREADY-LANDED spec as the thing a future wiring pass would \
-        extend - spec 27 for `distiller::rebuild`, spec 32 for `Defaults::sdet_author_enabled`, \
-        spec 60 for `Store::with_content_identity` - not a gap this plan should re-propose as a \
-        fresh entry \
-        - re-litigating an already-landed spec's own scope is out of place in a plan whose own \
-        rule is \"adds no new findings\". `keep-public-surface` is explicitly empty (0 of 26 \
-        candidates cite a real MCP/workflow-template/CLI-contract consumer) - stated so with the \
-        search that established it, never omitted (spec 85's own CONSTRAINTS WALK), the same \
-        discipline spec 85's original all-clean section 4 applied to a scope this redo has since \
-        superseded. Both named retirements (`turbovec`, `kurrentdb`, spec 85's own original \
-        section 4 finding, unaffected by spec 87's redo since neither is a `src/` production fn) \
-        are still fully clean, and the two stale-looking doc paths found remain confirmed \
-        generic illustrative examples, not real dangling references - re-verified, not \
-        re-scanned, by this criterion's own research.\n",
+        "Section 4.2's rule leaves no dead-code category for a later plan item: a function is \
+        live or it is deleted by item 0. Both named retirements (`turbovec`, `kurrentdb`) are \
+        still fully clean, and the two stale-looking doc paths found remain confirmed generic \
+        illustrative examples, not real dangling references.\n",
     );
     out
 }
@@ -5842,10 +5467,8 @@ struct TestOnlyRef {
     content_hash: String,
 }
 
-/// One production fn with ZERO production references (spec 87 OUTPUT). Criterion 2 owns every
-/// field through `test_only_references`; criterion 3 (this unit) OWNS `disposition` and `reason`,
-/// extending the SAME struct/JSON rather than adding a parallel one (decision
-/// `u87c2-json-schema-excludes-disposition`: "c3 extends this same struct/JSON when it lands").
+/// One production fn with ZERO production references: a dead-code ledger entry, to be deleted
+/// (section 4.2's rule - live or deleted, no third state).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct DeadCodeCandidate {
     name: String,
@@ -5875,32 +5498,10 @@ struct DeadCodeCandidate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ambiguous_with_hashed: Vec<String>,
     test_only_references: Vec<TestOnlyRef>,
-    /// Criterion 3's own field (spec 87 OUTPUT: "and a DISPOSITION"). Assigned by
-    /// [`disposition_for`], keyed on `(file, name)` - never on a line number, since a line moves
-    /// `#[cfg(feature)]`-gated `ingest_project`s share one name and one reason.
-    disposition: Disposition,
-    /// The cited reason [`disposition_for`] assigns alongside [`DeadCodeCandidate::disposition`]
-    /// (spec 87 DISPOSITIONS: "Every entry gets one; an entry without a cited reason is a
-    /// defect") - a `delete` names why the current zero-production-reference reading is real and
-    /// safe to act on; `keep-public-surface` names the consumer; `keep-pending` names the spec.
-    reason: String,
     /// Spec 90 criterion 2 addition: this candidate's own line-free identity (see
     /// [`span_content_hash`], over its whole `[start_line, end_line]` span like a catalog
     /// [`dup_site`]) - what [`DEAD_CODE_PATH`]'s guarded wire form carries INSTEAD of `line`.
     content_hash: String,
-}
-
-/// Spec 87 DISPOSITIONS, decided: "exactly three" - `delete` (the fn and the tests that
-/// reference only it), `keep-public-surface` (a `pub` item that is part of the library's
-/// intended external surface, with a cited consumer), or `keep-pending` (referenced only by a
-/// test that proves a contract the product is expected to gain, with the spec that will call
-/// it). `kebab-case` on the wire matches the spec's own literal spelling exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Disposition {
-    Delete,
-    KeepPublicSurface,
-    KeepPending,
 }
 
 /// `true` for an entry point the language or a foreign caller invokes, never Rust code: a
@@ -6469,571 +6070,10 @@ fn build_dead_code_candidates(
             ambiguous_with_hashed,
             test_only_references: test_only,
             content_hash: span_content_hash(file_tokens[f.file.as_str()], f.start_line, f.end_line),
-            // NOT yet dispositioned here: this is criterion 2's instrument, which never sees a
-            // `disposition_for` entry for a fixture-tree file (every one of this file's OWN
-            // fixture tests constructs a synthetic `src/...rs` that has no place in that real-
-            // tree-only table). [`apply_real_tree_dispositions`], applied ONLY by
-            // [`real_dead_code_candidates`], fills these in for the real tree; a fixture test
-            // never inspects either field.
-            disposition: Disposition::Delete,
-            reason: String::new(),
         });
     }
     out.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     out
-}
-
-/// Spec 87 criterion 3's own disposition assignment for the REAL tree only - hand-authored per
-/// candidate, keyed on `(file, line)` rather than bare `name` (the two `#[cfg(feature)]`-gated
-/// `ingest_project`s share a name but carry different reasons; the `dash.rs` `parse` this file's
-/// own fixture regression test names is NOT in this table at all - the Self:: fix above removes
-/// it from the real tree's candidate set entirely, so it never reaches this function). Applied
-/// by [`apply_real_tree_dispositions`] to [`real_dead_code_candidates`] only - a fixture-tree
-/// candidate never reaches this function at all, so a synthetic `src/vis.rs`-shaped fixture file
-/// can never trip its panic (see that function's own doc for why the fixture/real-tree split
-/// exists). Every entry the real tree's instrument (criteria 1-2) finds MUST resolve here or
-/// this panics loudly, by design: spec 85's own THOROUGHNESS discipline ("unassignable functions
-/// are named as such, never omitted") applies to a disposition exactly as it does to the
-/// responsibility map's module assignment - a silently-defaulted disposition on a real candidate
-/// would be worse than a loud build failure naming exactly which one needs research. The full
-/// evidence trail behind each entry - the real caller/consumer read, every recursive `grep -rn`
-/// this unit ran to rule out a hidden qualified call site, and (for the three `keep-pending`
-/// entries) the governing spec's own text - lives in
-/// `docs/audit/2026-09-simplification-audit.md` section 4, not repeated here; this table carries
-/// the SAME reason text the report's full list cites, so the JSON and the report can never state
-/// two different reasons for one candidate.
-fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
-    use Disposition::{Delete, KeepPending, KeepPublicSurface};
-    match (file, name) {
-        ("src/canary.rs", "to_event") => (
-            KeepPublicSurface,
-            "to_event names two methods in this file (CanaryOutcome::to_event, canary.rs:94; \
-             CanaryHeader::to_event, canary.rs:185), both newly surfaced as candidates by spec \
-             93 criterion 1's read/write split of this file: before the split their only \
-             callers lived in this same file, so no cross-file visibility (and no separate \
-             candidacy-scan entry) was needed; now each is `pub(crate)` so its real consumer in \
-             the write half can reach it - CanaryOutcome::to_event is called from the \
-             production write path `canary_store::append` (canary_store.rs:312) and \
-             CanaryHeader::to_event from `canary_store::record_header` (canary_store.rs:228), \
-             neither of which is test-only code. Keep-public-surface: a real, non-test consumer \
-             in a sibling module, the same reason the split needed `pub(crate)` at all rather \
-             than a narrower visibility.",
-        ),
-        ("src/progress.rs", "to_event") => (
-            KeepPublicSurface,
-            "to_event names three methods in this file (AgentProgress::to_event, progress.rs:71; \
-             SpawnLaunched::to_event, progress.rs:119; StopFailure::to_event, added by spec 104 \
-             criterion 5), all structurally identical wrappers around `Event::new` + \
-             `with_meta`, which is exactly why they share one content hash and this one table \
-             entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 \
-             criterion 1's read/write split of the old progress.rs: before the split its only \
-             caller lived in this same file, so no cross-file visibility (and no separate \
-             candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in \
-             the write half can reach it - called from the production write path \
-             `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added \
-             directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that \
-             same split on day one rather than repeating it later: its real consumer is \
-             `progress_store::record_launch` (progress_store.rs:39). StopFailure::to_event \
-             (spec 104 criterion 5, A FAILURE HAS A CLASS - THE HOOKS' 'record' half) was added \
-             the same direct-`pub(crate)` way: its real consumer is \
-             `progress_store::record_stop_failure`, called by `rigger hook stop-failure`'s own \
-             `cmd_hook_stop_failure` (main.rs) - a real, non-test production write path. None of \
-             the three callers is test-only code. Keep-public-surface: a real, non-test consumer \
-             in a sibling module for each, the same reason the split needed `pub(crate)` at all \
-             rather than a narrower visibility.",
-        ),
-        ("src/run.rs", "to_event") => (
-            KeepPublicSurface,
-            "RunStarted::to_event, newly surfaced as a candidate by spec 93 criterion 1's \
-             read/write split of the old run.rs: before the split its only caller lived in this \
-             same file, so no cross-file visibility (and no separate candidacy-scan entry) was \
-             needed; now it is `pub(crate)` so its real consumer in the write half can reach it \
-             - called from the production write path `run_store::start_fresh` \
-             (run_store.rs:227), not test-only code. Keep-public-surface: a real, non-test \
-             consumer in a sibling module, the same reason the split needed `pub(crate)` at all \
-             rather than a narrower visibility.",
-        ),
-        ("src/canary_store.rs", "cataloged_classes") => (
-            Delete,
-            "cataloged_classes has no production caller anywhere in src/ (checked whole-tree, \
-             recursively). Its only two references are its own inline tests, now in this file \
-             after spec 93 criterion 1's read/write split of the old canary.rs moved every \
-             disk/store-touching function here \
-             (cataloged_classes_counts_only_planted_distinct_classes, canary_store.rs:1150; \
-             the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes, \
-             canary_store.rs:1164); the latter is the one behavior it exists to prove - the \
-             shipped corpus catalogs >= 3 defect classes (spec 13 unit 5) - and would go dead \
-             with it. run_canary (the real production review-panel loop) never consults it: \
-             corpus diversity is a load-time authoring check, not a runtime one. This entry \
-             carries forward the original disposition and reasoning unchanged, only relocated \
-             to this candidate's new file:name key.",
-        ),
-        ("src/conductor.rs", "failure_class") => (
-            KeepPending,
-            "failure_class (spec 104 criterion 5, FAILURE CLASS's data-recovery half: 'the port \
-             returns the class as data') RELOCATED here from src/driver/claude_code.rs (adj- \
-             u104c5 REQUIRED FIX 3, arch-u104c5-failure-class-belongs-in-conductor-not-driver: a \
-             port-crossing sentinel-plus-typed-class pair belongs beside `Error`/`AgentDriver`/ \
-             `PARKED_MARKER`/`is_parked`, the SAME shape, rather than in one particular adapter) \
-             - the disposition itself carries forward unchanged, only the file:name key moves. \
-             Still has no production caller: it is the reader half of the \
-             [`no_result_error`]/[`failure_class`] sentinel pair `read_stream`'s own no-result \
-             path writes through `classify_no_result` (a real, non-test call, so the WRITER is \
-             exercised end to end - see the criterion's own periphery tests), but the READER \
-             exists to let a caller recover the embedded class from an `Err`, and the only \
-             caller with an `Err` to recover it from is spec 105's hold controller, which does \
-             not exist on this branch (`rigger run` still composes agents through `cli::Driver`, \
-             unchanged - `driver::claude_code`'s own module doc). Unlike a stray convenience \
-             wrapper, its tested behavior IS the shipped mechanism the criterion's own Done-when \
-             text specifies ('a test proves A FAILURE HAS A CLASS ... This criterion OWNS the \
-             class, its sources and the bound') - deleting it would delete the one way anything \
-             outside this file can ever learn the class `classify_no_result` computed. \
-             keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS) and spec 105 \
-             (the hold controller that consumes it, per this criterion's own Goal sentence: 'the \
-             hold that consumes its failure classes ... are spec 105's').",
-        ),
-        ("src/conductor.rs", "should_relaunch") => (
-            KeepPending,
-            "should_relaunch (spec 104 criterion 5, Design's THE BOUND: 'the spawn is relaunched \
-             at most twice, then the run halts naming the class') RELOCATED here from \
-             src/driver/claude_code.rs by the same adj-u104c5 REQUIRED FIX 3 - the disposition \
-             itself carries forward unchanged, only the file:name key moves. Still has no \
-             production caller: it is a pure decision primitive ('every AgentFailure variant \
-             shares this ONE bound ... the class itself is not an input', this function's own \
-             doc) that spec 105's hold controller is the only production caller of, once the \
-             composition root swaps `rigger run` onto this driver - unchanged on this branch \
-             (`cli::Driver` never relaunches a live session, `driver::claude_code`'s own module \
-             doc). Unlike a stray convenience wrapper, its tested behavior IS the shipped \
-             mechanism the criterion's own Done-when text specifies ('relaunches the spawn at \
-             most twice, then halts the run naming the class ... This criterion OWNS the class, \
-             its sources and the bound') - deleting it would delete the one place that bound is \
-             proven correct in isolation. keep-pending, citing spec 104 criterion 5 (this \
-             criterion's own OWNS: 'the bound') and spec 105 (the hold controller that enforces \
-             it, per this criterion's own Goal sentence).",
-        ),
-        ("src/config.rs", "sdet_author_enabled") => (
-            KeepPending,
-            "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not \
-             a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET \
-             periphery-test author ONLY on whether an sdet-author agent is configured \
-             (self.cfg.agents.get(ROLE_SDET_AUTHOR)) and never consults \
-             self.cfg.defaults.sdet_author_enabled() at all, so today an explicit \
-             sdet_author: false in a workflow's defaults: block does nothing - the on-by-default \
-             opt-out spec 32 documents and this very method's own doc comment claims ('the \
-             conductor's build-seam reads through here') is not actually true of the shipped \
-             code. keep-pending, citing spec 32 (the sdet-author feature this toggle governs, \
-             already landed): deleting the method would delete the documented resolution \
-             authority for an already-shipped, still-referenced config field \
-             (Defaults::sdet_author) before a follow-up wires spawn_sdet_author to call it - the \
-             correct fix is wiring the call site, out of scope here (no production code changes \
-             this criterion).",
-        ),
-        ("src/contextgraph/query.rs", "graph_load") => (
-            KeepPending,
-            "graph_load (the stateless op-level `payload -> Graph` deserializer, spec 93 \
-             criterion 5) has no production caller anywhere - it is called only by its own two \
-             unit tests and by graph_query's own proof test, all in this file's `#[cfg(test)] \
-             mod graph_ops_tests`. Unlike a stray convenience wrapper, graph_load's tested \
-             behavior IS the wire-form contract spec 93 criterion 5 was built to hand off: \
-             `console_call`'s future `graph_load(payload)` op (the console/Mission-Control ABI, \
-             docs/architecture-addendum-mission-control.md) names this exact function by exact \
-             signature - 'the query engine moves with the ops' - so deleting it would delete the \
-             shipped mechanism a later criterion (2, the console member crate) wires to a real \
-             caller, not an unused alternative to one. keep-pending, citing spec 93 criterion 2: \
-             this criterion's own OWNS is the pure query engine and its two op entry points, not \
-             their ABI wiring.",
-        ),
-        ("src/contextgraph/query.rs", "graph_query") => (
-            KeepPending,
-            "graph_query (the stateless op-level `(&Graph, kind, params) -> Value` dispatcher, \
-             spec 93 criterion 5) has no production caller anywhere - it is called only by its \
-             own five unit tests in this file's `#[cfg(test)] mod graph_ops_tests`, most directly \
-             `graph_query_answers_every_kind_identically_to_the_direct_library_call`, which is \
-             this criterion's own done-when proof that the dispatcher and the direct library \
-             calls (`neighborhood`, `card`, `path`, `clustered_overview`, `cluster_detail`, \
-             `search`) agree. Same reasoning and same citation as the `graph_load` entry \
-             immediately above: the console/Mission-Control ABI (spec 93 criterion 2) names \
-             `graph_query(kind, params)` as one of its 12 ops and wires to this exact function; \
-             deleting it would delete that already-tested dispatch contract before its ABI caller \
-             lands. keep-pending, citing spec 93 criterion 2.",
-        ),
-        ("src/dash.rs", "pid_is_alive") => (
-            Delete,
-            "pid_is_alive has no production caller. It is the RETIRED predecessor of the real \
-             marker-serving check: dash_marker_serving (main.rs:5711, the production predicate \
-             ensure_run_dashboard_at is called with) calls dash::dash_serving_on - a REAL \
-             network probe of the port - and its own doc comment explains why by name: 'A REAL \
-             network probe of the port, never a bare pid-liveness check: a marker left by a \
-             self-reaped or pid-recycled dash must never masquerade as still serving just because \
-             its pid happens to be alive'. pid_is_alive's only references are its own unit test \
-             (dash.rs:9304) and an older fixture test (main.rs:12795-12841) that injects it as a \
-             simplified closure for readability, not a claim about production behavior.",
-        ),
-        ("src/dash.rs", "serve") => (
-            Delete,
-            "serve (the blocking, self-binding accept-loop entry point) has no production caller. \
-             The real dash-serving CLI path (main.rs::cmd_dash) calls dash::serve_on (main.rs:6493) \
-             with the listener bind_singleton already bound, never dash::serve, which would bind \
-             its own listener and so cannot participate in spec 62's singleton-bind-then-serve \
-             flow. (main.rs:6574's doc comment still names '[`dash::serve`]' as the accept loop \
-             that terminates - a stale intra-doc reference worth a follow-up fixing it to name \
-             serve_on, disclosed here rather than silently left.) serve's 2 references are its \
-             own smoke tests.",
-        ),
-        ("src/distiller.rs", "rebuild") => (
-            KeepPending,
-            "rebuild (the digest-pool projection rebuild, spec 27) has no production caller \
-             anywhere - src/lib.rs's mod distiller; declaration is the only mention of the module \
-             outside distiller.rs itself, confirmed by a whole-tree recursive grep. Unlike a mere \
-             convenience wrapper, rebuild's own tested behavior IS spec 27's already-landed \
-             Done-when contract (clearing and re-deriving the digest pool, run-boundary scoping, \
-             determinism) - deleting it would delete the shipped mechanism those criteria proved, \
-             not an unused alternative to one. keep-pending, citing spec 27: it is modeled \
-             directly on playbooks::rebuild, which IS wired to a CLI surface (rigger playbooks \
-             --rebuild); distiller::rebuild is the equivalent primitive awaiting its own call \
-             site (a rigger distill command, or a hook into rigger reset), never spec'd as a \
-             Done-when criterion of spec 27 itself, which is why it shipped unwired.",
-        ),
-        ("src/driver/claude_code.rs", "install_stop_failure_hooks") => (
-            KeepPending,
-            "install_stop_failure_hooks (spec 104 criterion 5, THE HOOKS' `StopFailure` family \
-             injection half: 'criterion 5's, command, record and injection both') has no \
-             production caller yet, for the identical reason install_write_guard_hook (criterion \
-             4's own injection half, immediately below) does not: `rigger run` still composes \
-             agents through `cli::Driver` (main.rs:3667), unchanged until spec 105's composition- \
-             root swap builds a live spawn's --settings string from this criterion's own \
-             `StopFailure` family plus criterion 4's `PreToolUse` one (Design's THE HOOKS: 'the \
-             per-spawn settings JSON carries exactly two hook families ... assembled ... from \
-             their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the \
-             shipped mechanism Design specifies ('one entry per error category') - deleting it \
-             would delete the criterion's own injection half before the composition-root wiring \
-             that calls it lands, mirroring install_write_guard_hook's own already-disclosed \
-             inert-until-wired state one entry below. keep-pending, citing spec 104 criterion 5 \
-             (this criterion's own OWNS: 'command, record and injection both') and THE HOOKS, \
-             which names criterion 5 the `StopFailure` family's sole owner.",
-        ),
-        ("src/driver/claude_code.rs", "install_write_guard_hook") => (
-            KeepPending,
-            "install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) \
-             has no production caller yet: `rigger run` still composes agents through \
-             `cli::Driver` (main.rs:3667), unchanged until criterion 2's stream reader completes \
-             `impl AgentDriver for claude_code::Driver` (this file's own module doc: 'until it \
-             lands ... rigger run ... keeps using cli::Driver'), and no unit yet builds a live \
-             spawn's --settings string from this criterion's own hook fragment plus criterion \
-             5's StopFailure one (spec 104 Design's THE HOOKS paragraph: 'the per-spawn settings \
-             JSON carries exactly two hook families ... assembled ... from their two owners'). \
-             Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism \
-             THE WRITE GUARD's own Done-when text specifies ('the host injects it as the \
-             PreToolUse hook for Edit|Write|NotebookEdit') - deleting it would delete the \
-             criterion's own injection half before the composition-root wiring that calls it \
-             (assembling opts.settings_json from both hook owners) lands, mirroring \
-             SpawnOpts.settings_json's own already-disclosed inert-until-wired state (spec 104 \
-             criterion 1's own accounting: 'no live driver reads these fields yet'). \
-             keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard \
-             command and its injection') and THE HOOKS, which names criterion 4 this hook \
-             family's sole owner.",
-        ),
-        ("src/driver/claude_code.rs", "reconcile_on_start") => (
-            KeepPending,
-            "reconcile_on_start (spec 104 criterion 6, STOP's supervisor start-up \
-             reconciliation half: 'on start the supervisor closes any SpawnLaunched left \
-             open as interrupted and reaps processes still rooted in that spawn's worktree \
-             before it relaunches') has no production caller yet, the SAME already-disclosed \
-             shape install_write_guard_hook's own entry above documents for criterion 4: \
-             `rigger run` still composes agents through cli::Driver (main.rs:3667), and no \
-             supervisor loop yet calls a claude_code::Driver method at start-up - that call \
-             site is spec 105's own composition-root swap, not this criterion's (spec 104's \
-             own Design, THE COMPOSITION ROOT paragraph: 'the swap that makes rigger run \
-             build claude_code::Driver is spec 105's first unit'). Unlike a stray convenience \
-             wrapper, its tested behavior IS the shipped mechanism criterion 6's own Done-when \
-             text specifies ('a supervisor start closes an open launch record and reaps the \
-             spawn's worktree before relaunching') - deleting it would delete the criterion's \
-             own start-up half before the supervisor loop that calls it once per boot lands. \
-             keep-pending, citing spec 104 criterion 6 (this criterion's own OWNS: 'stop and \
-             start-up reconciliation only') and spec 105 (the composition-root swap that will \
-             call it).",
-        ),
-        ("src/eventstore/sqlite.rs", "with_content_identity") => (
-            KeepPending,
-            "with_content_identity (the storage-level idempotency append-guard builder, spec 60) \
-             has no production caller: open_sqlite_store (main.rs:444), the crate's ONE sqlite \
-             event-log constructor, is a bare Store::open(path) with no guard chained, and \
-             derived_index_identity() (ingest.rs:368, the production ContentIdentity value) is \
-             only ever passed to maintenance operations (count_derived_duplicates, \
-             prune_derived_index) that take it as a query-time parameter, never to \
-             with_content_identity itself. Its 44 references are all test fixtures exercising the \
-             guard directly against a Store they construct, per spec 60 criterion 4's own \
-             Done-when text: 'it DOES prove itself by driving the STORE PORT directly'. \
-             keep-pending, citing spec 60 (already landed): this is the documented, deliberately \
-             injected-at-the-composition-root 'defense in depth so a regression upstream can \
-             never re-bloat the log' criterion 4 shipped and tested - deleting it removes a \
-             proven backstop the composition root is architecturally meant to wire in, not dead \
-             weight. Disclosed plainly: whether main.rs's real store-open path SHOULD chain it is \
-             an open question this criterion does not resolve (no production code changes here) - \
-             a follow-up spec should either wire it into open_sqlite_store or explicitly retire \
-             it, rather than let it sit silently unwired indefinitely.",
-        ),
-        ("src/gate.rs", "resolve_wrapper_name") => (
-            Delete,
-            "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own \
-             decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by \
-             hand: 'resolve_build_layer duplicates its ambient-PATH read inline rather than \
-             calling it'). resolve_build_layer (gate.rs:581), its own doc comment's named sole \
-             intended caller ('kept pub as the wrapper-only building block ... \
-             resolve_build_layer composes'), instead reads std::env::var_os(\"PATH\") itself \
-             (gate.rs:588) rather than calling resolve_wrapper_name(wrapper) - a small, \
-             confirmed duplicate-glue defect (worth folding into section 2's duplication catalog \
-             on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 \
-             references are its own tests.",
-        ),
-        ("src/grounder/symbols/events.rs", "index_events") => (
-            Delete,
-            "index_events is spec 87's own Goal-worked example of the false negative this whole \
-             spec exists to fix ('a function whose only caller is its own test reads as alive: \
-             the false negative the operator predicted... e.g. \
-             src/grounder/symbols/events.rs:17 index_events, 21 test references'). Confirmed \
-             again on the current tree (now 64 test references at line 29, having grown with the \
-             test suite): no production caller anywhere.",
-        ),
-        ("src/grounder/symbols/model.rs", "definitions_named") => (
-            Delete,
-            "definitions_named has no production caller - only its own module's assertion-style \
-             tests (symbols/mod.rs) use it to check index state after a build/update, never a \
-             production edge-resolution path.",
-        ),
-        ("src/grounder/symbols/model.rs", "references_named") => (
-            Delete,
-            "references_named has no production caller - the same test-only accessor shape as \
-             its sibling definitions_named immediately above it.",
-        ),
-        ("src/ingest.rs", "ingest_project") => (
-            Delete,
-            "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the \
-             #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated \
-             sites - has no production caller on either lane. Production calls \
-             ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point \
-             this fn's own doc comment already names as the thing 'existing callers discard \
-             [IngestStats] and are unaffected' by, i.e. it documents its own supersession.",
-        ),
-        ("src/ledger.rs", "fully_done") => (
-            Delete,
-            "fully_done has no production caller. Its own doc comment's three-conjunct \
-             completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it \
-             (confirmed whole-tree, recursively) - the wired run-completion checks it was \
-             apparently meant to serve use done() and the per-unit is_terminal predicate instead. \
-             (Line shifted 500 -> 506 -> 574: spec 88 round 3's prior_criterion_unit spec-scoping \
-             fix added 6 lines above spec_stem, then merging rigger-run's spec 88 criterion 3 \
-             (ESCALATION RESUMES) added resume_bound/ResumeGrant/UnitResumed earlier in this same \
-             file.)",
-        ),
-        ("src/ledger.rs", "is_integrated") => (
-            Delete,
-            "is_integrated has no production caller, though its doc comment claims one ('used by \
-             resume to skip completed work'): the real resume-skip logic uses is_terminal \
-             (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:643, \
-             main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only \
-             check (a resume must also skip an Escalated unit, which is_integrated alone would \
-             wrongly re-attempt). Superseded, not merely unused. \
-             (Line shifted 577 -> 583 -> 651: same round-3 doc-comment addition, then the same \
-             rigger-run merge shift above.)",
-        ),
-        ("src/spawn.rs", "new") => (
-            Delete,
-            "SpawnRequest::new and its 7 builder methods (with_system_prompt/with_model/ \
-             with_tools/with_dir/with_blast_radius/with_title/with_reviews) plus the park \
-             convenience wrapper are ALL dead together, same root cause: the real production spawn \
-             path (driver/replay.rs:251-252 fn spawn_request(...) -> SpawnRequest { SpawnRequest \
-             { ... } }) constructs the struct via a direct struct literal and calls \
-             park_in_run(store, &req, &opts.run_id) directly (driver/replay.rs:338) - it never \
-             touches the builder or the zero-run-id park() wrapper at all. Every one of these 9 \
-             fns' references is a test fixture building a SpawnRequest by hand; spec 87's own \
-             Goal text names four of the seven builders (with_title/with_reviews/with_model/ \
-             with_blast_radius) as its worked example of confirmed dead code.",
-        ),
-        ("src/spawn.rs", "with_system_prompt") => (
-            Delete,
-            "with_system_prompt - part of the SpawnRequest builder family; see the disposition on \
-             SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
-        ),
-        ("src/spawn.rs", "with_model") => (
-            Delete,
-            "with_model - part of the SpawnRequest builder family; see the disposition on \
-             SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
-        ),
-        ("src/spawn.rs", "with_tools") => (
-            Delete,
-            "with_tools - part of the SpawnRequest builder family; see the disposition on \
-             SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
-        ),
-        ("src/spawn.rs", "with_dir") => (
-            Delete,
-            "with_dir - part of the SpawnRequest builder family; see the disposition on \
-             SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
-        ),
-        ("src/spawn.rs", "with_blast_radius") => (
-            Delete,
-            "with_blast_radius - part of the SpawnRequest builder family (one of the four spec 87 \
-             Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
-             shared root cause and citation.",
-        ),
-        ("src/spawn.rs", "with_title") => (
-            Delete,
-            "with_title - part of the SpawnRequest builder family (one of the four spec 87 Goal \
-             names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
-             shared root cause and citation.",
-        ),
-        ("src/spawn.rs", "with_reviews") => (
-            Delete,
-            "with_reviews - part of the SpawnRequest builder family (one of the four spec 87 Goal \
-             names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
-             shared root cause and citation.",
-        ),
-        ("src/spawn_store.rs", "park") => (
-            Delete,
-            "park (the zero-run-id convenience wrapper around park_in_run) - part of the \
-             SpawnRequest-construction dead set; see the disposition on SpawnRequest::new \
-             (spawn.rs:320) for the shared root cause and citation. This entry's file:name key \
-             moved from src/spawn.rs to src/spawn_store.rs (unchanged reasoning) when spec 93 \
-             criterion 1's read/write split relocated both park and park_in_run into the new \
-             store-only sibling file; park_in_run itself (spawn_store.rs:36, the real park \
-             authority) is correctly NOT a candidate: its own body is the one real production \
-             reference driver/replay.rs:339 needs - this scanner counts direct references, not \
-             reachability, so park_in_run reads alive even though its only OTHER caller (park) \
-             is itself dead.",
-        ),
-        ("src/worktree.rs", "is_dirty") => (
-            Delete,
-            "is_dirty has no production caller - one of spec 87's own two Goal-cited worked \
-             examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current \
-             tree: its 3 references (src/conductor.rs and worktree.rs's own `mod tests`) are all \
-             test-only; its own body now delegates to `path_is_dirty` (spec 89 round 3), but that \
-             internal call is not a caller of `is_dirty` itself. Line shifted again, this time by \
-             spec 89 criterion 1's round 3 fix \
-             (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`): `is_dirty`'s \
-             body was replaced with a one-line delegation to the new shared `path_is_dirty` free \
-             fn (built on the pre-existing `git`/`run_git` primitives, and now also called \
-             directly by `sweep_terminal_logged` and `main.rs`'s `reclaim_orphan_scratch` so the \
-             two no longer risk diverging on how a git-status failure is read), and the doc \
-             comment naming that delegation pushes the line down 8 more, 627->635. expect_merged \
-             itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved \
-             it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into \
-             this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the \
-             newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - \
-             now calls those two split methods directly for its own row-level durable recording \
-             and has no caller left for the combined form) - a test-scoped item is not a \
-             production dead-code candidate by this scanner's own definition, closing the \
-             finding at its root rather than re-dispositioning it in place.",
-        ),
-        // frame (spec 84 criterion 1) is NO LONGER a candidate at all as of criterion 2's own
-        // diff - not moved, gone outright, the SAME "relocated/now-called fn drops out entirely"
-        // shape the neighborhood entry above documents. Criterion 2's hit (immediately below)
-        // calls frame directly (`hit` reuses `frame`'s own projection so hit-testing can never
-        // drift from what a page actually draws - see hit's own doc), a genuine SAME-FILE,
-        // same-crate production call the scanner's in-src/ reference sweep now sees; frame's
-        // prior keep-public-surface entry (cited only its cross-crate console-core caller) is
-        // therefore removed, not re-dispositioned in place.
-        ("src/console/map.rs", "hit") => (
-            KeepPublicSurface,
-            "hit (spec 84 criterion 2's own hit-testing engine) has no production caller within \
-             src/ - the scanner's own scope is this crate's src/ tree, and hit's one real caller, \
-             console-core's op_map_hit (crates/console-core/src/lib.rs), lives in a SEPARATE \
-             workspace-member crate (`rigger` compiled with `default-features = false, features = \
-             [\"core\"]`), invisible to a same-crate reference sweep by construction - the \
-             identical cross-crate shape frame carried before this same diff removed it as a \
-             candidate (see the comment above). Already landed and wired, not a future consumer: \
-             console_call's real 'map_hit' op dispatches to this exact function today (see \
-             dispatch's own match arm and console_call_wires_map_hit_through_the_public_abi, the \
-             periphery test proving it crosses the real exported ABI). Keep-public-surface: a \
-             real, non-test, ALREADY-WIRED consumer across the workspace's own crate boundary.",
-        ),
-        ("src/console/map.rs", "landmarks")
-        | ("src/console/map.rs", "bridges_between_districts")
-        | ("src/console/map.rs", "changing_right_now")
-        | ("src/console/map.rs", "argued_about_in_review")
-        | ("src/console/map.rs", "search")
-        | ("src/console/map.rs", "fit_whole_map")
-        | ("src/console/map.rs", "fit_district")
-        | ("src/console/map.rs", "fit_entity") => (
-            KeepPublicSurface,
-            "spec 84 criterion 2's own Explore rail candidate lists (landmarks/\
-             bridges_between_districts/changing_right_now/argued_about_in_review), search, and \
-             the three camera-reset functions (fit_whole_map/fit_district/fit_entity - the last \
-             added round 2, closing the rejection's own fly-to-entity gap) each have no \
-             production caller within src/ for the SAME cross-crate reason hit above does not: \
-             every one is called ONLY from console-core's op_map_query (the five map_* \
-             graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/\
-             map_search) or its three sibling arms (map_fit_whole/map_fit_district/\
-             map_fit_entity), all in crates/console-core/src/lib.rs - a separate \
-             workspace-member crate invisible to this scanner's same-crate sweep. Already landed \
-             and wired, not a future consumer: each has its own dispatch_tests coverage \
-             (graph_query_map_landmarks_matches_the_librarys_own_result and its seven siblings, \
-             including round 2's own graph_query_map_fit_entity_matches_the_librarys_own_result) \
-             proving the real op_graph_query wiring reaches the exact same function, plus \
-             console_call_wires_graph_query_map_landmarks_through_the_public_abi and round 2's \
-             own console_call_wires_graph_query_map_fit_entity_through_the_public_abi proving the \
-             representative cases cross the real exported ABI. Keep-public-surface, identical \
-             shape to hit.",
-        ),
-        ("src/console/map.rs", "legend") => (
-            KeepPublicSurface,
-            "spec 84 criterion 3's own THE LEGEND has no production caller within src/ for the \
-             SAME cross-crate reason hit and the Explore rail functions above do not: its one \
-             real caller is console-core's op_graph_query (crates/console-core/src/lib.rs, the \
-             map_legend kind), a separate workspace-member crate invisible to this scanner's \
-             same-crate sweep. Already landed and wired, not a future consumer: \
-             graph_query_map_legend_matches_the_librarys_own_result_on_a_fresh_session (this \
-             crate's own dispatch_tests) proves the real op_graph_query wiring reaches this exact \
-             function, plus \
-             console_call_wires_graph_query_map_legend_through_the_public_abi_before_any_map_is_built \
-             (exported_abi_periphery.rs) proves it crosses the real exported ABI - and, unlike \
-             every other map_* kind, needs neither graph_load nor map_build first, since the \
-             legend is static content. Keep-public-surface, identical shape to hit; kind_colour \
-             (this same criterion's other new pub fn) is NOT a candidate at all - legend's own \
-             kind-colour rows call it directly, a genuine same-file production call the scanner's \
-             in-src/ sweep already sees.",
-        ),
-        ("src/console/mod.rs", "scrub_track") => (
-            KeepPublicSurface,
-            "scrub_track (spec 94 criterion 3's own THE POSITION MODEL) has no production caller \
-             within src/ for the SAME cross-crate reason the console::map functions above do not: \
-             its one real caller is console-core's op_scrub_track (crates/console-core/src/\
-             lib.rs), a separate workspace-member crate (`rigger` compiled with \
-             `default-features = false, features = [\"core\"]`) invisible to this scanner's \
-             same-crate reference sweep by construction. Already landed and wired, not a future \
-             consumer: console_call's real 'scrub_track' op dispatches to this exact function \
-             today (see dispatch's own match arm and this crate's own dispatch_tests coverage - \
-             scrub_track_answers_console_scrub_tracks_own_marks and its siblings), plus \
-             console_call_wires_scrub_track_through_the_public_abi (exported_abi_periphery.rs) \
-             proves it crosses the real exported ABI. Keep-public-surface, identical shape to the \
-             console::map entries above.",
-        ),
-        ("src/console/mod.rs", "palette_commands") => (
-            KeepPublicSurface,
-            "palette_commands (spec 94 criterion 4's own THE PALETTE) has no production caller \
-             within src/ for the SAME cross-crate reason scrub_track above does not: its one \
-             real caller is console-core's op_palette_commands (crates/console-core/src/\
-             lib.rs), a separate workspace-member crate (`rigger` compiled with \
-             `default-features = false, features = [\"core\"]`) invisible to this scanner's \
-             same-crate reference sweep by construction. Already landed and wired, not a future \
-             consumer: console_call's real 'palette_commands' op dispatches to this exact \
-             function today (see dispatch's own match arm and this crate's own dispatch_tests \
-             coverage - palette_commands_answers_console_palette_commands_own_entries and its \
-             malformed-recorded-spawn sibling), plus \
-             console_call_wires_palette_commands_through_the_public_abi \
-             (exported_abi_periphery.rs) proves it crosses the real exported ABI. \
-             Keep-public-surface, identical shape to scrub_track above.",
-        ),
-        (other_file, other_name) => panic!(
-            "dead-code candidate {other_file}::{other_name} has no assigned disposition - this is \
-             a NEW candidate the tree has grown since spec 87 criterion 3 researched and \
-             dispositioned every candidate that existed then (26 entries); assign one in \
-             disposition_for (spec 87 criterion 3's own OWNS: 'the dispositions'), citing a real \
-             consumer (keep-public-surface), a governing spec (keep-pending), or the evidence \
-             that no production caller exists anywhere (delete) - never default one silently \
-             (spec 85's own THOROUGHNESS discipline: 'unassignable... named as such, never \
-             omitted')"
-        ),
-    }
 }
 
 const DEAD_CODE_PATH: &str = "docs/audit/dead-code.json";
@@ -7068,8 +6108,6 @@ struct DeadCodeCandidateWire {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ambiguous_with: Vec<String>,
     test_only_references: Vec<TestOnlyRefWire>,
-    disposition: Disposition,
-    reason: String,
 }
 
 /// [`DEAD_CODE_LINES_PATH`]'s per-candidate shape: the line spans [`DeadCodeCandidateWire`]
@@ -7103,8 +6141,6 @@ fn dead_code_candidate_wire(c: &DeadCodeCandidate) -> DeadCodeCandidateWire {
                 content_hash: r.content_hash.clone(),
             })
             .collect(),
-        disposition: c.disposition,
-        reason: c.reason.clone(),
     }
 }
 
@@ -7164,30 +6200,12 @@ fn real_workspace_files() -> &'static [FileScan] {
     CACHE.get_or_init(|| scan_workspace(&repo_root()))
 }
 
-/// Criterion 3's own finalization step, applied ONLY to the real tree's candidates: fills in
-/// each candidate's [`disposition_for`] lookup result. Kept OUT of
-/// [`build_dead_code_candidates`] itself (criterion 2's instrument) so this file's own dozens of
-/// fixture tests - each constructing a synthetic `src/...rs` tree via [`candidates_for`] - never
-/// trip `disposition_for`'s deliberate real-tree-only panic; only [`real_dead_code_candidates`]
-/// calls this.
-fn apply_real_tree_dispositions(mut candidates: Vec<DeadCodeCandidate>) -> Vec<DeadCodeCandidate> {
-    for c in &mut candidates {
-        let (disposition, reason) = disposition_for(&c.file, &c.name);
-        c.disposition = disposition;
-        c.reason = reason.to_string();
-    }
-    candidates
-}
-
-/// The real checked-out tree's [`build_dead_code_candidates`], DISPOSITIONED (see
-/// [`apply_real_tree_dispositions`]), memoized alongside [`real_files`] for the same reason.
+/// The real checked-out workspace's [`build_dead_code_candidates`], memoized alongside
+/// [`real_files`] for the same reason.
 fn real_dead_code_candidates() -> &'static [DeadCodeCandidate] {
     static CACHE: std::sync::OnceLock<Vec<DeadCodeCandidate>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
-        apply_real_tree_dispositions(build_dead_code_candidates(
-            real_workspace_files(),
-            real_whole_file_test_set(),
-        ))
+        build_dead_code_candidates(real_workspace_files(), real_whole_file_test_set())
     })
 }
 
@@ -10016,11 +9034,7 @@ mod tests {
     /// `render_dead_code_full_list` (unlike `render_section_2`) sources its candidates
     /// internally from `real_dead_code_candidates()` rather than a caller-supplied slice - a
     /// synthetic single-candidate fixture is not this function's own shape (see
-    /// `assert_dead_code_render_cites_the_unguarded_lines_value`). `kg_degree_for` still
-    /// receives the probed candidate's OWN live line (a lookup key into a hand-maintained
-    /// table, never a citation - see `render_dead_code_full_list`'s own doc comment), so this
-    /// isolates exactly the citation data-flow claim without tripping `kg_degree_for`'s own
-    /// unknown-pair panic.
+    /// `assert_dead_code_render_cites_the_unguarded_lines_value`).
     #[test]
     fn report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
         assert_dead_code_render_cites_the_unguarded_lines_value(
@@ -10154,12 +9168,7 @@ mod tests {
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
         assert!(rendered.contains("dup-0672"));
-        // Item 0 (spec 87 c3): section 4's redo turned dead-and-vestigial-code from an empty
-        // category into a real Tier 1 deletion item; the 3 residual `keep-pending` entries
-        // explicitly get no NEW follow-up stub (each cites an already-landed governing spec
-        // instead), and `keep-public-surface` (0 entries) is stated so with the search that
-        // established it, never omitted - spec 85's own CONSTRAINTS WALK rule for an empty
-        // category, now applied to the narrower keep-public-surface slice.
+        // Item 0: the dead-code deletion, and the explicit no-further-follow-up category.
         assert!(rendered.contains("Delete the dead-code set"));
         assert!(rendered.contains("no further follow-up"));
         assert!(rendered.contains("turbovec"));
@@ -10167,23 +9176,8 @@ mod tests {
         // Adds no new findings: every dollar figure traces back to the committed JSON, not
         // a fresh scan - the section says so explicitly.
         assert!(rendered.contains("adds no new findings"));
-        // Item 0's own content: the deletion count, its two named citations, and the three
-        // keep-pending entries' governing specs (spec 87 c3's own Done-when: "section 6 gains
-        // item 0").
         assert!(rendered.contains("#### 0. Delete the dead-code set"));
-        assert!(rendered.contains("23 dead functions"));
-        assert!(rendered.contains("src/spawn.rs"));
-        assert!(rendered.contains("284 production lines"));
-        for (spec_n, name) in [
-            ("27", "distiller::rebuild"),
-            ("32", "Defaults::sdet_author_enabled"),
-            ("60", "Store::with_content_identity"),
-        ] {
-            assert!(
-                rendered.contains(&format!("spec {spec_n}")),
-                "missing keep-pending citation for spec {spec_n} ({name}): {rendered}"
-            );
-        }
+        assert!(rendered.contains("section 4.2's rule no entry is kept"));
     }
 
     /// Spec 90 Design, verbatim: "the report's guard checks structure only (sections present,
@@ -10207,10 +9201,7 @@ mod tests {
         let committed_span = heading_bounded_span(committed_section_6, "#### 0. ", "#### ");
         let fresh_span = heading_bounded_span(fresh_section_6, "#### 0. ", "#### ");
         let committed_item_0 = &committed_section_6[committed_span.clone()];
-        let deletes: Vec<&DeadCodeCandidate> = candidates
-            .iter()
-            .filter(|c| c.disposition == Disposition::Delete)
-            .collect();
+        let deletes: Vec<&DeadCodeCandidate> = candidates.iter().collect();
         let mut files: Vec<&str> = deletes.iter().map(|c| c.file.as_str()).collect();
         files.sort_unstable();
         files.dedup();
@@ -10300,16 +9291,12 @@ mod tests {
     /// CLAIM-4 equivalent for section 6 item 0 (mirrors
     /// `report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
     /// same shared machinery, applied to `render_dead_code_deletion_list` instead, probed at
-    /// the first real `delete`-dispositioned entry (see
+    /// the first real entry (see
     /// `assert_dead_code_render_cites_the_unguarded_lines_value`).
     #[test]
     fn report_section_6_item_0_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
-        let probe = real_dead_code_candidates()
-            .iter()
-            .position(|c| c.disposition == Disposition::Delete)
-            .expect("the real tree has at least one delete-dispositioned candidate");
         assert_dead_code_render_cites_the_unguarded_lines_value(
-            probe,
+            0,
             render_dead_code_deletion_list,
             |c, line| format!("`{}` (line {})", c.name, line),
         );
@@ -11446,8 +10433,7 @@ mod tests {
     /// `content_hash` keys on each candidate's own span text, never its line number. Closes
     /// `sdet-u90c2-surface-accounting`/`sdet-u90c2-deadcode-map-missing-claim2-claim3-tests` -
     /// sdet's own reverted probe already empirically confirmed this property; this test is that
-    /// probe made permanent, using the file's own [`candidates_for`] fixture helper (never
-    /// [`real_dead_code_candidates`], which requires the real tree's `disposition_for` table).
+    /// probe made permanent, using the file's own [`candidates_for`] fixture helper.
     #[test]
     fn a_pin_bump_leaves_the_guarded_dead_code_json_byte_identical() {
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
@@ -11563,218 +10549,6 @@ mod tests {
             a_new[0], b_new[0],
             "the two branches' new candidates must be distinct - nothing for a real merge to \
              conflict over"
-        );
-    }
-
-    #[test]
-    fn every_real_candidate_has_a_zero_degree_knowledge_graph_cross_check_shape() {
-        // Every real candidate is a genuine `src/` production fn (never a test, never from
-        // `tests/`). The actual `rigger graph --show <entity>` degree per candidate (spec 87
-        // Design's cross-check) is reported in the report's own section 4 full list - this test
-        // pins only the file-scope shape every candidate must satisfy for that lookup to be
-        // meaningful at all.
-        for c in real_dead_code_candidates() {
-            assert!(c.file.starts_with("src/"), "{c:?}");
-        }
-    }
-
-    /// Spec 87 criterion 3's own THOROUGHNESS proof (mirrors spec 85's "coverage is asserted by
-    /// the generator" discipline): [`disposition_for`] panicking on an unrecognized `(file,
-    /// line)` IS the enforcement mechanism (a candidate the tree has grown since this research
-    /// would fail every test in this suite, loudly, naming exactly which one) - this test adds a
-    /// second, independent proof that every entry actually carries a non-empty reason and that
-    /// the three-disposition vocabulary is exhaustive (spec 87 DISPOSITIONS: "exactly three").
-    #[test]
-    fn every_real_candidate_carries_exactly_one_disposition_with_a_non_empty_cited_reason() {
-        let candidates = real_dead_code_candidates();
-        assert!(
-            !candidates.is_empty(),
-            "expected real dead-code candidates to disposition"
-        );
-        for c in candidates {
-            assert!(
-                !c.reason.trim().is_empty(),
-                "{}:{} ({}) carries an empty disposition reason",
-                c.file,
-                c.line,
-                c.name
-            );
-            assert!(
-                matches!(
-                    c.disposition,
-                    Disposition::Delete | Disposition::KeepPublicSurface | Disposition::KeepPending
-                ),
-                "{}:{} ({}) has an unrecognized disposition {:?}",
-                c.file,
-                c.line,
-                c.name,
-                c.disposition
-            );
-        }
-    }
-
-    /// Regression pin: the exact real-tree candidate count and disposition split this criterion's
-    /// research established (26 candidates: the Self:: fix above removes `dash.rs::parse`'s false
-    /// positive from criterion 2's original 27; 23 `delete`, 3 `keep-pending`, 0
-    /// `keep-public-surface` today - spec 88 criterion 1 round 4 then dropped this to 25/22/0/3:
-    /// `expect_merged` (formerly src/worktree.rs:86, `delete`) is no longer a production
-    /// candidate at all, moved into `src/worktree.rs`'s own `#[cfg(test)] mod tests` alongside
-    /// the `IntegrateOutcome` enum and a test-only `integrate` recomposition of the newly-split
-    /// `merge_into_worktree`/`land`). A future change to either the tree or `disposition_for`
-    /// that shifts this split should be a deliberate, reviewed edit - this test makes that shift
-    /// visible rather than silent.
-    #[test]
-    fn the_real_tree_disposition_split_matches_this_criterions_research() {
-        let candidates = real_dead_code_candidates();
-        let delete = candidates
-            .iter()
-            .filter(|c| c.disposition == Disposition::Delete)
-            .count();
-        let keep_public = candidates
-            .iter()
-            .filter(|c| c.disposition == Disposition::KeepPublicSurface)
-            .count();
-        let keep_pending = candidates
-            .iter()
-            .filter(|c| c.disposition == Disposition::KeepPending)
-            .count();
-        assert_eq!(
-            (candidates.len(), delete, keep_public, keep_pending),
-            (29, 21, 0, 8),
-            "the real-tree candidate count or disposition split has changed since this \
-             criterion's research - {candidates:#?}\n\n\
-             Was (48, 21, 17, 10) before the sweep read callers from the whole workspace and \
-             attributed each method by its receiver type: the eleven console items and \
-             graph_load/graph_query are called from crates/console-core, and the six \
-             to_event methods each have their own typed caller.\n\n\
-             Was (44, 21, 16, 7) before spec 104 criterion 5's own A FAILURE HAS A CLASS, \
-             landed concurrently against the same criterion-4 base criterion 6's STOP entry \
-             below also builds on. FOUR fresh candidates land: THREE fresh keep-pending - \
-             failure_class and should_relaunch (both since relocated to src/conductor.rs, \
-             adj-u104c5 REQUIRED FIX 3 - FAILURE CLASS's data-recovery half and Design's THE \
-             BOUND, only spec 105's not-yet-landed hold controller would call either) and \
-             install_stop_failure_hooks (src/driver/claude_code.rs, THE HOOKS' `StopFailure` \
-             family injection half, the direct sibling of install_write_guard_hook immediately \
-             below - same composition-root-not-landed reason) - candidates: +3, keep_pending: \
-             7 -> 10. ONE is a fresh keep-public-surface candidate sharing the EXISTING \
-             src/progress.rs::to_event table key (StopFailure::to_event, added `pub(crate)` the \
-             same direct way SpawnLaunched::to_event was by criterion 1 immediately below, with \
-             a real non-test consumer: `progress_store::record_stop_failure`, called by \
-             `cmd_hook_stop_failure` in main.rs) - one updated JSON row under a three-method \
-             reason, not a new match arm - candidates: +1, keep_public: 16 -> 17. Net: \
-             44 + 3 + 1 = 48 candidates; 21 delete unchanged; 16 + 1 = 17 keep-public-surface; \
-             7 + 3 = 10 keep-pending.\n\n\
-             Was (43, 21, 16, 6) before spec 104 criterion 6's own STOP. ONE fresh keep-pending \
-             candidate lands in src/driver/claude_code.rs: reconcile_on_start (STOP's \
-             supervisor start-up reconciliation half) - no production caller yet, the SAME \
-             already-disclosed shape install_write_guard_hook's own entry documents \
-             immediately below, since the supervisor loop that calls it once per boot is spec \
-             105's composition-root swap, not this criterion's - candidates: +1, keep_pending: \
-             6 -> 7. Net: 43 + 1 = 44 candidates; 21 delete unchanged; 16 keep-public-surface \
-             unchanged; 6 + 1 = 7 keep-pending.\n\n\
-             Was (42, 21, 16, 5) before spec 104 criterion 4's own THE WRITE GUARD. ONE fresh \
-             keep-pending candidate lands in src/driver/claude_code.rs: \
-             install_write_guard_hook (THE WRITE GUARD's injection half) - no production caller \
-             yet, since the composition-root wiring that assembles a live spawn's --settings \
-             string from both hook owners (this criterion's own fragment plus criterion 5's \
-             StopFailure one, spec 104 Design's own THE HOOKS) is a later unit, mirroring the \
-             graph_load/graph_query keep-pending precedent below - candidates: +1, keep_pending: \
-             5 -> 6. Net: 42 + 1 = 43 candidates; 21 delete unchanged; 16 keep-public-surface \
-             unchanged; 5 + 1 = 6 keep-pending.\n\n\
-             Was (41, 21, 15, 5) before spec 104 criterion 1's own THE LAUNCH IS TYPED. ONE \
-             fresh keep-public-surface candidate lands in src/progress.rs: SpawnLaunched::\
-             to_event, added `pub(crate)` alongside the new SpawnLaunched type so the impure \
-             write half (`progress_store::record_launch`) can reach it - the SAME reason \
-             AgentProgress::to_event already carries. It shares that existing (file, name) \
-             table key and, since the two methods are structurally identical wrappers around \
-             `Event::new` + `with_meta`, the SAME content hash - so this is one new JSON row \
-             under an updated two-method reason, not a new match arm - candidates: +1, \
-             keep_public: 15 -> 16. Net: 41 + 1 = 42 candidates; 21 delete unchanged; 15 + 1 = 16 \
-             keep-public-surface; 5 keep-pending unchanged.\n\n\
-             Was (40, 21, 14, 5) before spec 94 criterion 4's own THE PALETTE. ONE fresh \
-             keep-public-surface candidate lands in src/console/mod.rs, the SAME cross-crate \
-             shape scrub_track above already carries: palette_commands (console-core's real \
-             'palette_commands' op, needing only a fold_reset'd session) - candidates: +1, \
-             keep_public: 14 -> 15. Net: 40 + 1 = 41 candidates; 21 delete unchanged; 14 + 1 = 15 \
-             keep-public-surface; 5 keep-pending unchanged.\n\n\
-             Was (39, 21, 13, 5) before spec 94 criterion 3's own THE POSITION MODEL. ONE fresh \
-             keep-public-surface candidate lands in src/console/mod.rs, the SAME cross-crate \
-             shape every console::map entry above already carries: scrub_track (console-core's \
-             real 'scrub_track' op, needing only a fold_reset'd session) - candidates: +1, \
-             keep_public: 13 -> 14. Net: 39 + 1 = 40 candidates; 21 delete unchanged; 13 + 1 = 14 \
-             keep-public-surface; 5 keep-pending unchanged.\n\n\
-             Was (38, 21, 12, 5) before spec 84 criterion 3's own THE LEGEND. ONE fresh \
-             keep-public-surface candidate lands in src/console/map.rs, the SAME cross-crate \
-             shape hit and the Explore rail functions already carry: legend (console-core's real \
-             'map_legend' graph_query kind, needing neither graph_load nor map_build first since \
-             the legend is static content) - candidates: +1, keep_public: 12 -> 13. \
-             kind_colour, this same criterion's other new pub fn, is NOT a fresh candidate at \
-             all: legend's own kind-colour rows call it directly, a genuine same-file production \
-             call this scanner's in-src/ sweep already sees (the SAME reason frame is not a \
-             candidate once hit calls it). Net: 38 + 1 = 39 candidates; 21 delete unchanged; \
-             12 + 1 = 13 keep-public-surface; 5 keep-pending unchanged.\n\n\
-             Was (31, 21, 5, 5) before spec 84 criterion 2's Explore rail, search, selection, \
-             hit-testing and camera-reset engine. EIGHT fresh keep-public-surface candidates \
-             land in src/console/map.rs, each for the SAME cross-crate reason frame carried \
-             before this diff (its one real caller lives in the separate console-core \
-             workspace-member crate, invisible to this same-crate scan): hit (console-core's \
-             real 'map_hit' op), and landmarks/bridges_between_districts/changing_right_now/\
-             argued_about_in_review/search/fit_whole_map/fit_district (the seven map_* \
-             graph_query kinds) - candidates: +8, keep_public: 5 -> 13. But frame ITSELF drops \
-             out as a candidate entirely in this same diff (not moved, gone outright - the SAME \
-             shape the neighborhood entry elsewhere in this file documents): hit's own body \
-             calls frame directly (hit reuses frame's own projection so hit-testing can never \
-             drift from what a page actually draws), a genuine SAME-FILE, same-crate production \
-             call this scanner's in-src/ reference sweep now sees - frame's prior \
-             keep-public-surface entry, which cited only its CROSS-crate console-core caller, no \
-             longer applies once a same-crate one exists - candidates: -1, keep_public: 13 -> 12. \
-             Net: 31 + 8 - 1 = 38 candidates; 21 delete unchanged; 5 + 8 - 1 = 12 \
-             keep-public-surface; 5 keep-pending unchanged.\n\n\
-             Was (30, 21, 4, 5) before spec 84 criterion 1's map engine. console::map::frame \
-             (src/console/map.rs) is a fresh keep-public-surface candidate: it has no in-src/ \
-             production caller (console-core's op_map_frame, its one real caller, lives in a \
-             separate workspace-member crate outside src/, invisible to this same-crate scan by \
-             construction) but IS already wired to a real, landed, non-test consumer today - \
-             candidates: +1, keep_public: 4 -> 5. Net: 30 + 1 = 31 candidates; 21 delete \
-             unchanged; 4 + 1 = 5 keep-public-surface; 5 keep-pending unchanged.\n\n\
-             Was (29, 22, 4, 3) before spec 93 criterion 5's dashboard query-engine relocation. \
-             That criterion moved `neighborhood` (and its siblings) out of src/dash.rs into the \
-             new src/contextgraph/query.rs, where a new `graph_query` op dispatcher calls \
-             `neighborhood` directly by name - so `(\"src/dash.rs\", \"neighborhood\")`'s prior \
-             `delete` entry is gone outright (delete: 22 -> 21, candidates: -1), not moved, since \
-             the relocated fn is no longer a candidate at all (same pattern as the pre-existing \
-             `is_dirty`/`expect_merged` precedent this file already documents). The criterion's \
-             own two NEW op-level entry points, `graph_load` and `graph_query` \
-             (src/contextgraph/query.rs), both land as fresh `keep-pending` candidates: neither \
-             has a production caller yet (only their own unit tests call them) because the \
-             console/Mission-Control ABI that wires `graph_load(payload)`/`graph_query(kind, \
-             params)` to a real op surface is a LATER criterion (2), not this one - candidates: \
-             +2, keep_pending: 3 -> 5. Net: 29 - 1 + 2 = 30 candidates; 22 - 1 = 21 delete; 4 \
-             keep-public-surface unchanged; 3 + 2 = 5 keep-pending.\n\n\
-             Was (26, 23, 0, 3) before spec 93 criterion 1's core/store file splits and its \
-             companion scanner fix. The +4 keep-public-surface entries are `to_event` becoming \
-             pub(crate) across a new read/write file boundary with a real non-test consumer in \
-             the sibling: CanaryOutcome::to_event and CanaryHeader::to_event (both in \
-             src/canary.rs, hence +2 from that one file:name key), AgentProgress::to_event \
-             (src/progress.rs), and RunStarted::to_event (src/run.rs). Delete drops by exactly \
-             one (23 -> 22), not zero: cataloged_classes and park only moved file:name keys \
-             (canary.rs->canary_store.rs, spawn.rs->spawn_store.rs, same disposition, net \
-             zero), but src/ingest.rs's record_current_generation - ALREADY misclassified \
-             before this session touched anything, a private fixture helper that always lived \
-             inside a `#[cfg(all(test, feature = \"symbols\"))] mod scoped_reindex_tests` - \
-             drops out entirely: this criterion's own gate-shape widening \
-             (`#[cfg(all(test, any(feature = \"store\", not(feature = \"core\"))))]` on \
-             blast_radius_eval.rs and eventstore/mod.rs's `pub mod contract;`) exposed a \
-             pre-existing gap in this scanner's own textual `cfg(test)` recognition (Design: \
-             \"only cfg(test)/#[test] are given any semantic meaning\" - a literal `cfg(all(` \
-             compound was recognized by neither the old code nor this record_current_generation \
-             entry's own research). The fix, `cfg_all_contains_bare_test`, closes the general \
-             case - bare `test` as a top-level clause of any `cfg(all(...))` is a strict subset \
-             of plain `cfg(test)`, so recognizing it can never misclassify a real production fn \
-             - not a special case for this criterion's own two files, so it also correctly \
-             un-candidates record_current_generation (never a real one) with no disposition \
-             entry needed for it any more, and keep_pending stays at its original 3 (no new \
-             blast_radius_eval.rs/contract.rs entries either, for the same reason)."
         );
     }
 }

@@ -59,12 +59,10 @@ looking alive (file:line each), and a DISPOSITION. The generator writes it under
 shape as the catalog). Section 4 of the report is REWRITTEN from this file: the count, the
 per-file distribution, the full list, and for each entry its disposition.
 
-DISPOSITIONS, decided, exactly three: `delete` (the fn and the tests that reference only it),
-`keep-public-surface` (a `pub` item that is part of the library's intended external surface -
-must cite the consumer: the MCP server, the workflow template, a documented CLI contract - a
-consumer that does not exist is not a reason), or `keep-pending` (referenced only by a test
-that PROVES a contract the product is expected to gain - must cite the spec that will call it).
-Every entry gets one; an entry without a cited reason is a defect. The audit's section 6 gains
+DISPOSITIONS, decided: every entry is `delete` (the fn and the tests that reference only it).
+The library has no consumer outside this workspace, and the sweep reads callers from the whole
+workspace, so no entry is kept as public surface; a fn a future change needs is added by that
+change together with its caller. The audit's section 6 gains
 a Tier 1 item 0: "Delete the dead-code set" with the deletion list, expected line delta
 (negative: the fns plus their orphaned tests) and risk, so the wave carries it.
 
@@ -75,8 +73,8 @@ inflation rather than trusting the degree.
 
 CONSTRAINTS WALK: a fn called only through a trait object (dynamic dispatch) - the reference
 pass counts trait method NAMES at call sites, so an impl's method referenced via `.name(` on any
-receiver is alive; an unreferenced trait method is reported with `keep-public-surface` or
-`delete` per its trait's use. A fn referenced only by a macro expansion - macros are scanned
+receiver is alive; a trait-impl method is exempt, since the language can invoke it with no
+call site in the text. A fn referenced only by a macro expansion - macros are scanned
 as text; a name inside a macro body is a reference. A `#[cfg(feature)]`-gated fn - counted
 within its lane; both lanes are scanned and the union is the reference set. A fn used only in
 `build.rs` - `build.rs` and `build/` are production references. An entry point (`main`,
@@ -115,9 +113,8 @@ graph cross-check uses product-only degrees.
   production caller does not appear. This criterion OWNS the stage-2 instrument and the JSON; the
   report and dispositions are criterion 3's, NOT this one's.
 - [ ] a test proves EVERY CANDIDATE IS DISPOSITIONED: section 4 of the report is regenerated
-  from the JSON with the count, per-file distribution and full list, every entry carries exactly
-  one of `delete` / `keep-public-surface` / `keep-pending` with its cited reason, the knowledge
-  graph degree is reported beside each, and section 6 gains item 0 "Delete the dead-code set"
+  from the JSON with the count, per-file distribution and full list, every entry is `delete`,
+  and section 6 gains item 0 "Delete the dead-code set"
   with the deletion list and its delta. This criterion OWNS section 4's text, the dispositions
   and the section 6 item; the instruments are criteria 1 and 2's, NOT this one's.
 - [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features).

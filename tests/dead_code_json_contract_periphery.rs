@@ -39,41 +39,6 @@
 //! section 4 (spec 87 Done-when: "criterion 3, NOT this one's"), so this file drives no binary
 //! and spawns no process - the whole surface to prove is the persisted data contract itself.
 //!
-//! CRITERION 3 ACCOUNTING (u87c3, extending this file rather than starting a parallel one - the
-//! same shared-artifact/shared-contract-test authority round 0-3 of criterion 2 already
-//! established): criterion 3 adds `disposition` and `reason` to the SAME committed
-//! `docs/audit/dead-code.json` (decision `u87c2-json-schema-excludes-disposition`: "c3 extends
-//! this same struct/JSON when it lands"), so `ConsumedDeadCodeCandidate` below grows the same two
-//! fields, as plain `String` (a real downstream consumer need not replicate the producer's own
-//! `Disposition` enum type to read its wire value - the exhaustiveness check belongs to a test
-//! that reads the three literal strings, below). Criterion 3 ALSO fixed a real bug in the
-//! shared instrument while researching dispositions (decision
-//! `u87c3-self-colon-colon-qualifier-false-positive`): `src/dash.rs`'s `DashMarker::parse`,
-//! ambiguous with `gate.rs`/`ledger.rs` (x2)/`failure.rs`'s own `parse`s, was a false-positive
-//! dead candidate - referenced only via `Self::parse(...)` from its own `DashMarker::read`
-//! (a real production call path, `main.rs:5731/7313/7629`), which the qualifier-attribution
-//! logic never resolved. The candidate count drops from 27 to 26 as a result; a regression test
-//! below pins its continued absence.
-//!
-//! CRITERION 3, SDET-LENS ACCOUNTING (decision `sdet-u87c3-surface-accounting`): boundary probes
-//! against base `84739b4` found the two new fields plus the disposition split test above (all
-//! pre-existing, folded into the implementer's own commit) but one gap: spec 87 DISPOSITIONS is
-//! stronger than "non-empty reason" - `keep-pending` "must cite the spec that will call it" and
-//! `keep-public-surface` "must cite the consumer... a consumer that does not exist is not a
-//! reason" - and none of the three pre-existing tests mechanically check citation SPECIFICITY
-//! against the persisted file, only non-emptiness. The property held today (each of the 3 real
-//! `keep-pending` entries already literally cites `spec 27`/`spec 32`/`spec 60`) but was unpinned.
-//! `every_keep_pending_reason_cites_a_real_spec_number` below closes this at the `keep-pending`
-//! side (a plain byte scan for `"spec "` immediately followed by an ASCII digit, the same
-//! no-new-dependency style as every helper in this file). `keep-public-surface` has 0 real
-//! entries today - vacuously satisfied, already pinned by the disposition-split test - so there
-//! is no committed fact yet to assert its citation requirement against; a future entry needs its
-//! own test when one lands. RED/GREEN discipline: backed up `docs/audit/dead-code.json`, stripped
-//! every `"spec 27"` occurrence from the `distiller::rebuild` `keep-pending` reason in the
-//! working copy, confirmed the new test fails naming that exact candidate and quoting the
-//! corrupted reason, restored the original committed bytes (sha256-verified byte-identical), and
-//! confirmed all 18 tests in this file green again.
-//!
 //! ROUND 1 ACCOUNTING (decision `sdet-u87c2-r1-surface-accounting`, superseding
 //! `sdet-u87c2-surface-accounting` above): round 1's fix
 //! (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`) added a genuine NEW
@@ -171,8 +136,7 @@
 //! delivered it, `render_dead_code_deletion_list` now takes an explicit `lines:
 //! &[DeadCodeCandidateLines]` param, but no periphery test closed CLAIM 4 for that site):
 //! `the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactly_as_the_lines_
-//! sibling_records_them` below closes it the same way, filtered to `disposition == "delete"` (the
-//! deletion list's own scope) and joined by the SAME array position as section 4.3's test, not
+//! sibling_records_them` below closes it the same way, joined by the SAME array position as section 4.3's test, not
 //! re-sorted. CLAIM 2 (pin-bump byte-identical) and CLAIM 3 (merge-friendly) both require
 //! regenerating over a synthetic fixture tree via `build_dead_code_candidates`/`scan_tree`,
 //! private to `tests/simplification_audit.rs`'s own `mod tests` - this layer never authors or
@@ -200,9 +164,7 @@ struct ConsumedTestOnlyRef {
 }
 
 /// Mirrors `tests/simplification_audit.rs`'s private `DeadCodeCandidateWire` shape
-/// field-for-field, `disposition`/`reason` (criterion 3's own addition) included, as plain
-/// `String` - see the module doc comment's CRITERION 3 ACCOUNTING for why a raw string, not the
-/// producer's enum. Spec 90 criterion 2: `line` moved to the unguarded `.lines.json` sibling,
+/// field-for-field. Spec 90 criterion 2: `line` moved to the unguarded `.lines.json` sibling,
 /// replaced by `content_hash`; `ambiguous_with` citations are `file#hash`, never `file:line`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 struct ConsumedDeadCodeCandidate {
@@ -217,8 +179,6 @@ struct ConsumedDeadCodeCandidate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ambiguous_with: Vec<String>,
     test_only_references: Vec<ConsumedTestOnlyRef>,
-    disposition: String,
-    reason: String,
 }
 
 const DEAD_CODE_PATH: &str = "docs/audit/dead-code.json";
@@ -240,8 +200,8 @@ fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
     serde_json::from_str(&raw).unwrap_or_else(|e| {
         panic!(
             "{DEAD_CODE_PATH} does not deserialize as the documented DeadCodeCandidate contract \
-             (name/file/content_hash/visibility/ambiguous/ambiguous_with/test_only_references/ \
-             disposition/reason, test_only_references as file/content_hash): {e}"
+             (name/file/content_hash/visibility/ambiguous/ambiguous_with/test_only_references, \
+             test_only_references as file/content_hash): {e}"
         )
     })
 }
@@ -719,34 +679,9 @@ fn getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_
 }
 
 // -----------------------------------------------------------------------------------------
-// CRITERION 3 (`u87c3`, THIS UNIT): dispositions land in the SAME committed artifact. See the
-// module doc comment's "CRITERION 3 ACCOUNTING" section.
+// A scanner false positive found while researching the ledger, pinned against the committed
+// artifact.
 // -----------------------------------------------------------------------------------------
-
-/// Spec 87 DISPOSITIONS: "exactly three" - `delete`, `keep-public-surface`, `keep-pending` -
-/// and "Every entry gets one; an entry without a cited reason is a defect". Checked against the
-/// PERSISTED file (never the producer's in-memory value), exactly the independence this whole
-/// file exists to prove for every other field.
-#[test]
-fn every_committed_candidate_has_exactly_one_of_the_three_dispositions_with_a_non_empty_reason() {
-    let candidates = deserialize_committed_dead_code();
-    assert!(!candidates.is_empty(), "expected committed candidates");
-    for c in &candidates {
-        assert!(
-            ["delete", "keep-public-surface", "keep-pending"].contains(&c.disposition.as_str()),
-            "{} ({}) has an unrecognized disposition {:?} - spec 87 names exactly three",
-            c.name,
-            c.file,
-            c.disposition
-        );
-        assert!(
-            !c.reason.trim().is_empty(),
-            "{} ({}) has an empty disposition reason",
-            c.name,
-            c.file
-        );
-    }
-}
 
 /// Regression pin for the real bug criterion 3 found and fixed while researching dispositions
 /// (decision `u87c3-self-colon-colon-qualifier-false-positive`, see the module doc comment):
@@ -765,170 +700,6 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
          it is called from real production code via Self::parse inside DashMarker::read and must \
          never be recommended for deletion"
     );
-}
-
-/// The exact `delete`/`keep-pending`/`keep-public-surface` split this criterion's research
-/// established, pinned against the persisted file (mirrors
-/// `the_real_tree_disposition_split_matches_this_criterions_research` in
-/// `tests/simplification_audit.rs`, checked there against the in-memory producer value - this is
-/// the same fact, independently re-derived from the committed bytes). Was 22/3/0 (25 total) until
-/// spec 92 criterion 1's FRESH ON EVERY INTEGRATION unit added `record_current_generation`
-/// (src/ingest.rs, a private test-only fixture helper, `delete`) to `src/ingest.rs`'s own
-/// `scoped_reindex_tests` module, raising the total to 26 and `delete` to 23. Was 23/3/0 (26
-/// total) until spec 88 criterion 1 round 4 moved `expect_merged` (src/worktree.rs, `delete`) out
-/// of production entirely (into `src/worktree.rs`'s own `#[cfg(test)] mod tests`, alongside
-/// `IntegrateOutcome` and a test-only `integrate` recomposition of the newly-split
-/// `merge_into_worktree`/`land`), dropping the total to 25 and `delete` to 22, then back up to
-/// 26/23 by the unrelated addition above. Now 29/22/4/3 (was 26/23/0/3) after spec 93
-/// criterion 1's core/store file splits (`to_event` becoming `pub(crate)` across 3 new
-/// read/write file boundaries - CanaryOutcome's and CanaryHeader's in src/canary.rs, plus
-/// src/progress.rs's and src/run.rs's - adds 4 real `keep-public-surface` candidates) AND its
-/// companion scanner fix (`cfg_all_contains_bare_test` in `tests/simplification_audit.rs`:
-/// widening a store-only whole-module gate from a bare `#[cfg(test)]` to `#[cfg(all(test,
-/// any(feature = "store", not(feature = "core"))))]` on blast_radius_eval.rs and
-/// eventstore/mod.rs's `pub mod contract;` exposed this scanner's own pre-existing gap in
-/// recognizing a compound `cfg(all(...))` as test-in-full - closing it correctly ALSO
-/// un-candidates `record_current_generation` above, since it was never a real production
-/// concern either: a private fixture helper that always lived inside `src/ingest.rs`'s own
-/// `#[cfg(all(test, feature = "symbols"))] mod scoped_reindex_tests`, misclassified since spec
-/// 92 added it for the exact same reason. Net: total 26 -> 29 (+4 to_event, -1
-/// record_current_generation), delete 23 -> 22 (-1, record_current_generation only -
-/// cataloged_classes and park moved file:name keys with the same disposition, net zero), 0 -> 4
-/// keep-public-surface, 3 keep-pending unchanged. Now 30/21/4/5 (was 29/22/4/3) after spec 93
-/// criterion 5's dashboard query-engine relocation: `src/dash.rs::neighborhood` moved into
-/// `src/contextgraph/query.rs`, where the new `graph_query` op dispatcher calls it directly, so
-/// its prior `delete` entry is gone outright rather than moved (candidates -1, delete -1); the
-/// criterion's two new op-level entry points, `graph_load` and `graph_query`
-/// (src/contextgraph/query.rs), land as fresh `keep-pending` candidates awaiting their
-/// console/Mission-Control ABI caller, a later criterion (candidates +2, keep-pending +2). Now
-/// 31/21/5/5 (was 30/21/4/5) after spec 84 criterion 1's map engine: `console::map::frame`
-/// (src/console/map.rs) lands as a fresh `keep-public-surface` candidate - its one real caller,
-/// console-core's `op_map_frame`, lives in a separate workspace-member crate outside `src/` (this
-/// scanner's own scope), invisible by construction, but is already landed and wired today, not a
-/// future one (candidates +1, keep-public-surface +1). Now 38/21/12/5 (was 31/21/5/5) after spec
-/// 84 criterion 2's rail/search/camera engine: 8 new pub fns land in src/console/map.rs (`hit`,
-/// `landmarks`, `bridges_between_districts`, `changing_right_now`, `argued_about_in_review`,
-/// `search`, `fit_whole_map`, `fit_district`) as fresh `keep-public-surface` candidates - each
-/// wired through console-core's new `map_hit` op or the extended `graph_query` op's new `map_*`
-/// kinds, both living outside `src/` same as criterion 1's `frame` - AND `frame` itself drops out
-/// of the candidate list entirely, since criterion 2's own `hit()` now calls it directly from the
-/// same file (a real in-src/ production caller for the first time, not merely console-core's
-/// cross-crate one). Candidates +8 -1 = +7 (31 -> 38), keep-public-surface +8 -1 = +7 (5 -> 12),
-/// delete and keep-pending unchanged. Now 39/21/13/5 (was 38/21/12/5) after spec 84 criterion 3's
-/// legend: `console::map::legend` lands as a fresh `keep-public-surface` candidate, the SAME
-/// cross-crate shape `frame`/`hit` carried (its one real caller, console-core's `map_legend`
-/// `graph_query` kind, lives outside `src/`); `kind_colour`, this criterion's other new pub fn,
-/// is NOT a candidate - `legend` calls it directly, a same-file production call this scanner's
-/// in-src/ sweep already sees. Candidates +1 (38 -> 39), keep-public-surface +1 (12 -> 13),
-/// delete and keep-pending unchanged. Now 40/21/14/5 (was 39/21/13/5) after spec 94 criterion 3's
-/// THE POSITION MODEL: `console::scrub_track` (src/console/mod.rs) lands as a fresh
-/// `keep-public-surface` candidate, the SAME cross-crate shape every console::map entry above
-/// carries (its one real caller, console-core's `scrub_track` op, lives outside `src/`).
-/// Candidates +1 (39 -> 40), keep-public-surface +1 (13 -> 14), delete and keep-pending
-/// unchanged. Now 41/21/15/5 (was 40/21/14/5) after spec 94 criterion 4's THE PALETTE:
-/// `console::palette_commands` (src/console/mod.rs) lands as a fresh `keep-public-surface`
-/// candidate, the SAME cross-crate shape `scrub_track` above already carries (its one real
-/// caller, console-core's `palette_commands` op, lives outside `src/`). Candidates +1
-/// (40 -> 41), keep-public-surface +1 (14 -> 15), delete and keep-pending unchanged. Now
-/// 42/21/16/5 (was 41/21/15/5) after spec 104 criterion 1's THE LAUNCH IS TYPED:
-/// `SpawnLaunched::to_event` (src/progress.rs) lands as a fresh `keep-public-surface`
-/// candidate under the SAME `(file, name)` table key `AgentProgress::to_event` already
-/// occupies there (both are structurally identical `Event::new` + `with_meta` wrappers, so
-/// they share one content hash too) - its real consumer is the new
-/// `progress_store::record_launch`, not test-only code. Candidates +1 (41 -> 42),
-/// keep-public-surface +1 (15 -> 16), delete and keep-pending unchanged. Now 43/21/16/6
-/// (was 42/21/16/5) after spec 104 criterion 4's THE WRITE GUARD: `install_write_guard_hook`
-/// (src/driver/claude_code.rs) lands as a fresh `keep-pending` candidate - THE WRITE GUARD's
-/// injection half, no production caller yet since the composition-root wiring that assembles
-/// a live spawn's `--settings` string from both hook owners (this criterion's fragment plus
-/// criterion 5's `StopFailure` one) is a later unit. Candidates +1 (42 -> 43), keep-pending
-/// +1 (5 -> 6), delete and keep-public-surface unchanged. Now 44/21/16/7 (was 43/21/16/6)
-/// after spec 104 criterion 6's STOP: `reconcile_on_start` (src/driver/claude_code.rs) lands
-/// as a fresh `keep-pending` candidate - a supervisor start-up's closing-and-reaping half, no
-/// production caller yet since the composition-root wiring that calls it before a fresh spawn
-/// launch is spec 105's. Candidates +1 (43 -> 44), keep-pending +1 (6 -> 7), delete and
-/// keep-public-surface unchanged. Now 48/21/17/10 (was 44/21/16/7) after spec 104 criterion
-/// 5's A FAILURE HAS A CLASS, landed concurrently against the same criterion-4 base: three
-/// fresh `keep-pending` candidates - `failure_class`, `should_relaunch` (relocated to
-/// `src/conductor.rs`), and `install_stop_failure_hooks` (src/driver/claude_code.rs) - each a
-/// real production fn with no caller yet, since the same composition-root wiring criterion 4's
-/// `install_write_guard_hook` is still waiting on (spec 105) is what will call them too; plus
-/// one fresh `keep-public-surface` row, `StopFailure::to_event` (src/progress.rs), a third
-/// same-named, same-content-hash `to_event` definition joining
-/// `AgentProgress::to_event`/`SpawnLaunched::to_event` in the ambiguous bucket that table key
-/// already names - its real consumer is the new `progress_store::record_stop_failure`, not
-/// test-only code. Candidates +4 (44 -> 48), keep-pending +3 (7 -> 10), keep-public-surface +1
-/// (16 -> 17), delete unchanged.
-#[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_10_keep_pending_17_keep_public_surface(
-) {
-    let candidates = deserialize_committed_dead_code();
-    let delete = candidates
-        .iter()
-        .filter(|c| c.disposition == "delete")
-        .count();
-    let keep_public = candidates
-        .iter()
-        .filter(|c| c.disposition == "keep-public-surface")
-        .count();
-    let keep_pending = candidates
-        .iter()
-        .filter(|c| c.disposition == "keep-pending")
-        .count();
-    assert_eq!(
-        (candidates.len(), delete, keep_public, keep_pending),
-        (29, 21, 0, 8),
-        "the committed disposition split has changed since this criterion's research"
-    );
-}
-
-/// Plain byte scan for a `"spec <digits>"` citation - no new dependency, matching this file's
-/// own no-regex-crate style. Deliberately stricter than a bare substring search for `"spec"`:
-/// the word alone (as in "inspect" or ordinary English prose) does not satisfy spec 87
-/// DISPOSITIONS' citation requirement, only `"spec"` immediately followed by a space and at
-/// least one ASCII digit does.
-fn cites_a_spec_number(reason: &str) -> bool {
-    let mut rest = reason;
-    while let Some(idx) = rest.find("spec ") {
-        rest = &rest[idx + "spec ".len()..];
-        if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Spec 87 DISPOSITIONS is stronger than "non-empty reason" (already pinned above by
-/// `every_committed_candidate_has_exactly_one_of_the_three_dispositions_with_a_non_empty_reason`):
-/// `keep-pending` "must cite the spec that will call it". Checked against the PERSISTED file's
-/// actual `keep-pending` reasons - a reason that merely uses the ENGLISH WORD "spec" without a
-/// number, or omits it entirely, is a defect this test catches that the non-emptiness check
-/// cannot. (`keep-public-surface`'s parallel "must cite the consumer... a consumer that does not
-/// exist is not a reason" clause has no committed candidate to check today - 0 real entries,
-/// already pinned vacuously by the disposition-split test above - so there is nothing yet to
-/// mechanically assert there.)
-#[test]
-fn every_keep_pending_reason_cites_a_real_spec_number() {
-    let candidates = deserialize_committed_dead_code();
-    let keep_pending: Vec<_> = candidates
-        .iter()
-        .filter(|c| c.disposition == "keep-pending")
-        .collect();
-    assert!(
-        !keep_pending.is_empty(),
-        "expected at least one keep-pending candidate in {DEAD_CODE_PATH}"
-    );
-    for c in &keep_pending {
-        assert!(
-            cites_a_spec_number(&c.reason),
-            "{} ({}) has disposition keep-pending but its reason does not cite a \"spec N\" \
-             number - spec 87 DISPOSITIONS requires keep-pending to \"cite the spec that will \
-             call it\": {:?}",
-            c.name,
-            c.file,
-            c.reason
-        );
-    }
 }
 
 // -----------------------------------------------------------------------------------------
@@ -953,7 +724,7 @@ const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 /// citations.
 fn section_4_3_citations(report: &str) -> Vec<(String, String, usize)> {
     let start = report
-        .find("### 4.3 The full list, dispositioned")
+        .find("### 4.3 The ledger")
         .expect("report has a 4.3 heading");
     let rest = &report[start..];
     let end = rest
@@ -1060,11 +831,9 @@ fn section_6_deletion_list_citations(report: &str) -> Vec<(String, String, usize
 /// CLAIM 4, section 6 item 0 (round 4's own extent - `adj-u90c2-r3-verdict-reject` named this
 /// site alongside sections 1/4.3): every mechanically-rendered `(name, file, line)` citation in
 /// the COMMITTED report's dead-code deletion list matches, in order, the PERSISTED
-/// `DEAD_CODE_LINES_PATH` filtered to `disposition == "delete"` in
-/// [`deserialize_committed_dead_code`]. `render_dead_code_deletion_list` filters
-/// `real_dead_code_candidates()`/`real_dead_code_lines()` to `Disposition::Delete` with no
-/// re-sort, so the same filter-in-place over the two ALREADY position-joined and (file,
-/// line)-ascending committed files (proven by
+/// `DEAD_CODE_LINES_PATH`. `render_dead_code_deletion_list` iterates
+/// `real_dead_code_candidates()`/`real_dead_code_lines()` with no re-sort, so the two ALREADY
+/// position-joined and (file, line)-ascending committed files (proven by
 /// `the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_ascending_by_file_
 /// then_line` above) reproduces the identical sequence. A `(file, name)` lookup would be wrong for
 /// the same reason section 4.3's test avoids one: `src/ingest.rs`'s `ingest_project` is ambiguous.
@@ -1085,20 +854,18 @@ fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactl
     let expected: Vec<(String, String, usize)> = candidates
         .iter()
         .zip(lines.iter())
-        .filter(|(c, _)| c.disposition == "delete")
         .map(|(_, l)| (l.file.clone(), l.name.clone(), l.line))
         .collect();
     assert!(
         !expected.is_empty(),
-        "zero delete-dispositioned entries in {DEAD_CODE_PATH} - the disposition filter or the \
-         committed data is broken"
+        "zero entries in {DEAD_CODE_PATH} - the committed data is broken"
     );
     assert_eq!(
         citations.len(),
         expected.len(),
         "the report's section 6 deletion list cites {} candidate(s) but {DEAD_CODE_PATH} \
-         records {} delete-dispositioned entries - they must list the same candidates in the \
-         same order (both come from the same underlying position-joined, filtered sequence)",
+         records {} entries - they must list the same candidates in the \
+         same order (both come from the same underlying position-joined sequence)",
         citations.len(),
         expected.len()
     );
@@ -1109,8 +876,8 @@ fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactl
             (file.as_str(), name.as_str()),
             (efile.as_str(), ename.as_str()),
             "deletion-list citation {i} in {REPORT_PATH} is {name} ({file}), but the same-index \
-             delete-dispositioned entry in {DEAD_CODE_LINES_PATH} is {ename} ({efile}) - report \
-             order and the filtered lines-sibling order have diverged",
+             entry in {DEAD_CODE_LINES_PATH} is {ename} ({efile}) - report \
+             order and the lines-sibling order have diverged",
         );
         assert_eq!(
             line, eline,
