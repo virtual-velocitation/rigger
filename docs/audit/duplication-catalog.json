@@ -4380,7 +4380,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b99d84bff6a4",
+    "id": "dup-332233e2a08c",
     "classification": "semantic",
     "sites": [
       {
@@ -4402,16 +4402,6 @@
         "file": "src/eventstore/sqlite.rs",
         "name": "Connection::open_with_flags",
         "content_hash": "c9fe8bd11b5e51a4"
-      },
-      {
-        "file": "src/eventstore/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "75faf30ccbd36bc2"
-      },
-      {
-        "file": "src/eventstore/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "b1ad5143fd332b66"
       },
       {
         "file": "src/main.rs",
@@ -4452,6 +4442,16 @@
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
+        "file": "tests/common/fixtures/store.rs",
+        "name": "Connection::open",
+        "content_hash": "a2fad77eaca35107"
+      },
+      {
+        "file": "tests/common/fixtures/store.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -4521,16 +4521,6 @@
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "a26e651ef0fda2a7"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "a2fad77eaca35107"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "Connection::open",
         "content_hash": "49800332dd9ca1f4"
       },
       {
@@ -4565,7 +4555,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 36 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 34 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

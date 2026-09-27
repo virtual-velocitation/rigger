@@ -88,6 +88,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
+use common::fixtures::{plant_free_pages, pragma_i64};
 use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
@@ -3616,29 +3617,6 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
 // leaves its pages on the freelist; VACUUM drives that count to zero and shrinks `page_count`
 // with it.
 // ---------------------------------------------------------------------------------------
-
-/// A whole-number `PRAGMA` read through a connection of its own, so the measurement never depends
-/// on the state of the connection the store is using.
-fn pragma_i64(db: &Path, pragma: &str) -> i64 {
-    rusqlite::Connection::open(db)
-        .expect("open the event log")
-        .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
-        .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
-}
-
-/// Leave roughly `pages` worth of reclaimable free pages in `db`: a table filled and dropped
-/// releases its pages to the freelist, where they stay until something vacuums the file.
-fn plant_free_pages(db: &Path, rows: u64) {
-    let conn = rusqlite::Connection::open(db).expect("open the event log");
-    conn.execute_batch(&format!(
-        "CREATE TABLE junk(x BLOB);
-         INSERT INTO junk(x)
-           WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {rows})
-           SELECT randomblob(600) FROM c;
-         DROP TABLE junk;"
-    ))
-    .expect("plant reclaimable free pages");
-}
 
 /// Every byte of `db` as it stands on disk. A VACUUM rewrites the whole file - at the very least
 /// the header's change counter moves - so an unchanged byte string is the assertion that no

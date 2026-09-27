@@ -1029,6 +1029,7 @@ fn direction_sql(dir: Direction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{plant_free_pages, pragma_i64};
 
     #[test]
     fn passes_the_contract() {
@@ -1715,29 +1716,6 @@ mod tests {
             matches!(err, Error::Backend(_)),
             "the step reports a backend failure; got {err:?}"
         );
-    }
-
-    /// Leave roughly `rows` blobs' worth of reclaimable free pages in `db`: a table filled and
-    /// dropped releases its pages to the freelist, where they stay until something vacuums.
-    fn plant_free_pages(db: &std::path::Path, rows: u64) {
-        let conn = Connection::open(db).expect("open the log to plant free pages");
-        conn.execute_batch(&format!(
-            "CREATE TABLE junk(x BLOB);
-             INSERT INTO junk(x)
-               WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {rows})
-               SELECT randomblob(600) FROM c;
-             DROP TABLE junk;"
-        ))
-        .expect("plant reclaimable free pages");
-    }
-
-    /// A whole-number `PRAGMA` read through a connection of its own, so the measurement never
-    /// depends on the state of the connection the store is using.
-    fn pragma_i64(db: &std::path::Path, pragma: &str) -> i64 {
-        Connection::open(db)
-            .expect("open the log to read a pragma")
-            .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
-            .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
     }
 
     /// Spec 60, criterion 5: THE REMEDY THE REPORT PROMISES EXISTS. When the reclamation fails
