@@ -2137,7 +2137,6 @@ const ADVERSARIAL_SAMPLE_READ_ON: &str = "2026-09-27";
 /// One hand verdict on a drawn function, recorded once by the reading pass and rendered on its
 /// row: reading is the one thing no generator can do (spec 85 THOROUGHNESS), so the verdict is
 /// data the pass writes, never a label the renderer assumes.
-#[allow(dead_code)] // variants are constructed only by the ledger rows below
 enum SampleVerdict {
     /// Read by hand with its host file and siblings: no duplicate beyond what the catalog caught.
     NoDuplicate,
@@ -2146,7 +2145,164 @@ enum SampleVerdict {
 }
 
 /// The latest reading pass's verdict per drawn function, keyed `(file, name)`.
-const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[];
+const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
+    (
+        "src/canary.rs",
+        "from_event",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/canary_store.rs",
+        "any_finding_is_critical",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/canary_store.rs",
+        "score_item_reports_no_resolved_model_for_a_tier_whose_driver_leaves_it_empty",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/conductor.rs",
+        "land_refused",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/conductor.rs",
+        "speculation_escalates_when_every_candidate_is_rejected",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/conductor.rs",
+        "replay_step",
+        SampleVerdict::Closed(
+        "three stepwise budget and attention tests re-rolled its body (and `started_store`'s) as inline closures; all now call `replay_step`",
+    ),
+    ),
+    (
+        "src/contextgraph/mod.rs",
+        "a_caller_less_reference_event_serializes_byte_identically_to_the_pre37_wire_form",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/dash.rs",
+        "get_static",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/dash.rs",
+        "export_neutralizes_a_script_breakout_in_the_inlined_state",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/driver/cli.rs",
+        "bridge_emits_propagates_the_first_emit_error",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/main.rs",
+        "runs_menu_line",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/main.rs",
+        "reclaim_spawn_scratch",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/main.rs",
+        "workflow_drift_advisory",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/metrics.rs",
+        "artifact_verdict",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/subprocess.rs",
+        "detach_process_group",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/cli.rs",
+        "workflow_accepts_a_spec_and_a_base_flag",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/cli.rs",
+        "validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off",
+        SampleVerdict::Closed(
+        "it re-rolled `assert_validate_reports` inline; it now calls it, which returns the stdout for its extra no-cache-dir check",
+    ),
+    ),
+    (
+        "tests/cli.rs",
+        "setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger",
+        SampleVerdict::Closed(
+        "it re-rolled `fresh_committed_skill`, `committed_skill` and `commit_a_code_change` inline; it now calls them, with the commit half split out as `commit_staged`",
+    ),
+    ),
+    (
+        "tests/cli.rs",
+        "guard_write_under_a_root",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/cli.rs",
+        "guard_write_exits_the_blocking_code_on_every_transport_failure",
+        SampleVerdict::Closed(
+        "it and `guard_write_without_a_root_fails_loudly_rather_than_allowing_everything` re-rolled `run_hook_verb`'s piped-stdin spawn; all three now call `pipe_into_rigger`, the blocking checks through `assert_blocks`",
+    ),
+    ),
+    (
+        "tests/common/audit_record.rs",
+        "read_audit_record",
+        SampleVerdict::Closed(
+        "`tests/gitsemver_path_inclusion_accounting_periphery.rs` re-rolled it to read the stage1 record; it now includes and calls it",
+    ),
+    ),
+    (
+        "tests/compiler_pass_stage1_audit.rs",
+        "stage1_record_has_the_shape_every_consumer_relies_on",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/concepts_labels_membership.rs",
+        "label_of_the_documentless_hub",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/reset_derived_compaction_periphery.rs",
+        "a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten",
+        SampleVerdict::Closed(
+        "`the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count` repeated its settled-file fixture and skipped-rewrite assertions; both now call `settled_clean_store` and `assert_prune_skips_the_rewrite`",
+    ),
+    ),
+    (
+        "tests/simplification_audit.rs",
+        "a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod",
+        SampleVerdict::Closed(
+        "it and five sibling scanner tests re-rolled `scan_single`; all now call it or its name and span assertions",
+    ),
+    ),
+    (
+        "tests/spawn_recorded_lenient_periphery.rs",
+        "recorded_lenient_collapses_a_re_parked_duplicate_id_to_the_last_recorded_request",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/step_attention_periphery.rs",
+        "hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/worker_persona_label_periphery.rs",
+        "the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation",
+        SampleVerdict::Closed(
+        "it re-rolled `assert_worker_label` inline; it now calls it",
+    ),
+    ),
+];
 
 /// Duplicates the 2026-09-27 reading passes found and closed on functions an earlier draw picked:
 /// the draw was then by population index, so each closure reshuffled it until the draw became
