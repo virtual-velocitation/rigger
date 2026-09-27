@@ -393,61 +393,50 @@ mod tests {
         assert_eq!(blockers[0].kind, Kind::Building { attempt: 3 });
     }
 
-    #[test]
-    fn reject_recurrence_line_shows_n_over_max() {
-        let events = positioned(vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":1}"#),
-        ]);
+    /// A unit that started and failed once per `failures` payload (in order), under a
+    /// configured bound of `max_retries`, renders exactly `line`.
+    fn assert_reject_recurrence_line(failures: &[&str], max_retries: u32, line: &str) {
+        let events = positioned(
+            failures
+                .iter()
+                .flat_map(|failure| {
+                    [
+                        ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+                        ev(ledger::TYPE_UNIT_FAILED, failure),
+                    ]
+                })
+                .collect(),
+        );
+        let blockers = from_events(&events, max_retries).unwrap();
+        assert_eq!(blockers[0].full_line(), line);
+    }
+
+    crate::test_cases! {
         // configured 0 -> resolves to MAX_RETRIES (3). No cause on the event (a
         // cause-less prior event, spec 69 criterion 3) reads as "unknown", never the
         // old generic "remediating" wording.
-        let blockers = from_events(&events, 0).unwrap();
-        assert_eq!(
-            blockers[0].full_line(),
-            "u: reject-recurrence #1/3 (unknown)"
+        reject_recurrence_line_shows_n_over_max: assert_reject_recurrence_line(
+            &[r#"{"id":"u","attempts":1}"#],
+            0,
+            "u: reject-recurrence #1/3 (unknown)",
         );
-    }
-
-    #[test]
-    fn reject_recurrence_line_carries_the_recorded_cause() {
         // spec 69, criterion 3 (the cause wire): "status blocker lines carry it" - the
         // line names the conductor's own recorded cause instead of the generic
         // "remediating" wording.
-        let events = positioned(vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":4,"cause":"integrate-conflict"}"#,
-            ),
-        ]);
-        let blockers = from_events(&events, 6).unwrap();
-        assert_eq!(
-            blockers[0].full_line(),
-            "u: reject-recurrence #4/6 (integrate-conflict)"
+        reject_recurrence_line_carries_the_recorded_cause: assert_reject_recurrence_line(
+            &[r#"{"id":"u","attempts":4,"cause":"integrate-conflict"}"#],
+            6,
+            "u: reject-recurrence #4/6 (integrate-conflict)",
         );
-    }
-
-    #[test]
-    fn reject_recurrence_line_carries_the_latest_of_several_causes() {
         // A changed cause is progress (spec 69 Design): the line names the MOST
         // RECENT failure's cause, not the first.
-        let events = positioned(vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
+        reject_recurrence_line_carries_the_latest_of_several_causes: assert_reject_recurrence_line(
+            &[
                 r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
-            ),
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
                 r#"{"id":"u","attempts":2,"cause":"reject"}"#,
-            ),
-        ]);
-        let blockers = from_events(&events, 6).unwrap();
-        assert_eq!(
-            blockers[0].full_line(),
-            "u: reject-recurrence #2/6 (reject)"
+            ],
+            6,
+            "u: reject-recurrence #2/6 (reject)",
         );
     }
 
