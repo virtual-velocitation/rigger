@@ -33,8 +33,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 use common::fixtures::apply_code_entity;
 
 /// The bare ids from every `node <id> <kind>` line of a `rigger graph --around` transcript,
@@ -70,9 +69,8 @@ fn edge_lines(out: &str) -> Vec<(String, String, String)> {
 
 #[test]
 fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or_findings() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
     let file = "lonely.rs";
 
     {
@@ -102,9 +100,8 @@ fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or
 
 #[test]
 fn around_shows_exactly_ten_with_no_trailing_count_at_the_cap_boundary() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
     let file = "exactly_ten.rs";
 
     {
@@ -147,9 +144,8 @@ fn around_shows_exactly_ten_with_no_trailing_count_at_the_cap_boundary() {
 
 #[test]
 fn around_never_prints_a_governs_or_about_edge_even_though_subgraph_returns_it() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
     let file = "governed.rs";
 
     {
@@ -220,9 +216,8 @@ fn around_never_prints_a_governs_or_about_edge_even_though_subgraph_returns_it()
 #[test]
 fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_crowd_out_a_live_one(
 ) {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
     let file = "supersede_recency.rs";
 
     {

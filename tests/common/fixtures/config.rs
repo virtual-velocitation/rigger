@@ -127,6 +127,24 @@ pub fn workflow_cfg(agents: &[&str], gates: &[(&str, &str)], stages: Vec<Stage>)
     cfg
 }
 
+/// A config whose one stage `stage` is run by the bare agent `a` and gated by the always-passing
+/// `core` gate `ok`.
+pub fn one_gated_stage_cfg(stage: &str) -> Config {
+    let mut cfg = Config::default();
+    cfg.agents.insert("a".into(), agent("a"));
+    cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+    cfg.workflow.stages.insert(
+        stage.into(),
+        Stage {
+            name: stage.into(),
+            agent: "a".into(),
+            gates: vec!["ok".into()],
+            ..Default::default()
+        },
+    );
+    cfg
+}
+
 /// The `plan` stage: the `planner` agent produces the unit DAG.
 pub fn plan_stage() -> Stage {
     Stage {

@@ -44,8 +44,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 
 /// The headline boundary proof: all four members of the closed vocabulary
 /// (`reject` | `gate:<name>` | `integrate-conflict` | `infra:<kind>`) - a distinct failed unit
@@ -53,9 +52,8 @@ use common::cli::temp_project;
 /// compiled binary against a REAL on-disk store, exactly as an operator would see them.
 #[test]
 fn all_four_closed_vocabulary_causes_surface_on_reject_recurrence_lines_through_the_real_binary() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -109,9 +107,8 @@ fn all_four_closed_vocabulary_causes_surface_on_reject_recurrence_lines_through_
 /// `"unknown"` rather than crashing or silently dropping the unit from the blocker list.
 #[test]
 fn a_legacy_causeless_unit_failed_event_survives_a_real_store_round_trip_and_renders_unknown() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -139,9 +136,8 @@ fn a_legacy_causeless_unit_failed_event_survives_a_real_store_round_trip_and_ren
 #[test]
 fn the_reject_recurrence_line_names_the_latest_of_several_recorded_causes_through_the_real_binary()
 {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[

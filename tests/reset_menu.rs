@@ -26,8 +26,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::seed_derived_duplicates;
 use common::cli::seed_run_events;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 use common::cli::DUP_ROUNDS;
 use std::path::Path;
 
@@ -78,9 +77,8 @@ fn store_row_counts(root: &Path) -> (i64, i64, i64) {
 
 #[test]
 fn bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
 
     let (out, err, ok) = run_rigger(root, &["reset"]);
     assert!(
@@ -100,9 +98,8 @@ fn bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable() {
 #[test]
 fn bare_reset_on_a_populated_store_reports_measured_counts_matching_a_real_prune_and_mutates_nothing(
 ) {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
     seed_one_dead_run_node(root);
     seed_derived_duplicates(root);
 
@@ -153,9 +150,8 @@ fn bare_reset_on_a_populated_store_reports_measured_counts_matching_a_real_prune
 fn bare_reset_never_prunes_the_graph_even_when_only_dead_run_nodes_are_present() {
     // A narrower read-only proof, isolated from the derived-log fixture: the context graph
     // specifically survives a bare `rigger reset` byte-for-byte (row-count-for-row-count).
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
     seed_one_dead_run_node(root);
 
     let (_, nodes_before, edges_before) = store_row_counts(root);

@@ -56,6 +56,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::temp_rigger_project;
+use common::cli::validate_after_init;
 use common::fixtures::tool_available;
 use common::git::git_ok_with_identity;
 use common::git::trimmed_stdout;
@@ -241,15 +242,7 @@ fn validate_stays_silent_on_the_version_advisories_and_leaks_no_raw_git_error_fo
 
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed on an ordinary project unrelated to rigger's own history; \
-         stderr:\n{err}"
-    );
+    let (out, err) = validate_after_init(root, |_| {});
     assert!(
         out.contains("config valid"),
         "validate must print its config summary; stdout:\n{out}"

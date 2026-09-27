@@ -22,8 +22,7 @@ use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_derived_duplicates;
 use common::cli::seed_run_events;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 use common::cli::DUP_ROUNDS;
 
 // ---------------------------------------------------------------------------------------
@@ -35,9 +34,8 @@ use common::cli::DUP_ROUNDS;
 #[test]
 fn bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the_minted_project_identity(
 ) {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
 
     // Seeded BEFORE `rigger init` mints an identity: filed under the LEGACY basename namespace,
     // exactly the shape a bloated store actually has (mirrors

@@ -334,6 +334,29 @@ pub fn write_workflow_fixture(root: &Path, fixture: &WorkflowFixture) {
     write_scaffold(root, &[("worker", fixture.worker)], fixture.body);
 }
 
+/// One real `rigger step` over `root`, which must exit 0 (`what` names the step in the failure);
+/// returns its trimmed stdout - the step's one JSON line.
+pub fn step_line(root: &Path, what: &str) -> String {
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "{what}; stderr: {err}");
+    out.trim().to_string()
+}
+
+/// `rigger validate` over `root` once `rigger init` has scaffolded it and `seed` has planted what
+/// the test examines; asserts both exit 0 (an advisory never fails validate) and returns
+/// validate's (stdout, stderr).
+pub fn validate_after_init(root: &Path, seed: impl FnOnce(&Path)) -> (String, String) {
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    seed(root);
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must exit 0 (an advisory never fails it); stderr:\n{err}"
+    );
+    (out, err)
+}
+
 /// Scaffold `root/.rigger`: each `(id, definition)` of `agents` as `agents/<id>.md`, and
 /// `workflow` as its `workflow.yml`.
 pub fn write_scaffold(root: &Path, agents: &[(&str, &str)], workflow: &str) {

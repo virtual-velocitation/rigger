@@ -69,8 +69,7 @@ use std::collections::HashMap;
 use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 use rigger::contextgraph::Graph;
 
 // ---------------------------------------------------------------------------------------
@@ -84,9 +83,8 @@ use rigger::contextgraph::Graph;
 /// today.
 #[test]
 fn a_unit_resumed_event_seeded_directly_through_a_real_store_reaches_status_without_the_command() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -120,9 +118,8 @@ fn a_unit_resumed_event_seeded_directly_through_a_real_store_reaches_status_with
 #[test]
 fn a_legacy_shaped_unit_resumed_event_missing_both_optional_fields_survives_a_real_store_round_trip(
 ) {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -163,9 +160,8 @@ fn a_legacy_shaped_unit_resumed_event_missing_both_optional_fields_survives_a_re
 #[test]
 fn status_and_the_dashboards_build_state_render_the_same_resumed_line_through_a_real_store_round_trip(
 ) {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -237,9 +233,8 @@ fn status_and_the_dashboards_build_state_render_the_same_resumed_line_through_a_
 /// again only after a SECOND failure/escalation).
 #[test]
 fn the_resumed_banner_survives_a_genuinely_in_flight_re_parked_attempt_not_yet_resolved() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -316,9 +311,8 @@ rigger::test_cases! {
 /// unit`), rather than resting the accounting on that implementer-authored fixture alone.
 #[test]
 fn resume_unit_rejects_an_unknown_unit_absent_from_the_run() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -344,9 +338,8 @@ fn resume_unit_rejects_an_unknown_unit_absent_from_the_run() {
 /// `branch_exists`' false path through the real binary and a real git repo.
 #[test]
 fn resume_unit_refuses_when_the_recorded_branch_was_never_created() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -375,9 +368,8 @@ fn resume_unit_refuses_when_the_recorded_branch_was_never_created() {
 /// escalated` already covers - refuses by name.
 #[test]
 fn resume_unit_refuses_an_already_integrated_unit() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[

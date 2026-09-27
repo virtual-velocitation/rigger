@@ -59,6 +59,7 @@ mod common;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
+use common::cli::validate_after_init;
 use common::fixtures::apply_json;
 use std::path::Path;
 
@@ -484,15 +485,7 @@ fn project_graph(root: &Path) -> rigger::contextgraph::sqlite::Projector {
 fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails() {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_a_retired_entity(root);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
-    );
+    let (_out, err) = validate_after_init(root, seed_a_retired_entity);
     assert!(
         err.to_lowercase().contains("retired"),
         "validate must warn that a code entity was retired; stderr:\n{err}"
@@ -512,12 +505,7 @@ fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fai
 fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_a_live_entity(root);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
+    let (_out, err) = validate_after_init(root, seed_a_live_entity);
     assert!(
         !err.to_lowercase().contains("retired"),
         "a graph.db with a live, never-retired entity must draw no retirement warning; \

@@ -39,6 +39,7 @@ use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::seed_store;
 use common::cli::temp_project;
+use common::cli::temp_store_project;
 use common::fixtures::cleanup;
 use common::fixtures::sigterm_ignorer_in;
 use common::wait_until;
@@ -212,9 +213,8 @@ fn rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_
 #[test]
 fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_with_no_agents_fleet_present(
 ) {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
     seed_run_started(root, "r1");
 
     let relocated = tempfile::tempdir().expect("create relocated workdir");

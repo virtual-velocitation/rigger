@@ -139,6 +139,7 @@ mod common;
 use common::cli::plant_stale_marker;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
+use common::cli::step_line;
 use common::cli::temp_repoless_project;
 use common::cli::{write_workflow_fixture, WorkflowFixture, UNISOLATED_WORKER};
 use common::fixtures::js_declaration;
@@ -178,9 +179,7 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
 
     // Round 1: the unit is ready, so its implementer parks fresh as attempt #0. Nothing has
     // crossed a threshold yet - not even a failure has happened - so `attention` is omitted.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 1 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 1 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#0""#),
         "round 1 must park attempt #0; got: {line:?}"
@@ -197,9 +196,7 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
     );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 2 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 2 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#1""#),
         "round 2 must park the remediation attempt #1; got: {line:?}"
@@ -215,9 +212,7 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
     );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 3 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 3 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#2""#),
         "round 3 must park the remediation attempt #2; got: {line:?}"
@@ -237,9 +232,7 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
     );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 4 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 4 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#3""#),
         "round 4 must park the remediation attempt #3, still unanswered; got: {line:?}"
@@ -258,9 +251,7 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
     // this is the one property a same-process, in-memory-store test structurally cannot
     // prove - it needs a REAL persisted log a NEW process re-derives the same "nothing new"
     // verdict from, not Rust state a single process happened to carry forward.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 5 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 5 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#3""#),
         "round 5 must still show attempt #3 as the parked wave, unchanged; got: {line:?}"
@@ -407,9 +398,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     write_workflow_fixture(root, &ATTENTION_ORDERING_WORKFLOW);
 
     // Round 1: both independent units are ready, so both park together in one wave.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 1 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 1 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#0""#) && line.contains(r#""id":"h/implementer#0""#),
         "round 1 must park BOTH units' implementer spawns in one wave; got: {line:?}"
@@ -458,9 +447,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
         root,
         &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
     );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 4 step must succeed; stderr: {err}");
-    let line = out.trim();
+    let line = step_line(root, "round 4 step must succeed");
     assert_eq!(
         line.matches(r#"{"kind":"#).count(),
         3,

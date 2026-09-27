@@ -33,6 +33,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
+use common::cli::validate_after_init;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -125,14 +126,7 @@ fn seed_key_under_two_covered_types(root: &Path, key: &str) {
 fn validate_stderr_after(prepare: impl FnOnce(&Path)) -> String {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    prepare(root);
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
-    );
+    let (_out, err) = validate_after_init(root, prepare);
     err
 }
 
@@ -207,14 +201,11 @@ rigger::test_cases! {
 fn validate_is_silent_on_index_staleness_when_the_index_matches_the_tree() {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let content = "fn one() {}\n";
-    std::fs::write(root.join("a.rs"), content).unwrap();
-    persist_index(root, &[("a.rs", content)]);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
+    let (_out, err) = validate_after_init(root, |root| {
+        let content = "fn one() {}\n";
+        std::fs::write(root.join("a.rs"), content).unwrap();
+        persist_index(root, &[("a.rs", content)]);
+    });
     assert!(
         !err.contains("rigger reindex"),
         "an index that matches the tree must draw no staleness warning; stderr:\n{err}"
@@ -272,15 +263,7 @@ fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
 fn validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived() {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_duplicated_key(root, 6);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
-    );
+    let (_out, err) = validate_after_init(root, |root| seed_duplicated_key(root, 6));
     assert!(
         err.to_lowercase().contains("duplicat") || err.to_lowercase().contains("bloat"),
         "validate must warn of derived-index duplication; stderr:\n{err}"
@@ -468,15 +451,7 @@ fn strip_implement_gates(root: &Path) {
 fn validate_warns_of_an_ungated_fanout_template_and_names_it() {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    strip_implement_gates(root);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
-    );
+    let (_out, err) = validate_after_init(root, strip_implement_gates);
     assert!(
         err.contains("fan-out template 'implement' declares no gates"),
         "validate must warn of the ungated fan-out template, naming it; stderr:\n{err}"
@@ -507,11 +482,7 @@ fn validate_warns_of_an_ungated_fanout_template_and_names_it() {
 fn validate_is_silent_on_the_scaffolded_gated_fanout_template() {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
+    let (_out, err) = validate_after_init(root, |_| {});
     assert!(
         !err.contains("declares no gates"),
         "the scaffolded `implement` template declares gates and must draw no warning; \
@@ -529,14 +500,7 @@ fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory
     let root = dir.path();
     // No persisted symbols index at all, and no seeded event log - the state `rigger init`
     // itself leaves a fresh project in.
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed on a clean project; stderr:\n{err}"
-    );
+    let (out, err) = validate_after_init(root, |_| {});
     assert!(
         out.contains("config valid"),
         "validate must still print its config summary; stdout:\n{out}"

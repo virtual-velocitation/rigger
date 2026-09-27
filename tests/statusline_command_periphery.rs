@@ -16,8 +16,8 @@ mod common;
 use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
-use common::cli::seed_store;
 use common::cli::temp_project;
+use common::cli::temp_store_project;
 
 /// `rigger status --line` prints EXACTLY ONE line, and it is `console::fold`'s own
 /// `statusline` computed independently by this test from a real store round trip - not a
@@ -25,9 +25,8 @@ use common::cli::temp_project;
 /// current blockers, the run-id header) leaks into it.
 #[test]
 fn status_line_prints_exactly_the_consoles_own_statusline_and_nothing_else() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -60,9 +59,8 @@ fn status_line_prints_exactly_the_consoles_own_statusline_and_nothing_else() {
 /// derivations to agree.
 #[test]
 fn status_line_matches_rigger_status_first_line_for_the_same_position() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -90,9 +88,8 @@ fn status_line_matches_rigger_status_first_line_for_the_same_position() {
 /// bare answer `rigger status`'s own first line gives on an empty store.
 #[test]
 fn status_line_on_a_clean_run() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
     let (out, err, ok) = run_rigger(root, &["status", "--line"]);
     assert!(
@@ -138,9 +135,8 @@ fn status_line_on_a_project_with_no_store_yet_renders_a_graceful_placeholder() {
 /// two are different output modes for the same command and cannot both apply to one call.
 #[test]
 fn status_line_and_json_are_mutually_exclusive() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
     let (_out, err, ok) = run_rigger(root, &["status", "--line", "--json"]);
     assert!(!ok, "status --line --json must be rejected");

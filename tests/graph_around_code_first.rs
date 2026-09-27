@@ -25,8 +25,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 use common::fixtures::apply_code_entity;
 
 /// The `node <id> <kind>` lines of a `rigger graph --around` transcript, in the ORDER they
@@ -46,9 +45,8 @@ fn node_lines(out: &str) -> Vec<(usize, String)> {
 
 #[test]
 fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
 
     let file = "big.rs";
 
@@ -154,9 +152,8 @@ fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() 
 fn run_rigger_ignores_an_inherited_ambient_store_fence() {
     let _fence_cleared = common::StoreFenceCleared::new();
 
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
 
     // Simulate exactly what a fenced `cargo test` gate does to THIS test binary's own
     // process: an ambient fence pointing at a scratch dir this fixture never built and never

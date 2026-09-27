@@ -40,8 +40,8 @@ use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_order_signature;
 use common::cli::seed_run_events;
-use common::cli::seed_store;
 use common::cli::temp_project;
+use common::cli::temp_store_project;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 
@@ -97,9 +97,8 @@ fn line_channel(stream: impl std::io::Read + Send + 'static) -> std::sync::mpsc:
 #[test]
 fn watch_once_reports_anomalies_through_the_real_compiled_binary_naming_signal_subject_and_response(
 ) {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -148,9 +147,8 @@ fn watch_once_reports_anomalies_through_the_real_compiled_binary_naming_signal_s
 /// property of the pure `detect()` fold but of the whole composed command.
 #[test]
 fn watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
     let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
     assert!(ok, "watch --once must exit 0 on a clean store: {err}");
@@ -269,9 +267,8 @@ fn watch_refuses_a_project_with_no_rigger_store_at_all_through_the_real_binary()
 /// message naming the bad argument, never a panic.
 #[test]
 fn watch_rejects_an_unknown_flag_through_the_real_binary_with_a_nonzero_exit() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
     let (out, err, ok) = run_rigger(root, &["watch", "--bogus"]);
     assert!(
@@ -295,9 +292,8 @@ fn watch_rejects_an_unknown_flag_through_the_real_binary_with_a_nonzero_exit() {
 /// and zero prior tests; this drives all three together, live.
 #[test]
 fn watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
     let mut child = spawn_streaming_watch(root);
     let stdout = child.stdout.take().expect("watch stdout is piped");
@@ -363,9 +359,8 @@ fn watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed() 
 /// live-process shape.
 #[test]
 fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     let db_path = root.join(".rigger").join("events.db");
     let good_bytes = std::fs::read(&db_path).expect("read the seeded store");
 
@@ -451,9 +446,8 @@ fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
 /// combined shape a real operator's store actually presents silently lost a line.
 #[test]
 fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real_compiled_binary() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -549,9 +543,8 @@ fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real
 /// needs a real process re-polling a store that keeps changing while it runs.
 #[test]
 fn watch_streaming_re_alerts_a_reject_recurrence_churn_count_on_each_increment() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     // Two same-cause failures: below the diagnose threshold of three, must stay silent.
     seed_run_events(
         root,

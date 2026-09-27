@@ -31,8 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::cli::run_rigger;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 use common::fixtures::write_file;
 use rigger::budget::BuildBudget;
 use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner};
@@ -74,9 +73,8 @@ fn dir_bytes(path: &Path) -> u64 {
 
 #[test]
 fn reset_build_cache_deletes_a_real_populated_cache_and_reports_its_bytes() {
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 5_000]);
     write_file(&cache.join("debug").join("b.rlib"), &[0u8; 2_500]);
@@ -103,9 +101,8 @@ fn reset_build_cache_deletes_a_real_populated_cache_and_reports_its_bytes() {
 
 #[test]
 fn reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything() {
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     // No cache ever created at all.
 
     let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
@@ -133,9 +130,8 @@ fn reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_any
 
 #[test]
 fn reset_build_cache_composes_with_runs_and_derived_in_either_order() {
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     write_file(
         &scratch_entry(root, SHARED_CACHE).join("x.rlib"),
         &[0u8; 10],
@@ -169,9 +165,8 @@ fn reset_build_cache_composes_with_runs_and_derived_in_either_order() {
 
 #[test]
 fn reset_build_cache_flag_is_registered_and_rejects_a_duplicate() {
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
 
     let (_out, err, ok) = run_rigger(root, &["reset", "--build-cache", "--build-cache"]);
     assert!(!ok, "a duplicate --build-cache must be refused");
@@ -189,9 +184,8 @@ fn reset_build_cache_is_not_dropped_when_composed_with_derived_on_a_server_backe
     // only its own accumulation. Selects the server backend the same way an operator would
     // (KURRENTDB_CONN alone, rung 2 of the store-selection precedence) - unreachable is
     // fine, since `--build-cache` never opens the store at all.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("x.rlib"), &[0u8; 16]);
 
@@ -235,9 +229,8 @@ fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
     // for a build's duration - `gate::ExecRunner::run`'s own shape) with a real external
     // `flock -s`, then run the real compiled binary against the identical guard path it
     // independently derives.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
     let guard = scratch_entry(root, CACHE_GUARD);
@@ -320,9 +313,8 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     // trailing `sh -c "singlecommand"`). Killing ONLY the orchestrator's own pid
     // (`Child::kill`, which signals that one pid, never a process group) must leave the
     // backgrounded flock/sh chain alive and STILL holding the guard.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
     let guard = scratch_entry(root, CACHE_GUARD);
@@ -426,9 +418,8 @@ fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path(
     // read_scratch_workdir` exists specifically so `reset --build-cache` tracks a configured
     // `defaults.workdir` - prove it end to end through the real binary, not merely the
     // lib-level contract already pinned in tests/scratch_workdir_config.rs.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     let scratch = tempfile::tempdir().expect("create a separate configured scratch root");
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
@@ -496,9 +487,8 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
     // proving no lock was ever taken - AND the gate command's own `CARGO_TARGET_DIR` must never
     // have equaled `build_cache_dir` in the first place, proving a real build was never pointed
     // at the directory the concurrent reclaim just freely reaped out from under it.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("preexisting.rlib"), &[0u8; 64]);
 

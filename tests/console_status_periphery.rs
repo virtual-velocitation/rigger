@@ -17,8 +17,7 @@ mod common;
 use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 
 /// ONE FOLD, the CLI's use of the core: for a run with an escalated unit, `rigger status`'s
 /// FIRST printed line is exactly `console::fold`'s `statusline` computed independently by this
@@ -26,9 +25,8 @@ use common::cli::temp_project;
 /// `console::fold`'s own dock line - not a second, hand-composed rendering.
 #[test]
 fn rigger_status_first_line_and_needs_you_section_are_the_consoles_own_fold() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -87,9 +85,8 @@ fn rigger_status_first_line_and_needs_you_section_are_the_consoles_own_fold() {
 /// binary, not only through `console.rs`'s own colocated unit test.
 #[test]
 fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -167,9 +164,8 @@ fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
 /// operator reading a quiet run's status never wonders whether the needs-you check even ran.
 #[test]
 fn rigger_status_reports_nothing_needs_you_on_a_clean_run() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
     let (out, err, ok) = run_rigger(root, &["status"]);
     assert!(ok, "rigger status must succeed on an empty store: {err}");
@@ -187,9 +183,8 @@ fn rigger_status_reports_nothing_needs_you_on_a_clean_run() {
 /// exactly what it was.
 #[test]
 fn rigger_status_json_is_unaffected_by_the_console_surface() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -222,9 +217,8 @@ fn rigger_status_json_is_unaffected_by_the_console_surface() {
 /// asserts, and the `UnitStatuses` type alias they are keyed by.
 #[test]
 fn console_dock_and_statusline_are_reachable_directly_over_a_real_store_round_trip() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[

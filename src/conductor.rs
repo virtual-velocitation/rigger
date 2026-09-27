@@ -13963,6 +13963,7 @@ mod tests {
     use crate::test_support::git_ok;
     use crate::test_support::git_out;
     use crate::test_support::has_status_marker as has_status;
+    use crate::test_support::one_gated_stage_cfg;
     use crate::test_support::run_git;
     use crate::test_support::temp_git_project_with_commit;
     use crate::test_support::trimmed_stdout;
@@ -15660,22 +15661,8 @@ mod tests {
 
     #[test]
     fn integrates_a_passing_stage() {
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let cfg = one_gated_stage_cfg("s");
+        let (rs, _) = run_logged(&cfg, &Stub::new());
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
     }
 
@@ -21418,18 +21405,7 @@ mod tests {
 
     #[test]
     fn resume_skips_already_integrated_units() {
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
+        let cfg = one_gated_stage_cfg("s");
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
@@ -23719,18 +23695,7 @@ mod tests {
         // stamps the actor 'a', no KIND_AGENT node and no REL_DECIDED attribution edge is projected;
         // the graph models the target project, not the persona that acted.
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
+        let cfg = one_gated_stage_cfg("s");
         let st = Store::open(":memory:").unwrap();
         let driver = Stub {
             emits: vec![(
@@ -27967,18 +27932,7 @@ mod tests {
         // hung-detector inside `compute_attention` alongside main.rs's.
         use crate::driver::replay::ReplayDriver;
 
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "u".into(),
-            Stage {
-                name: "u".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
+        let cfg = one_gated_stage_cfg("u");
 
         let st = Store::open(":memory:").unwrap();
         crate::run_store::ensure_started(&st, &[]).unwrap();
@@ -28079,22 +28033,8 @@ mod tests {
         // Spec 69, criterion 5: "omitted entirely on a clean step" - a run that converges
         // with nothing crossing any of the five signal thresholds must surface an empty
         // `attention`, so the wire stays byte-stable for the common case.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "w".into(),
-            Stage {
-                name: "w".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let cfg = one_gated_stage_cfg("w");
+        let (rs, _) = run_logged(&cfg, &Stub::new());
         assert!(
             rs.attention.is_empty(),
             "a clean converged step must stamp no attention entries, got {:?}",
@@ -28201,10 +28141,7 @@ mod tests {
                 },
             );
         }
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, _) = run_logged(&cfg, &Stub::new());
         assert!(
             rs.budget_halt.is_none(),
             "9/10 spawns must not halt the run"
@@ -28354,22 +28291,8 @@ mod tests {
         // The halt signal is ABSENT on a run that did not trip the breaker: `rigger step`
         // then prints `{"wave":[],"done":true}` with no halt and the driver reports a clean
         // completion. A budget of 0 is unlimited, so the single unit never trips.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "w".into(),
-            Stage {
-                name: "w".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let cfg = one_gated_stage_cfg("w");
+        let (rs, _) = run_logged(&cfg, &Stub::new());
         assert_eq!(
             rs.budget_halt, None,
             "a run that never tripped the breaker reports no halt reason"
@@ -32012,10 +31935,7 @@ mod tests {
                 },
             );
         }
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, _) = run_logged(&cfg, &Stub::new());
         for n in 0..6 {
             assert_eq!(
                 rs.units[&format!("s{n}")].status,
@@ -32214,18 +32134,7 @@ mod tests {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
+        let cfg = one_gated_stage_cfg("s");
         let st = Store::open(":memory:").unwrap();
         let driver = Stub {
             write_file: Some("touched.rs".into()),
@@ -33511,22 +33420,8 @@ mod tests {
         // Item 4: every TYPE_UNIT_STATUS emit used to omit `evidence`, leaving the
         // ledger's Unit.evidence always empty. After a passing run the unit's projected
         // evidence must be non-empty (gate summaries for verified, etc.).
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let cfg = one_gated_stage_cfg("s");
+        let (rs, _) = run_logged(&cfg, &Stub::new());
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
         assert!(
             !rs.units["s"].evidence.is_empty(),
