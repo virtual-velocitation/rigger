@@ -44,39 +44,15 @@
 
 mod common;
 
-use common::fixtures::agent;
-use common::fixtures::gate_def;
 use common::fixtures::review_panel;
-use common::git::install_refusing_hook;
+use common::fixtures::{repo_with_refusing_hook, workflow_cfg};
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, Stage};
+use rigger::config::{AgentDef, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. `tests/checkpoint_commit_hook_bypass_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
 
 fn mk_stage(name: &str, needs: Vec<String>) -> Stage {
     Stage {
@@ -137,41 +113,18 @@ impl AgentDriver for CompDriver {
 
 #[test]
 fn a_compensation_revert_bypasses_an_installed_refusing_hook() {
-    let repo = init_repo();
-    let repo_path = repo.path().to_str().unwrap().to_string();
-    install_refusing_hook(&repo_path);
+    let (repo, repo_path) = repo_with_refusing_hook();
 
-    // Sanity: the hook really does refuse an ordinary commit in a worktree of this same repo,
-    // so a green run below is proof of a bypass, never proof the hook was toothless.
-    let wt_path = std::env::temp_dir().join(format!("hook-sanity-{}", uuid::Uuid::new_v4()));
-    let wt = rigger::worktree::Worktree::create(
-        &repo_path,
-        wt_path.to_str().unwrap(),
-        "rigger/hook-sanity",
-        "",
-    )
-    .unwrap();
-    std::fs::write(wt_path.join("probe.txt"), "x\n").unwrap();
-    let err = wt
-        .commit("rigger: probe")
-        .expect_err("the installed hook must refuse an ordinary commit in a sibling worktree");
-    assert!(err.to_string().contains("hook: refusing"), "{err}");
-    drop(wt);
-    let _ = std::fs::remove_dir_all(&wt_path);
-
-    let mut cfg = Config::default();
-    cfg.agents.insert("worker".into(), agent("worker"));
-    cfg.agents.insert("lens".into(), agent("lens"));
-    cfg.agents.insert("judge".into(), agent("judge"));
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     // unit-b needs unit-a, so unit-a integrates FIRST and unit-b's review can then prove that
     // already-integrated unit-a wrong (the ordering `drain_compensations` requires).
-    cfg.workflow
-        .stages
-        .insert("unit-a".into(), mk_stage("unit-a", vec![]));
-    cfg.workflow
-        .stages
-        .insert("unit-b".into(), mk_stage("unit-b", vec!["unit-a".into()]));
+    let cfg = workflow_cfg(
+        &["worker", "lens", "judge"],
+        &[("g", "exit 0")],
+        vec![
+            mk_stage("unit-a", vec![]),
+            mk_stage("unit-b", vec!["unit-a".into()]),
+        ],
+    );
 
     let store = Store::open(":memory:").unwrap();
     let driver = CompDriver;

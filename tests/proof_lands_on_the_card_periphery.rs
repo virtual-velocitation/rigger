@@ -56,7 +56,7 @@
 mod common;
 
 use common::served::body_of;
-use common::served::try_fetch_served;
+use common::served::fetch_served;
 
 // ---- the Done-when, end to end via the public API (symbols lane only) ----------------------
 
@@ -776,19 +776,6 @@ fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_
 }
 
 // ---- the SERVED /api/graph?card= wire contract (both lanes) --------------------------------
-
-/// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, retrying on
-/// a socket-level transient. Mirrors `dash_kg_graph_route.rs::fetch_served` verbatim.
-fn fetch_served(path: &str, graph: &rigger::contextgraph::Graph) -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_served(path, graph.clone(), graph.clone()) {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served {path} over the real socket after many fresh-port attempts"
-    );
-}
 
 /// A minimal graph with one PROVEN code entity (`proven_by`/`proof_evidence` attrs already folded)
 /// and one UNPROVEN one (neither attr present) - built by hand, mirroring how the real fold leaves

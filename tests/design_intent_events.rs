@@ -32,9 +32,8 @@ use rigger::contextgraph::{
 #[cfg(feature = "symbols")]
 use rigger::eventstore::Event;
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_json;
+mod common;
+use common::fixtures::apply_json;
 
 /// A fresh in-memory projector with `events` folded onto it in order, their log positions
 /// numbered from 1.

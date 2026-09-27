@@ -31,10 +31,7 @@
 
 mod common;
 
-use std::process::Command;
-
-use common::fixtures::tool_available;
-use common::served::page_script;
+use common::served::node_harness_passes;
 use rigger::dash;
 
 /// STRUCTURAL: the served page SHIPS the density-spread lever AND wires the radius/label accessors
@@ -193,45 +190,10 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-spacing-harness.js" });
 "##;
 
-/// RUNTIME proof of the done-when: the served page's own force layout spreads with density - a 160-node
-/// overview occupies a strictly larger extent than a 60-node one, longer labels take strictly more room
-/// than short ones at a fixed node count, and after the full pipeline every edge's endpoints are at
-/// least the sum of their node radii apart - deterministically across two runs.
-#[test]
-fn the_layout_extent_scales_with_density_and_edges_are_drawable() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP the_layout_extent_scales_with_density_and_edges_are_drawable: no `node` runtime on \
-             PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
-             install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the spacing harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, SPACING_HARNESS).expect("write the spacing harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served layout");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the layout must scale its extent with density and keep edges drawable, but the runtime \
-         harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK density-scaled-spacing"),
-        "the spacing harness must confirm density-scaled spacing:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME proof of the done-when: the served page's own force layout spreads with density - a 160-node
+    /// overview occupies a strictly larger extent than a 60-node one, longer labels take strictly more room
+    /// than short ones at a fixed node count, and after the full pipeline every edge's endpoints are at
+    /// least the sum of their node radii apart - deterministically across two runs.
+    the_layout_extent_scales_with_density_and_edges_are_drawable: node_harness_passes(SPACING_HARNESS, "OK density-scaled-spacing");
 }

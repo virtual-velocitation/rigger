@@ -47,12 +47,15 @@
 mod common;
 use common::git::run_git;
 
-use common::cli::has_status_marker;
+use common::fixtures::count_status_marker;
 use common::fixtures::gate_def;
+use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
-use common::fixtures::review_or_adjudicate;
 use common::fixtures::scratch_cfg;
+use common::fixtures::A_WORK_DRIVER;
+use common::git::git_commit_all;
 use common::git::git_stdout;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config};
 use rigger::contextgraph;
@@ -63,72 +66,13 @@ use rigger::eventstore::{
 use rigger::ledger;
 use serde_json::{json, Value};
 use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. `tests/integrate_conflict_merge_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
-
-fn git_commit_all(dir: &str, msg: &str) {
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", msg]] {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?} in {dir} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-}
 
 /// `rigger::conductor::unit_branch`'s exact convention (`rigger/u/<unit-id>`, the crate's own
 /// public authority) reproduced by name rather than imported, so this file states plainly which
 /// branch it seeds without depending on the crate leaking its own worktree-dir layout too.
 fn unit_branch(unit_id: &str) -> String {
     format!("rigger/u/{unit_id}")
-}
-
-/// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else. Mirrors
-/// `tests/integrate_conflict_merge_periphery.rs::SimpleWorkDriver`.
-struct SimpleWorkDriver;
-
-impl AgentDriver for SimpleWorkDriver {
-    fn spawn(
-        &self,
-        _a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            return Ok(AgentResult::default());
-        }
-        Ok(review_or_adjudicate(opts))
-    }
 }
 
 /// A driver that fails the test the instant ANY role is spawned - GAP 1's own proof that a
@@ -196,16 +140,6 @@ impl EventStore for FailAfterContaining<'_> {
     crate::delegate_event_store_reads!();
 }
 
-fn count_status_marker(events: &[Event], status: &str) -> usize {
-    events
-        .iter()
-        .filter(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
-        })
-        .count()
-}
-
 /// Whether `events` carries a real, non-cached-hit-or-otherwise `GateVerdict` for the
 /// POST-MERGE re-gate specifically. The post-merge replay key
 /// (`src/conductor.rs::postmerge_gate_verdict_key`, private to that module) is
@@ -234,12 +168,12 @@ fn base_cfg(repo_path: &str) -> Config {
 
 #[test]
 fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_on_resume() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = base_cfg(&repo_path);
 
     let store = Store::open(":memory:").unwrap();
-    let driver = SimpleWorkDriver;
+    let driver = A_WORK_DRIVER;
     {
         let failing_store = FailAfterContaining {
             inner: &store,
@@ -342,7 +276,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
 
 #[test]
 fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavior() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = base_cfg(&repo_path);
     let branch = unit_branch("unit-a");

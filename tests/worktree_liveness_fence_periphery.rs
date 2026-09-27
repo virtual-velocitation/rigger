@@ -88,26 +88,13 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
-use common::cli::temp_git_project_with_commit;
 use common::cli::write_reviewless_git_unit_workflow;
+use common::git::git_answer;
 use common::git::git_ok;
 use common::git::init_repo;
+use common::git::temp_git_project_with_commit;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
-use std::process::Command;
-
-/// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success.
-fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("git must be runnable");
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-}
 
 /// Append raw events built through the crate's PUBLIC `rigger::spawn`/`rigger::eventstore` API
 /// (never a hand-typed JSON guess at the wire shape) directly into the same real on-disk store
@@ -369,7 +356,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
     // own best-effort `Worktree::delete_branch` call underneath; only the duplicate LOG
     // line is suppressed, never the underlying cleanup.
     assert!(
-        git_out(
+        git_answer(
             root,
             &[
                 "rev-parse",
@@ -382,7 +369,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
         "the hung unit's now-orphaned branch ref must still be reclaimed (silently), even \
          though its removal is no longer independently logged"
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    let list = git_answer(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
     assert!(
         !list.contains("rigger/u/hung"),
         "the reclaimed `hung` worktree must be fully DEREGISTERED from git: {list}"
@@ -534,7 +521,7 @@ fn gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_regi
          assertion above no longer gives: {err}"
     );
     assert!(
-        git_out(
+        git_answer(
             root,
             &[
                 "rev-parse",

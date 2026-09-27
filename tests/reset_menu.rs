@@ -22,27 +22,21 @@
 mod common;
 
 use common::cli::emit;
+use common::cli::event_log;
+use common::cli::graph_db;
 use common::cli::run_rigger;
 use common::cli::seed_derived_duplicates;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::cli::temp_project;
 use common::cli::DUP_ROUNDS;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/cli.rs and tests/reset_derived_compaction.rs; each integration
 // suite is its own binary, so a small harness is duplicated per file by this codebase's
 // existing convention rather than shared).
 // ---------------------------------------------------------------------------------------
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
-fn graph_db(root: &Path) -> PathBuf {
-    root.join(".rigger").join("graph.db")
-}
 
 /// A single dead-run, prunable-by-`--runs` context-graph node: a superseded run `r1` records one
 /// `DecisionMade`, then the active run `r2` starts and records its own. `reset --runs` drops

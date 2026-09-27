@@ -163,7 +163,7 @@
 //!   the after-record lands exactly once, never duplicated.
 //! - Row 1's mutation|after-record boundary,
 //!   `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`: an
-//!   ordinary, conflict-free single-unit merge (`SimpleWorkDriver`) - `merge_into_worktree`
+//!   ordinary, conflict-free single-unit merge (`A_WORK_DRIVER`) - `merge_into_worktree`
 //!   itself succeeds for real (a genuine commit lands on the unit's OWN branch) - paired with a
 //!   `FailAppendContaining` case refusing `integrate-merge-outcome` specifically, proving the
 //!   merge commit's on-disk effect survives the after-record's own append failure and a resumed
@@ -193,7 +193,7 @@
 //!   landing-intent record survives that failure.
 //! - Row 4's mutation|after-record boundary,
 //!   `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`: the same
-//!   ordinary conflict-free `SimpleWorkDriver` unit as row 1's after-record fixture -
+//!   ordinary conflict-free `A_WORK_DRIVER` unit as row 1's after-record fixture -
 //!   `Worktree::land` itself succeeds for real (the run branch's own working tree gets the
 //!   merge commit) - paired with `FailAppendContaining` refusing `integrate-landed`
 //!   specifically, proving the land's on-disk effect survives the after-record's own append
@@ -235,7 +235,7 @@
 //!   catches row 3 up for real, and a THIRD `run()` observation (the on-disk content) confirms
 //!   the regenerated output shipped, never the placeholder.
 //!
-//! Neither of GAP 9's own row-4 fixtures can catch this (both use `SimpleWorkDriver` - no
+//! Neither of GAP 9's own row-4 fixtures can catch this (both use `A_WORK_DRIVER` - no
 //! conflict, no owed regeneration ever in play), and GAP 9's row-3 fixture never exercises the
 //! entry-level fast path at all (its failures land before `files.is_empty()` can ever be true
 //! on a resumed call). This is the accounting this file's own header promises: a re-read of the
@@ -267,14 +267,19 @@
 mod common;
 use common::git::run_git;
 
-use common::cli::has_status_marker;
 use common::cli::write_workflow;
 use common::fixtures::bare_deps;
+use common::fixtures::count_status_marker;
 use common::fixtures::gate_def;
+use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::scratch_cfg;
+use common::fixtures::FifoAtLandingDriver;
+use common::fixtures::A_WORK_DRIVER;
+use common::git::git_commit_all;
 use common::git::git_stdout;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, RegenerateRule};
 use rigger::config_store;
@@ -287,39 +292,6 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. `tests/worktree_liveness_fence_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
-
-fn git_commit_all(dir: &str, msg: &str) {
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", msg]] {
-        Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-}
 
 /// Resumes the crashed run with a driver that panics on any implementer spawn, asserts
 /// `unit-a` lands with no charged attempt, and returns the stream afterward.
@@ -588,7 +560,7 @@ impl AgentDriver for MixedConflictDriver {
 
 #[test]
 fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regenerates_for_real() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::create_dir_all(Path::new(&repo_path).join("docs/audit")).unwrap();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
@@ -778,7 +750,7 @@ impl AgentDriver for BranchResetDriver {
 
 #[test]
 fn a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("m.rs"), MB_BASE).unwrap();
     git_commit_all(&repo_path, "base m.rs");
@@ -975,7 +947,7 @@ impl AgentDriver for GatesPortConflictDriver {
 
 #[test]
 fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_shell_out() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE\n").unwrap();
     git_commit_all(&repo_path, "base c.rs");
@@ -1168,7 +1140,7 @@ impl AgentDriver for GatedThirdUnitDriver {
 
 #[test]
 fn regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_land_meanwhile() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE\n").unwrap();
     std::fs::write(Path::new(&repo_path).join("d.rs"), "BASE_D\n").unwrap();
@@ -1384,7 +1356,7 @@ impl AgentDriver for NoConflictRespawnAfterCrashDriver {
 
 #[test]
 fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resume() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::create_dir_all(Path::new(&repo_path).join("docs/audit")).unwrap();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
@@ -1565,7 +1537,7 @@ impl AgentDriver for NonContentMergeFailureDriver {
 #[test]
 #[cfg(unix)]
 fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let store = Store::open(":memory:").unwrap();
@@ -1737,7 +1709,7 @@ fn count_regenerate_pending_markers(events: &[rigger::eventstore::Event]) -> usi
 
 #[test]
 fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate_pending_marker() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
     std::fs::write(Path::new(&repo_path).join("gen.txt"), "BASE_GEN\n").unwrap();
@@ -1857,16 +1829,6 @@ impl EventStore for FailAppendContaining<'_> {
     crate::delegate_event_store_reads!();
 }
 
-fn count_status_marker(events: &[rigger::eventstore::Event], status: &str) -> usize {
-    events
-        .iter()
-        .filter(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
-        })
-        .count()
-}
-
 /// Call 1's driver for the row-1 fixture: plants a NEW path directly on the bare run branch
 /// (mirrors `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo directly" technique
 /// above) AND leaves a stray FIFO at that same path in this unit's own worktree - a FIFO,
@@ -1911,7 +1873,7 @@ impl AgentDriver for Row1MergeCrashDriver {
 #[test]
 #[cfg(unix)]
 fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = scratch_cfg(&repo_path);
@@ -1977,44 +1939,10 @@ fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
     drop(repo);
 }
 
-/// Call 1's driver for the row-4 fixture: writes `a.rs` for real in the unit's own worktree (no
-/// conflict at all - `Worktree::merge_into_worktree` resolves cleanly, rows 1-3 complete
-/// normally) but plants a stray FIFO at that SAME path directly in `self.deps.repo`'s own
-/// working tree - so `Worktree::land`'s `git merge --no-edit` (which must check `a.rs` out
-/// there for the first time) is refused NON-content, reached only AFTER row 4's landing-intent
-/// before-record already landed.
-struct Row4LandCrashDriver {
-    repo: String,
-}
-
-impl AgentDriver for Row4LandCrashDriver {
-    fn spawn(
-        &self,
-        _a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            assert!(
-                Command::new("mkfifo")
-                    .arg(Path::new(&self.repo).join("a.rs"))
-                    .status()
-                    .unwrap()
-                    .success(),
-                "test setup: mkfifo must succeed"
-            );
-            return Ok(AgentResult::default());
-        }
-        Ok(review_or_adjudicate(opts))
-    }
-}
-
 #[test]
 #[cfg(unix)]
 fn a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = scratch_cfg(&repo_path);
@@ -2024,8 +1952,9 @@ fn a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4() {
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
 
     let store = Store::open(":memory:").unwrap();
-    let driver = Row4LandCrashDriver {
+    let driver = FifoAtLandingDriver {
         repo: repo_path.clone(),
+        file: "a.rs",
     };
     {
         let deps = bare_deps(&store, &driver, &rigger::gate::ExecRunner, &repo_path);
@@ -2157,7 +2086,7 @@ impl AgentDriver for ResolveSourceOnRetryDriver {
 
 #[test]
 fn a_crash_right_after_placeholder_staging_resumes_and_completes_row_2() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = scratch_cfg(&repo_path);
@@ -2337,7 +2266,7 @@ fn regenerating_cfg(repo_path: &str) -> Config {
 fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3() {
     // --- Boundary A: before-record | mutation (the regenerate command itself fails once) ---
     {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = regenerating_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
@@ -2396,7 +2325,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
     // --- Boundary B: mutation | after-record (the regenerate command succeeds, the SPECIFIC
     // after-record append is what a real backend failure refuses) ---
     {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = regenerating_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
@@ -2459,35 +2388,12 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
     }
 }
 
-/// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else, no
-/// sibling ever touches the run branch. Shared by the row 1 and row 4 mutation|after-record
-/// fixtures below - both need `Worktree::merge_into_worktree`/`Worktree::land` to succeed for
-/// REAL (a genuine git mutation lands) with no conflict anywhere, so the only thing that can
-/// crash is the specific after-record append `FailAppendContaining` targets.
-struct SimpleWorkDriver;
-
-impl AgentDriver for SimpleWorkDriver {
-    fn spawn(
-        &self,
-        _a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            return Ok(AgentResult::default());
-        }
-        Ok(review_or_adjudicate(opts))
-    }
-}
-
 /// A crash on the append that would durably record `after` while the mutation itself already
 /// succeeded for real: call 1 fails on exactly that append with `before` recorded, the
 /// mutation's effect is already on disk (`on_disk`), and a resumed call re-derives the same
 /// outcome idempotently, recording each marker exactly once.
 fn assert_after_record_crash_resumes(before: &str, after: &'static str, on_disk: fn(&str)) {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = scratch_cfg(&repo_path);
@@ -2497,7 +2403,7 @@ fn assert_after_record_crash_resumes(before: &str, after: &'static str, on_disk:
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
 
     let store = Store::open(":memory:").unwrap();
-    let driver = SimpleWorkDriver;
+    let driver = A_WORK_DRIVER;
     {
         let failing_store = FailAppendContaining {
             inner: &store,
@@ -2615,7 +2521,7 @@ rigger::test_cases! {
 // ordinary regenerate-command failure right after the land is enough, no crash required),
 // the unit was reported `Integrated` while the durable `conflict_regenerate_pending` marker
 // sat orphaned and the `accept_incoming` placeholder shipped permanently. Neither of GAP 9's
-// own row-4 fixtures above can catch this: both use `SimpleWorkDriver` - no conflict, no
+// own row-4 fixtures above can catch this: both use `A_WORK_DRIVER` - no conflict, no
 // owed regeneration ever in play. These two fixtures drive the row-4-closed-but-row-3-owed
 // shape through EACH of the fast path's two recovery sub-paths - `pending_landing_for`
 // returning `None` (row 4's after-record already landed too) and returning `Some` (row 4's
@@ -2670,7 +2576,7 @@ impl AgentDriver for MixedConflictThenResolveDriver {
 #[test]
 fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed(
 ) {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = regenerating_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
@@ -2765,7 +2671,7 @@ fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_wh
 /// defect).
 #[test]
 fn a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = regenerating_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
@@ -2933,7 +2839,7 @@ impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
 /// mid-landing). See the file header's GAP 11 entry for the full picture.
 #[test]
 fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_landing() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = scratch_cfg(&repo_path);
@@ -2948,7 +2854,7 @@ fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_l
         repo: repo_path.clone(),
         fired: Mutex::new(false),
     };
-    let driver = SimpleWorkDriver;
+    let driver = A_WORK_DRIVER;
     let deps = bare_deps(
         &moving_store,
         &driver,

@@ -340,6 +340,7 @@ impl Config {
 mod tests {
     use super::*;
     use crate::test_support::agent as agent_def;
+    use crate::test_support::agent_with_prompt;
 
     // ---- instruction injection: the operator layer loader ----
 
@@ -443,18 +444,11 @@ mod tests {
 
     // ---- spec 18, unit 1: gating-persona verdict-line static lint ----
 
-    fn agent(id: &str, prompt: &str) -> AgentDef {
-        AgentDef {
-            id: id.into(),
-            prompt: prompt.into(),
-            ..Default::default()
-        }
-    }
-
     /// A config whose default review panel gates on an adjudicator carrying `prompt`.
     fn config_with_default_adjudicator(prompt: &str) -> Config {
         let mut cfg = Config::default();
-        cfg.agents.insert("adj".into(), agent("adj", prompt));
+        cfg.agents
+            .insert("adj".into(), agent_with_prompt("adj", prompt));
         cfg.workflow.defaults.review.adjudicator = "adj".into();
         cfg
     }
@@ -789,9 +783,12 @@ mod tests {
         // Only the adjudicator's result-channel verdict gates integration; an emit-only lens or
         // adversary is not a gating role, so the lint leaves it alone.
         let mut cfg = Config::default();
-        cfg.agents.insert("adj".into(), agent("adj", RESULT_LINE));
-        cfg.agents.insert("adv".into(), agent("adv", EMIT_ONLY));
-        cfg.agents.insert("lens".into(), agent("lens", EMIT_ONLY));
+        cfg.agents
+            .insert("adj".into(), agent_with_prompt("adj", RESULT_LINE));
+        cfg.agents
+            .insert("adv".into(), agent_with_prompt("adv", EMIT_ONLY));
+        cfg.agents
+            .insert("lens".into(), agent_with_prompt("lens", EMIT_ONLY));
         cfg.workflow.defaults.review.adjudicator = "adj".into();
         cfg.workflow.defaults.review.adversary = "adv".into();
         cfg.workflow.defaults.review.lenses = vec!["lens".into()];
@@ -804,8 +801,10 @@ mod tests {
     #[test]
     fn the_verdict_line_lint_reaches_the_light_tier_adjudicator() {
         let mut cfg = Config::default();
-        cfg.agents.insert("full".into(), agent("full", RESULT_LINE));
-        cfg.agents.insert("light".into(), agent("light", EMIT_ONLY));
+        cfg.agents
+            .insert("full".into(), agent_with_prompt("full", RESULT_LINE));
+        cfg.agents
+            .insert("light".into(), agent_with_prompt("light", EMIT_ONLY));
         cfg.workflow.defaults.review.adjudicator = "full".into();
         let mut depth = ReviewDepth::default();
         depth.light.adjudicator = "light".into();
@@ -827,7 +826,7 @@ mod tests {
         // separately by `the_verdict_line_lint_excludes_the_conductor_injected_plan_critique_gate`.
         let mut cfg = Config::default();
         cfg.agents
-            .insert("critic".into(), agent("critic", EMIT_ONLY));
+            .insert("critic".into(), agent_with_prompt("critic", EMIT_ONLY));
         let st = Stage {
             adjudicator: "critic".into(),
             ..Default::default()
@@ -854,10 +853,13 @@ mod tests {
         // conductor injects its verdict line, so it must NOT be flagged.
         let mut cfg = Config::default();
         cfg.agents
-            .insert("planner".into(), agent("planner", RESULT_LINE));
+            .insert("planner".into(), agent_with_prompt("planner", RESULT_LINE));
+        cfg.agents.insert(
+            "dag-critic".into(),
+            agent_with_prompt("dag-critic", EMIT_ONLY),
+        );
         cfg.agents
-            .insert("dag-critic".into(), agent("dag-critic", EMIT_ONLY));
-        cfg.agents.insert("adj".into(), agent("adj", RESULT_LINE));
+            .insert("adj".into(), agent_with_prompt("adj", RESULT_LINE));
         // The producer stage (a planner that `produces` a DAG).
         let plan = Stage {
             agent: "planner".into(),
@@ -903,7 +905,7 @@ mod tests {
         // different field), so dropping it can no longer ship green.
         let mut cfg = Config::default();
         cfg.agents
-            .insert("sjudge".into(), agent("sjudge", EMIT_ONLY));
+            .insert("sjudge".into(), agent_with_prompt("sjudge", EMIT_ONLY));
         let mut st = Stage::default();
         st.review.adjudicator = "sjudge".into();
         cfg.workflow.stages.insert("implement".into(), st);
@@ -1686,7 +1688,8 @@ mod tests {
         // A lens/adversary that hangs is not a GATING role; the advisory targets only the
         // verdict-bearing roles the gate awaits, so an unbounded lens is not named.
         let mut cfg = config_with_default_adjudicator(RESULT_LINE);
-        cfg.agents.insert("lens".into(), agent("lens", RESULT_LINE));
+        cfg.agents
+            .insert("lens".into(), agent_with_prompt("lens", RESULT_LINE));
         cfg.workflow.defaults.review.lenses = vec!["lens".into()];
         let msg = unbounded_wall_clock_advisory(&cfg)
             .expect("the unbounded gating adjudicator still warns");

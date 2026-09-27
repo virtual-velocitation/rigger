@@ -18,24 +18,10 @@
 //! binary, at both entry points the finding named.
 
 mod common;
-
+use common::cli::run_rigger;
 use common::cli::temp_project;
 
 use std::path::Path;
-
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let out = common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
 
 /// Every agent `rigger init`'s default fleet seeds when a workflow references none of them
 /// (the genuine empty-repo case) - the exact set the bug re-scaffolds even when it should

@@ -20,7 +20,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::served::body_of;
-use common::served::try_fetch_served;
+use common::served::fetch_served;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, KIND_FINDING,
     KIND_HANDBOOK_RULE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, REL_SUPERSEDES, TIER_INFERRED,
@@ -88,19 +88,6 @@ fn rationale_graph() -> Graph {
             edge("da", "shared.rs::foo", REL_GOVERNS, None),
         ],
     }
-}
-
-/// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, RETRYING the
-/// whole port handoff on a connection-level transient (see [`try_fetch_served`]).
-fn fetch_served(path: &str, graph: &Graph) -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_served(path, graph.clone(), graph.clone()) {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served {path} over the real socket after many fresh-port attempts"
-    );
 }
 
 /// The SERVED `/api/graph?explain=` endpoint returns the rationale batch over the real `serve` socket:

@@ -55,29 +55,13 @@
 //! git race - not a guaranteed reproduction of any specific defect on every run. The two
 //! predicate tests are the deterministic proof of the heal decision table itself.
 
+mod common;
+use common::fixtures::assert_concurrent_creates_succeed;
+use common::git::temp_git_project_with_commit;
+
 use rigger::worktree::Worktree;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime};
-
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
 
 /// The worktree admin entry `Worktree::create` registers for a worktree at `dir`: git names
 /// it after `dir`'s own leaf path component, under the repo's `.git/worktrees/`.
@@ -100,7 +84,7 @@ fn backdate(path: &Path, secs_ago: u64) {
 #[test]
 fn create_at_the_crate_boundary_spares_a_locked_or_too_young_admin_entry_and_heals_an_old_unlocked_one(
 ) {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path();
@@ -182,36 +166,16 @@ fn create_serializes_concurrent_sibling_creates_at_the_crate_boundary() {
     // driven entirely through the compiled crate's public `Worktree::create`, from outside
     // the crate - proving the lock's contract holds at the real crate boundary, not merely
     // inside the module that defines it.
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path().to_str().unwrap().to_string();
-
-    for round in 0..30 {
-        let dir_a = format!("{root}/wt-race-a-{round}");
-        let dir_b = format!("{root}/wt-race-b-{round}");
-        let branch_a = format!("rigger/u/race-a-{round}");
-        let branch_b = format!("rigger/u/race-b-{round}");
-
-        let (ra, rb) = std::thread::scope(|s| {
-            let ha = s.spawn(|| Worktree::create(&repo_path, &dir_a, &branch_a, ""));
-            let hb = s.spawn(|| Worktree::create(&repo_path, &dir_b, &branch_b, ""));
-            (ha.join().unwrap(), hb.join().unwrap())
-        });
-
-        assert!(
-            ra.is_ok(),
-            "round {round}: thread A's create must never lose the admin-directory race \
-             at the crate boundary: {:?}",
-            ra.err()
-        );
-        assert!(
-            rb.is_ok(),
-            "round {round}: thread B's create must never lose the admin-directory race \
-             at the crate boundary: {:?}",
-            rb.err()
-        );
-    }
+    assert_concurrent_creates_succeed(
+        &repo_path,
+        &format!("{root}/wt-"),
+        30,
+        " at the crate boundary",
+    );
 }
 
 #[test]
@@ -230,7 +194,7 @@ fn discard_then_create_never_corrupts_a_concurrent_siblings_admin_entry() {
     // reclaim). This test now REGRESSION-LOCKS the fixed behavior: discard-then-create on one
     // thread, a plain sibling create on another, both against one shared repo, across many
     // rounds - the composition must never corrupt a concurrent sibling's admin entry.
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path().to_str().unwrap().to_string();

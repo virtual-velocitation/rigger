@@ -19,15 +19,14 @@
 //! entry, not two, with the courier call's own refresh landing on the identical file the step
 //! created and carrying forward the SAME `project`/`root`/`store` identity.
 
-use std::path::Path;
-use std::process::{Command, Output};
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-
-use common::cli::registry_entries;
+use common::cli::run_rigger_in_state_home;
+use common::cli::write_workflow;
+use common::fixtures::registry_entries;
+use common::git::temp_git_project_with_commit;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
 use courier_registry::assert_ok;
@@ -39,73 +38,9 @@ use courier_registry::assert_ok;
 /// a `nop` grounder) so `rigger step` completes deterministically with no model call and no
 /// git worktree of its own.
 fn driver_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let ok = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git init must succeed while seeding the fixture");
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the fixture");
-    }
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write the agent prompt");
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"defaults:
-  grounder: nop
-  budget: 60
-stages:
-  a:
-    agent: worker
-    on_pass: none
-"#,
-    )
-    .expect("write workflow.yml");
+    let dir = temp_git_project_with_commit();
+    write_workflow(dir.path(), "");
     dir
-}
-
-/// Run `rigger <args...>` in `cwd`, with the machine-global registry redirected into the
-/// CALLER-OWNED `state_home` - shared across both calls in this test, so the SAME registry
-/// directory is read back and re-written across the driver-then-courier sequence.
-///
-/// `KURRENTDB_CONN` is REMOVED from the child so this fixture's project (a throwaway git repo
-/// with no committed store config) resolves the LOCAL sqlite log regardless of what the calling
-/// process's own ambient environment happens to carry - mirroring every sibling courier-spawning
-/// periphery test in this family (`store_precedence.rs`, `store_resolution_cli.rs`,
-/// `store_secrets.rs`). Without this, a real, reachable, credentialed `KURRENTDB_CONN` in the
-/// operator's shell - a documented, supported rigger configuration - would silently route this
-/// test's real `rigger step`/`progress` writes into the operator's actual shared event store
-/// under this fixture's fake identity: genuine test-data pollution of production
-/// infrastructure, not merely a spurious local failure.
-fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
-    common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        // Never let a real driver step or courier spawn a real dashboard under test.
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state_home)
-        .env_remove("KURRENTDB_CONN")
-        .output()
-        .expect("the rigger binary runs")
 }
 
 /// THE CONVERGENCE CLAIM: a real `rigger step` (driver path, `register_run_instance`) followed
@@ -121,7 +56,7 @@ fn a_driver_step_and_a_courier_progress_refresh_the_identical_registry_entry() {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
 
     // The DRIVER path: a real `rigger step` registers the instance via `register_run_instance`.
-    let step = run_rigger(root, state.path(), &["step"]);
+    let step = run_rigger_in_state_home(root, state.path(), &["step"]);
     assert_ok(&step, &["step"]);
 
     let after_step = registry_entries(state.path());
@@ -140,7 +75,7 @@ fn a_driver_step_and_a_courier_progress_refresh_the_identical_registry_entry() {
     // The COURIER path: a real `rigger progress`, from the same root, refreshes via
     // `refresh_registry_entry`. The spawn id need not be a real, live one - `progress` records
     // unconditionally against the progress store, and the registry refresh runs regardless.
-    let progress = run_rigger(
+    let progress = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "a/implementer#0", "working"],
@@ -216,10 +151,10 @@ fn an_ambient_kurrentdb_conn_never_leaks_into_the_driver_courier_calls() {
     let _restore = common::RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
     std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
 
-    let step = run_rigger(root, state.path(), &["step"]);
+    let step = run_rigger_in_state_home(root, state.path(), &["step"]);
     assert_ok(&step, &["step"]);
 
-    let progress = run_rigger(
+    let progress = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "a/implementer#0", "working"],

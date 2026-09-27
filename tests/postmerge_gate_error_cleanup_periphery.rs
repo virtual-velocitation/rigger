@@ -34,32 +34,19 @@
 //! calling any private helper.
 
 mod common;
+use common::fixtures::workflow_cfg;
+use common::git::git_ok;
 
 use rigger::worktree::branch_exists;
 
 use std::path::Path;
-use std::process::Command;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::config::{AgentDef, Config, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Appended, Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
 use serde_json::Value;
-
-fn git_ok(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 /// The re-gate worktree/branch naming spec 103 criterion 7 documents as part of its contract
 /// (`Throwaway::POSTMERGE.dir_and_branch`, src/conductor.rs) - reconstructed here rather
@@ -96,35 +83,63 @@ impl AgentDriver for WriteOneFileDriver {
 }
 
 fn base_config(repo: &Path) -> Config {
-    let mut cfg = Config::default();
-    cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        "g".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "unit-a".into(),
-        Stage {
+    let mut cfg = workflow_cfg(
+        &["worker"],
+        &[("g", "true")],
+        vec![Stage {
             name: "unit-a".into(),
             agent: "worker".into(),
             gates: vec!["g".into()],
             on_pass: "merge".into(),
-            needs: vec![],
             ..Default::default()
-        },
+        }],
     );
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
     cfg
+}
+
+/// A fresh base repo and its config, with the deterministic post-merge throwaway worktree `dir`
+/// and `branch` of `unit-a`'s attempt 0. The scratch root is created as a side effect of
+/// resolving it (the resolver's own documented contract), so a fixture planted at `dir` lands in
+/// an already-existing parent directory.
+struct PostmergeFixture {
+    _repo: tempfile::TempDir,
+    repo_path: String,
+    cfg: Config,
+    dir: String,
+    branch: String,
+}
+
+impl PostmergeFixture {
+    fn new() -> Self {
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = init_base_repo(repo.path());
+        let cfg = base_config(repo.path());
+        let scratch =
+            rigger::worktree::scratch_root_from_env(&repo_path, &cfg.workflow.defaults.workdir);
+        PostmergeFixture {
+            dir: expected_postmerge_dir(&scratch, "unit-a", 0),
+            branch: expected_postmerge_branch("unit-a", 0),
+            _repo: repo,
+            repo_path,
+            cfg,
+        }
+    }
+
+    /// Whether a run over `store`, whose implementer writes one file, errs.
+    fn run_errs(&self, store: &dyn EventStore) -> bool {
+        let driver = WriteOneFileDriver;
+        let deps = Deps {
+            store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: self.repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&self.cfg, &deps).is_err()
+    }
 }
 
 fn init_base_repo(repo: &Path) -> String {
@@ -150,39 +165,20 @@ fn init_base_repo(repo: &Path) -> String {
 /// `rigger/postmerge/<unit>-<attempt>` branch must not survive.
 #[test]
 fn worktree_create_err_during_postmerge_regate_leaves_no_branch_behind() {
-    let repo = tempfile::tempdir().unwrap();
-    let repo_path = init_base_repo(repo.path());
-    let cfg = base_config(repo.path());
-
-    // Created as a side effect of resolving it (the resolver's own documented contract), so
-    // the symlink below lands in an already-existing parent directory.
-    let scratch =
-        rigger::worktree::scratch_root_from_env(&repo_path, &cfg.workflow.defaults.workdir);
-    let pm_dir = expected_postmerge_dir(&scratch, "unit-a", 0);
-    let pm_branch = expected_postmerge_branch("unit-a", 0);
-    std::os::unix::fs::symlink("/nonexistent-sdet-u103c7-r3-target", &pm_dir)
+    let pm = PostmergeFixture::new();
+    std::os::unix::fs::symlink("/nonexistent-sdet-u103c7-r3-target", &pm.dir)
         .expect("plant the dangling symlink that occupies pm_dir without `exists()`-ing");
 
     let store = Store::open(":memory:").unwrap();
-    let driver = WriteOneFileDriver;
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: repo_path.clone(),
-        grounder: None,
-        graph: None,
-        criteria: Vec::new(),
-    };
-
     assert!(
-        run(&cfg, &deps).is_err(),
+        pm.run_errs(&store),
         "a genuine post-merge worktree-create infra error must propagate out of run(), never \
          be swallowed as a passing/failing gate verdict"
     );
 
+    let pm_branch = &pm.branch;
     assert!(
-        !branch_exists(&repo_path, &pm_branch),
+        !branch_exists(&pm.repo_path, pm_branch),
         "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted even \
          when the worktree-create step itself errors right after the branch was minted, never \
          left behind"
@@ -228,41 +224,24 @@ impl EventStore for FailPostmergeVerdictWrite<'_> {
 /// worktree directory nor its branch must survive.
 #[test]
 fn run_gates_err_during_postmerge_regate_leaves_no_worktree_or_branch_behind() {
-    let repo = tempfile::tempdir().unwrap();
-    let repo_path = init_base_repo(repo.path());
-    let cfg = base_config(repo.path());
-
-    let scratch =
-        rigger::worktree::scratch_root_from_env(&repo_path, &cfg.workflow.defaults.workdir);
-    let pm_dir = expected_postmerge_dir(&scratch, "unit-a", 0);
-    let pm_branch = expected_postmerge_branch("unit-a", 0);
+    let pm = PostmergeFixture::new();
 
     let real_store = Store::open(":memory:").unwrap();
     let store = FailPostmergeVerdictWrite { inner: &real_store };
-    let driver = WriteOneFileDriver;
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: repo_path.clone(),
-        grounder: None,
-        graph: None,
-        criteria: Vec::new(),
-    };
-
     assert!(
-        run(&cfg, &deps).is_err(),
+        pm.run_errs(&store),
         "a genuine post-merge gate-suite infra error must propagate out of run(), never be \
          swallowed as a passing/failing gate verdict"
     );
 
+    let (pm_dir, pm_branch) = (&pm.dir, &pm.branch);
     assert!(
-        !Path::new(&pm_dir).exists(),
+        !Path::new(pm_dir).exists(),
         "the post-merge re-gate's own throwaway worktree must be reaped even when its gate \
          suite errors, never leaked for a later step to find; {pm_dir} still exists"
     );
     assert!(
-        !branch_exists(&repo_path, &pm_branch),
+        !branch_exists(&pm.repo_path, pm_branch),
         "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted even \
          when its gate suite errors, never left behind"
     );

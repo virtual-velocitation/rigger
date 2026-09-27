@@ -48,50 +48,8 @@ mod common;
 mod gitsemver;
 
 use common::fixtures::tool_available;
-use common::git::tagged_gitsemver_repo;
-use std::path::Path;
+use common::git::{git_ok, git_out, tagged_gitsemver_repo};
 use std::process::Command;
-
-/// Run `git <args>` in `root`, panicking with stderr on failure - fixture setup must
-/// never silently half-succeed. Mirrors `tests/gitsemver_derivation.rs`'s identical
-/// helper (integration-test binaries cannot share private helpers without a `tests/common`
-/// module, and this fixture's needs - a second `worktree add` step - differ enough from
-/// that file's to not warrant one).
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// Run `git <args>` in `root` and return trimmed stdout, panicking with stderr on
-/// failure. Deliberately independent of [`gitsemver::git_rev_parse`]: this test needs a
-/// plain, trusted `git rev-parse HEAD` to build its own expectation from, never a call
-/// through the code under test's own resolution logic - otherwise a regression in that
-/// logic could shift both the expectation and the result together and the test would
-/// stay green.
-fn git_output(root: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout)
-        .unwrap_or_else(|e| panic!("git {args:?} produced non-utf8 output: {e}"))
-        .trim()
-        .to_string()
-}
 
 #[test]
 fn a_linked_worktree_derives_its_own_diverged_head_not_primarys() {
@@ -116,7 +74,7 @@ fn a_linked_worktree_derives_its_own_diverged_head_not_primarys() {
     // Remove the empty tempdir itself first - `git worktree add` creates its own
     // target directory and refuses to reuse an existing empty one on some git versions.
     std::fs::remove_dir(worktree_dir.path()).unwrap();
-    git(
+    git_ok(
         primary_dir.path(),
         &[
             "worktree",
@@ -135,8 +93,8 @@ fn a_linked_worktree_derives_its_own_diverged_head_not_primarys() {
     // `tests/gitsemver_derivation.rs::a_feat_commit_after_a_tag_increments_the_minor`.
     std::fs::write(worktree_dir.path().join("worktree-only.txt"), "third\n")
         .expect("write worktree-only fixture file");
-    git(worktree_dir.path(), &["add", "worktree-only.txt"]);
-    git(
+    git_ok(worktree_dir.path(), &["add", "worktree-only.txt"]);
+    git_ok(
         worktree_dir.path(),
         &["commit", "-q", "-m", "feat: add a worktree-only file"],
     );
@@ -149,7 +107,7 @@ fn a_linked_worktree_derives_its_own_diverged_head_not_primarys() {
     // pointed at `primary_dir` (already known, not re-derived) and `-c` at that commit.
     // This path shares nothing with `derive_version`'s own resolution logic, so it
     // cannot drift together with a regression in that logic.
-    let worktree_head = git_output(worktree_dir.path(), &["rev-parse", "HEAD"]);
+    let worktree_head = git_out(worktree_dir.path(), &["rev-parse", "HEAD"]);
     let expected_out = Command::new("go-gitsemver")
         .arg("--no-repair-worktree-config")
         .arg("-p")

@@ -18,12 +18,7 @@
 //! site plus an explicit extent-unavailable note and NO body - the honesty contract for a feature
 //! lane that cannot derive the extent (asserted by [`assert_light_lane_extent_note`]).
 
-use std::path::Path;
-use std::process::Command;
-
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
@@ -33,42 +28,11 @@ mod common;
 #[cfg(not(feature = "symbols"))]
 use common::cli::assert_light_lane_extent_note;
 
+use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
-use common::rigger_bin;
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Opts out of the
-/// auto-started dashboard and points the instance registry at a throwaway state dir, exactly as
-/// the other CLI integration tests do, so a short-lived inspector invocation spawns nothing that
-/// outlives the test.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = Command::new(rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event (the ALWAYS-compiled fold), exactly as a real extraction pass
-/// would - so this seeding is feature-lane independent (no `symbols` extractor required).
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"rust"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use common::fixtures::apply_code_entity;
 
 #[test]
 fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
@@ -101,9 +65,9 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
     {
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 1, "a.rs", "alpha", "function", 1);
-        seed_def(&p, 2, "a.rs", "shared", "function", 3);
-        seed_def(&p, 3, "b.rs", "shared", "function", 1);
+        apply_code_entity(&p, 1, "a.rs", "alpha", "function", 1, "rust");
+        apply_code_entity(&p, 2, "a.rs", "shared", "function", 3, "rust");
+        apply_code_entity(&p, 3, "b.rs", "shared", "function", 1, "rust");
     }
 
     // (1) SHOW BY UNIQUE NAME: `alpha` has one definition -> its site + kind + degree + a

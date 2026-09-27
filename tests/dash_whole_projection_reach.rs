@@ -27,18 +27,14 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, Instant};
-
 use common::served::body_of;
+use common::served::{fetch_with_retry, try_fetch_over};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Graph, Projection, REL_CONTAINS, REL_GOVERNS, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
     TYPE_EDGE_INFERRED,
 };
-use rigger::dash::{self, DashInputs};
+use rigger::dash::{self};
 use rigger::eventstore::Event;
 
 /// A `DecisionMade` event in its on-log JSON form (`id` decides, governing `governs`, superseding
@@ -242,90 +238,24 @@ fn code_ingest_db(dir: &std::path::Path, identity: &str) -> String {
     path
 }
 
-/// Start the dash server on a FRESH ephemeral loopback port whose graph provider is the REAL
-/// whole-projection read - `Projector::open(db).whole()`, byte-for-byte what the production
-/// `dash_read_whole_graph` does - over a file-backed graph.db, while the polled state provider
-/// carries an EMPTY run-seeded graph (the never-built repo). Fetch `GET <path>` once and return the
-/// raw response, or `None` on a genuine socket-level failure.
-///
-/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. Releasing it
-/// first would leave the port free for the whole handoff window, so a sibling test's `bind(0)` in
-/// this same binary could be handed it; one `serve` then wins the re-bind and the loser's client
-/// CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture - a content failure no
-/// connect-error retry can see, reddening only on a loaded machine. Owning the port from `bind`
-/// through `serve_on` closes that window by construction.
-fn try_fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> Option<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    // The SEPARATE lazy graph provider (spec 45, criteria 1+2): opens the projection and reads the
-    // WHOLE graph on a graph request - the exact read production wires into `/api/graph`.
-    let graph_provider = {
+/// Drive the real `serve` socket, retrying the whole port handoff on a connection-level transient.
+fn fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> String {
+    fetch_with_retry(path, || {
+        // The lazy graph provider (spec 45, criteria 1+2): opens the projection and reads the
+        // WHOLE graph on a graph request - byte-for-byte what the production
+        // `dash_read_whole_graph` wires into `/api/graph`. The state poll serves an EMPTY
+        // run-seeded graph (the never-built repo), so `/api/graph` must reach the whole
+        // projection through the provider split alone.
         let db = graph_db.to_string();
         let id = identity.to_string();
-        move |_instance: Option<&str>| -> Graph {
+        let whole = move |_instance: Option<&str>| -> Graph {
             match Projector::open(&db, &id) {
                 Ok(p) => p.whole().unwrap_or_default(),
                 Err(_) => Graph::default(),
             }
-        }
-    };
-    // The polled STATE provider: a never-built repo has no run content, so its run-seeded graph is
-    // empty. This is the other half of the provider split - `/api/graph` must still reach the whole
-    // projection even though the state poll's graph is `Graph::default`.
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
-    };
-    // The lazy directed-call provider (spec 52, criterion 4): this test drives the overview /
-    // neighborhood reach, not a call view, so an empty walk satisfies `serve`'s calls-provider bound.
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
         };
-    let instances_provider = Vec::new;
-
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => return None,
-        }
-    };
-    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    if client.write_all(req.as_bytes()).is_err() {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
-}
-
-/// Drive the real `serve` socket, retrying the whole port handoff on a connection-level transient.
-fn fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_whole_served(graph_db, identity, path) {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served {path} over the real socket after many fresh-port attempts"
-    );
+        try_fetch_over(path, whole, Graph::default())
+    })
 }
 
 /// Integration (spec 45, criterion 2) over the REAL serve socket: on a never-built repo (a graph.db

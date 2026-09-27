@@ -38,15 +38,18 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
+use common::fixtures::edge;
 use common::fixtures::plain;
+use common::served::served as served_over;
+use common::served::served_json as served_json_over;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
     REL_REFERENCES, TIER_EXTRACTED,
 };
 use rigger::dash::{
-    cluster_detail, clustered_overview, neighborhood, route, Cluster, ClusterEdge, Lens,
+    cluster_detail, clustered_overview, neighborhood, Cluster, ClusterEdge, Lens,
     WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
@@ -65,22 +68,9 @@ fn ce(id: &str) -> Node {
     }
 }
 
-/// A currently-valid edge (`valid_to = None`) of `rel`.
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
-    }
-}
-
 /// A currently-valid REFERENCES edge between two ids.
 fn refs(from: &str, to: &str) -> Edge {
-    edge(from, to, REL_REFERENCES)
+    edge(from, to, REL_REFERENCES, TIER_EXTRACTED)
 }
 
 /// The lens fixture. TWO files, each with two code entities that call each other internally (adds NO
@@ -488,8 +478,8 @@ fn a_files_contained_entities_are_still_reachable_via_neighborhood_the_cards_own
     let graph = Graph {
         nodes: vec![plain(FILE_A, KIND_FILE), ce(FOO), ce(BAR)],
         edges: vec![
-            edge(FILE_A, FOO, REL_CONTAINS),
-            edge(FILE_A, BAR, REL_CONTAINS),
+            edge(FILE_A, FOO, REL_CONTAINS, TIER_EXTRACTED),
+            edge(FILE_A, BAR, REL_CONTAINS, TIER_EXTRACTED),
         ],
     };
     let nb = neighborhood(&graph, FILE_A, 1);
@@ -501,40 +491,9 @@ fn a_files_contained_entities_are_still_reachable_via_neighborhood_the_cards_own
     );
 }
 
-/// Drive the public `route` for `GET <target>` over an arbitrary graph and return the raw
-/// `Response`. `route` is the exact body-builder `serve` ships (serve delegates to it), so this
-/// drives the files-lens DEFAULT dispatch the browser hits on every plain `/api/graph` load - the
-/// seam the in-process folds never exercise.
-fn served_over(graph: &Graph, target: &str) -> rigger::dash::Response {
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the files-lens route never errors on a live graph)"
-    );
-    resp
-}
-
 /// [`served_over`] over the shared [`lens_graph`] fixture - every existing call site's graph.
 fn served(target: &str) -> rigger::dash::Response {
     served_over(&lens_graph(), target)
-}
-
-fn served_json_over(graph: &Graph, target: &str) -> serde_json::Value {
-    let resp = served_over(graph, target);
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }
 
 fn served_json(target: &str) -> serde_json::Value {

@@ -35,7 +35,8 @@
 mod common;
 
 use common::fixtures::run_log;
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY};
+use common::fixtures::NoopDriver;
+use rigger::conductor::{run, Deps, META_REPLAY_KEY};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::{TYPE_EDGE_INFERRED, TYPE_GATE_VERDICT};
 use rigger::eventstore::sqlite::Store;
@@ -44,7 +45,6 @@ use rigger::gate::ExecRunner;
 use rigger::ingest::project_scoped_replay_keys;
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
 use rigger::run::{current_run, TYPE_RUN_STARTED};
-use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// The stage id is `gc` - the CODE INGEST'S OWN batch prefix - and the gate id carries an `@`, the
@@ -54,27 +54,6 @@ use std::collections::BTreeSet;
 /// minted key really is that shape is ASSERTED below off the recorded log, never assumed.
 const UNIT: &str = "gc";
 const GATE: &str = "g@h1";
-
-/// A driver that does nothing and reports nothing. Criterion 2 is about what the RUN records at its
-/// own seeding seam, so the agent's work is irrelevant - the stage only has to reach its gates and
-/// integrate, which an empty result and a `true` gate do.
-#[derive(Default)]
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: String::new(),
-            resolved_model: String::new(),
-        })
-    }
-}
 
 /// One campaign over `store`, differing from its sibling ONLY in its criterion - so the run
 /// authority MINTS a second `RunStarted` (a genuinely fresh run) while the stage keeps its id, and

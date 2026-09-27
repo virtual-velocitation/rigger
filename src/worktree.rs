@@ -2609,6 +2609,7 @@ fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::liveness::marker_filename;
+    use crate::test_support::assert_concurrent_creates_succeed;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::run_log;
     use std::process::Command;
@@ -6963,31 +6964,12 @@ mod tests {
         let repo_path = repo.path().to_str().unwrap().to_string();
         let root = scratch_root(&repo_path, "", None);
 
-        for round in 0..50 {
-            let dir_a = format!("{root}/{UNIT_WORKTREE_PREFIX}race-a-{round}");
-            let dir_b = format!("{root}/{UNIT_WORKTREE_PREFIX}race-b-{round}");
-            let branch_a = format!("rigger/u/race-a-{round}");
-            let branch_b = format!("rigger/u/race-b-{round}");
-
-            let (ra, rb) = std::thread::scope(|s| {
-                let ha = s.spawn(|| Worktree::create(&repo_path, &dir_a, &branch_a, ""));
-                let hb = s.spawn(|| Worktree::create(&repo_path, &dir_b, &branch_b, ""));
-                (ha.join().unwrap(), hb.join().unwrap())
-            });
-
-            assert!(
-                ra.is_ok(),
-                "round {round}: thread A's create must never lose the admin-directory \
-                 race: {:?}",
-                ra.err()
-            );
-            assert!(
-                rb.is_ok(),
-                "round {round}: thread B's create must never lose the admin-directory \
-                 race: {:?}",
-                rb.err()
-            );
-        }
+        assert_concurrent_creates_succeed(
+            &repo_path,
+            &format!("{root}/{UNIT_WORKTREE_PREFIX}"),
+            50,
+            "",
+        );
     }
 
     #[test]

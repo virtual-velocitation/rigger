@@ -24,9 +24,7 @@ use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_json;
+use common::fixtures::apply_json;
 
 /// Extracts the source tree at `root`, emits it, and folds every event onto `p` at the positions
 /// following `pos`, advancing `pos` past the last one.

@@ -41,6 +41,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
+use common::fixtures::edge;
 use common::fixtures::spoke_id;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, REL_IN_COMMUNITY, REL_REFERENCES,
@@ -89,19 +90,6 @@ fn membership(id: &str) -> Edge {
         valid_to: None,
         source: 0,
         tier: TIER_INFERRED.to_string(),
-    }
-}
-
-/// A currently-valid REFERENCES edge between two ids (the `extracted` tier, `valid_to = None`).
-fn edge(from: &str, to: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: REL_REFERENCES.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
     }
 }
 
@@ -206,7 +194,12 @@ fn cluster_detail_is_a_pure_stable_drill_that_never_dangles_an_edge() {
     for i in 0..spokes {
         nodes.push(member(&format!("s{i:05}")));
         edges.push(membership(&spoke_id("cl/f.rs", i)));
-        edges.push(edge("cl/f.rs::hub", &spoke_id("cl/f.rs", i)));
+        edges.push(edge(
+            "cl/f.rs::hub",
+            &spoke_id("cl/f.rs", i),
+            REL_REFERENCES,
+            TIER_EXTRACTED,
+        ));
     }
     let total = nodes.len() - 1; // hub + (budget + 2) spokes = budget + 3 members (excl. community node)
     let g = Graph { nodes, edges };
@@ -272,7 +265,7 @@ fn cluster_detail_degrades_gracefully_on_unknown_empty_key_and_empty_graph() {
         edges: vec![
             membership("cl/f.rs::a"),
             membership("cl/f.rs::b"),
-            edge("cl/f.rs::a", "cl/f.rs::b"),
+            edge("cl/f.rs::a", "cl/f.rs::b", REL_REFERENCES, TIER_EXTRACTED),
         ],
     };
 
@@ -324,7 +317,12 @@ fn truncated_serializes_only_when_the_drill_capped_preserving_neighborhood_backc
     // is needed here.
     let g = Graph {
         nodes: vec![member("a"), member("b")],
-        edges: vec![edge("cl/f.rs::a", "cl/f.rs::b")],
+        edges: vec![edge(
+            "cl/f.rs::a",
+            "cl/f.rs::b",
+            REL_REFERENCES,
+            TIER_EXTRACTED,
+        )],
     };
     let nb = serde_json::to_value(neighborhood(&g, "cl/f.rs::a", 1))
         .expect("a Neighborhood serializes to JSON");
@@ -340,7 +338,7 @@ fn truncated_serializes_only_when_the_drill_capped_preserving_neighborhood_backc
         edges: vec![
             membership("cl/f.rs::a"),
             membership("cl/f.rs::b"),
-            edge("cl/f.rs::a", "cl/f.rs::b"),
+            edge("cl/f.rs::a", "cl/f.rs::b", REL_REFERENCES, TIER_EXTRACTED),
         ],
     };
     let under = serde_json::to_value(cluster_detail(&g_community, COMMUNITY, &code_lens()))

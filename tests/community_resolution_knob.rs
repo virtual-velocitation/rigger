@@ -54,9 +54,8 @@ use rigger::community::{self, Assignment, Coupling};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY};
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::{live_node_ids, seed_two_subsystems};
+mod common;
+use common::fixtures::{live_node_ids, seed_two_subsystems};
 
 /// The coupling graph of the seeded projection (over the public `whole()` read).
 fn coupling(p: &Projector) -> Coupling {

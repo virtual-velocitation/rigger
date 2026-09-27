@@ -41,40 +41,18 @@ mod common;
 use common::cli::code_entity;
 use common::cli::keyed;
 use common::cli::nanos;
+use common::fixtures::apply_def_at;
+use common::fixtures::edge_inferred;
 use rigger::contextgraph::sqlite::{Projector, PruneStats};
-use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{ContentIdentity, Event, EventStore, ExpectedRevision};
-use std::time::{Duration, UNIX_EPOCH};
+use rigger::eventstore::{ContentIdentity, EventStore, ExpectedRevision};
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/graph_superseded_prune.rs and tests/reset_derived_compaction_periphery.rs;
 // each integration suite is its own binary, so a small harness is duplicated per file by this
 // codebase's existing convention).
 // ---------------------------------------------------------------------------------------
-
-/// Fold a `CodeEntityExtracted` (`file` defines `name`) from its raw on-log JSON at `pos`. `fresh`
-/// marks the FIRST event of an extraction batch, whose fold supersedes the file's prior live
-/// structural edges before folding the new batch (mirrors `graph_superseded_prune.rs::apply_def`).
-fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool, secs: u64) {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-        "fresh": fresh,
-    });
-    let mut e = Event::new(
-        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&payload).unwrap(),
-    )
-    .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-fn edge_inferred() -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "file": "src/a.rs", "name": "beta", "lang": "rust" }))
-        .unwrap()
-}
 
 const KEY_CODE: &str = "gc/src/a.rs@h1#0";
 const KEY_EDGE: &str = "gc/src/a.rs@h1#1";
@@ -94,11 +72,11 @@ fn count_prunable_reports_the_same_nodes_and_superseded_edges_a_real_prune_then_
     // The exact three-run re-extraction shape `graph_superseded_prune.rs` proves the edge count
     // against, extended with a `bar` node that is never re-extracted after run 1 - a dead node a
     // real `--runs` would also drop.
-    apply_def(&p, 1, file, "foo", 5, true, 100);
-    apply_def(&p, 2, file, "bar", 9, false, 100);
-    apply_def(&p, 10, file, "foo", 12, true, 200);
-    apply_def(&p, 20, file, "foo", 3, true, 300);
-    apply_def(&p, 21, file, "baz", 7, false, 300);
+    apply_def_at(&p, 1, file, "foo", 5, true, 100);
+    apply_def_at(&p, 2, file, "bar", 9, false, 100);
+    apply_def_at(&p, 10, file, "foo", 12, true, 200);
+    apply_def_at(&p, 20, file, "foo", 3, true, 300);
+    apply_def_at(&p, 21, file, "baz", 7, false, 300);
 
     let boundary = nanos(300);
     // `bar`'s own CONTAINS edge is BOTH touched by the node drop (its to_id is the dropped node)
@@ -157,11 +135,11 @@ fn count_prunable_is_scoped_to_its_own_project_on_a_shared_backend() {
     // the two projects' synthetic positions here must not overlap, or the second project's folds
     // would be skipped as already-applied duplicates of the first's.
     for (p, base) in [(&a, 0u64), (&b, 100u64)] {
-        apply_def(p, base + 1, "src/a.rs", "foo", 5, true, 100);
-        apply_def(p, base + 2, "src/a.rs", "bar", 9, false, 100);
-        apply_def(p, base + 10, "src/a.rs", "foo", 12, true, 200);
-        apply_def(p, base + 20, "src/a.rs", "foo", 3, true, 300);
-        apply_def(p, base + 21, "src/a.rs", "baz", 7, false, 300);
+        apply_def_at(p, base + 1, "src/a.rs", "foo", 5, true, 100);
+        apply_def_at(p, base + 2, "src/a.rs", "bar", 9, false, 100);
+        apply_def_at(p, base + 10, "src/a.rs", "foo", 12, true, 200);
+        apply_def_at(p, base + 20, "src/a.rs", "foo", 3, true, 300);
+        apply_def_at(p, base + 21, "src/a.rs", "baz", 7, false, 300);
     }
     let boundary = nanos(300);
     let drop = vec!["src/a.rs::bar".to_string()];
@@ -215,7 +193,7 @@ fn count_derived_duplicates_matches_prune_derived_indexs_per_type_report_in_decl
     for r in 0..EDGE_ROUNDS {
         events.push(keyed(
             rigger::contextgraph::TYPE_EDGE_INFERRED,
-            edge_inferred(),
+            edge_inferred("src/a.rs", "beta"),
             KEY_EDGE,
             2_000 + r as u64,
         ));

@@ -22,10 +22,10 @@
 //! traversal and delivering them to a spawn. The render fold + those node/edge kinds are always
 //! compiled, so these guard the boundary in BOTH feature lanes.
 
-use std::process::Command;
 use std::sync::Mutex;
 
 mod common;
+use common::git::temp_git_project_with_commit;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
@@ -41,11 +41,8 @@ use rigger::gate::ExecRunner;
 use rigger::grounder::{Grounder, Ref};
 use rigger::spawn::ROLE_SDET_AUTHOR;
 use serde_json::{json, Value};
-use tempfile::TempDir;
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_next_json;
+use common::fixtures::apply_next_json;
 
 /// A driver that captures every prompt it is asked to spawn, then returns an empty result. It is
 /// the observation channel for the periphery boundary: the prompt a spawn actually receives.
@@ -594,29 +591,6 @@ fn the_producer_prompt_carries_the_three_verb_lookup_pointer() {
     );
 }
 
-/// `git init` a throwaway repo with one empty commit - the committed HEAD an isolated unit worktree
-/// branches from (mirrors the conductor's own scratch repo). A REAL repo is required for the seam
-/// test: the sdet-author spawn only fires for a unit that HAS a worktree (`spawn_sdet_author` skips an
-/// empty `dir`), so an `isolation: none` / repo-less run can never reach the build seam it observes.
-fn init_seam_repo() -> TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
-
 /// Drive a real, WORKTREE-ISOLATED `conductor::run` of a single non-producer (implement) stage that
 /// also has an `sdet-author` agent configured, and return every prompt the `sdet-author` spawn
 /// received. The sdet-author runs at the BUILD SEAM - after the implementer emits green, in the
@@ -625,7 +599,7 @@ fn init_seam_repo() -> TempDir {
 /// slice at all. Seeded on `core.rs` via the stub `SeedGrounder`, exactly like the implement/producer
 /// trim tests, so the sdet-author's slice is compared against the SAME neighborhood.
 fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
-    let repo = init_seam_repo();
+    let repo = temp_git_project_with_commit();
     let mut cfg = Config::default();
     // Spec 89 criterion 2 ruling item 2: this is the one worktree-isolated run in this file
     // (every other Deps here uses `repo: String::new()`) - its real unit worktree must never

@@ -25,8 +25,8 @@ use rigger::gate::STORE_FENCE_ENV;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::cli::registry_entries;
 use common::cli::temp_store_project;
+use common::fixtures::registry_entries;
 use common::RestoreEnvVars;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;

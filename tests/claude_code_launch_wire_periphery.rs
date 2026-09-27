@@ -53,12 +53,12 @@
 //! the write guard and the StopFailure hooks - criteria 3, 4 and 5, separate units.
 
 mod common;
+use common::fixtures::implementer_opts as opts;
 
 use std::io::Read;
 use std::process::Child;
 use std::sync::Mutex;
 
-use rigger::conductor::SpawnOpts;
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::Driver;
 use rigger::eventstore::sqlite::Store;
@@ -91,15 +91,6 @@ fn fixture_bin() -> String {
 // `fixture_bin`'s own shape under a different name (the exact duplicate the project's own
 // audit flags a trivial one-argument forwarding function pair as, regardless of which
 // literal each passes).
-
-fn opts(id: &str) -> SpawnOpts {
-    SpawnOpts {
-        id: id.to_string(),
-        attempt: 0,
-        system_prompt: "You implement findings.".to_string(),
-        ..Default::default()
-    }
-}
 
 /// Throwaway in-memory stores for a test that only exercises `launch()` (which takes ITS
 /// OWN store as an explicit parameter - see this file's module doc, point 2): criterion

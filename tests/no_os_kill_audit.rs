@@ -36,11 +36,11 @@
 //! its own em-dash byte pattern via `printf` octal at runtime for the identical reason: so
 //! the gate's own command carries no literal instance of what it forbids.
 
-use std::fs;
-use std::path::Path;
-
 mod common;
 use common::repo::collect_rs_files;
+
+use std::fs;
+use std::path::Path;
 
 #[path = "common/source_audit.rs"]
 mod source_audit;

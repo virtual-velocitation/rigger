@@ -40,10 +40,7 @@
 
 mod common;
 
-use std::process::Command;
-
-use common::fixtures::tool_available;
-use common::served::page_script;
+use common::served::node_harness_passes;
 use rigger::dash;
 
 /// STRUCTURAL: the served page SHIPS the declutter authority AND wires it live. Bound to the c3
@@ -231,47 +228,10 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-adaptive-labels-harness.js" });
 "##;
 
-/// RUNTIME proof of the done-when: over a real-density laid-out overview the default-zoom visible set is
-/// a non-empty strict subset with pairwise-disjoint label boxes that keeps the most-important node; a
-/// deeper zoom reveals strictly more labels, monotonically; the selection is deterministic; and the
-/// rendered force view carries a hover `<title>` for every node's label.
-#[test]
-fn adaptive_labels_declutter_by_importance_and_reveal_on_zoom() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP adaptive_labels_declutter_by_importance_and_reveal_on_zoom: no `node` runtime on \
-             PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
-             install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the adaptive-labels harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, ADAPTIVE_HARNESS).expect("write the adaptive-labels harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served declutter");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the declutter must show only the disjoint top labels at default zoom, reveal more on zoom, and \
-         carry every label on hover, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- \
-         stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK adaptive-labels"),
-        "the adaptive-labels harness must confirm the declutter:\n--- stdout ---\n{stdout}\n--- stderr \
-         ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME proof of the done-when: over a real-density laid-out overview the default-zoom visible set is
+    /// a non-empty strict subset with pairwise-disjoint label boxes that keeps the most-important node; a
+    /// deeper zoom reveals strictly more labels, monotonically; the selection is deterministic; and the
+    /// rendered force view carries a hover `<title>` for every node's label.
+    adaptive_labels_declutter_by_importance_and_reveal_on_zoom: node_harness_passes(ADAPTIVE_HARNESS, "OK adaptive-labels");
 }

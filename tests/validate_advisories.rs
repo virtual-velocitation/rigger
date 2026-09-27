@@ -29,6 +29,7 @@
 
 mod common;
 
+use common::cli::event_log;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
@@ -37,15 +38,11 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymbolIndex};
 use rigger::grounder::symbols::store as symstore;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/reset_derived_compaction.rs's conventions)
 // ---------------------------------------------------------------------------------------
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
 
 /// Persist a `symbols` index directly (no tree-sitter needed - the staleness check is ungated),
 /// one entry per `(rel_path, content)`, its hash recorded from the CONTENT GIVEN (so a caller can

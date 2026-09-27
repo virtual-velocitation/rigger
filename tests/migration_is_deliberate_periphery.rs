@@ -55,14 +55,12 @@
 //!    `sqlite.rs::migration_c3` already reads the raw superseded edge directly.
 
 mod common;
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
 
 use common::cli::run_rigger;
+use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
-use graph_fold::apply_json;
+use common::fixtures::apply_json;
 use std::path::Path;
-use std::process::Command;
 
 // =========================================================================================
 // Part 1: the emit+fold seam through the PUBLIC API (symbols lane only)
@@ -425,35 +423,6 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_proj
 // Part 2: `rigger validate`'s RETIRED CODE-ENTITY advisory, through the COMPILED binary
 // =========================================================================================
 
-/// The project identity `rigger validate`'s own `project_identity()` resolves for `root`: the
-/// tracked `.rigger/project.id` when present (as `rigger init` mints), else the git top-level's
-/// basename, else `root`'s own basename. Mirrors `tests/validate_advisories.rs`'s own
-/// `run_stream_identity`, needed here so a directly-seeded `graph.db` lands under the SAME
-/// project scope the compiled binary will read it back under.
-fn project_identity_of(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
 /// Seed `root`'s `.rigger/graph.db` directly (bypassing the extraction pass entirely, exactly
 /// like `tests/validate_advisories.rs`'s own `seed_duplicated_key`/`seed_key_under_two_covered_
 /// types` bypass the extraction pass to seed `events.db`): one legacy `CodeEntityExtracted` node
@@ -506,7 +475,7 @@ fn project_graph(root: &Path) -> rigger::contextgraph::sqlite::Projector {
     std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
     rigger::contextgraph::sqlite::Projector::open(
         graph_path.to_str().unwrap(),
-        &project_identity_of(root),
+        &run_stream_identity(root),
     )
     .unwrap()
 }

@@ -45,6 +45,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::fixtures::edge;
+use common::fixtures::labelled_node;
 use common::fixtures::plain;
 use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
 use common::served::served;
@@ -61,19 +62,6 @@ use rigger::dash::{
 // The two default-grain community ids (`community/<resolution>/<n>`) the fixture derives.
 const C0: &str = "community/1/0";
 const C1: &str = "community/1/1";
-
-/// A derived `KIND_COMMUNITY` super-node carrying its deterministic display `label` attr (the fold's
-/// highest-degree-member pick, spec 53 c3). Under the code lens it is a BUCKET, not a member, so it
-/// is excluded from every count and never carries its own membership.
-fn community(id: &str, label: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_COMMUNITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("label".to_string(), label.to_string());
-    n
-}
 
 /// The lens fixture. TWO coupling communities, each a pair of code entities in DIFFERENT directories
 /// that call each other - so the code lens grouping demonstrably crosses directory lines, the whole
@@ -98,8 +86,8 @@ fn lens_graph() -> Graph {
             plain(BAR, KIND_CODE_ENTITY),
             plain(BAZ, KIND_CODE_ENTITY),
             plain(QUX, KIND_CODE_ENTITY),
-            community(C0, "foo"),
-            community(C1, "baz"),
+            labelled_node(C0, KIND_COMMUNITY, Some("foo")),
+            labelled_node(C1, KIND_COMMUNITY, Some("baz")),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -269,7 +257,7 @@ fn code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membersh
         nodes: vec![
             plain(FOO, KIND_CODE_ENTITY),
             plain(BAR, KIND_CODE_ENTITY),
-            community(C0, "foo"),
+            labelled_node(C0, KIND_COMMUNITY, Some("foo")),
             file_node,
         ],
         edges: vec![
@@ -329,7 +317,7 @@ fn code_lens_excludes_a_membership_less_code_entity_entirely() {
         nodes: vec![
             plain(FOO, KIND_CODE_ENTITY),
             plain(BAR, KIND_CODE_ENTITY),
-            community(C0, "foo"),
+            labelled_node(C0, KIND_COMMUNITY, Some("foo")),
             plain(LONER, KIND_CODE_ENTITY),
         ],
         edges: vec![
@@ -411,7 +399,7 @@ fn code_lens_overview_carries_the_empty_state_when_only_a_non_code_entity_carrie
         .attrs
         .insert("name".to_string(), FILE_MEMBER.to_string());
     let graph = Graph {
-        nodes: vec![community(C0, "foo"), file_node],
+        nodes: vec![labelled_node(C0, KIND_COMMUNITY, Some("foo")), file_node],
         edges: vec![
             // The ONLY live community membership in the whole graph belongs to a file, not a code
             // entity - `Buckets::underived` (kind-blind) reads `false` even though the code lens's own

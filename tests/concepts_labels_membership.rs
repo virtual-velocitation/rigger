@@ -26,47 +26,16 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-
+use common::fixtures::edge;
+use common::fixtures::entity_node as node;
 use common::fixtures::pair_map;
 use rigger::concepts::{derive, events, intent_layer, Derivation, DEFAULT_RESOLUTION};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Edge, Graph, Node, Projection, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
-    KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
-    REL_SPECIFIES, TIER_EXTRACTED,
+    Graph, Projection, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_HANDBOOK_RULE,
+    KIND_RATIONALE, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_EXTRACTED,
 };
 use rigger::eventstore::Event;
-
-/// One graph [`Node`] of a kind, with optional `title` (an ingested document) and/or `name` (a code
-/// entity) attr - the two attrs the label picker reads in that preference order.
-fn node(id: &str, kind: &str, title: Option<&str>, name: Option<&str>) -> Node {
-    let mut attrs = BTreeMap::new();
-    if let Some(t) = title {
-        attrs.insert("title".to_string(), t.to_string());
-    }
-    if let Some(n) = name {
-        attrs.insert("name".to_string(), n.to_string());
-    }
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs,
-    }
-}
-
-/// One live intent [`Edge`] at the extracted tier (every ingested intent edge folds EXTRACTED).
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
-    }
-}
 
 /// Derive concepts over `g`'s intent layer at the default grain - the public pass the criterion owns.
 fn derive_default(g: &Graph) -> Derivation {
@@ -116,11 +85,16 @@ fn doc_with_more_central_rationale() -> Graph {
         ],
         edges: vec![
             // The rationale is the star hub (degree 4): it explains three files and references the doc.
-            edge(rationale, "src/graph/store.rs", REL_EXPLAINS),
-            edge(rationale, "src/graph/a.rs", REL_EXPLAINS),
-            edge(rationale, "src/graph/b.rs", REL_EXPLAINS),
+            edge(
+                rationale,
+                "src/graph/store.rs",
+                REL_EXPLAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(rationale, "src/graph/a.rs", REL_EXPLAINS, TIER_EXTRACTED),
+            edge(rationale, "src/graph/b.rs", REL_EXPLAINS, TIER_EXTRACTED),
             // The doc hangs off the hub as a degree-1 leaf - the only titled document in the concept.
-            edge(doc, rationale, REL_DOC_REFERENCES),
+            edge(doc, rationale, REL_DOC_REFERENCES, TIER_EXTRACTED),
         ],
     }
 }
@@ -167,10 +141,10 @@ rigger::test_cases! {
                 node("src/core/f3.rs", KIND_FILE, None, None),
             ],
             edges: vec![
-                edge("docs/zzz-kg.md", "src/core/f1.rs", REL_SPECIFIES),
-                edge("docs/zzz-kg.md", "src/core/f2.rs", REL_SPECIFIES),
-                edge("docs/zzz-kg.md", "src/core/f3.rs", REL_SPECIFIES),
-                edge("docs/zzz-kg.md", "docs/aaa-review.md", REL_DOC_REFERENCES),
+                edge("docs/zzz-kg.md", "src/core/f1.rs", REL_SPECIFIES, TIER_EXTRACTED),
+                edge("docs/zzz-kg.md", "src/core/f2.rs", REL_SPECIFIES, TIER_EXTRACTED),
+                edge("docs/zzz-kg.md", "src/core/f3.rs", REL_SPECIFIES, TIER_EXTRACTED),
+                edge("docs/zzz-kg.md", "docs/aaa-review.md", REL_DOC_REFERENCES, TIER_EXTRACTED),
             ],
         },
         "docs/zzz-kg.md",
@@ -192,9 +166,9 @@ rigger::test_cases! {
                     node("src/shared.rs", KIND_FILE, None, None),
                 ],
                 edges: vec![
-                    edge("docs/a-alpha.md", "docs/z-omega.md", REL_DOC_REFERENCES),
-                    edge("docs/a-alpha.md", "src/shared.rs", REL_SPECIFIES),
-                    edge("docs/z-omega.md", "src/shared.rs", REL_SPECIFIES),
+                    edge("docs/a-alpha.md", "docs/z-omega.md", REL_DOC_REFERENCES, TIER_EXTRACTED),
+                    edge("docs/a-alpha.md", "src/shared.rs", REL_SPECIFIES, TIER_EXTRACTED),
+                    edge("docs/z-omega.md", "src/shared.rs", REL_SPECIFIES, TIER_EXTRACTED),
                 ],
             },
             "docs/a-alpha.md",
@@ -267,9 +241,9 @@ fn label_of_the_documentless_hub(hub_name: Option<&str>) -> String {
             node("src/ccc.rs#L1", KIND_RATIONALE, Some("why c"), None),
         ],
         edges: vec![
-            edge("src/aaa.rs#L1", HUB, REL_EXPLAINS),
-            edge("src/bbb.rs#L1", HUB, REL_EXPLAINS),
-            edge("src/ccc.rs#L1", HUB, REL_EXPLAINS),
+            edge("src/aaa.rs#L1", HUB, REL_EXPLAINS, TIER_EXTRACTED),
+            edge("src/bbb.rs#L1", HUB, REL_EXPLAINS, TIER_EXTRACTED),
+            edge("src/ccc.rs#L1", HUB, REL_EXPLAINS, TIER_EXTRACTED),
         ],
     };
     label_of(&derive_default(&g), HUB)
@@ -316,11 +290,11 @@ fn a_code_node_with_no_intent_edge_belongs_to_no_concept() {
         ],
         edges: vec![
             // A real concept: the design-doc specifies two files (a pure star, one connected region).
-            edge(doc, "src/graph/a.rs", REL_SPECIFIES),
-            edge(doc, "src/graph/b.rs", REL_SPECIFIES),
+            edge(doc, "src/graph/a.rs", REL_SPECIFIES, TIER_EXTRACTED),
+            edge(doc, "src/graph/b.rs", REL_SPECIFIES, TIER_EXTRACTED),
             // Harness noise: a dev-loop decision GOVERNS a file. Same rel as an intent edge, but
             // NEITHER endpoint is an intent-doc, so the layer must reject it - the file stays orphaned.
-            edge("d-noise", orphan, REL_GOVERNS),
+            edge("d-noise", orphan, REL_GOVERNS, TIER_EXTRACTED),
         ],
     };
     let d = derive_default(&g);

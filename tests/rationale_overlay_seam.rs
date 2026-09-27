@@ -19,37 +19,13 @@
 
 mod common;
 
+use common::fixtures::edge;
 use common::fixtures::summarized_node as node;
 use common::served::body_of;
-use common::served::try_fetch_served;
+use common::served::fetch_served_split as fetch_served;
 use rigger::contextgraph::{
-    Edge, Graph, KIND_DECISION, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, TIER_INFERRED,
+    Graph, KIND_DECISION, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, TIER_INFERRED,
 };
-
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None, // live
-        source: 0,
-        tier: TIER_INFERRED.to_string(),
-    }
-}
-
-/// Drive the dash server over a REAL loopback socket, RETRYING the whole port handoff on a
-/// connection-level transient (see [`try_fetch_served`]).
-fn fetch_served(path: &str, whole_graph: &Graph, poll_graph: &Graph) -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_served(path, whole_graph.clone(), poll_graph.clone()) {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served {path} over the real socket after many fresh-port attempts"
-    );
-}
 
 /// The served `/api/graph?explain=` overlay reads the LAZY WHOLE-GRAPH provider, NEVER the state poll.
 ///
@@ -68,8 +44,8 @@ fn the_served_explain_overlay_reads_the_lazy_whole_graph_not_the_state_poll() {
             node("les-real", KIND_LESSON, "the whole-graph lesson"),
         ],
         edges: vec![
-            edge("d-real", "shared.rs", REL_GOVERNS),
-            edge("les-real", "shared.rs", REL_ABOUT),
+            edge("d-real", "shared.rs", REL_GOVERNS, TIER_INFERRED),
+            edge("les-real", "shared.rs", REL_ABOUT, TIER_INFERRED),
         ],
     };
     let poll_graph = Graph {
@@ -81,7 +57,12 @@ fn the_served_explain_overlay_reads_the_lazy_whole_graph_not_the_state_poll() {
                 "the state-poll decoy must not surface",
             ),
         ],
-        edges: vec![edge("d-poll-decoy", "shared.rs", REL_GOVERNS)],
+        edges: vec![edge(
+            "d-poll-decoy",
+            "shared.rs",
+            REL_GOVERNS,
+            TIER_INFERRED,
+        )],
     };
 
     let resp = fetch_served("/api/graph?explain=shared.rs", &whole_graph, &poll_graph);
@@ -131,7 +112,7 @@ fn an_empty_explain_value_is_a_graceful_empty_batch_not_the_neighborhood() {
             node("shared.rs", KIND_FILE, ""),
             node("d1", KIND_DECISION, "why shared"),
         ],
-        edges: vec![edge("d1", "shared.rs", REL_GOVERNS)],
+        edges: vec![edge("d1", "shared.rs", REL_GOVERNS, TIER_INFERRED)],
     };
     let resp = fetch_served("/api/graph?explain=", &whole_graph, &Graph::default());
     assert!(
@@ -163,7 +144,7 @@ fn the_served_rationale_batch_wire_shape_is_byte_stable() {
             node("shared.rs", KIND_FILE, ""),
             node("d1", KIND_DECISION, "why shared"),
         ],
-        edges: vec![edge("d1", "shared.rs", REL_GOVERNS)],
+        edges: vec![edge("d1", "shared.rs", REL_GOVERNS, TIER_INFERRED)],
     };
     let resp = fetch_served(
         "/api/graph?explain=shared.rs",

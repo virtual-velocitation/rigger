@@ -120,20 +120,10 @@ impl Drop for SlotGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::wait_until_for;
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-
-    /// Poll `pred` until it holds or a generous timeout elapses; returns whether it held.
-    fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-        for _ in 0..400 {
-            if pred() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        false
-    }
 
     #[test]
     fn unlimited_budget_never_touches_the_filesystem_and_never_blocks() {
@@ -179,7 +169,7 @@ mod tests {
 
         drop(first);
         assert!(
-            wait_until(|| acquired.load(Ordering::SeqCst)),
+            wait_until_for(400, || acquired.load(Ordering::SeqCst)),
             "the waiting build must acquire once the held slot is released"
         );
         handle.join().unwrap();
@@ -254,7 +244,7 @@ mod tests {
 
         // Wait until the external holder has actually taken the lock before probing it.
         assert!(
-            wait_until(|| Command::new("flock")
+            wait_until_for(400, || Command::new("flock")
                 .arg("-n")
                 .arg("-x")
                 .arg(&slot_path)
@@ -287,7 +277,7 @@ mod tests {
         holder.wait().expect("reap the killed fixture holder");
 
         assert!(
-            wait_until(|| done.load(Ordering::SeqCst)),
+            wait_until_for(400, || done.load(Ordering::SeqCst)),
             "the kernel must release the flock the instant the abnormal holder exits"
         );
         handle.join().unwrap();

@@ -382,13 +382,10 @@ fn temp_project_with_at_signs_in_its_paths() -> tempfile::TempDir {
 /// the real keys the log will carry - never a spelling this test invented.
 #[cfg(feature = "symbols")]
 fn minted(root: &std::path::Path) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
-        for (key, ev) in batch {
-            out.push((key.clone(), ev.type_.clone()));
-        }
-    });
-    out
+    minted_events(root)
+        .into_iter()
+        .map(|(key, event)| (key, event.type_))
+        .collect()
 }
 
 /// The minted keys as a set, for comparison against what the predicate hands a sink back.
@@ -598,27 +595,11 @@ use common::cli::ingested_count;
 #[cfg(feature = "symbols")]
 use common::cli::read_run_events;
 #[cfg(feature = "symbols")]
-use common::cli::run_stream_identity;
-
-/// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr, success).
+use common::cli::run_rigger;
 #[cfg(feature = "symbols")]
-fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME for the rigger invocation");
-    let out = std::process::Command::new(common::rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        // Never let a short-lived integration invocation spawn a real dashboard, and never let it
-        // register a phantom instance in the operator's real machine-global registry.
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
+use common::cli::run_stream_identity;
+#[cfg(feature = "symbols")]
+use common::fixtures::minted_events;
 
 /// INTEGRATION, at the crate boundary the binary crosses: the cold `graph build` sink and the run's
 /// seeding are two processes that must agree, and this criterion makes them agree by sharing ONE

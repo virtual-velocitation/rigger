@@ -12600,6 +12600,7 @@ fn git_hooks_dir(root: &Path) -> std::path::PathBuf {
 /// block is chained in (inserted after the shebang, before the existing body), never clobbered -
 /// and reading BYTES rather than a UTF-8 string keeps that guarantee even for a non-UTF-8 hook.
 fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
     let hooks_dir = git_hooks_dir(root);
     std::fs::create_dir_all(&hooks_dir)?;
     let hook_path = hooks_dir.join("pre-commit");
@@ -12617,7 +12618,6 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
     // ignored, which would defeat the whole feature.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(&hook_path)?.permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&hook_path, perms)?;
@@ -14597,6 +14597,8 @@ mod tests {
     use crate::test_support::ev;
     use crate::test_support::git_init_quiet;
     use crate::test_support::git_ok;
+    use crate::test_support::git_ok_with_identity;
+    use crate::test_support::git_out;
     use crate::test_support::js_declaration;
     use crate::test_support::pgid_of;
     use crate::test_support::run_git;
@@ -17357,39 +17359,6 @@ mod tests {
         );
     }
 
-    /// `git <args>` in `root` with a fixed committer identity, panicking with stderr on
-    /// failure - mirrors `tests/gitsemver_derivation.rs`'s own `git` fixture helper.
-    fn behind_the_tree_git(root: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@e")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@e")
-            .output()
-            .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    fn behind_the_tree_git_output(root: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap().trim().to_string()
-    }
-
     #[test]
     fn behind_the_tree_advisory_names_the_real_derived_version_ahead_of_the_installed_commit() {
         if !tool_available("go-gitsemver", "version") {
@@ -17398,21 +17367,21 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        behind_the_tree_git(root, &["init", "-q"]);
+        git_ok_with_identity(root, &["init", "-q"]);
         std::fs::write(
             root.join("go-gitsemver.yml"),
             "mode: Mainline\ntag-prefix: v\n",
         )
         .unwrap();
-        behind_the_tree_git(root, &["add", "."]);
-        behind_the_tree_git(root, &["commit", "-q", "-m", "chore: initial"]);
-        behind_the_tree_git(root, &["tag", "v1.0.0"]);
-        let installed_commit = behind_the_tree_git_output(root, &["rev-parse", "HEAD"]);
+        git_ok_with_identity(root, &["add", "."]);
+        git_ok_with_identity(root, &["commit", "-q", "-m", "chore: initial"]);
+        git_ok_with_identity(root, &["tag", "v1.0.0"]);
+        let installed_commit = git_out(root, &["rev-parse", "HEAD"]);
         let installed_version = gitsemver::derive_version("go-gitsemver", root);
 
         std::fs::write(root.join("file.txt"), "second\n").unwrap();
-        behind_the_tree_git(root, &["add", "."]);
-        behind_the_tree_git(root, &["commit", "-q", "-m", "feat: add a thing"]);
+        git_ok_with_identity(root, &["add", "."]);
+        git_ok_with_identity(root, &["commit", "-q", "-m", "feat: add a thing"]);
 
         let advisory = behind_the_tree_advisory(root, &installed_version, &installed_commit)
             .expect("a checkout genuinely ahead of the installed commit must yield an advisory");
@@ -17439,15 +17408,15 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        behind_the_tree_git(root, &["init", "-q"]);
+        git_ok_with_identity(root, &["init", "-q"]);
         std::fs::write(
             root.join("go-gitsemver.yml"),
             "mode: Mainline\ntag-prefix: v\n",
         )
         .unwrap();
-        behind_the_tree_git(root, &["add", "."]);
-        behind_the_tree_git(root, &["commit", "-q", "-m", "chore: initial"]);
-        let installed_commit = behind_the_tree_git_output(root, &["rev-parse", "HEAD"]);
+        git_ok_with_identity(root, &["add", "."]);
+        git_ok_with_identity(root, &["commit", "-q", "-m", "chore: initial"]);
+        let installed_commit = git_out(root, &["rev-parse", "HEAD"]);
         let installed_version = gitsemver::derive_version("go-gitsemver", root);
 
         assert!(

@@ -47,6 +47,37 @@ pub fn pgid_of(pid: u32) -> u32 {
         .expect("pgrp is a base-10 integer")
 }
 
+/// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL escalation
+/// can end it - exercising the full SIGTERM-then-SIGKILL reap, not just a plain `sleep` a bare
+/// SIGTERM would already end.
+pub fn sigterm_ignorer_in(dir: &Path) -> Child {
+    Command::new("sh")
+        .arg("-c")
+        .arg("trap '' TERM; while :; do sleep 1; done")
+        .current_dir(dir)
+        .spawn()
+        .expect("spawn a SIGTERM-ignoring fixture process")
+}
+
+/// Poll `pred` up to `tries` times, sleeping 25ms between checks, and return whether it held -
+/// the latency tolerance a test needs to observe an asynchronous OS-level effect (a signal
+/// delivered, a process reaped, a kernel lock taken) without a flaky zero-wait check or a fixed
+/// sleep long enough to slow the suite.
+pub fn wait_until_for(tries: u32, mut pred: impl FnMut() -> bool) -> bool {
+    for _ in 0..tries {
+        if pred() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+/// [`wait_until_for`] over the default 5 seconds.
+pub fn wait_until(pred: impl FnMut() -> bool) -> bool {
+    wait_until_for(200, pred)
+}
+
 /// End and reap a fixture child unconditionally, ignoring errors - through the `Child` handle it
 /// was spawned with, never a computed pid. Ending it first means the reap returns promptly even
 /// when the child is still alive.

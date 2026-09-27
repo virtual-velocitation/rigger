@@ -24,9 +24,8 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
 use rigger::eventstore::Event;
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::{community_snapshot, seed_two_subsystems};
+mod common;
+use common::fixtures::{community_snapshot, seed_two_subsystems};
 
 /// Run the pass on a projector seeded with the coupling graph, returning (assignment, the recorded
 /// community events positioned onto the log after the seed).

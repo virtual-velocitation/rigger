@@ -287,39 +287,14 @@ mod tests {
     use super::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     use crate::contextgraph::sqlite::Projector;
+    use crate::test_support::edge;
+    use crate::test_support::entity_node;
     // `Projection` (the `.whole()` trait) and the two rel constants are needed only by the
     // sqlite-backed rebuild test above, gated the same way for the same reason.
-    use crate::contextgraph::{Edge, KIND_DECISION, KIND_FILE, TIER_EXTRACTED};
     #[cfg(any(feature = "store", not(feature = "core")))]
     use crate::contextgraph::{Projection, REL_IN_COMMUNITY, REL_REALIZES};
+    use crate::contextgraph::{KIND_DECISION, KIND_FILE, TIER_EXTRACTED};
     use crate::test_support::pair_map;
-    use std::collections::BTreeMap as Map;
-
-    /// One graph [`Node`] of a kind, with optional `title` / `name` attrs.
-    fn node(id: &str, kind: &str, title: Option<&str>) -> Node {
-        let mut attrs = Map::new();
-        if let Some(t) = title {
-            attrs.insert("title".to_string(), t.to_string());
-        }
-        Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs,
-        }
-    }
-
-    /// One live graph [`Edge`] of a rel at the extracted tier (every intent edge folds EXTRACTED).
-    fn edge(from: &str, to: &str, rel: &str) -> Edge {
-        Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: rel.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: TIER_EXTRACTED.to_string(),
-        }
-    }
 
     /// The canonical spec-54 intent fixture: TWO documents governing DISJOINT code regions, each
     /// region spanning TWO directories (so a concept groups a doc WITH its code across directory
@@ -355,30 +330,30 @@ mod tests {
         let rationale = "src/graph/index.rs#L5";
 
         let mut nodes = vec![
-            node(doc_a, KIND_DESIGN_DOC, Some("The knowledge graph")),
-            node(doc_b, KIND_HANDBOOK_RULE, Some("Review adjudication")),
-            node(rationale, KIND_RATIONALE, Some("why index by name")),
-            node(rat_file, KIND_FILE, None),
-            node("d-noise", KIND_DECISION, None),
+            entity_node(doc_a, KIND_DESIGN_DOC, Some("The knowledge graph"), None),
+            entity_node(doc_b, KIND_HANDBOOK_RULE, Some("Review adjudication"), None),
+            entity_node(rationale, KIND_RATIONALE, Some("why index by name"), None),
+            entity_node(rat_file, KIND_FILE, None, None),
+            entity_node("d-noise", KIND_DECISION, None, None),
         ];
         for f in a_files.iter().chain(b_files.iter()) {
-            nodes.push(node(f, KIND_FILE, None));
+            nodes.push(entity_node(f, KIND_FILE, None, None));
         }
 
         let mut edges = Vec::new();
         // Region A: the design-doc specifies every region-A file across src/graph + src/db.
         for f in &a_files {
-            edges.push(edge(doc_a, f, REL_SPECIFIES));
+            edges.push(edge(doc_a, f, REL_SPECIFIES, TIER_EXTRACTED));
         }
         // Region B: the handbook-rule governs its four files across src/review + src/verdict.
         for f in &b_files {
-            edges.push(edge(doc_b, f, REL_GOVERNS));
+            edges.push(edge(doc_b, f, REL_GOVERNS, TIER_EXTRACTED));
         }
         // The shared rationale explains a src/graph file NO design doc governs.
-        edges.push(edge(rationale, rat_file, REL_EXPLAINS));
+        edges.push(edge(rationale, rat_file, REL_EXPLAINS, TIER_EXTRACTED));
         // NOISE: a dev-loop decision GOVERNS a region-A file. Same rel as an intent edge, but the
         // `decision` node is not an intent-doc, so the layer must EXCLUDE it.
-        edges.push(edge("d-noise", a_files[0], REL_GOVERNS));
+        edges.push(edge("d-noise", a_files[0], REL_GOVERNS, TIER_EXTRACTED));
 
         Graph { nodes, edges }
     }

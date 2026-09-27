@@ -30,9 +30,7 @@
 //! The tier filter and the audit fields are always compiled, so these guard the boundary in BOTH
 //! feature lanes.
 
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM, TYPE_BLAST_RADIUS_COMPUTED,
-};
+use rigger::conductor::{run, Deps, STREAM, TYPE_BLAST_RADIUS_COMPUTED};
 use rigger::config::{AgentDef, Config, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
@@ -42,30 +40,9 @@ use rigger::gate::ExecRunner;
 use rigger::grounder::{BlastRadius, Grounder, Ref};
 use serde_json::{json, Value};
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_next_json;
-
-/// A driver that returns an empty result without doing anything. The blast radius is RECORDED before
-/// the spawn (`run_stage`), so the run's terminal disposition is irrelevant to what this periphery
-/// layer observes - it only needs the run to reach the record.
-#[derive(Default)]
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: String::new(),
-            resolved_model: String::new(),
-        })
-    }
-}
+mod common;
+use common::fixtures::apply_next_json;
+use common::fixtures::NoopDriver;
 
 /// A STRUCTURAL grounder double - the shape criterion 2's graph arm and the audit actually key off,
 /// which a grep grounder cannot stand in for:

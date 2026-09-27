@@ -1,8 +1,7 @@
 //! Shared support for the suites that pin a LIGHTWEIGHT `workflow.yml` probe's lib-API contract
 //! (`tests/scratch_workdir_config.rs` for `read_scratch_workdir`, `tests/store_config.rs` for
 //! `read_store_config`): a temp `.rigger` directory, the committed config written into it, and
-//! the one "this body reads as exactly this value" check both probes are held to. Included by each
-//! suite through `#[path]`.
+//! the one "this body reads as exactly this value" check both probes are held to.
 
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};

@@ -17,6 +17,7 @@
 mod common;
 
 use common::cli::emit;
+use common::cli::event_log;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_derived_duplicates;
@@ -24,17 +25,12 @@ use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::cli::temp_project;
 use common::cli::DUP_ROUNDS;
-use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/reset_menu.rs and tests/reset_derived_compaction.rs; each integration
 // suite is its own binary, so a small harness is duplicated per file by this codebase's existing
 // convention rather than shared).
 // ---------------------------------------------------------------------------------------
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
 
 #[test]
 fn bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the_minted_project_identity(

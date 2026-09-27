@@ -82,6 +82,8 @@
 mod common;
 use common::git::run_git;
 
+use common::cli::event_log;
+use common::cli::graph_db;
 use common::cli::keyed;
 use common::cli::reported_reclaimed_bytes;
 use common::cli::run_rigger;
@@ -93,7 +95,7 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::{PrunedDerived, Store};
 use rigger::eventstore::{ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -575,10 +577,6 @@ fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wro
 // ---------------------------------------------------------------------------------------
 // 3. The cross-module seam: the command prunes what `ingest` declares, and nothing else decides
 // ---------------------------------------------------------------------------------------
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
 
 fn seed_project(root: &Path, rounds: u64) {
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
@@ -1287,10 +1285,6 @@ fn pinned_project() -> tempfile::TempDir {
     std::fs::write(dir.path().join(".rigger").join("project.id"), PINNED_ID)
         .expect("pin the project identity");
     dir
-}
-
-fn graph_db(root: &Path) -> PathBuf {
-    root.join(".rigger").join("graph.db")
 }
 
 /// The context graph's LIVE content: its nodes, and the edges that have not been retired. This is

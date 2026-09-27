@@ -28,7 +28,7 @@
 //! Each case runs unconditionally, so the reshaped rung-1 flag and its place at the top of the
 //! order are regression-locked on every machine and on both feature lanes.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
@@ -39,6 +39,7 @@ use tempfile::TempDir;
 mod common;
 use common::git::run_git;
 
+use common::cli::assert_selected_server;
 use common::cli::write_workflow;
 use common::rigger_bin;
 
@@ -66,12 +67,6 @@ fn committed_project() -> TempDir {
     dir
 }
 
-/// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. The flag
-/// rung must never fabricate this when a server is selected.
-fn local_event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
 /// Drive `rigger run --base HEAD <extra flags>` in `root`, with `KURRENTDB_CONN` REMOVED from the
 /// child so the environment rung is silent and only the flags under test drive selection.
 /// `--base HEAD` resolves in the committed repo, so the run clears its base/anchor gates and reaches
@@ -93,32 +88,6 @@ fn run_with_flags(root: &Path, extra: &[&str]) -> Output {
         .env_remove("KURRENTDB_CONN")
         .output()
         .expect("spawn rigger run")
-}
-
-/// Assert the flag selected the SERVER backend: the run failed inside the kurrentdb adapter (the
-/// eager connect to the unreachable address) and fabricated no local sqlite event log. The ABSENCE
-/// of the sqlite walk-up's `no rigger store found` is what distinguishes a genuine server selection
-/// from the pre-fix drop.
-fn assert_selected_server(out: &Output, root: &Path, why: &str) {
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "{why}: an unreachable server must fail, never silently succeed against a local fallback; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("kurrentdb"),
-        "{why}: the run must fail INSIDE the server backend, proving the flag selected the server; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("no rigger store found"),
-        "{why}: the flag-selected server must not drop to the local sqlite walk-up; stderr:\n{stderr}"
-    );
-    assert!(
-        !local_event_log(root).exists(),
-        "{why}: a server selection must NOT fabricate a local .rigger/events.db"
-    );
 }
 
 /// A bare `--conn <url>` (no `--eventstore`) over a committed project whose workflow carries

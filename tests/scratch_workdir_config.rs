@@ -22,9 +22,9 @@
 
 use rigger::config_store::read_scratch_workdir;
 
-#[path = "common/workflow_probe.rs"]
-mod workflow_probe;
-use workflow_probe::{assert_probe_reads, rigger_dir, write_workflow};
+mod common;
+
+use common::workflow_probe::{assert_probe_reads, rigger_dir, write_workflow};
 
 #[test]
 fn an_absent_workflow_is_no_opinion_not_an_error() {

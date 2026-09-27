@@ -33,11 +33,11 @@
 //! scenario itself is this file's real subject.
 
 mod common;
+use common::git::git_ok;
 
 use common::fixtures::{MergeBreakDriver, MERGE_BREAK_BASE};
 
 use std::path::Path;
-use std::process::Command;
 
 use rigger::conductor::{run, Deps};
 use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
@@ -55,20 +55,6 @@ const SENTINEL_COMMITTED: &str = "clean";
 /// on a tracked file while a run executes, exactly as real as the untracked-scratch-file case
 /// the implementer's own test already covers.
 const SENTINEL_DIRTY: &str = "operator-modified";
-
-fn git_ok(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 #[test]
 fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_post_merge_gate() {

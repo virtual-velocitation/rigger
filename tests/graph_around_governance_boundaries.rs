@@ -24,56 +24,18 @@
 //!   Dating a node off ANY edge touching it as either endpoint (rather than only its own
 //!   `GOVERNS`/`ABOUT` edge) lets that inherited freshness rank the stale decision as if newest.
 
-use std::path::Path;
-
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
+use rigger::contextgraph::Projection;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
+use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_store;
 use common::cli::temp_project;
-
-/// Run `rigger <args...>` in `cwd`, opting out of the auto-started dashboard and pointing the
-/// instance registry at a throwaway state dir, exactly as the other CLI integration tests do.
-///
-/// Spawned through [`common::rigger_courier`] (checkin-round fix), never a bare
-/// `Command::new(rigger_bin())`: that shared authority scrubs an inherited
-/// `RIGGER_STORE_FENCE_DIR` (spec 70 criterion 3's gate store fence, which
-/// `gate::ExecRunner::run` pins on the WHOLE subprocess tree of a unit-worktree gate's `test`
-/// gate - THIS test binary itself, when it runs as one) - see
-/// [`run_rigger_ignores_an_inherited_ambient_store_fence`] for the regression this closes.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event directly (the ALWAYS-compiled fold), exactly as
-/// `graph_show_surface.rs` / `graph_around_code_first.rs` seed - feature-lane independent.
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"rust"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use common::fixtures::apply_code_entity;
 
 /// The bare ids from every `node <id> <kind>` line of a `rigger graph --around` transcript,
 /// parsed exactly (never substring-matched).
@@ -117,7 +79,7 @@ fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "solo", "function", 1);
+        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
@@ -149,7 +111,7 @@ fn around_shows_exactly_ten_with_no_trailing_count_at_the_cap_boundary() {
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "solo", "function", 1);
+        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
     }
 
     // Exactly AROUND_GOVERNANCE_CAP (10) governing items - the boundary itself, distinct from
@@ -194,7 +156,7 @@ fn around_never_prints_a_governs_or_about_edge_even_though_subgraph_returns_it()
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "guarded", "function", 1);
+        apply_code_entity(&p, 100_001, file, "guarded", "function", 1, "rust");
     }
 
     let payload =
@@ -267,7 +229,7 @@ fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_c
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "solo", "function", 1);
+        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
     }
 
     // d1: the OLDEST decision, governing `file` - about to be superseded.

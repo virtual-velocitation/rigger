@@ -134,9 +134,9 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
-use common::cli::temp_git_project_with_commit;
 use common::cli::write_reviewless_git_unit_workflow;
 use common::git::git_out;
+use common::git::temp_git_project_with_commit;
 use rigger::worktree::branch_exists;
 
 /// Spec 89, criterion 4 (EXACTLY ONE ROOT) - a regression, RED at round 1, GREEN as of round

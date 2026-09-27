@@ -92,28 +92,32 @@ pub fn get_raw(target: &str) -> Vec<u8> {
     raw
 }
 
-/// Start `serve` on a FRESH ephemeral loopback port - `whole_graph` behind the lazy whole-graph
-/// provider (`/api/graph` reads it), `poll_graph` behind the state-poll provider (every `/api/*`
-/// request rides it) - fetch `GET <path>` once, and return the raw HTTP response, or `None` on a
-/// genuine socket-level failure (a caller retries the whole handoff).
+/// Start the dash on a FRESH ephemeral loopback port - `graph_provider` behind its lazy
+/// whole-graph provider (`/api/graph` reads it), `poll_graph` behind its state-poll provider -
+/// and fetch `GET path` once, returning the raw HTTP response, or `None` on a genuine
+/// socket-level failure.
 ///
 /// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. That is
 /// load-bearing: releasing it first would leave the port free for the whole handoff window, so a
 /// sibling test's `bind(0)` in the same binary could be handed it; one `serve` then wins the
 /// re-bind and the loser's client CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture -
-/// a content failure no connect-error retry can see, reddening only on a loaded machine. Owning the
-/// port from `bind` through `serve_on` closes that window by construction.
-pub fn try_fetch_served(path: &str, whole_graph: Graph, poll_graph: Graph) -> Option<String> {
+/// a content failure no connect-error retry can see, reddening only on a loaded machine. Owning
+/// the port from `bind` through `serve_on` closes that window by construction: a response returned
+/// here is always this attempt's own server's.
+pub fn try_fetch_over<G>(path: &str, graph_provider: G, poll_graph: Graph) -> Option<String>
+where
+    G: Fn(Option<&str>) -> Graph + Send + 'static,
+{
     let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
     let addr = listener.local_addr().ok()?;
 
-    let graph_provider = move |_instance: Option<&str>| -> Graph { whole_graph.clone() };
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((Vec::new(), poll_graph.clone(), Vec::new(), HashMap::new()))
     };
     let calls_provider =
         |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
     let instances_provider = Vec::new;
+    // A detached server thread: `serve_on` loops until the process ends; we drive one request.
     std::thread::spawn(move || {
         let _ = dash::serve_on(
             listener,
@@ -127,20 +131,14 @@ pub fn try_fetch_served(path: &str, whole_graph: Graph, poll_graph: Graph) -> Op
         );
     });
 
-    // The port is already bound and listening, so this connect succeeds on its first pass; the
-    // budget survives only as a guard against a scheduler stall between the bind and the first
-    // accept.
     let deadline = Instant::now() + Duration::from_millis(1500);
     let mut client = loop {
         match TcpStream::connect(addr) {
             Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Err(_) => return None,
         }
     };
-
     let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
     if client.write_all(req.as_bytes()).is_err() {
         return None;
@@ -150,6 +148,44 @@ pub fn try_fetch_served(path: &str, whole_graph: Graph, poll_graph: Graph) -> Op
         Ok(_) => Some(resp),
         Err(_) => None,
     }
+}
+
+/// Fetch through `attempt` over a real loopback socket, RETRYING the whole port handoff on a
+/// socket-level transient. Each attempt owns its own port (see [`try_fetch_over`]), so a retry
+/// never returns another server's response; `what` names the request in the failure.
+pub fn fetch_with_retry(what: &str, attempt: impl Fn() -> Option<String>) -> String {
+    for _ in 0..200 {
+        if let Some(resp) = attempt() {
+            return resp;
+        }
+    }
+    panic!(
+        "the dash server never served {what} over the real socket after many fresh-port attempts"
+    );
+}
+
+/// A whole-graph provider serving `graph` for every instance.
+pub fn graph_provider_of(graph: Graph) -> impl Fn(Option<&str>) -> Graph + Send + 'static {
+    move |_instance: Option<&str>| graph.clone()
+}
+
+/// `GET path` over a real loopback socket against a dash whose whole-graph and state-poll
+/// providers both serve `graph`.
+pub fn fetch_served(path: &str, graph: &Graph) -> String {
+    fetch_served_split(path, graph, graph)
+}
+
+/// `GET path` over a real loopback socket against a dash serving two DISTINCT graphs -
+/// `whole_graph` behind the lazy whole-graph provider and `poll_graph` behind the state-poll
+/// provider - so whatever crosses the wire proves which provider it read.
+pub fn fetch_served_split(path: &str, whole_graph: &Graph, poll_graph: &Graph) -> String {
+    fetch_with_retry(path, || {
+        try_fetch_over(
+            path,
+            graph_provider_of(whole_graph.clone()),
+            poll_graph.clone(),
+        )
+    })
 }
 
 /// A raw HTTP response split into its header block and its body bytes.
@@ -183,7 +219,11 @@ pub fn served_console_body() -> String {
 
 /// The served console page carries every one of `needles`.
 pub fn assert_served_console_page_carries(needles: &[&str]) {
-    let body = served_console_body();
+    assert_console_body_carries(&served_console_body(), needles);
+}
+
+/// The served console page `body` carries every one of `needles`.
+pub fn assert_console_body_carries(body: &str, needles: &[&str]) {
     for needle in needles {
         assert!(
             body.contains(needle),
@@ -267,6 +307,11 @@ pub fn run_page_harness(page: &str, harness_src: &str) -> (bool, String, String)
 /// [`run_node_harness`], skipped (loudly) when there is no `node` runtime on PATH - node is
 /// present on dev machines and ubuntu-latest CI, so only a machine without it skips.
 pub fn node_harness_passes(harness_src: &str, ok_token: &str) {
+    node_harness_claims(harness_src, ok_token, SERVED_CLIENT_SEAM);
+}
+
+/// [`node_harness_passes`] whose failure reports `claim` - what the harness proves.
+pub fn node_harness_claims(harness_src: &str, ok_token: &str, claim: &str) {
     if !super::fixtures::tool_available("node", "--version") {
         eprintln!(
             "SKIP: no `node` runtime on PATH. This runtime guard needs node (present on dev \
@@ -274,17 +319,24 @@ pub fn node_harness_passes(harness_src: &str, ok_token: &str) {
         );
         return;
     }
-    run_node_harness(harness_src, ok_token);
+    run_node_harness_claiming(harness_src, ok_token, claim);
 }
+
+/// What a served-page runtime harness proves unless its caller names more.
+const SERVED_CLIENT_SEAM: &str = "the runtime harness must drive the served client seam";
 
 /// Run `harness_src` against the live served page, asserting node succeeds and prints
 /// `ok_token` - the sentinel that proves the driver ran to its end.
 pub fn run_node_harness(harness_src: &str, ok_token: &str) {
+    run_node_harness_claiming(harness_src, ok_token, SERVED_CLIENT_SEAM);
+}
+
+/// [`run_node_harness`] whose failure reports `claim`.
+fn run_node_harness_claiming(harness_src: &str, ok_token: &str, claim: &str) {
     let (ok, stdout, stderr) = run_page_harness(&dash::live_page(), harness_src);
     assert!(
         ok,
-        "the runtime harness must drive the served client seam, but node failed:\n\
-         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        "{claim}, but node failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(
         stdout.contains(ok_token),

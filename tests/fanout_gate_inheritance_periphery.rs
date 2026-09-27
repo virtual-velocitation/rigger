@@ -58,74 +58,30 @@
 //! criterion 3, not this unit's scope).
 
 mod common;
+use common::fixtures::{fan_out_stage, plan_stage, workflow_cfg};
+use common::fixtures::{unit_proposal, ProposingPlannerDriver};
+use common::git::temp_git_project_with_commit;
 
-use common::cli::temp_git_project_with_commit;
-
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
-};
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::conductor::{run, Deps};
+use rigger::config::Config;
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
-use serde_json::{json, Value};
 
 /// A real, single-criterion fan-out workflow: one `plan` stage feeding one `implement`
 /// fan-out template that declares gate `ok` (`run: "true"`, always passes) - and a SECOND
 /// gate `extra` (also always passes), never named on the template, so a proposal that adds
 /// it to `gates` proves UNION rather than merely inheriting a set of one.
 fn base_cfg(repo: &std::path::Path) -> Config {
-    let mut cfg = Config::default();
+    let mut cfg = workflow_cfg(
+        &["planner", "worker"],
+        &[("ok", "true"), ("extra", "true")],
+        vec![plan_stage(), fan_out_stage("implement", &["plan"], &["ok"])],
+    );
     // Spec 89 criterion 2 ruling item 2 (mirrored from the sibling periphery file): a
     // `Deps` driving a real repo must never reach the ambient `XDG_CACHE_HOME`/`HOME`
     // cache-home default.
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
-    for id in ["planner", "worker"] {
-        cfg.agents.insert(
-            id.into(),
-            AgentDef {
-                id: id.into(),
-                ..Default::default()
-            },
-        );
-    }
-    cfg.workflow.gates.insert(
-        "ok".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.gates.insert(
-        "extra".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan".into(),
-        Stage {
-            name: "plan".into(),
-            agent: "planner".into(),
-            produces: "dag".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement".into(),
-        Stage {
-            name: "implement".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            needs: vec!["plan".into()],
-            gates: vec!["ok".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
     cfg
 }
 
@@ -135,127 +91,27 @@ const CRITERION: &str = "the auth module lands";
 /// The id of the planner's own superseding (or same-id refined) unit.
 const PROPOSED_ID: &str = "planner-refines-the-auth-module";
 
-/// A planner driver whose one `UnitProposed` emit supersedes `criterion` with a unit named
-/// `proposed_id`, naming exactly `proposal_gates` in its own `gates` field (omitted from
-/// the wire entirely when empty, mirroring a real planner that never learned about gates -
-/// `#[serde(default)] gates: Vec<String>` on the conductor's decode side, so an absent key
-/// and an empty array decode identically). The `worker` role writes one real file into its
-/// real worktree so `on_pass: merge` has something to merge.
-struct SupersedingPlannerDriver {
-    proposed_id: String,
-    criterion: String,
-    proposal_gates: Vec<String>,
-}
-
-impl AgentDriver for SupersedingPlannerDriver {
-    fn spawn(
-        &self,
-        agent: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if agent.id == "planner" {
-            let mut body = json!({
-                "id": self.proposed_id,
-                "agent": "worker",
-                "criterion": self.criterion,
-            });
-            if !self.proposal_gates.is_empty() {
-                body["gates"] = json!(self.proposal_gates);
-            }
-            emit(TYPE_UNIT_PROPOSED, body)?;
-            return Ok(AgentResult {
-                output: "proposed a refinement".into(),
-                resolved_model: String::new(),
-            });
-        }
-        if !opts.dir.is_empty() {
-            let file = format!(
-                "{}/{}.rs",
-                opts.dir,
-                opts.unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
-            );
-            std::fs::write(file, "pub fn done() {}\n").unwrap();
-        }
-        Ok(AgentResult {
-            output: "ok".into(),
-            resolved_model: String::new(),
-        })
-    }
-}
-
-/// A planner driver whose one `spawn()` call emits TWO `UnitProposed` events for the SAME
-/// id before returning - the first superseding the baseline with no `gates` named (hits the
-/// INSERT site), the second re-emitted under the identical id naming `extra` (hits the
-/// EXISTING-STAGE refine site, `existing.gates = union_gates(&existing.gates, &u.gates)` -
-/// a different source line from the one `SupersedingPlannerDriver` above exercises). Both
-/// land in the store before the run's next `harvest_proposed` pass ever reads it, exactly
-/// mirroring the implementer's own pure-fold refine fixture's event order.
-struct RefiningPlannerDriver {
-    proposed_id: String,
-    criterion: String,
-}
-
-impl AgentDriver for RefiningPlannerDriver {
-    fn spawn(
-        &self,
-        agent: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if agent.id == "planner" {
-            emit(
-                TYPE_UNIT_PROPOSED,
-                json!({
-                    "id": self.proposed_id,
-                    "agent": "worker",
-                    "criterion": self.criterion,
-                }),
-            )?;
-            emit(
-                TYPE_UNIT_PROPOSED,
-                json!({
-                    "id": self.proposed_id,
-                    "agent": "worker",
-                    "criterion": self.criterion,
-                    "gates": ["extra"],
-                }),
-            )?;
-            return Ok(AgentResult {
-                output: "proposed, then refined by id".into(),
-                resolved_model: String::new(),
-            });
-        }
-        if !opts.dir.is_empty() {
-            let file = format!(
-                "{}/{}.rs",
-                opts.dir,
-                opts.unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
-            );
-            std::fs::write(file, "pub fn done() {}\n").unwrap();
-        }
-        Ok(AgentResult {
-            output: "ok".into(),
-            resolved_model: String::new(),
-        })
-    }
-}
-
-/// Drive the crate's public `run()` over [`base_cfg`]'s workflow with `driver` as the planner, a
-/// real `gate::ExecRunner` (so every gate genuinely executes as a child process) and a real git
-/// repo (so `on_pass: merge` genuinely merges): the planner's [`PROPOSED_ID`] unit must integrate
-/// through a real merge, and its real recorded `verified` evidence - mechanically mirroring
-/// `st.gates` (`verified_evidence`) - must read exactly `verified`.
-fn proposal_integrates_verified_by(driver: &dyn AgentDriver, verified: &str) {
+/// Drive the crate's public `run()` over [`base_cfg`]'s workflow with a planner emitting
+/// `proposals` (each a [`unit_proposal`] for [`PROPOSED_ID`] under [`CRITERION`]), a real
+/// `gate::ExecRunner` (so every gate genuinely executes as a child process) and a real git
+/// repo (so `on_pass: merge` genuinely merges): the planner's [`PROPOSED_ID`] unit must
+/// integrate through a real merge, and its real recorded `verified` evidence - mechanically
+/// mirroring `st.gates` (`verified_evidence`) - must read exactly `verified`.
+fn proposal_integrates_verified_by(proposals: &[&[&str]], output: &'static str, verified: &str) {
     let repo = temp_git_project_with_commit();
     let cfg = base_cfg(repo.path());
 
     let store = Store::open(":memory:").unwrap();
+    let driver = ProposingPlannerDriver {
+        proposals: proposals
+            .iter()
+            .map(|gates| unit_proposal(PROPOSED_ID, CRITERION, gates))
+            .collect(),
+        output,
+    };
     let deps = Deps {
         store: &store,
-        driver,
+        driver: &driver,
         gates: &ExecRunner,
         repo: repo.path().to_str().unwrap().to_string(),
         grounder: None,
@@ -276,7 +132,8 @@ fn proposal_integrates_verified_by(driver: &dyn AgentDriver, verified: &str) {
             .get("verified")
             .map(String::as_str),
         Some(verified),
-        "the planner's unit must carry the template's own gate list, unioned with any gate it          names itself, into a REAL gate run recorded as real evidence; got evidence: {:?}",
+        "the planner's unit must carry the template's own gate list, unioned with any gate it \
+         names itself, into a REAL gate run recorded as real evidence; got evidence: {:?}",
         rs.units[PROPOSED_ID].evidence
     );
 }
@@ -293,38 +150,27 @@ rigger::test_cases! {
     /// (`verified_evidence`, `src/conductor.rs:10935`) - `{}` before this fix (RED: `gates:
     /// u.gates` with `u.gates` empty), `"gates passed: ok"` after it.
     a_gateless_supersede_of_a_fanout_baseline_still_runs_the_templates_gate_for_real:
-        proposal_integrates_verified_by(
-            &SupersedingPlannerDriver {
-                proposed_id: PROPOSED_ID.to_string(),
-                criterion: CRITERION.to_string(),
-                proposal_gates: Vec::new(),
-            },
-            "gates passed: ok",
-        );
+        proposal_integrates_verified_by(&[&[]], "proposed a refinement", "gates passed: ok");
     /// GATE INHERITANCE's union half: a proposal that DOES name its own gate gets it unioned
     /// onto the template's, never substituted for it - both gates run for real and both show up
     /// in the real recorded evidence, template's gate first (base-list order preserved).
     a_supersede_naming_its_own_gate_unions_it_onto_the_templates_gate_for_real:
         proposal_integrates_verified_by(
-            &SupersedingPlannerDriver {
-                proposed_id: PROPOSED_ID.to_string(),
-                criterion: CRITERION.to_string(),
-                proposal_gates: vec!["extra".to_string()],
-            },
+            &[&["extra"]],
+            "proposed a refinement",
             "gates passed: ok, extra",
         );
-    /// GATE INHERITANCE's third named shape: a SAME-ID REFINE. The refine's own `extra` gate
-    /// must union onto the EXISTING stage's already-templated gate list (`existing.gates =
-    /// union_gates(&existing.gates, &u.gates)`) rather than overwrite it - a source line
-    /// distinct from the insert site the two tests above exercise, so this proves that line
-    /// also survives real gate execution and real evidence recording, not merely the insert
-    /// site.
+    /// GATE INHERITANCE's third named shape: a SAME-ID REFINE. Two proposals under the same
+    /// id - the first naming no gates (the INSERT site), the second naming `extra` (the
+    /// EXISTING-STAGE refine site). The refine's own `extra` gate must union onto the EXISTING
+    /// stage's already-templated gate list (`existing.gates = union_gates(&existing.gates,
+    /// &u.gates)`) rather than overwrite it - a source line distinct from the insert site the
+    /// two tests above exercise, so this proves that line also survives real gate execution
+    /// and real evidence recording, not merely the insert site.
     a_same_id_refine_unions_its_own_gate_onto_the_already_templated_list_for_real:
         proposal_integrates_verified_by(
-            &RefiningPlannerDriver {
-                proposed_id: PROPOSED_ID.to_string(),
-                criterion: CRITERION.to_string(),
-            },
+            &[&[], &["extra"]],
+            "proposed, then refined by id",
             "gates passed: ok, extra",
         );
 }

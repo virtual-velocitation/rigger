@@ -1,23 +1,15 @@
-//! Git fixtures for the integration suites: the shared git commands (defined once in
-//! `fixtures/git.rs`, which the crate's unit tests reach too) plus the suite-only hook fixture.
+//! Git fixtures for the integration suites, re-exported from [`super::fixtures`] - the one
+//! definition the crate's own unit tests share - plus the suite-only go-gitsemver fixture.
 
-use std::os::unix::fs::PermissionsExt;
+#![allow(unused_imports)]
+
 use std::path::Path;
 
-// A suite uses the subset it needs, like every other `tests/common` item.
-#[allow(unused_imports)]
 pub use super::fixtures::{
-    commit_at_fixed_date, git_init_quiet, git_ok, git_out, git_stdout, init_repo, run_git,
+    commit_at_fixed_date, git_answer, git_commit_all, git_init_quiet, git_ok, git_ok_with_identity,
+    git_out, git_out_with_identity, git_stdout, init_repo, install_refusing_hook, run_git,
+    temp_git_project_with_commit,
 };
-
-/// Install a `pre-commit` hook in the repository at `repo_path` that refuses every commit.
-pub fn install_refusing_hook(repo_path: &str) {
-    let hooks = Path::new(repo_path).join(".git").join("hooks");
-    std::fs::create_dir_all(&hooks).unwrap();
-    let hook = hooks.join("pre-commit");
-    std::fs::write(&hook, "#!/bin/sh\necho 'hook: refusing' >&2\nexit 1\n").unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
 
 /// A go-gitsemver fixture repository at `root`: `go-gitsemver.yml` matching this repo's own
 /// (`mode: Mainline`, `tag-prefix: v`), an initial commit tagged `v1.0.0`, then one more commit

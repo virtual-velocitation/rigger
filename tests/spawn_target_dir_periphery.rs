@@ -42,9 +42,9 @@ mod common;
 
 use std::path::Path;
 
-use common::cli::temp_git_project_with_commit;
 use common::env_test_lock;
 use common::fixtures::no_emit;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::cli;

@@ -139,9 +139,10 @@ mod common;
 use common::cli::plant_stale_marker;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
-use common::cli::temp_git_project_with_commit;
 use common::cli::temp_repoless_project;
+use common::cli::{write_scaffold, UNISOLATED_WORKER};
 use common::fixtures::js_declaration;
+use common::git::temp_git_project_with_commit;
 
 use std::path::Path;
 use std::process::Command;
@@ -152,15 +153,9 @@ use std::process::Command;
 /// repo-less: `nop` grounder, `isolation: none`, `on_pass: none` (never attempts a merge, so
 /// nothing here depends on git).
 fn write_attention_progression_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         r#"defaults:
   grounder: nop
   budget: 60
@@ -173,8 +168,7 @@ stages:
     gates: [ok]
     on_pass: none
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// Spec 69, criterion 5: worker-death-recurred and stalled-frontier, driven across FIVE
@@ -379,15 +373,9 @@ fn marker_path_for_wave_item(line: &str, id: &str) -> String {
 /// and `max_retries: 5` (so `u` is never escalated across the whole scenario, matching
 /// `write_attention_progression_workflow` above).
 fn write_attention_ordering_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         r#"defaults:
   grounder: nop
   budget: 60
@@ -401,8 +389,7 @@ stages:
     agent: worker
     on_pass: none
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// Spec 69, criterion 5's ordering CONTRACT, proven at the REAL binary boundary (review

@@ -1,15 +1,75 @@
 //! Fixtures for suites that drive the compiled `rigger` binary against a throwaway project:
 //! running it, seeding the stores it reads, and reading back what it wrote.
 
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
-use rigger::registry::{self, Instance};
+
+/// A throwaway project directory that is its own (commit-less) git repo, so the project
+/// identity the binary resolves for it is its basename, stable across every call a test makes.
+pub fn temp_project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("create temp project");
+    let _ = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status();
+    dir
+}
+
+/// A [`temp_project`] the compiled binary accepts as a courier target: its own git repo (so the
+/// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
+/// to fabricate one from a cwd with no existing store (spec 05).
+pub fn courier_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    init_event_log(dir.path());
+    dir
+}
+
+/// Open `root`'s `.rigger/events.db`, creating the directory, so the schema the binary appends
+/// to exists.
+pub fn init_event_log(root: &Path) {
+    seed_rigger_dir(root);
+    Store::open(event_log(root).to_str().expect("a utf-8 store path"))
+        .expect("the event log initializes");
+}
+
+/// A [`temp_project`] with a commit identity configured and an empty `.rigger/` directory: its
+/// own git repo keeps the project identity deterministic (the top-level is the fixture).
+pub fn identified_git_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    for args in [
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ] {
+        let _ = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .status();
+    }
+    seed_rigger_dir(dir.path());
+    dir
+}
+
+/// A throwaway project directory that is deliberately NOT a git repo, so the conductor drives
+/// a repo-less run (no worktrees, no run branch).
+pub fn temp_repoless_project() -> tempfile::TempDir {
+    tempfile::tempdir().expect("create temp project")
+}
+
+/// Where the embedded sqlite event log lives for a project rooted at `root`.
+pub fn event_log(root: &Path) -> PathBuf {
+    root.join(".rigger").join("events.db")
+}
+
+/// Where the graph projection lives for a project rooted at `root`.
+pub fn graph_db(root: &Path) -> PathBuf {
+    root.join(".rigger").join("graph.db")
+}
 
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
 pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
@@ -46,19 +106,6 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     )
 }
 
-/// A throwaway project dir that is its own git repo, so `project_identity()` (which scopes the
-/// namespaced streams) resolves to the directory's basename exactly as it does for a real
-/// project and a seed appended under that identity lands in the stream the binary reads back.
-/// No `.rigger/` dir yet.
-pub fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
 /// A [`temp_project`] that already carries an empty `.rigger/` dir.
 pub fn temp_rigger_project() -> tempfile::TempDir {
     let dir = temp_project();
@@ -74,27 +121,18 @@ pub fn temp_store_project() -> tempfile::TempDir {
     dir
 }
 
-/// A throwaway project the compiled binary accepts as a courier target: its own git repo (so the
-/// store's project identity resolves normally) and an event log already INITIALIZED through
-/// `Store::open` - a courier refuses to fabricate one from a cwd with no existing store (spec 05).
-pub fn courier_project() -> tempfile::TempDir {
-    let dir = temp_rigger_project();
-    let db = dir.path().join(".rigger").join("events.db");
-    Store::open(db.to_str().expect("a utf-8 store path")).expect("the event log initializes");
-    dir
-}
-
-/// A throwaway git project with a committer identity and one empty commit, so a base ref like
-/// `HEAD` resolves (a [`temp_project`] only `git init`s, leaving HEAD unborn).
-pub fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    super::git::init_repo(dir.path());
-    dir
-}
-
-/// A throwaway project dir that is NOT a git repo.
-pub fn temp_repoless_project() -> tempfile::TempDir {
-    tempfile::tempdir().expect("create temp project")
+/// Run `rigger <args...>` in `cwd` with the machine-global instance registry redirected into
+/// the CALLER-OWNED `state_home`, so a sequence of calls reads back and re-writes the same
+/// registry directory.
+pub fn run_rigger_in_state_home(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
+    super::rigger_courier()
+        .args(args)
+        .current_dir(cwd)
+        // Never let a short-lived courier or driver step spawn a real dashboard under test.
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state_home)
+        .output()
+        .expect("the rigger binary runs")
 }
 
 /// `rigger emit <typ> <json>` in `root`, asserting it succeeds.
@@ -156,7 +194,7 @@ pub fn run_stream_identity(root: &Path) -> String {
 pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     for &(ty, body) in events {
         store
@@ -171,8 +209,7 @@ pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
 
 /// Every event in `root`'s namespaced run stream, oldest first.
 pub fn read_run_events(root: &Path) -> Vec<Event> {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
@@ -182,7 +219,7 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
 /// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);
-    Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap()
+    Projector::open(graph_db(root).to_str().unwrap(), &id).unwrap()
 }
 
 /// The number of numbered source lines (`<n> | <text>`) in a `rigger graph --show` body.
@@ -255,8 +292,7 @@ pub const DUP_KEY: &str = "gc/src/a.rs@h1#0";
 /// Append [`DUP_ROUNDS`] re-extractions of the same [`code_entity`] under [`DUP_KEY`] to
 /// `root`'s run stream - derived duplicates a reset is expected to compact.
 pub fn seed_derived_duplicates(root: &Path) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events = Vec::with_capacity(DUP_ROUNDS);
     for r in 0..DUP_ROUNDS {
@@ -274,22 +310,105 @@ pub fn seed_derived_duplicates(root: &Path) {
         .unwrap();
 }
 
+/// The `worker` agent definition (sonnet, Read/Edit) that runs without a worktree
+/// (`isolation: none`).
+pub const UNISOLATED_WORKER: &str =
+    "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n";
+
+/// The `worker` agent definition on the default, git-backed isolation.
+pub const ISOLATED_WORKER: &str =
+    "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n";
+
+/// Scaffold `root/.rigger`: each `(id, definition)` of `agents` as `agents/<id>.md`, and
+/// `workflow` as its `workflow.yml`.
+pub fn write_scaffold(root: &Path, agents: &[(&str, &str)], workflow: &str) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
+    for (id, definition) in agents {
+        std::fs::write(rigger.join("agents").join(format!("{id}.md")), definition)
+            .expect("write an agent definition");
+    }
+    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
+}
+
 /// Write a one-stage `workflow.yml` (plus its `worker` agent) under `root`, with `block`
 /// appended verbatim after the stage.
 pub fn write_workflow(root: &Path, block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
     let workflow = format!(
         "defaults:\n  grounder: nop\n  budget: 60\n\
          stages:\n  a:\n    agent: worker\n    on_pass: none\n\
          {block}"
     );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
+    write_scaffold(root, &[("worker", UNISOLATED_WORKER)], &workflow);
+}
+
+/// `rigger progress` from the courier project at `root` (under a throwaway `XDG_STATE_HOME`)
+/// while THIS test process carries a well-formed but UNREACHABLE `KURRENTDB_CONN`, restored
+/// afterwards. The shared `rigger_courier()` strips it from every child, so the courier must
+/// resolve the fixture's local sqlite store and succeed; returns its output.
+pub fn progress_under_an_ambient_kurrentdb_conn(root: &Path) -> Output {
+    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
+    let _restore = super::RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
+    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
+    let out = run_rigger_in_state_home(
+        root,
+        state.path(),
+        &["progress", "u1/impl#0", "did a thing"],
+    );
+    assert!(
+        out.status.success(),
+        "a courier spawned through the shared rigger_courier() helper must resolve the \
+         fixture's local sqlite store, not attempt a real gRPC connection to whatever \
+         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+/// Assert the courier (or run) resolved the SERVER backend: it failed inside the kurrentdb
+/// adapter (the eager connect to the unreachable address) and fabricated no local sqlite event
+/// log. The ABSENCE of the sqlite walk-up's `no rigger store found` is what distinguishes a
+/// genuine server selection from a silent drop to the local default.
+pub fn assert_selected_server(out: &Output, root: &Path, why: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "{why}: an unreachable server must fail, never silently succeed against a local fallback; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("kurrentdb"),
+        "{why}: the courier must fail INSIDE the server backend, proving it resolved the server; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("no rigger store found"),
+        "{why}: a server selection must not fall back to the local sqlite walk-up; stderr:\n{stderr}"
+    );
+    assert!(
+        !event_log(root).exists(),
+        "{why}: a server selection must NOT fabricate a local .rigger/events.db"
+    );
+}
+
+/// Assert the courier resolved the SQLITE backend: it took the local walk-up, which on a
+/// never-initialized project refuses without reaching for any server.
+pub fn assert_selected_sqlite(out: &Output, root: &Path, why: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "{why}: a courier with no initialized local store must fail, not fabricate one; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no rigger store found") && !stderr.contains("kurrentdb"),
+        "{why}: a sqlite selection must resolve the LOCAL log (surfacing as a local-store error), \
+         never a server connect; stderr:\n{stderr}"
+    );
+    assert!(
+        !event_log(root).exists(),
+        "{why}: the refuse-to-fabricate guard must leave no local events.db behind"
+    );
 }
 
 /// Seed `root` with a reviewless single-stage workflow: one `worker` agent, one always-passing
@@ -357,37 +476,6 @@ pub fn reported_reclaimed_bytes(report: &str, marker: &str) -> Option<u64> {
     let rest = &report[start..];
     let end = rest.find(" byte(s)")?;
     rest[..end].trim().parse().ok()
-}
-
-/// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
-/// a raw directory read, so a test sees exactly what the binary wrote without depending on
-/// `read_live`'s pruning (which mutates the directory as a side effect of reading it).
-pub fn registry_entries(state_home: &Path) -> Vec<(std::path::PathBuf, Instance)> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push((path, inst));
-            }
-        }
-    }
-    out
-}
-
-/// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status`.
-pub fn has_status_marker(events: &[Event], status: &str) -> bool {
-    events.iter().any(|e| {
-        e.type_ == rigger::ledger::TYPE_UNIT_STATUS
-            && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
-    })
 }
 
 /// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), `graph

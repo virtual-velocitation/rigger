@@ -23,9 +23,6 @@
 //! channel, and verbatim pass-through are pinned by their own criteria; here we only prove that
 //! the store choice governs the event LOG and never redirects a local projection.
 
-use std::path::Path;
-use std::process::Command;
-
 // =======================================================================================
 // Structural boundary: projections open as LOCAL sqlite; the event-log resolver and the
 // server adapter never touch a projection path. Always on - no container required.
@@ -112,34 +109,9 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
+use common::cli::identified_git_project;
+use common::cli::run_stream_identity;
 use common::repo::production_main_rs;
-
-/// The project identity the binary resolves for `root` (the git top-level basename, or the
-/// tracked `.rigger/project.id`) - the identity that namespaces the LOCAL progress projection,
-/// so a read-back binds the exact stream the courier's write landed in.
-fn store_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
 
 /// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
 /// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as the
@@ -176,21 +148,6 @@ fn start_kurrentdb(
     ))
 }
 
-/// A throwaway project that is its OWN git repo (so the identity is stable and the ingest walk
-/// roots at the fixture), configured for the server-backed store purely by `KURRENTDB_CONN`.
-fn server_project() -> tempfile::TempDir {
-    let project = tempfile::tempdir().unwrap();
-    let root = project.path();
-    let git = |args: &[&str]| {
-        let _ = Command::new("git").args(args).current_dir(root).status();
-    };
-    git(&["init", "-q"]);
-    git(&["config", "user.email", "t@t"]);
-    git(&["config", "user.name", "t"]);
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    project
-}
-
 #[test]
 fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server() {
     use rigger::contextgraph::sqlite::Projector;
@@ -201,7 +158,7 @@ fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let project = server_project();
+        let project = identified_git_project();
         let root = project.path();
         // A small source file so the default lane has something to parse; the light lane ingests
         // nothing but still CREATES the graph store, so this test asserts the same boundary in
@@ -263,7 +220,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let project = server_project();
+        let project = identified_git_project();
         let root = project.path();
 
         // A bare `rigger progress` - no `--eventstore` flag - the exact surface a worker uses. It
@@ -304,7 +261,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
         // server), proving the write stayed local.
         let backend = Store::open(progress_db.to_str().unwrap())
             .expect("the local progress.db must be a valid sqlite store");
-        let store = Namespaced::new(&backend, &store_identity(root));
+        let store = Namespaced::new(&backend, &run_stream_identity(root));
         let events = store
             .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
             .expect("read the local progress stream");

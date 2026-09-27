@@ -52,6 +52,8 @@ use common::git::run_git;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::git::git_ok;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{
     parked_spawn, run, unit_branch, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM,
 };
@@ -63,48 +65,6 @@ use rigger::gate::ExecRunner;
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
-use std::process::Command;
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. this directory's own
-/// `review_round_no_adjudicator_residue_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
-
-/// Runs a git command in `dir` and panics with its stderr on failure - this test's own
-/// driver breaks review protocol ON PURPOSE (that is the shape under test), so its git
-/// calls must succeed or the premise itself is broken. Mirrors
-/// `review_round_non_ancestor_residue_names_true_diff_periphery.rs`'s identical helper.
-fn git_ok(dir: &str, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} in {dir} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 /// WINDOW 1's driver. The implementer writes real work. Of the two lenses in the SAME
 /// concurrent chunk (`MAX_CONCURRENCY` is 4, so both fit in one chunk): lens `a` breaks
@@ -177,7 +137,7 @@ impl AgentDriver for Window2Driver {
 /// call site none of round 3's own coverage exercises.
 #[test]
 fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();

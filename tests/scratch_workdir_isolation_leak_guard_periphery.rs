@@ -28,9 +28,11 @@
 use std::path::{Path, PathBuf};
 
 mod common;
+use common::fixtures::{fan_out_stage, workflow_cfg};
+use common::git::temp_git_project_with_commit;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::config::{AgentDef, Config};
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 
@@ -54,66 +56,20 @@ impl AgentDriver for NoopDriver {
     }
 }
 
-/// `git init` plus one real commit, so a fan-out unit worktree has a HEAD to branch off of -
-/// mirrors every other periphery file's own identical copy (this codebase's established
-/// per-file idiom for this fixture, e.g. `gate_store_fence_periphery.rs`'s
-/// `init_repo_with_head`, `fanout_template_needs_and_stage_retries_periphery.rs`'s
-/// `temp_git_project_with_commit`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create the fixture repo dir");
-    let p = dir.path();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .status()
-            .expect("git fixture command");
-    }
-    dir
-}
-
 /// A single-stage, single-unit fan-out workflow (mirrors every other periphery file's
 /// minimal `implement-template`-shaped fixture) whose real `ExecRunner` gate is a trivial
 /// `true` - enough for `conductor::run` to create a REAL git unit worktree under
 /// `cfg.workflow.defaults.workdir`, without needing a real cargo build.
 fn one_unit_cfg(repo: &Path) -> Config {
-    let mut cfg = Config::default();
+    let mut cfg = workflow_cfg(
+        &["worker"],
+        &[("gate", "true")],
+        vec![fan_out_stage("implement-template", &[], &["gate"])],
+    );
     // Item 2's fix, item 3's subject: nest the scratch/worktree default back inside this
     // fixture's own repo tempdir so the real unit worktree `run` below creates never reaches
     // the real ambient `XDG_CACHE_HOME`/`HOME` cache-home default.
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        "gate".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement-template".into(),
-        Stage {
-            name: "implement-template".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            gates: vec!["gate".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
     cfg
 }
 
@@ -159,7 +115,7 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
         return; // genuinely homeless host: nothing for this guard to check
     }
 
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = one_unit_cfg(repo.path());
     let store = Store::open(":memory:").unwrap();
@@ -208,7 +164,7 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
 /// proof for the subprocess/`XDG_CACHE_HOME` case.
 #[test]
 fn the_isolated_workdirs_real_worktree_is_gone_once_its_owning_repo_tempdir_drops() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let cfg = one_unit_cfg(repo.path());
     let scratch_root = PathBuf::from(&cfg.workflow.defaults.workdir);
     let store = Store::open(":memory:").unwrap();

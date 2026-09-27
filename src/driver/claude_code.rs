@@ -1124,16 +1124,8 @@ mod tests {
     use crate::conductor::{strip_failure_marker, AgentFailure};
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, SilentStore};
+    use crate::test_support::implementer_opts as opts;
     use std::io::Read;
-
-    fn opts(id: &str) -> SpawnOpts {
-        SpawnOpts {
-            id: id.to_string(),
-            attempt: 0,
-            system_prompt: "You implement findings.".to_string(),
-            ..Default::default()
-        }
-    }
 
     // ---- build_args: pure, no process ----
 

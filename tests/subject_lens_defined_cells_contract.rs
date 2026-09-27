@@ -21,12 +21,14 @@
 
 mod common;
 
+use common::fixtures::def_node as def;
+use common::fixtures::edge;
 use common::fixtures::labelled_node as node;
 use common::lens::{lens, shared_member_graph, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
+use rigger::contextgraph::TIER_EXTRACTED;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
-    REL_REALIZES,
+    Graph, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
     reproject, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
@@ -34,31 +36,6 @@ use rigger::dash::{
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
-
-/// A code-entity DEFINITION node (its `name` attr marks it a real definition, so a files re-grain
-/// folds it under its OWN file and a derived lens reads its memberships).
-fn def(id: &str, name: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("name".to_string(), name.to_string());
-    n
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel`.
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: "extracted".to_string(),
-    }
-}
 
 /// The bucket keys a re-projection rendered, in order.
 fn keys(re: &rigger::dash::Reprojection) -> Vec<&str> {
@@ -79,16 +56,21 @@ fn per_file_graph(single: usize, big: usize) -> Graph {
         // the one a (count-tie, key-asc) rank drops first.
         let id = format!("src/f{i:02}.rs::e{i}");
         nodes.push(def(&id, &format!("e{i}")));
-        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES));
+        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES, TIER_EXTRACTED));
     }
     for j in 0..big {
         let id = format!("src/zz.rs::b{j}");
         nodes.push(def(&id, &format!("b{j}")));
-        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES));
+        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES, TIER_EXTRACTED));
     }
     if single >= 2 {
         // A cross-file coupling edge wholly within the smallest-key buckets, so it is always kept.
-        edges.push(edge("src/f00.rs::e0", "src/f01.rs::e1", REL_CALLS));
+        edges.push(edge(
+            "src/f00.rs::e0",
+            "src/f01.rs::e1",
+            REL_CALLS,
+            TIER_EXTRACTED,
+        ));
     }
     Graph { nodes, edges }
 }
@@ -259,10 +241,10 @@ fn full_in_budget_graph() -> Graph {
             def("src/two.rs::y", "y"),
         ],
         edges: vec![
-            edge("src/one.rs::x", PLAIN_CONCEPT, REL_REALIZES),
-            edge("src/two.rs::y", PLAIN_CONCEPT, REL_REALIZES),
-            edge("src/one.rs::x", COMM_A, REL_IN_COMMUNITY),
-            edge("src/two.rs::y", COMM_B, REL_IN_COMMUNITY),
+            edge("src/one.rs::x", PLAIN_CONCEPT, REL_REALIZES, TIER_EXTRACTED),
+            edge("src/two.rs::y", PLAIN_CONCEPT, REL_REALIZES, TIER_EXTRACTED),
+            edge("src/one.rs::x", COMM_A, REL_IN_COMMUNITY, TIER_EXTRACTED),
+            edge("src/two.rs::y", COMM_B, REL_IN_COMMUNITY, TIER_EXTRACTED),
         ],
     }
 }
@@ -347,7 +329,12 @@ fn the_empty_cell_message_constants_hold_their_documented_values() {
             node("concept/9/0", KIND_CONCEPT, Some("idea")),
             def("src/z.rs::only", "only"),
         ],
-        edges: vec![edge("src/z.rs::only", "concept/9/0", REL_REALIZES)],
+        edges: vec![edge(
+            "src/z.rs::only",
+            "concept/9/0",
+            REL_REALIZES,
+            TIER_EXTRACTED,
+        )],
     };
     assert_eq!(
         reproject(&graph, "concept/9/0", &lens("code"))

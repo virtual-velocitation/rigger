@@ -27,6 +27,7 @@
 mod common;
 
 use common::repo::assert_doc_carries_none_of;
+use common::repo::missing_rows;
 use common::repo::repo_text;
 
 /// Every (fact, needle) the README must carry to tell the new grounding truth. Each needle is
@@ -85,11 +86,7 @@ const RETIRED_INVERSIONS: &[&str] = &[
 fn readme_records_the_symbols_default_and_the_retirement_rationale() {
     let text = repo_text("README.md").to_lowercase();
 
-    let missing: Vec<String> = REQUIRED_TRUTHS
-        .iter()
-        .filter(|(_, needle)| !text.contains(needle))
-        .map(|(fact, needle)| format!("{fact}  (missing: {needle:?})"))
-        .collect();
+    let missing = missing_rows(&text, REQUIRED_TRUTHS, "missing");
 
     assert!(
         missing.is_empty(),

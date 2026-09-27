@@ -33,9 +33,8 @@ use rigger::contextgraph::{
     KIND_CONCEPT, REL_REALIZES, TIER_INFERRED, TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED,
 };
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::{apply_json, live_node_ids, live_targets};
+mod common;
+use common::fixtures::{apply_json, live_node_ids, live_targets};
 
 /// Fold one `ConceptDerived` (the concept super-node) at `pos`.
 fn derived(p: &Projector, pos: u64, concept: &str, res: f64, fresh: bool) {

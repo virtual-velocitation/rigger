@@ -25,14 +25,14 @@
 //! externally visible via the fail-fast connect, so every case runs unconditionally and the secret
 //! channel is regression-locked on every machine.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Output;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-
+use common::cli::event_log;
 use common::cli::temp_rigger_project;
 #[path = "common/store_courier.rs"]
 mod store_courier;
@@ -46,12 +46,6 @@ const CREDENTIALED_UNREACHABLE: &str = "kurrentdb://spy:hunter2@127.0.0.1:65533?
 const SECRET_USER: &str = "spy";
 /// The password half of the credential in [`CREDENTIALED_UNREACHABLE`].
 const SECRET_PASSWORD: &str = "hunter2";
-
-/// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. A
-/// server selection - from any secret channel - must never fabricate this file.
-fn local_event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
 
 /// Write `<root>/.rigger/store.conn` (rung 3, the per-machine secret file), one line: the full
 /// connection string, credentials included. Locked to owner-only (`0o600`) on Unix so the
@@ -107,7 +101,7 @@ fn assert_server_reached_and_credentials_redacted(out: &Output, root: &Path, why
     );
     // A server selection never fabricates the local sqlite event log.
     assert!(
-        !local_event_log(root).exists(),
+        !event_log(root).exists(),
         "{why}: a server-configured courier must NOT create a local .rigger/events.db: {stderr}"
     );
 }

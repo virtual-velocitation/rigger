@@ -38,24 +38,8 @@ mod common;
 mod gitsemver;
 
 use common::fixtures::tool_available;
-use common::git::tagged_gitsemver_repo;
-use std::path::Path;
+use common::git::{git_ok, tagged_gitsemver_repo};
 use std::process::Command;
-
-/// Run `git <args>` in `root`, panicking with stderr on failure - fixture setup must
-/// never silently half-succeed.
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 /// A repo tagged v1.0.0 with one further commit titled `subject` derives a version starting
 /// `prefix` under Mainline mode (`why` is the assertion's reason), never the fallback marker.
@@ -191,7 +175,7 @@ fn worktree_config_extension_never_mutated_even_though_it_defeats_derivation() {
     // ANY-failure fallback contract (never fabricate, never fail the build) is exactly
     // what covers that trade-off - the same contract the tool-absent and
     // outside-a-checkout scenarios already exercise.
-    git(dir.path(), &["config", "extensions.worktreeConfig", "true"]);
+    git_ok(dir.path(), &["config", "extensions.worktreeConfig", "true"]);
 
     let config_path = dir.path().join(".git").join("config");
     let before = std::fs::read(&config_path).expect("read fixture .git/config before");

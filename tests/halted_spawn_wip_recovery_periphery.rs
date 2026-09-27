@@ -87,9 +87,10 @@ use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::seed_run_events;
-use common::cli::temp_git_project_with_commit;
+use common::cli::{write_scaffold, ISOLATED_WORKER};
 use common::git::git_ok;
 use common::git::git_out;
+use common::git::temp_git_project_with_commit;
 use std::path::Path;
 use std::process::Command;
 
@@ -99,15 +100,9 @@ use std::process::Command;
 /// agents to answer). Mirrors `tests/cli.rs`'s `write_unit_review_lenses_workflow` minus its
 /// `review:` block - this file needs the unit's own durable worktree, not the review layer.
 fn write_solo_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", ISOLATED_WORKER)],
         r#"defaults:
   grounder: nop
   budget: 60
@@ -119,8 +114,7 @@ stages:
     gates: [ok]
     on_pass: none
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// The DETERMINISTIC worktree dir `stage_worktree`'s `Worktree::create` derives for a unit named

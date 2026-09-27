@@ -39,6 +39,7 @@ mod common;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, Stage};
 use rigger::contextgraph;
@@ -48,30 +49,6 @@ use rigger::gate::ExecRunner;
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
-use std::process::Command;
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. `tests/checkpoint_commit_hook_bypass_periphery.rs`,
-/// `tests/integrate_conflict_merge_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
 
 /// The implementer writes real work; the lone review LENS breaks the review protocol on
 /// purpose and drops an untracked file straight into the unit's OWN real worktree
@@ -109,7 +86,7 @@ impl AgentDriver for LensResidueDriver {
 /// real work still lands normally alongside it.
 #[test]
 fn a_lenses_only_panels_residue_is_restored_and_never_merged() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();

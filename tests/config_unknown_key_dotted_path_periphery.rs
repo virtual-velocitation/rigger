@@ -104,24 +104,8 @@
 //! caught here before a fifth.
 
 mod common;
-
+use common::cli::run_rigger;
 use common::cli::temp_project;
-
-use std::path::Path;
-
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let out = common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
 
 /// `rigger init` scaffolds a `.rigger/agents/` fleet that parses cleanly on its own, so
 /// overwriting ONLY `workflow.yml` afterward isolates the unknown-key failure to the one

@@ -19,6 +19,10 @@ pub mod git;
 pub mod lens;
 pub mod repo;
 pub mod served;
+pub mod workflow_probe;
+
+#[allow(unused_imports)]
+pub use fixtures::wait_until;
 
 /// The product binary that belongs to the target dir a test executable is running out of, or
 /// `None` when `test_exe` is not a cargo-run integration suite.
@@ -431,24 +435,6 @@ pub fn json_object_keys(v: &serde_json::Value) -> Vec<String> {
         .collect();
     keys.sort_unstable();
     keys
-}
-
-/// Poll up to 5s for `pred` to hold, sleeping 25ms between checks - the scan/escalation
-/// latency tolerance every reap-adjacent periphery test needs to observe an async OS-level
-/// effect (a signal delivered, a process reaped) without either a flaky zero-wait check or a
-/// fixed sleep long enough to slow the suite. Shared here (spec 85's own mandatory
-/// duplication sweep, the same rationale [`json_object_keys`]'s own doc states just above)
-/// rather than adding yet another per-file copy: this exact shape already exists,
-/// independently, in half a dozen periphery files under `tests/` - consolidating a NEW call
-/// site here instead of growing that count is the one-way door.
-pub fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if pred() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    false
 }
 
 /// Every event the production whole-project ingest

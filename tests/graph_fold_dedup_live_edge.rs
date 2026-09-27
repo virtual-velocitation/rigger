@@ -26,28 +26,10 @@
 mod common;
 
 use common::cli::nanos;
+use common::fixtures::apply_governs_at;
 use common::fixtures::governs;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_DECISION_MADE};
-use rigger::eventstore::Event;
-use std::time::{Duration, UNIX_EPOCH};
-
-/// Fold a `DecisionMade` (`id` GOVERNS `path`) built from its raw on-log JSON at `pos` - deliberately
-/// bypassing the in-crate payload struct so the test pins the JSON contract, not the Rust type.
-/// GOVERNS is the surviving content edge the dedup is demonstrated over after the spec 43 de-noise
-/// dropped the old TOUCHES machinery vehicle. `secs` sets the event's valid-from so a test can assert
-/// the collapsed edge keeps the EARLIEST assertion time; `pos` becomes the edge's `source`, so the
-/// LATEST assertion wins. `apply` returns `Err` on a fold failure, so a successful call is itself
-/// evidence the payload folded.
-fn apply_governs(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
-    let payload = serde_json::json!({
-        "id": id, "summary": "x", "governs": [path], "supersedes": "",
-    });
-    let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap())
-        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use rigger::contextgraph::Projection;
 
 #[test]
 fn subgraph_collapses_repeated_governs_to_one_live_edge_keeping_latest_provenance() {
@@ -61,13 +43,13 @@ fn subgraph_collapses_repeated_governs_to_one_live_edge_keeping_latest_provenanc
     let p = Projector::open(":memory:", "test").unwrap();
 
     // d1 governs src/f.rs four times (positions 10..=13; valid_from 100..=400s).
-    apply_governs(&p, 10, "d1", "src/f.rs", 100);
-    apply_governs(&p, 11, "d1", "src/f.rs", 200);
-    apply_governs(&p, 12, "d1", "src/f.rs", 300);
-    apply_governs(&p, 13, "d1", "src/f.rs", 400);
+    apply_governs_at(&p, 10, "d1", "src/f.rs", 100);
+    apply_governs_at(&p, 11, "d1", "src/f.rs", 200);
+    apply_governs_at(&p, 12, "d1", "src/f.rs", 300);
+    apply_governs_at(&p, 13, "d1", "src/f.rs", 400);
     // A DIFFERENT decision and a DIFFERENT file each fold their own distinct live edge.
-    apply_governs(&p, 14, "d2", "src/f.rs", 500);
-    apply_governs(&p, 15, "d1", "src/g.rs", 600);
+    apply_governs_at(&p, 14, "d2", "src/f.rs", 500);
+    apply_governs_at(&p, 15, "d1", "src/g.rs", 600);
 
     // Seed BOTH files so the reachable set is {src/f.rs, src/g.rs, d1, d2} and every edge above has
     // both endpoints in scope - the one query surfaces all three distinct live edges.
@@ -100,9 +82,9 @@ fn the_collapsed_edge_keeps_the_earliest_fact_time_and_latest_source_regardless_
     // source = the LATEST position (22). This reddens if the fold took last-write / first-write for
     // either field instead of a true min/max.
     let p = Projector::open(":memory:", "test").unwrap();
-    apply_governs(&p, 20, "d1", "src/f.rs", 300);
-    apply_governs(&p, 21, "d1", "src/f.rs", 100);
-    apply_governs(&p, 22, "d1", "src/f.rs", 200);
+    apply_governs_at(&p, 20, "d1", "src/f.rs", 300);
+    apply_governs_at(&p, 21, "d1", "src/f.rs", 100);
+    apply_governs_at(&p, 22, "d1", "src/f.rs", 200);
 
     let g = p.subgraph(&["src/f.rs".to_string()], 1).unwrap();
 

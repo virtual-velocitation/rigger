@@ -54,26 +54,7 @@ use common::git::run_git;
 
 use common::cli::ingested_count;
 use common::cli::read_run_events;
-
-/// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr,
-/// success). Each invocation gets its own throwaway state home so a short-lived integration run
-/// never registers a phantom instance in the operator's machine-global registry, and never spawns
-/// a real dashboard.
-fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME for the rigger invocation");
-    let out = std::process::Command::new(common::rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
+use common::cli::run_rigger;
 
 /// Drive `graph build` in `root` and return what it reported ingesting, failing loudly rather than
 /// letting a non-zero exit read as a zero-ingest.
