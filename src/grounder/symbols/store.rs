@@ -31,10 +31,7 @@ pub fn index_path(dir: &str) -> PathBuf {
 /// same (gitignored) `.rigger/symbols/` dir, carrying no data - it exists only to be the `flock`
 /// target that serializes concurrent [`save`]s across processes.
 fn lock_path(dir: &str) -> PathBuf {
-    Path::new(dir)
-        .join(".rigger")
-        .join("symbols")
-        .join("index.lock")
+    index_path(dir).with_file_name("index.lock")
 }
 
 /// A line-ending-normalized content hash: `"a\r\nb\r\n"` and `"a\nb\n"` hash identically, so the
