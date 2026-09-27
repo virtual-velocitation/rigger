@@ -239,116 +239,41 @@ mod tests {
     use crate::run::{current_run_base, current_run_base_tip, current_run_id};
     use crate::test_support::ev;
 
-    #[test]
-    fn the_resolved_base_is_persisted_on_the_run_start_and_survives_adopt() {
-        // Spec 38, criterion 3: the run-branch base a run anchors on is stamped as `META_BASE`
-        // on its RunStarted at mint, so `rigger status`/`rigger dash` - which cannot see the
-        // run's `--base` flag - read the run's ACTUAL base from the log. It is stamped ONCE (on
-        // the mint) and an adopting resume keeps it, so the base never drifts across steps.
-        let store = Store::open(":memory:").unwrap();
-
-        // A fresh mint with an explicit base persists it, round-tripping through the store.
-        let minted = start_fresh(
-            &store,
-            &["crit".to_string()],
-            "def",
-            "origin/develop",
-            "",
-            "",
-        )
-        .unwrap();
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert_eq!(
-            current_run_base(&events).as_deref(),
-            Some("origin/develop"),
-            "start_fresh stamps the resolved base as RunStarted metadata"
-        );
-
-        // A same-criteria resume ADOPTS the run (no new boundary), passing a DIFFERENT base -
-        // the adopt path must NOT re-stamp or overwrite the base the original start persisted.
-        let out = ensure_started_pinned(
-            &store,
-            &["crit".to_string()],
-            "def",
-            false,
-            "origin/other",
-            "",
-            "",
-        )
-        .unwrap();
-        assert_eq!(
-            out.run(),
-            minted,
-            "the same-criteria resume adopts the minted run rather than re-minting"
-        );
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
-            1,
-            "adopt appends no second RunStarted"
-        );
-        assert_eq!(
-            current_run_base(&events).as_deref(),
-            Some("origin/develop"),
-            "adopt keeps the base the original mint stamped; it never re-stamps"
-        );
-
-        // A mint with an EMPTY base (a repo-less path, an offline replay) stamps nothing, so a
-        // reader falls back to live resolution rather than reading an empty string.
-        let bare = Store::open(":memory:").unwrap();
-        start_fresh(&bare, &["crit".to_string()], "def", "", "", "").unwrap();
-        let bare_events = bare.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert_eq!(
-            current_run_base(&bare_events),
-            None,
-            "an empty base is not stamped; the reader reports no persisted base"
-        );
+    /// How many `RunStarted` boundaries `events` holds.
+    fn run_started_count(events: &[Event]) -> usize {
+        events
+            .iter()
+            .filter(|e| e.type_ == TYPE_RUN_STARTED)
+            .count()
     }
 
-    #[test]
-    fn the_base_tip_is_persisted_on_the_run_start_and_survives_adopt() {
-        // Spec 91: the run branch's tip commit sha AT run start is persisted in the
-        // RunStarted BODY (unlike `base`, a ref, which lives only in metadata) at mint, so
-        // the checkin stage's `mutation` gate can diff the whole spec against the tree BEFORE
-        // any implement unit began - never a `git merge-base` with the run branch, which has
-        // already moved past this point by the time that stage's own worktree exists. It is
-        // stamped ONCE (on the mint) and an adopting resume keeps it, so the tip never drifts
-        // across steps even as the real run branch advances underneath.
+    /// One `(base, base_tip, spec)` triple a run is started with.
+    type Launch<'a> = (&'a str, &'a str, &'a str);
+
+    /// A field of the run's `RunStarted` is stamped ONCE, at mint: a run minted with `mint`
+    /// reads back `stamped` through `read` (`stamped_why`); a same-criteria resume passing the
+    /// DIFFERENT `adopt` values adopts that run, appends no second boundary and keeps `stamped`
+    /// (`kept_why`); and a mint with every value empty reads back `bare` (`bare_why`).
+    #[allow(clippy::too_many_arguments)]
+    fn assert_stamped_once_at_mint(
+        mint: Launch,
+        adopt: Launch,
+        read: fn(&[Event]) -> Option<String>,
+        stamped: &str,
+        stamped_why: &str,
+        kept_why: &str,
+        bare: Option<&str>,
+        bare_why: &str,
+    ) {
         let store = Store::open(":memory:").unwrap();
-
-        // A fresh mint with an explicit tip persists it, round-tripping through the store.
-        let minted = start_fresh(
-            &store,
-            &["crit".to_string()],
-            "def",
-            "origin/develop",
-            "abc123deadbeef",
-            "",
-        )
-        .unwrap();
+        let crit = ["crit".to_string()];
+        let (base, tip, spec) = mint;
+        let minted = start_fresh(&store, &crit, "def", base, tip, spec).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert_eq!(
-            current_run_base_tip(&events).as_deref(),
-            Some("abc123deadbeef"),
-            "start_fresh persists the run branch's tip in the RunStarted body"
-        );
+        assert_eq!(read(&events).as_deref(), Some(stamped), "{stamped_why}");
 
-        // A same-criteria resume ADOPTS the run (no new boundary), passing a DIFFERENT tip -
-        // the adopt path must NOT re-stamp or overwrite the tip the original start persisted,
-        // even though the real run branch has since advanced past it.
-        let out = ensure_started_pinned(
-            &store,
-            &["crit".to_string()],
-            "def",
-            false,
-            "origin/other",
-            "111222deadbeef",
-            "",
-        )
-        .unwrap();
+        let (base, tip, spec) = adopt;
+        let out = ensure_started_pinned(&store, &crit, "def", false, base, tip, spec).unwrap();
         assert_eq!(
             out.run(),
             minted,
@@ -356,98 +281,79 @@ mod tests {
         );
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
+            run_started_count(&events),
             1,
             "adopt appends no second RunStarted"
         );
-        assert_eq!(
-            current_run_base_tip(&events).as_deref(),
-            Some("abc123deadbeef"),
-            "adopt keeps the tip the original mint stamped; it never re-stamps"
-        );
+        assert_eq!(read(&events).as_deref(), Some(stamped), "{kept_why}");
 
-        // A mint with an EMPTY tip (a repo-less path, an offline replay) decodes back empty,
-        // so the reader reports no persisted tip and the mutation gate's own `test -n` guard
-        // refuses loud rather than sweeping an empty diff.
-        let bare = Store::open(":memory:").unwrap();
-        start_fresh(&bare, &["crit".to_string()], "def", "", "", "").unwrap();
-        let bare_events = bare.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert_eq!(
-            current_run_base_tip(&bare_events),
-            None,
-            "an empty tip is not stamped; the reader reports no persisted base tip"
-        );
+        let bare_store = Store::open(":memory:").unwrap();
+        start_fresh(&bare_store, &crit, "def", "", "", "").unwrap();
+        let bare_events = bare_store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap();
+        assert_eq!(read(&bare_events).as_deref(), bare, "{bare_why}");
     }
 
-    #[test]
-    fn the_spec_path_is_persisted_on_the_run_start_and_survives_adopt() {
-        // Spec 82, criterion 1: the spec file path a run was launched with is persisted in
-        // the RunStarted BODY at mint (unlike `base`, which lives only in metadata), so
-        // `ledger::RunState::apply`'s plain decode of the event picks it up like `run`/
-        // `criteria`/`definition` - no new parameter threaded through `release_ready`'s
-        // callers. It is stamped ONCE (on the mint) and an adopting resume keeps it,
-        // mirroring `base`'s mint-only persistence.
-        let store = Store::open(":memory:").unwrap();
-
-        let minted = start_fresh(
-            &store,
-            &["crit".to_string()],
-            "def",
-            "",
-            "",
-            "specs/82-unique-pr-heads.md",
-        )
-        .unwrap();
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let started = latest(&events).unwrap();
-        assert_eq!(
-            started.spec, "specs/82-unique-pr-heads.md",
-            "start_fresh persists the launching spec path in the RunStarted body"
-        );
-
-        // A same-criteria resume ADOPTS the run (no new boundary), passing a DIFFERENT spec
-        // path - the adopt path must NOT re-stamp or overwrite the spec the original start
-        // persisted.
-        let out = ensure_started_pinned(
-            &store,
-            &["crit".to_string()],
-            "def",
-            false,
-            "",
-            "",
-            "specs/99-other.md",
-        )
-        .unwrap();
-        assert_eq!(
-            out.run(),
-            minted,
-            "the same-criteria resume adopts the minted run rather than re-minting"
-        );
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
-            1,
-            "adopt appends no second RunStarted"
-        );
-        let started = latest(&events).unwrap();
-        assert_eq!(
-            started.spec, "specs/82-unique-pr-heads.md",
-            "adopt keeps the spec path the original mint stamped; it never re-stamps"
-        );
-
-        // A mint with an EMPTY spec path (an offline replay, a no-spec workflow run) decodes
-        // back as empty - the reader (`ledger::RunState`) then degrades the PR head-name
-        // derivation to the run-short-id alone.
-        let bare = Store::open(":memory:").unwrap();
-        start_fresh(&bare, &["crit".to_string()], "def", "", "", "").unwrap();
-        let bare_events = bare.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert_eq!(latest(&bare_events).unwrap().spec, "");
+    crate::test_cases! {
+        /// Spec 38, criterion 3: the run-branch base a run anchors on is stamped as `META_BASE`
+        /// on its RunStarted at mint, so `rigger status`/`rigger dash` - which cannot see the
+        /// run's `--base` flag - read the run's ACTUAL base from the log. It is stamped ONCE (on
+        /// the mint) and an adopting resume keeps it, so the base never drifts across steps. A
+        /// mint with an EMPTY base (a repo-less path, an offline replay) stamps nothing, so a
+        /// reader falls back to live resolution rather than reading an empty string.
+        the_resolved_base_is_persisted_on_the_run_start_and_survives_adopt:
+            assert_stamped_once_at_mint(
+                ("origin/develop", "", ""),
+                ("origin/other", "", ""),
+                current_run_base,
+                "origin/develop",
+                "start_fresh stamps the resolved base as RunStarted metadata",
+                "adopt keeps the base the original mint stamped; it never re-stamps",
+                None,
+                "an empty base is not stamped; the reader reports no persisted base",
+            );
+        /// Spec 91: the run branch's tip commit sha AT run start is persisted in the
+        /// RunStarted BODY (unlike `base`, a ref, which lives only in metadata) at mint, so
+        /// the checkin stage's `mutation` gate can diff the whole spec against the tree BEFORE
+        /// any implement unit began - never a `git merge-base` with the run branch, which has
+        /// already moved past this point by the time that stage's own worktree exists. It is
+        /// stamped ONCE (on the mint) and an adopting resume keeps it, so the tip never drifts
+        /// across steps even as the real run branch advances underneath. A mint with an EMPTY
+        /// tip (a repo-less path, an offline replay) decodes back empty, so the reader reports
+        /// no persisted tip and the mutation gate's own `test -n` guard refuses loud rather
+        /// than sweeping an empty diff.
+        the_base_tip_is_persisted_on_the_run_start_and_survives_adopt:
+            assert_stamped_once_at_mint(
+                ("origin/develop", "abc123deadbeef", ""),
+                ("origin/other", "111222deadbeef", ""),
+                current_run_base_tip,
+                "abc123deadbeef",
+                "start_fresh persists the run branch's tip in the RunStarted body",
+                "adopt keeps the tip the original mint stamped; it never re-stamps",
+                None,
+                "an empty tip is not stamped; the reader reports no persisted base tip",
+            );
+        /// Spec 82, criterion 1: the spec file path a run was launched with is persisted in
+        /// the RunStarted BODY at mint (unlike `base`, which lives only in metadata), so
+        /// `ledger::RunState::apply`'s plain decode of the event picks it up like `run`/
+        /// `criteria`/`definition` - no new parameter threaded through `release_ready`'s
+        /// callers. It is stamped ONCE (on the mint) and an adopting resume keeps it,
+        /// mirroring `base`'s mint-only persistence. A mint with an EMPTY spec path (an
+        /// offline replay, a no-spec workflow run) decodes back as empty - the reader
+        /// (`ledger::RunState`) then degrades the PR head-name derivation to the run-short-id
+        /// alone.
+        the_spec_path_is_persisted_on_the_run_start_and_survives_adopt:
+            assert_stamped_once_at_mint(
+                ("", "", "specs/82-unique-pr-heads.md"),
+                ("", "", "specs/99-other.md"),
+                |events| latest(events).map(|started| started.spec),
+                "specs/82-unique-pr-heads.md",
+                "start_fresh persists the launching spec path in the RunStarted body",
+                "adopt keeps the spec path the original mint stamped; it never re-stamps",
+                Some(""),
+                "",
+            );
     }
 
     #[test]
@@ -481,10 +387,7 @@ mod tests {
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
+            run_started_count(&events),
             1,
             "adopting a run appends no second RunStarted"
         );
@@ -519,10 +422,7 @@ mod tests {
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
+            run_started_count(&events),
             2,
             "--fresh appended a second RunStarted rather than adopting the wedged run"
         );
@@ -556,10 +456,7 @@ mod tests {
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
+            run_started_count(&events),
             2,
             "the new campaign appended its own RunStarted"
         );
@@ -637,12 +534,7 @@ mod tests {
             "an unchanged definition adopts, does not drift"
         );
         assert_eq!(
-            store
-                .read_stream(STREAM, 0, Direction::Forward)
-                .unwrap()
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
+            run_started_count(&store.read_stream(STREAM, 0, Direction::Forward).unwrap()),
             1,
             "adopting appends no second RunStarted"
         );
@@ -717,10 +609,7 @@ mod tests {
             Some("hash-A")
         );
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
+            run_started_count(&events),
             1,
             "a rebase does NOT append a second RunStarted (the run boundary is unchanged)"
         );
@@ -804,10 +693,7 @@ mod tests {
         );
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == TYPE_RUN_STARTED)
-                .count(),
+            run_started_count(&events),
             2,
             "the new campaign appended its own pinned RunStarted"
         );

@@ -823,57 +823,55 @@ mod tests {
         prompt.contains("CRIT defect here")
     }
 
-    fn with_anchor(anchor: &str) -> CanaryItem {
-        CanaryItem {
-            anchor: anchor.into(),
-            ..Default::default()
+    /// Holds each `(anchor, about, catches, why)` case: a finding whose single `about` entry is
+    /// `about` catches an item planted at `anchor` exactly when `catches`.
+    fn assert_catches(cases: &[(&str, &str, bool, &str)]) {
+        for &(anchor, about, catches, why) in cases {
+            let it = CanaryItem {
+                anchor: anchor.into(),
+                ..Default::default()
+            };
+            let finding = Finding {
+                about: vec![about.to_string()],
+                summary: String::new(),
+            };
+            assert_eq!(finding.catches(&it), catches, "{why}");
         }
     }
 
-    fn finding(about: &[&str]) -> Finding {
-        Finding {
-            about: about.iter().map(|s| s.to_string()).collect(),
-            summary: String::new(),
-        }
-    }
-
-    #[test]
-    fn catches_matches_an_absolute_path_spelling_of_a_repo_relative_anchor() {
-        let it = with_anchor("src/sum.rs");
-        assert!(
-            finding(&["/home/dev/repo/src/sum.rs"]).catches(&it),
-            "an absolute path ending in the anchor at a segment boundary must catch"
-        );
-    }
-
-    #[test]
-    fn catches_matches_a_segment_boundary_path_suffix_in_either_direction() {
-        // The finding names a shorter suffix spelling of a longer anchor.
-        let it = with_anchor("corpus/a.rs");
-        assert!(
-            finding(&["a.rs"]).catches(&it),
-            "a basename spelling that is the anchor's own segment-boundary suffix must catch"
-        );
-
-        // The anchor is itself the shorter suffix spelling of a longer `about` entry.
-        let it2 = with_anchor("a.rs");
-        assert!(
-            finding(&["corpus/a.rs"]).catches(&it2),
-            "corpus/a.rs is a.rs's segment-boundary suffix spelling and must catch"
-        );
-    }
-
-    #[test]
-    fn catches_rejects_a_name_that_merely_ends_with_the_anchors_text() {
-        let it = with_anchor("a.rs");
-        assert!(
-            !finding(&["extra.rs"]).catches(&it),
-            "extra.rs ends with a.rs's text but not at a path-segment boundary - must not catch"
-        );
-        assert!(
-            !finding(&["other.rs"]).catches(&it),
-            "an unrelated file must not catch"
-        );
+    crate::test_cases! {
+        catches_matches_an_absolute_path_spelling_of_a_repo_relative_anchor: assert_catches(&[(
+            "src/sum.rs",
+            "/home/dev/repo/src/sum.rs",
+            true,
+            "an absolute path ending in the anchor at a segment boundary must catch",
+        )]);
+        catches_matches_a_segment_boundary_path_suffix_in_either_direction: assert_catches(&[
+            // The finding names a shorter suffix spelling of a longer anchor.
+            (
+                "corpus/a.rs",
+                "a.rs",
+                true,
+                "a basename spelling that is the anchor's own segment-boundary suffix must catch",
+            ),
+            // The anchor is itself the shorter suffix spelling of a longer `about` entry.
+            (
+                "a.rs",
+                "corpus/a.rs",
+                true,
+                "corpus/a.rs is a.rs's segment-boundary suffix spelling and must catch",
+            ),
+        ]);
+        catches_rejects_a_name_that_merely_ends_with_the_anchors_text: assert_catches(&[
+            (
+                "a.rs",
+                "extra.rs",
+                false,
+                "extra.rs ends with a.rs's text but not at a path-segment boundary - must not \
+                 catch",
+            ),
+            ("a.rs", "other.rs", false, "an unrelated file must not catch"),
+        ]);
     }
 
     #[test]
@@ -1353,22 +1351,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_canary_shards_independent_items_concurrently_at_the_scheduling_seam() {
-        // Three items, one lens each, jobs=3 so spawn_budget picks item_workers=3,
-        // lens_workers=1: three items must have their (sole) lens spawn in flight
-        // simultaneously or this deadlocks, proving run_canary's OUTER per-item loop now
-        // shards independent items concurrently (not just the inner lens loop c4 built).
-        let ids = ["lens-a", "adv", "adj"];
+    /// Scores three planted items, each reviewed by every one of `lenses`, with `jobs` workers,
+    /// where every lens spawn in the whole run blocks on one barrier sized to `jobs`: the run can
+    /// only finish - every item caught by the lens tier and judged correctly - when `jobs` lens
+    /// spawns are in flight at the same instant.
+    fn assert_run_canary_fills_every_job_at_once(lenses: &[&str], jobs: usize) {
+        let mut ids: Vec<&str> = lenses.to_vec();
+        ids.extend(["adv", "adj"]);
         let c = cfg_for(&ids);
-        let p = panel_with_lenses(&["lens-a"]);
+        let p = panel_with_lenses(lenses);
         let corpus = vec![
             item("i1", "off-by-one", true, "reject", "lens"),
             item("i2", "off-by-one", true, "reject", "lens"),
             item("i3", "off-by-one", true, "reject", "lens"),
         ];
         let driver = BarrierGatedLenses {
-            barrier: std::sync::Barrier::new(3),
+            barrier: std::sync::Barrier::new(jobs),
             inner: Scripted {
                 catching_tier: TIER_LENS,
                 planted_anchors: vec!["i1.rs".into(), "i2.rs".into(), "i3.rs".into()],
@@ -1377,7 +1375,7 @@ mod tests {
             },
         };
         let store = Store::open(":memory:").unwrap();
-        let report = run_canary(&store, &driver, &c, &p, &corpus, 3, &|_, _| {}).unwrap();
+        let report = run_canary(&store, &driver, &c, &p, &corpus, jobs, &|_, _| {}).unwrap();
         assert_eq!(report.outcomes.len(), 3);
         for outcome in &report.outcomes {
             assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
@@ -1385,40 +1383,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn run_canary_jobs_cap_bounds_total_concurrent_spawns_across_both_dimensions() {
-        // Three items x two lenses, jobs=6 (an exact fit: spawn_budget(6,3) = (3,2)).
-        // Every lens spawn across the WHOLE run - all items together - blocks on a
-        // barrier sized to exactly 3*2=6. This can only pass if item sharding (3
-        // concurrent items) and lens fan-out (2 concurrent lenses per item) are truly
-        // COMBINED at the same instant: fewer than 6 simultaneous lens spawns anywhere in
-        // the system (e.g. items serialized, or lenses serialized within an item) hangs.
-        let lenses = ["lens-a", "lens-b"];
-        let mut ids: Vec<&str> = lenses.to_vec();
-        ids.extend(["adv", "adj"]);
-        let c = cfg_for(&ids);
-        let p = panel_with_lenses(&lenses);
-        let corpus = vec![
-            item("i1", "off-by-one", true, "reject", "lens"),
-            item("i2", "off-by-one", true, "reject", "lens"),
-            item("i3", "off-by-one", true, "reject", "lens"),
-        ];
-        let driver = BarrierGatedLenses {
-            barrier: std::sync::Barrier::new(6),
-            inner: Scripted {
-                catching_tier: TIER_LENS,
-                planted_anchors: vec!["i1.rs".into(), "i2.rs".into(), "i3.rs".into()],
-                adjudicator_order_sensitive: false,
-                resolved_model: String::new(),
-            },
-        };
-        let store = Store::open(":memory:").unwrap();
-        let report = run_canary(&store, &driver, &c, &p, &corpus, 6, &|_, _| {}).unwrap();
-        assert_eq!(report.outcomes.len(), 3);
-        for outcome in &report.outcomes {
-            assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
-            assert!(outcome.verdict_correct);
-        }
+    crate::test_cases! {
+        /// Three items, one lens each, jobs=3 so spawn_budget picks item_workers=3,
+        /// lens_workers=1: three items must have their (sole) lens spawn in flight
+        /// simultaneously or this deadlocks, proving run_canary's OUTER per-item loop now
+        /// shards independent items concurrently (not just the inner lens loop c4 built).
+        run_canary_shards_independent_items_concurrently_at_the_scheduling_seam:
+            assert_run_canary_fills_every_job_at_once(&["lens-a"], 3);
+        /// Three items x two lenses, jobs=6 (an exact fit: spawn_budget(6,3) = (3,2)).
+        /// Every lens spawn across the WHOLE run - all items together - blocks on a
+        /// barrier sized to exactly 3*2=6. This can only pass if item sharding (3
+        /// concurrent items) and lens fan-out (2 concurrent lenses per item) are truly
+        /// COMBINED at the same instant: fewer than 6 simultaneous lens spawns anywhere in
+        /// the system (e.g. items serialized, or lenses serialized within an item) hangs.
+        run_canary_jobs_cap_bounds_total_concurrent_spawns_across_both_dimensions:
+            assert_run_canary_fills_every_job_at_once(&["lens-a", "lens-b"], 6);
     }
 
     #[test]

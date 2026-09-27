@@ -289,7 +289,7 @@ impl Store {
 
 /// Where a successful append ack lets the adapter say the batch landed - and nothing more
 /// than that.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum AckPlacement {
     /// The ONE event's own commit position, issued by the server and reportable as is.
     Issued(Position),
@@ -597,12 +597,25 @@ async fn forward_loop(
 mod ack {
     use super::*;
 
-    #[test]
-    fn a_single_event_reports_the_position_the_server_issued() {
-        assert!(matches!(
-            placement_of_ack("run", 1, 4096, 7),
-            Ok(AckPlacement::Issued(4096))
-        ));
+    /// Holds each `(n, commit, next_expected_version, placed)` case: an append of `n` events
+    /// whose ack carries that commit position and next revision is placed exactly as `placed`.
+    fn assert_placements(cases: &[(usize, u64, u64, AckPlacement)]) {
+        for (n, commit, next, placed) in cases {
+            assert_eq!(
+                &placement_of_ack("run", *n, *commit, *next).unwrap(),
+                placed
+            );
+        }
+    }
+
+    crate::test_cases! {
+        a_single_event_reports_the_position_the_server_issued:
+            assert_placements(&[(1, 4096, 7, AckPlacement::Issued(4096))]);
+        a_batch_reports_the_revision_span_the_ack_names: assert_placements(&[
+            (3, 4096, 9, AckPlacement::ReadBackFrom(7)),
+            // The whole stream, starting at its very first revision, is a legitimate span.
+            (3, 4096, 2, AckPlacement::ReadBackFrom(0)),
+        ]);
     }
 
     /// An absent position is ASKED ABOUT, never answered from here. A zero commit is
@@ -628,19 +641,6 @@ mod ack {
         // The stream's very first revision is a legitimate span for one event too.
         assert!(matches!(
             placement_of_ack("run", 1, 0, 0),
-            Ok(AckPlacement::ReadBackFrom(0))
-        ));
-    }
-
-    #[test]
-    fn a_batch_reports_the_revision_span_the_ack_names() {
-        assert!(matches!(
-            placement_of_ack("run", 3, 4096, 9),
-            Ok(AckPlacement::ReadBackFrom(7))
-        ));
-        // The whole stream, starting at its very first revision, is a legitimate span.
-        assert!(matches!(
-            placement_of_ack("run", 3, 4096, 2),
             Ok(AckPlacement::ReadBackFrom(0))
         ));
     }

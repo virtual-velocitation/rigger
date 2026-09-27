@@ -29,11 +29,13 @@
 
 mod common;
 
-use common::repo::for_each_rs_file;
 use common::repo::repo_text;
 use common::repo::table_declares_key;
 use common::repo::table_lines;
-use std::path::PathBuf;
+
+#[path = "common/retired_feature.rs"]
+mod retired_feature;
+use retired_feature::assert_no_src_line_gates_on;
 
 /// DEP DIET (spec 57, criterion 2, part one): the `turbovec` cargo feature is retired.
 /// With no `[features]` entry named `turbovec`, cargo rejects `-F turbovec` as an unknown
@@ -112,21 +114,10 @@ fn symbols_remains_in_the_default_feature_set() {
 /// on it. Space-insensitive so it catches `feature="turbovec"` too.
 #[test]
 fn no_source_still_gates_on_the_retired_turbovec_feature() {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut offenders = Vec::new();
-    for_each_rs_file(&src, &mut |path, text| {
-        for (idx, line) in text.lines().enumerate() {
-            let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-            if squeezed.contains("feature=\"turbovec\"") {
-                offenders.push(format!("{}:{}", path.display(), idx + 1));
-            }
-        }
-    });
-    assert!(
-        offenders.is_empty(),
+    assert_no_src_line_gates_on(
+        &["feature=\"turbovec\""],
         "the `turbovec` cargo feature is retired (spec 57), so no source may still gate on it - \
          a `cfg(feature = \"turbovec\")` predicate on a now-undefined feature resolves \
-         deterministically and silently compiles the guarded code in or out of every build. \
-         Offending lines: {offenders:?}"
+         deterministically and silently compiles the guarded code in or out of every build.",
     );
 }

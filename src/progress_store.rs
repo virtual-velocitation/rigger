@@ -23,12 +23,12 @@ pub fn record(
         id: id.to_string(),
         activity: activity.to_string(),
     };
-    let ev = progress
-        .to_stamped_event(run_id)
-        .map_err(|e| Error::Backend(format!("serialize AgentProgress: {e}")))?;
-    store
-        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
-        .one(&format!("the progress report of {id}"))
+    append_stamped(
+        store,
+        run_id,
+        &progress,
+        &format!("the progress report of {id}"),
+    )
 }
 
 /// Record one [`SpawnLaunched`] open-launch report to the progress `store`, stamped with
@@ -41,15 +41,15 @@ pub fn record_launch(
     run_id: &str,
     launch: &SpawnLaunched,
 ) -> Result<Position, Error> {
-    let ev = launch
-        .to_stamped_event(run_id)
-        .map_err(|e| Error::Backend(format!("serialize SpawnLaunched: {e}")))?;
-    store
-        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
-        .one(&format!(
+    append_stamped(
+        store,
+        run_id,
+        launch,
+        &format!(
             "the launch record of {} (launch {})",
             launch.spawn, launch.launch
-        ))
+        ),
+    )
 }
 
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`
@@ -61,15 +61,29 @@ pub fn record_stop_failure(
     run_id: &str,
     stop_failure: &StopFailure,
 ) -> Result<Position, Error> {
-    let ev = stop_failure
+    append_stamped(
+        store,
+        run_id,
+        stop_failure,
+        &format!("the stop-failure record of {}", stop_failure.spawn),
+    )
+}
+
+/// Append `report`, stamped with `run_id`, as the one event of the progress `store`'s stream:
+/// the append contract every record above shares. `what` names the record if the store wrote
+/// nothing ([`crate::eventstore::Appended::one`]).
+fn append_stamped<R: RunStamped>(
+    store: &dyn EventStore,
+    run_id: &str,
+    report: &R,
+    what: &str,
+) -> Result<Position, Error> {
+    let ev = report
         .to_stamped_event(run_id)
-        .map_err(|e| Error::Backend(format!("serialize StopFailure: {e}")))?;
+        .map_err(|e| Error::Backend(format!("serialize {}: {e}", R::EVENT_TYPE)))?;
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
-        .one(&format!(
-            "the stop-failure record of {}",
-            stop_failure.spawn
-        ))
+        .one(what)
 }
 
 #[cfg(test)]

@@ -29,10 +29,36 @@ use rigger::contextgraph::{
     KIND_RATIONALE, REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
     TIER_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
 };
+#[cfg(feature = "symbols")]
+use rigger::eventstore::Event;
 
 #[path = "common/graph_fold.rs"]
 mod graph_fold;
 use graph_fold::apply_json;
+
+/// A fresh in-memory projector with `events` folded onto it in order, their log positions
+/// numbered from 1.
+#[cfg(feature = "symbols")]
+fn fold(events: impl IntoIterator<Item = Event>) -> Projector {
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (i, mut e) in events.into_iter().enumerate() {
+        e.position = (i + 1) as u64;
+        p.apply(&e).unwrap();
+    }
+    p
+}
+
+/// [`fold`]s `events`, which must be exactly one event of `event_type` - what one emitted
+/// `item` lowers to.
+#[cfg(feature = "symbols")]
+fn fold_the_one_event(events: Vec<Event>, item: &str, event_type: &str) -> Projector {
+    assert_eq!(events.len(), 1, "one {item} emits one event");
+    assert_eq!(
+        events[0].type_, event_type,
+        "the emitted event is a {event_type}"
+    );
+    fold(events)
+}
 
 /// The kind of the node with `id` in `g`, if it folded at all.
 fn kind_of<'g>(g: &'g Graph, id: &str) -> Option<&'g str> {
@@ -224,17 +250,11 @@ fn the_public_emit_lowers_every_concept_kind_onto_the_fold_arm_that_matches_it()
             title: "a concept".to_string(),
             doc: format!("docs/{expected_kind}.md"),
         };
-        let events = concept_events(std::slice::from_ref(&concept));
-        assert_eq!(events.len(), 1, "one concept emits one event");
-        assert_eq!(
-            events[0].type_, TYPE_DOC_CONCEPT_EXTRACTED,
-            "the emitted event is a DocConceptExtracted"
+        let p = fold_the_one_event(
+            concept_events(std::slice::from_ref(&concept)),
+            "concept",
+            TYPE_DOC_CONCEPT_EXTRACTED,
         );
-
-        let p = Projector::open(":memory:", "test").unwrap();
-        let mut e = events.into_iter().next().unwrap();
-        e.position = 1;
-        p.apply(&e).unwrap();
 
         let g = p.subgraph(std::slice::from_ref(&concept.id), 1).unwrap();
         assert_eq!(
@@ -426,17 +446,11 @@ fn the_public_link_emit_lowers_every_link_rel_onto_the_fold_arm_that_matches_it(
             rel: variant,
             to: "src/to.rs".to_string(),
         };
-        let events = link_events(std::slice::from_ref(&link));
-        assert_eq!(events.len(), 1, "one link emits one event");
-        assert_eq!(
-            events[0].type_, TYPE_DOC_LINK_EXTRACTED,
-            "the emitted event is a DocLinkExtracted"
+        let p = fold_the_one_event(
+            link_events(std::slice::from_ref(&link)),
+            "link",
+            TYPE_DOC_LINK_EXTRACTED,
         );
-
-        let p = Projector::open(":memory:", "test").unwrap();
-        let mut e = events.into_iter().next().unwrap();
-        e.position = 1;
-        p.apply(&e).unwrap();
 
         let g = p.subgraph(std::slice::from_ref(&link.from), 1).unwrap();
         assert!(
@@ -672,11 +686,7 @@ fn the_scope_gate_ingests_a_design_doc_and_drops_a_usage_doc() {
     );
     events.extend(usage_events);
 
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in events.into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
+    let p = fold(events);
 
     // The design doc is present as a design-doc node; the usage doc is absent from the graph -
     // neither as a design-intent node nor as a bare-artifact edge endpoint.
@@ -769,11 +779,7 @@ fn a_structural_design_doc_carrying_a_usage_word_is_never_dropped_and_folds_its_
             !events.is_empty(),
             "a structural design doc is never gated as usage; {path} emitted nothing"
         );
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            p.apply(&e).unwrap();
-        }
+        let p = fold(events);
         let g = p.subgraph(&[path.to_string()], 1).unwrap();
         assert_eq!(
             kind_of(&g, path),
@@ -785,11 +791,52 @@ fn a_structural_design_doc_carrying_a_usage_word_is_never_dropped_and_folds_its_
 }
 
 #[cfg(feature = "symbols")]
-#[test]
-fn every_recognized_end_user_usage_shape_is_dropped_before_the_fold() {
+/// Every `dropped` `(path, contents)` doc emits zero events on its own (`emits_nothing` names
+/// why for a path), and folding them all beside the `kept` doc lands exactly the kept doc, as a
+/// `kept_kind` node (`kept_why`), and no node for any dropped path (`folds_nothing`).
+fn assert_dropped_beside_one_kept_doc(
+    dropped: &[(&str, &str)],
+    emits_nothing: impl Fn(&str) -> String,
+    folds_nothing: impl Fn(&str) -> String,
+    kept: (&str, &str),
+    kept_kind: &str,
+    kept_why: &str,
+) {
     use rigger::grounder::design::events::concept_events;
     use rigger::grounder::design::extract::extract_concepts;
 
+    let mut all_events = Vec::new();
+    for &(path, contents) in dropped {
+        let events = concept_events(&extract_concepts(path, contents));
+        assert!(events.is_empty(), "{}; got {events:?}", emits_nothing(path));
+        all_events.extend(events);
+    }
+    let (kept_path, kept_contents) = kept;
+    all_events.extend(concept_events(&extract_concepts(kept_path, kept_contents)));
+
+    let p = fold(all_events);
+    let mut seeds: Vec<String> = dropped.iter().map(|&(path, _)| path.to_string()).collect();
+    seeds.push(kept_path.to_string());
+    let g = p.subgraph(&seeds, 1).unwrap();
+    assert_eq!(
+        kind_of(&g, kept_path),
+        Some(kept_kind),
+        "{kept_why}; got {:?}",
+        g.nodes
+    );
+    for &(path, _) in dropped {
+        assert!(
+            g.nodes.iter().all(|n| !n.id.starts_with(path)),
+            "{}; got {:?}",
+            folds_nothing(path),
+            g.nodes
+        );
+    }
+}
+
+#[cfg(feature = "symbols")]
+#[test]
+fn every_recognized_end_user_usage_shape_is_dropped_before_the_fold() {
     // Full breadth of the scope gate at the emit + fold boundary. The inside-out unit test iterates
     // the usage shapes over the returned Vec; this drives every DISTINCT usage-doc shape - a PATH
     // signal and a HEADING-only signal - through the real emit and proves each produces ZERO events,
@@ -797,58 +844,29 @@ fn every_recognized_end_user_usage_shape_is_dropped_before_the_fold() {
     // lands, so the projection carries the design node and NOT ONE usage node. Dropping any single
     // usage signal from the gate would let that shape emit an event and fold a node, reddening both
     // the per-shape empty-events assertion and the no-usage-node assertion.
-    let usage: &[(&str, &str)] = &[
-        ("README.md", "# Rigger\n\ndrive it\n"),
-        ("docs/getting-started.md", "# Getting started\n\ninstall\n"),
-        ("docs/quickstart.md", "# Overview\n\nsteps\n"),
-        ("docs/tutorial-first-run.md", "# First run\n\nsteps\n"),
-        ("docs/how-to-configure.md", "# Configure\n\nsteps\n"),
-        ("docs/user-guide.md", "# The guide\n\nsteps\n"),
-        ("docs/faq.md", "# Questions\n\nanswers\n"),
-        ("docs/troubleshooting.md", "# When it breaks\n\nfixes\n"),
-        // Signal in the HEADING only, over an otherwise-neutral path.
-        ("docs/overview.md", "# Installation\n\ninstall it\n"),
-        ("docs/notes.md", "# Command reference\n\nflags\n"),
-    ];
-
-    // Each usage shape emits nothing on its own.
-    let mut all_events = Vec::new();
-    for &(path, contents) in usage {
-        let events = concept_events(&extract_concepts(path, contents));
-        assert!(
-            events.is_empty(),
-            "the usage shape {path} emits zero events; got {events:?}"
-        );
-        all_events.extend(events);
-    }
-
-    // A design doc folded alongside every usage shape is the only thing that lands in the graph.
-    let design_doc = "docs/architecture.md";
-    all_events.extend(concept_events(&extract_concepts(
-        design_doc,
-        "# Reference architecture\n\n## Nodes\n",
-    )));
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in all_events.into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
-    let mut seeds: Vec<String> = usage.iter().map(|&(path, _)| path.to_string()).collect();
-    seeds.push(design_doc.to_string());
-    let g = p.subgraph(&seeds, 1).unwrap();
-    assert_eq!(
-        kind_of(&g, design_doc),
-        Some(KIND_DESIGN_DOC),
-        "the design doc folded alongside the dropped usage docs; got {:?}",
-        g.nodes
+    assert_dropped_beside_one_kept_doc(
+        &[
+            ("README.md", "# Rigger\n\ndrive it\n"),
+            ("docs/getting-started.md", "# Getting started\n\ninstall\n"),
+            ("docs/quickstart.md", "# Overview\n\nsteps\n"),
+            ("docs/tutorial-first-run.md", "# First run\n\nsteps\n"),
+            ("docs/how-to-configure.md", "# Configure\n\nsteps\n"),
+            ("docs/user-guide.md", "# The guide\n\nsteps\n"),
+            ("docs/faq.md", "# Questions\n\nanswers\n"),
+            ("docs/troubleshooting.md", "# When it breaks\n\nfixes\n"),
+            // Signal in the HEADING only, over an otherwise-neutral path.
+            ("docs/overview.md", "# Installation\n\ninstall it\n"),
+            ("docs/notes.md", "# Command reference\n\nflags\n"),
+        ],
+        |path| format!("the usage shape {path} emits zero events"),
+        |path| format!("no node folded for the dropped usage doc {path}"),
+        (
+            "docs/architecture.md",
+            "# Reference architecture\n\n## Nodes\n",
+        ),
+        KIND_DESIGN_DOC,
+        "the design doc folded alongside the dropped usage docs",
     );
-    for &(path, _) in usage {
-        assert!(
-            g.nodes.iter().all(|n| !n.id.starts_with(path)),
-            "no node folded for the dropped usage doc {path}; got {:?}",
-            g.nodes
-        );
-    }
 }
 
 #[cfg(feature = "symbols")]
@@ -872,11 +890,7 @@ fn the_scope_gate_never_suppresses_source_file_rationale_even_under_a_usage_path
         !events.is_empty(),
         "a source file's rationale is never gated by the doc scope gate; got nothing"
     );
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in events.into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
+    let p = fold(events);
     let rationale_id = format!("{path}#L2");
     let g = p.subgraph(std::slice::from_ref(&rationale_id), 1).unwrap();
     assert_eq!(
@@ -932,11 +946,7 @@ fn under_a_handbook_path_a_design_rule_doc_stays_but_a_pure_end_user_guide_is_dr
         "a loop-discipline / spec-shape rule doc under a handbook path is ingested; got nothing"
     );
     events.extend(guide_events);
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in events.into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
+    let p = fold(events);
     let g = p
         .subgraph(&[rule.to_string(), guide.to_string()], 1)
         .unwrap();
@@ -956,9 +966,6 @@ fn under_a_handbook_path_a_design_rule_doc_stays_but_a_pure_end_user_guide_is_dr
 #[cfg(feature = "symbols")]
 #[test]
 fn a_design_word_in_a_non_handbook_usage_doc_does_not_leak_the_handbook_content_keep() {
-    use rigger::grounder::design::events::concept_events;
-    use rigger::grounder::design::extract::extract_concepts;
-
     // Handbook SCOPING of the content-aware keep (spec 29b criterion 3), at the fold boundary from
     // outside the crate. The content-aware layer that keeps a rule doc IN is deliberately SCOPED to a
     // handbook path: a handbook is the one doc tree that mixes design rules with end-user guides, so
@@ -980,70 +987,43 @@ fn a_design_word_in_a_non_handbook_usage_doc_does_not_leak_the_handbook_content_
     // FAQ) whose drop is the CORRECT disposition; the design words in their bodies are contrived
     // purely to prove the content keep does not leak past the handbook boundary, not a claim that the
     // doc is design intent.
-    let leaky_usage: &[(&str, &str)] = &[
-        (
-            "README.md",
-            "# Rigger\n\nRun it to build a spec. This project keeps a loop discipline and every \
-             run holds an invariant, but this file is a usage index.\n",
-        ),
-        (
-            "docs/faq.md",
-            "# Frequently asked questions\n\nQ: is review fail-closed? A: yes. Q: what is blast \
-             radius? A: isolation. This is still just an end-user FAQ.\n",
-        ),
-    ];
-
+    //
     // Each non-handbook usage doc emits nothing: outside a handbook path the design word in its body
-    // is inert, so layer 3's `readme` / `faq` path signal drops it.
-    let mut all_events = Vec::new();
-    for &(path, contents) in leaky_usage {
-        let events = concept_events(&extract_concepts(path, contents));
-        assert!(
-            events.is_empty(),
-            "the content keep is scoped to handbook paths, so the non-handbook usage doc {path} is \
-             still dropped despite a design word in its body; got {events:?}"
-        );
-        all_events.extend(events);
-    }
-
-    // The SAME class of design words under a handbook path IS kept - the keep is path-scoped, not a
+    // is inert, so layer 3's `readme` / `faq` path signal drops it. The SAME class of design words under a handbook path IS kept - the keep is path-scoped, not a
     // global content rule. This is the real repo file `docs/handbook/using-rigger.md`.
-    let handbook_rule = "docs/handbook/using-rigger.md";
-    all_events.extend(concept_events(&extract_concepts(
-        handbook_rule,
-        "# Using rigger: the operating discipline\n\nThe operating discipline for a run: every \
-         criterion holds an invariant and review is fail-closed.\n",
-    )));
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in all_events.into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
-    let mut seeds: Vec<String> = leaky_usage
-        .iter()
-        .map(|&(path, _)| path.to_string())
-        .collect();
-    seeds.push(handbook_rule.to_string());
-    let g = p.subgraph(&seeds, 1).unwrap();
-
-    // The handbook rule doc landed as a handbook-rule node.
-    assert_eq!(
-        kind_of(&g, handbook_rule),
-        Some(KIND_HANDBOOK_RULE),
-        "the handbook rule doc is kept by the content-aware layer and folds a handbook-rule node; \
-         got {:?}",
-        g.nodes
+    assert_dropped_beside_one_kept_doc(
+        &[
+            (
+                "README.md",
+                "# Rigger\n\nRun it to build a spec. This project keeps a loop discipline and every \
+                 run holds an invariant, but this file is a usage index.\n",
+            ),
+            (
+                "docs/faq.md",
+                "# Frequently asked questions\n\nQ: is review fail-closed? A: yes. Q: what is blast \
+                 radius? A: isolation. This is still just an end-user FAQ.\n",
+            ),
+        ],
+        |path| {
+            format!(
+                "the content keep is scoped to handbook paths, so the non-handbook usage doc \
+                 {path} is still dropped despite a design word in its body"
+            )
+        },
+        |path| {
+            format!(
+                "no node folded for the non-handbook usage doc {path} - the content keep is \
+                 handbook-scoped"
+            )
+        },
+        (
+            "docs/handbook/using-rigger.md",
+            "# Using rigger: the operating discipline\n\nThe operating discipline for a run: \
+             every criterion holds an invariant and review is fail-closed.\n",
+        ),
+        KIND_HANDBOOK_RULE,
+        "the handbook rule doc is kept by the content-aware layer and folds a handbook-rule node",
     );
-    // Neither non-handbook usage doc folded any node - the content keep never left the handbook path.
-    for &(path, _) in leaky_usage {
-        assert!(
-            g.nodes.iter().all(|n| !n.id.starts_with(path)),
-            "no node folded for the non-handbook usage doc {path} - the content keep is handbook-scoped; \
-             got {:?}",
-            g.nodes
-        );
-    }
 }
 
 #[cfg(feature = "symbols")]
