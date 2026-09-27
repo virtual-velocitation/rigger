@@ -710,21 +710,23 @@ const ROLE_REPLAN: &str = "replan";
 #[error("conductor: {0}")]
 pub struct Error(pub String);
 
-impl From<crate::eventstore::Error> for Error {
-    fn from(e: crate::eventstore::Error) -> Self {
-        Error(e.to_string())
-    }
+/// Each listed error converts into a conductor [`Error`] carrying its display text.
+macro_rules! error_from_display {
+    ($($source:ty),+) => {
+        $(
+            impl From<$source> for Error {
+                fn from(e: $source) -> Self {
+                    Error(e.to_string())
+                }
+            }
+        )+
+    };
 }
-impl From<crate::worktree::Error> for Error {
-    fn from(e: crate::worktree::Error) -> Self {
-        Error(e.to_string())
-    }
-}
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
-        Error(e.to_string())
-    }
-}
+error_from_display!(
+    crate::eventstore::Error,
+    crate::worktree::Error,
+    serde_json::Error
+);
 
 /// What an agent returns when it finishes.
 #[derive(Clone, Debug, Default)]
