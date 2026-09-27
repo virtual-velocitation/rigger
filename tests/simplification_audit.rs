@@ -3651,10 +3651,12 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
     let _ = writeln!(out);
     for &i in &picked {
         let sf = refs[i].scanned(files);
+        // Keyed on the site's position, not its name: a file can define several functions of
+        // one name (trait-impl doubles), and only the one a cluster actually lists is caught.
         let hit = clusters.iter().find(|c| {
             c.sites
                 .iter()
-                .any(|s| s.file == sf.file && s.name == sf.name)
+                .any(|s| s.file == sf.file && s.start_line == sf.start_line)
         });
         match hit {
             Some(c) => {
