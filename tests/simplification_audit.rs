@@ -7084,7 +7084,7 @@ mod tests {
     /// Scan `src`, assert it holds exactly ONE function, and return that function.
     fn scan_single(src: &str) -> ScannedFn {
         let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
+        assert_eq!(fns.len(), 1, "{fns:?}");
         fns.into_iter().next().unwrap()
     }
 
@@ -7096,6 +7096,12 @@ mod tests {
     /// `src` scans to exactly one function, whose body closes on line `end_line`.
     fn assert_single_fn_ends_at(src: &str, end_line: usize) {
         assert_eq!(scan_single(src).end_line, end_line);
+    }
+
+    /// `src` scans to exactly one function, named `name`, whose body closes on line `end_line`.
+    fn assert_single_fn_spans(src: &str, name: &str, end_line: usize) {
+        let f = scan_single(src);
+        assert_eq!((f.name.as_str(), f.end_line), (name, end_line), "{f:?}");
     }
 
     rigger::test_cases! {
@@ -7146,19 +7152,10 @@ mod tests {
 
     #[test]
     fn a_fn_pointer_type_usage_is_not_recorded() {
-        let src = "fn takes_fp(f: fn(usize) -> bool) -> bool {\n    f(1)\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1, "{fns:?}");
-        assert_eq!(fns[0].name, "takes_fp");
-    }
-
-    #[test]
-    fn a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early() {
-        let src = "fn a(buf: [u8; 32]) -> bool {\n    buf.len() == 32\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1, "{fns:?}");
-        assert_eq!(fns[0].name, "a");
-        assert_eq!(fns[0].end_line, 3);
+        assert_single_fn_named(
+            "fn takes_fp(f: fn(usize) -> bool) -> bool {\n    f(1)\n}\n",
+            "takes_fp",
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -7209,9 +7206,8 @@ mod tests {
         // Sanity: the fix must not make every impl test-only - a plain impl outside any
         // cfg-test context stays production.
         let src = "impl Foo {\n    fn bar(&self) {}\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(!fns[0].is_test, "{:?}", fns[0]);
+        let f = scan_single(src);
+        assert!(!f.is_test, "{f:?}");
     }
 
     /// `src` scans to exactly one function, flagged test, enclosed by the `mods` path.
@@ -7235,9 +7231,8 @@ mod tests {
     #[test]
     fn a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod() {
         let src = "#[test]\nfn a_thing_works() {}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(fns[0].is_test);
+        let f = scan_single(src);
+        assert!(f.is_test);
     }
 
     #[test]
@@ -7252,10 +7247,9 @@ mod tests {
     #[test]
     fn a_mod_declaration_without_a_body_is_not_pushed_as_a_frame() {
         let src = "mod gitsemver;\nfn a() {}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].name, "a");
-        assert_eq!(fns[0].enclosing_mods, Vec::<String>::new());
+        let f = scan_single(src);
+        assert_eq!(f.name, "a");
+        assert_eq!(f.enclosing_mods, Vec::<String>::new());
     }
 
     #[test]
@@ -7265,13 +7259,17 @@ mod tests {
         assert_eq!(names, vec!["inner".to_string(), "outer".to_string()]);
     }
 
-    #[test]
-    fn braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span() {
-        let src = "fn a(x: i32) -> i32 {\n    if x > 0 {\n        1\n    } else {\n        match x {\n            _ => 0,\n        }\n    }\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].name, "a");
-        assert_eq!(fns[0].end_line, 9);
+    rigger::test_cases! {
+        a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early: assert_single_fn_spans(
+            "fn a(buf: [u8; 32]) -> bool {\n    buf.len() == 32\n}\n",
+            "a",
+            3,
+        );
+        braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span: assert_single_fn_spans(
+            "fn a(x: i32) -> i32 {\n    if x > 0 {\n        1\n    } else {\n        match x {\n            _ => 0,\n        }\n    }\n}\n",
+            "a",
+            9,
+        );
     }
 
     // -------------------------------------------------------------------------------------

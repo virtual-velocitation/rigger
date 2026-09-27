@@ -855,11 +855,6 @@
     "reason": "The two sides of the reclaim guard: a dirty worktree the workflow still declares is spared (and reclaimed once clean), while an undeclared dirty one is removed; different declared sets, outcomes and follow-up checks."
   },
   {
-    "id": "dup-9a077e3876ec",
-    "disposition": "not-a-duplicate",
-    "reason": "Scanner unit tests that each feed a different source shape and assert a different property (span, name, test flag, enclosing mods, advisory count); they share only the parse-then-assert idiom."
-  },
-  {
     "id": "dup-5bb2147904eb",
     "disposition": "not-a-duplicate",
     "reason": "Scanner unit tests that each feed a different text shape and assert a different outcome (a fail-closed quote state, scanning resuming after Notes, a bodiless trait method); they share only the parse-then-assert idiom."

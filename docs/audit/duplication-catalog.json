@@ -6369,50 +6369,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9a077e3876ec",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/spec.rs",
-        "name": "disposition_check_still_flags_an_unresolved_hedge_beside_a_decided_disposition",
-        "content_hash": "58965c4545c18ed6"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "two_sibling_functions_are_both_found_in_order",
-        "content_hash": "6f7cd984a392bbf5"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "a_fn_pointer_type_usage_is_not_recorded",
-        "content_hash": "850bf0ccfa5476d8"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early",
-        "content_hash": "f312250c538307e0"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod",
-        "content_hash": "c13c524a371f88ec"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "a_mod_declaration_without_a_body_is_not_pushed_as_a_frame",
-        "content_hash": "7b00d1e3eedfc543"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span",
-        "content_hash": "de9522a603c12c95"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/spec.rs, tests/simplification_audit.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-5bb2147904eb",
     "classification": "near",
     "sites": [
