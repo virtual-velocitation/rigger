@@ -86,6 +86,16 @@ pub struct CanaryOutcome {
     pub findings_raised: BTreeMap<String, u64>,
 }
 
+/// A canary-stream event: a fold-neutral `UnitStatus` carrying `data`, tagged with the batch
+/// id in metadata so the fold can scope to one run.
+fn canary_event(data: &serde_json::Value, batch: &str) -> Event {
+    Event::new(
+        TYPE_UNIT_STATUS,
+        serde_json::to_vec(data).unwrap_or_default(),
+    )
+    .with_meta(META_CANARY_BATCH, batch)
+}
+
 impl CanaryOutcome {
     /// Serialize this outcome to its canary-stream event: a fold-neutral `UnitStatus`
     /// carrying the score in its data, tagged with the batch id in metadata so the fold
@@ -105,11 +115,7 @@ impl CanaryOutcome {
             "stable": self.stable,
             "findings_raised": self.findings_raised,
         });
-        Event::new(
-            TYPE_UNIT_STATUS,
-            serde_json::to_vec(&data).unwrap_or_default(),
-        )
-        .with_meta(META_CANARY_BATCH, batch)
+        canary_event(&data, batch)
     }
 
     /// Decode a canary outcome from a canary-stream event, or `None` if it is not a
@@ -190,11 +196,7 @@ impl CanaryHeader {
             "corpus_hash": self.corpus_hash,
             "resolved_models": self.resolved_models,
         });
-        Event::new(
-            TYPE_UNIT_STATUS,
-            serde_json::to_vec(&data).unwrap_or_default(),
-        )
-        .with_meta(META_CANARY_BATCH, batch)
+        canary_event(&data, batch)
     }
 
     /// Decode a header from a canary-stream event, or `None` if it is not a
