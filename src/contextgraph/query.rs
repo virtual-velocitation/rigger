@@ -206,6 +206,32 @@ pub const REPROJECT_NO_COMMUNITY: &str = "no derived communities";
 /// [`REPROJECT_NO_COMMUNITY`].
 pub const REPROJECT_NO_CONCEPT: &str = "not part of any concept";
 
+/// The documented texts a DERIVED lens carries (see [`Buckets::derived_texts`]).
+pub(crate) struct DerivedLensTexts {
+    /// The empty-state message when [`Buckets::underived`]: the derivation prompt.
+    pub(crate) underived: &'static str,
+    /// The empty-CELL message for a derived-lens RE-PROJECTION whose member set folds into NO
+    /// derived bucket (spec 55 c2).
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only read by dash.rs's reproject_derived, gated out under core-only
+    pub(crate) no_membership: &'static str,
+    /// The super-node KIND whose deterministic `label` attr names a bucket cluster.
+    pub(crate) label_kind: &'static str,
+}
+
+/// [`Lens::Code`]'s texts: a coupling community ([`KIND_COMMUNITY`]) names its buckets.
+const CODE_LENS_TEXTS: DerivedLensTexts = DerivedLensTexts {
+    underived: CODE_LENS_UNDERIVED,
+    no_membership: REPROJECT_NO_COMMUNITY,
+    label_kind: KIND_COMMUNITY,
+};
+
+/// [`Lens::Concepts`]'s texts: a derived concept ([`KIND_CONCEPT`]) names its buckets.
+const CONCEPTS_LENS_TEXTS: DerivedLensTexts = DerivedLensTexts {
+    underived: CONCEPTS_LENS_UNDERIVED,
+    no_membership: REPROJECT_NO_CONCEPT,
+    label_kind: KIND_CONCEPT,
+};
+
 /// The documented empty-state message a [`Lens::Files`] WHOLE-GRAPH overview ([`clustered_overview`],
 /// spec 63 c3, FILES-LENS PURITY) carries when the graph holds at least one node but the Files fold
 /// admits NONE of them into any cluster - every node either falls outside [`KIND_CODE_ENTITY`] (a
@@ -411,38 +437,15 @@ impl<'g> Buckets<'g> {
         matches!(self.lens, Lens::Code { .. } | Lens::Concepts { .. }) && self.membership.is_empty()
     }
 
-    /// The documented empty-state message for this lens when [`Buckets::underived`]: the derivation
-    /// prompt for the active derived lens. `None` under [`Lens::Files`] (never underived).
-    pub(crate) fn underived_message(&self) -> Option<&'static str> {
+    /// The derived lens's own documented texts ([`CODE_LENS_TEXTS`] under [`Lens::Code`],
+    /// [`CONCEPTS_LENS_TEXTS`] under [`Lens::Concepts`]), or `None` under [`Lens::Files`], which
+    /// is never underived, never reaches a derived re-projection (`dash.rs`'s `reproject_files`
+    /// computes its own empty-cell case directly), and attaches no bucket label.
+    pub(crate) fn derived_texts(&self) -> Option<&'static DerivedLensTexts> {
         match self.lens {
             Lens::Files => None,
-            Lens::Code { .. } => Some(CODE_LENS_UNDERIVED),
-            Lens::Concepts { .. } => Some(CONCEPTS_LENS_UNDERIVED),
-        }
-    }
-
-    /// The documented empty-CELL message for a DERIVED-lens RE-PROJECTION whose member set folds into
-    /// NO derived bucket (spec 55 c2): [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`],
-    /// [`REPROJECT_NO_CONCEPT`] under [`Lens::Concepts`]. `None` under [`Lens::Files`] too (never
-    /// reached there: `dash.rs`'s `reproject_files` computes its own empty-cell case directly).
-    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from dash.rs's reproject_derived, gated out under core-only
-    pub(crate) fn no_membership_message(&self) -> Option<&'static str> {
-        match self.lens {
-            Lens::Files => None,
-            Lens::Code { .. } => Some(REPROJECT_NO_COMMUNITY),
-            Lens::Concepts { .. } => Some(REPROJECT_NO_CONCEPT),
-        }
-    }
-
-    /// The super-node KIND whose deterministic `label` attr names a bucket cluster under this lens:
-    /// [`KIND_COMMUNITY`] (a coupling community) under [`Lens::Code`], [`KIND_CONCEPT`] (a derived
-    /// concept) under [`Lens::Concepts`]. `None` under [`Lens::Files`], where a bucket key already
-    /// names its module / kind and no label is attached.
-    pub(crate) fn label_kind(&self) -> Option<&'static str> {
-        match self.lens {
-            Lens::Files => None,
-            Lens::Code { .. } => Some(KIND_COMMUNITY),
-            Lens::Concepts { .. } => Some(KIND_CONCEPT),
+            Lens::Code { .. } => Some(&CODE_LENS_TEXTS),
+            Lens::Concepts { .. } => Some(&CONCEPTS_LENS_TEXTS),
         }
     }
 
@@ -472,7 +475,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
             clusters: Vec::new(),
             edges: Vec::new(),
             total: graph.nodes.len(),
-            empty_state: buckets.underived_message().map(str::to_string),
+            empty_state: buckets.derived_texts().map(|t| t.underived.to_string()),
         };
     }
 
@@ -499,7 +502,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     //
     // Spec 63 c3 (FILES-LENS PURITY): `Lens::Files` carries this SAME hazard - `whole_graph_lens_key`'s
     // own purity gate can exclude EVERY node in a non-empty graph - but `buckets.underived()` is
-    // unconditionally `false` under `Lens::Files` and `buckets.underived_message()` is unconditionally
+    // unconditionally `false` under `Lens::Files` and `buckets.derived_texts()` is unconditionally
     // `None` there, so neither signal this fold's own emptiness the way the Code/Concepts arms above
     // do. A non-empty graph the fold admits nothing from carries `WHOLE_GRAPH_FILES_UNRESOLVED`; a
     // TRULY empty graph stays `None`, falling through to the generic "empty graph" caption.
@@ -510,7 +513,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
                 (!graph.nodes.is_empty()).then_some(WHOLE_GRAPH_FILES_UNRESOLVED.to_string())
             }
             Lens::Code { .. } | Lens::Concepts { .. } => {
-                buckets.underived_message().map(str::to_string)
+                buckets.derived_texts().map(|t| t.underived.to_string())
             }
         })
         .flatten();
@@ -581,7 +584,7 @@ pub(crate) fn bucket_label_index<'g>(
     graph: &'g Graph,
     buckets: &Buckets<'g>,
 ) -> BTreeMap<&'g str, &'g str> {
-    match buckets.label_kind() {
+    match buckets.derived_texts().map(|t| t.label_kind) {
         Some(super_kind) => graph
             .nodes
             .iter()
@@ -1828,10 +1831,16 @@ mod search_tests {
         }
     }
 
-    /// An empty query yields no hits, never the whole graph - a blank search box shows nothing.
-    #[test]
-    fn an_empty_query_yields_no_hits() {
-        assert!(search(&graph(), "", 50).is_empty());
+    /// The shared case body: searching the fixture graph for `query` yields no hits.
+    fn assert_no_hits(query: &str) {
+        assert!(search(&graph(), query, 50).is_empty());
+    }
+
+    test_cases! {
+        /// An empty query yields no hits, never the whole graph - a blank search box shows nothing.
+        an_empty_query_yields_no_hits => assert_no_hits("");
+        /// A query matching nothing returns an empty vec, never an error.
+        an_unmatched_query_returns_no_hits => assert_no_hits("no-such-thing-in-this-graph");
     }
 
     /// An EXACT id match (case-insensitive) ranks first, ahead of a mere substring match elsewhere.
@@ -1873,12 +1882,6 @@ mod search_tests {
     fn limit_caps_the_returned_hit_count() {
         let hits = search(&graph(), "dash", 1);
         assert_eq!(hits.len(), 1, "limit=1 should cap to exactly one hit");
-    }
-
-    /// A query matching nothing returns an empty vec, never an error.
-    #[test]
-    fn an_unmatched_query_returns_no_hits() {
-        assert!(search(&graph(), "no-such-thing-in-this-graph", 50).is_empty());
     }
 
     /// A node whose ID alone is a PREFIX match outranks a mere substring match even when
@@ -2012,19 +2015,19 @@ mod graph_ops_tests {
         );
     }
 
-    /// An unknown op kind is a graceful `Error`, never a panic - the console op layer's documented
-    /// `{"error": ...}` reply contract.
-    #[test]
-    fn graph_query_rejects_an_unknown_kind_without_panicking() {
+    /// The shared case body: `graph_query` over the sample graph answers `kind` with `params`
+    /// as a graceful `Error`, never a panic.
+    fn assert_rejected(kind: &str, params: &[u8]) {
         let g = sample_graph();
-        assert!(graph_query(&g, "no-such-op", b"{}").is_err());
+        assert!(graph_query(&g, kind, params).is_err());
     }
 
-    /// Malformed params for a real kind is a graceful `Error`, never a panic.
-    #[test]
-    fn graph_query_rejects_malformed_params_without_panicking() {
-        let g = sample_graph();
-        assert!(graph_query(&g, "card", b"not json").is_err());
+    test_cases! {
+        /// An unknown op kind is a graceful `Error`, never a panic - the console op layer's
+        /// documented `{"error": ...}` reply contract.
+        graph_query_rejects_an_unknown_kind_without_panicking => assert_rejected("no-such-op", b"{}");
+        /// Malformed params for a real kind is a graceful `Error`, never a panic.
+        graph_query_rejects_malformed_params_without_panicking => assert_rejected("card", b"not json");
     }
 }
 

@@ -15,6 +15,24 @@
 // by function: where a file mixed both (`spawn.rs`, `run.rs`, `progress.rs`), the impure
 // half moved to its own `_store` file (`spawn_store`, `run_store`, `progress_store`).
 
+/// Declares one `#[test]` per case of a table-driven test family: each case names its test
+/// (plus any attributes, e.g. its doc or `#[should_panic]`) and gives the expression that runs
+/// it - normally one call into the family's shared case body - so a family of same-shaped
+/// tests has ONE definition of its body instead of a copy per test. Defined before every
+/// module so each test module can invoke it by name.
+#[cfg(test)]
+macro_rules! test_cases {
+    ($($(#[$attr:meta])* $name:ident => $body:expr;)+) => {
+        $(
+            $(#[$attr])*
+            #[test]
+            fn $name() {
+                $body;
+            }
+        )+
+    };
+}
+
 pub mod blocker;
 /// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
 /// caps how many actual compiler invocations run at once, across every rigger process on

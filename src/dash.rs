@@ -1648,7 +1648,7 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
             && buckets.membership.contains_key(m.id.as_str())
     });
     let empty_state = (!has_derived_bucket)
-        .then(|| buckets.no_membership_message().map(str::to_string))
+        .then(|| buckets.derived_texts().map(|t| t.no_membership.to_string()))
         .flatten();
     // Spec 55 c2, the SHARED member: a member realizing MORE THAN ONE concept folds under its PRIMARY
     // bucket above (appears once) and is flagged here. `members` is ascending-id ordered (member_set),
