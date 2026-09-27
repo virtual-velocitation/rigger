@@ -399,6 +399,13 @@ thinking out loud, not json\n\
         );
     }
 
+    /// The index of `flag` in the built `args`, panicking when it is absent.
+    fn arg_index(args: &[String], flag: &str) -> usize {
+        args.iter()
+            .position(|x| x == flag)
+            .unwrap_or_else(|| panic!("{flag} must be in the args: {args:?}"))
+    }
+
     #[test]
     fn persona_is_the_system_prompt_task_is_the_prompt() {
         // The persona (the agent's role) is threaded in as the `system_prompt` arg -
@@ -416,16 +423,16 @@ thinking out loud, not json\n\
         };
         let args = build_args(&a, "do the thing", "You implement findings.", 0);
         // The grounded task is the -p prompt, and the persona is NOT spliced into it.
-        let pi = args.iter().position(|x| x == "-p").unwrap();
+        let pi = arg_index(&args, "-p");
         assert_eq!(args[pi + 1], "do the thing");
         assert!(!args[pi + 1].contains("You implement findings."));
         assert!(!args[pi + 1].contains("stale body"));
         // The persona is the system prompt.
-        let si = args.iter().position(|x| x == "--system-prompt").unwrap();
+        let si = arg_index(&args, "--system-prompt");
         assert_eq!(args[si + 1], "You implement findings.");
-        let mi = args.iter().position(|x| x == "--model").unwrap();
+        let mi = arg_index(&args, "--model");
         assert_eq!(args[mi + 1], "sonnet");
-        let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
+        let ti = arg_index(&args, "--allowed-tools");
         assert_eq!(args[ti + 1], "Read,Bash");
     }
 
@@ -438,7 +445,7 @@ thinking out loud, not json\n\
             ..Default::default()
         };
         let args = build_args(&a, "task", "", 0);
-        let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
+        let ti = arg_index(&args, "--allowed-tools");
         assert_eq!(args[ti + 1], "Read");
         assert!(!args[ti + 1].contains("Agent"));
     }
@@ -452,7 +459,7 @@ thinking out loud, not json\n\
             ..Default::default()
         };
         let args = build_args(&a, "task", "", 0);
-        let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
+        let ti = arg_index(&args, "--allowed-tools");
         assert_eq!(args[ti + 1], "Read,Agent");
     }
 
@@ -467,7 +474,7 @@ thinking out loud, not json\n\
         };
         let model_at = |attempt: u32| {
             let args = build_args(&a, "task", "", attempt);
-            let mi = args.iter().position(|x| x == "--model").unwrap();
+            let mi = arg_index(&args, "--model");
             args[mi + 1].clone()
         };
         assert_eq!(model_at(0), "haiku", "attempt 0 runs the first rung");
