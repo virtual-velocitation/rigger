@@ -19,49 +19,19 @@ mod common;
 
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
+use common::cli::reported_reclaimed_bytes;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
+use common::cli::seed_order_signature;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::cli::temp_git_project_with_commit;
+use common::cli::temp_project;
+use common::cli::temp_repoless_project;
+use common::cli::write_reviewless_git_unit_workflow;
 use common::fixtures::pgid_of;
 use common::rigger_bin;
-
-/// A throwaway project dir that is its own git repo, so `project_identity()` (which
-/// scopes the namespaced streams) is stable across the emit and the peers reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    // `git init` makes project_identity() resolve to the dir's basename
-    // deterministically; a non-repo dir would fall back to the current-dir name,
-    // which is also fine, but a real repo mirrors how rigger is actually used.
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// A throwaway git project with a real commit, so a base ref like `HEAD` resolves.
-/// `temp_project` only `git init`s (unborn HEAD), which is enough for the offline
-/// step tests but not for the run-branch-anchoring path that needs a base commit.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = temp_project();
-    let root = dir.path();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
 
 /// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success
 /// (used to assert branch state after a `rigger step --base`), or None on failure.
@@ -806,18 +776,6 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
     );
 }
 
-/// Extract the compaction's REPORTED reclaimed byte count from a `rigger reset --runs` line
-/// (spec 46, criterion 3). The line reads `... then compacted the graph file (reclaimed N
-/// byte(s) on disk) ...`; this parses `N`. Returns `None` when the phrase is absent, so a
-/// caller can distinguish "compaction was reported" from "no compaction phrase at all".
-fn reported_reclaimed_bytes(reset_line: &str) -> Option<u64> {
-    let marker = "compacted the graph file (reclaimed ";
-    let start = reset_line.find(marker)? + marker.len();
-    let rest = &reset_line[start..];
-    let end = rest.find(" byte(s)")?;
-    rest[..end].trim().parse().ok()
-}
-
 /// `rigger reset --runs` REPORTS the bytes its compaction reclaimed, and a SECOND pass is an
 /// idempotent no-op (spec 46, criterion 3). Two operator-facing boundaries the happy-path
 /// compaction test does not reach, both driven through the COMPILED binary: (1) the reset line
@@ -852,7 +810,7 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
         )),
         "first reset --runs must reclaim all {BLOATED_SUPERSEDED} superseded edges; got: {out1:?}"
     );
-    let reclaimed1 = reported_reclaimed_bytes(&out1)
+    let reclaimed1 = reported_reclaimed_bytes(&out1, "compacted the graph file (reclaimed ")
         .unwrap_or_else(|| panic!("first reset --runs must REPORT a compaction; got: {out1:?}"));
     // A real prune must format a PARSEABLE, non-zero reclaimed-byte count through the `cmd_reset`
     // report seam. That count is `page_count`-based (measured BEFORE the VACUUM), so it is non-zero
@@ -880,7 +838,7 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
         out2.contains("reclaimed 0 superseded edge(s)"),
         "second reset --runs must prune nothing (all cruft already gone); got: {out2:?}"
     );
-    let reclaimed2 = reported_reclaimed_bytes(&out2)
+    let reclaimed2 = reported_reclaimed_bytes(&out2, "compacted the graph file (reclaimed ")
         .unwrap_or_else(|| panic!("second reset --runs must REPORT a compaction; got: {out2:?}"));
     assert_eq!(
         reclaimed2, 0,
@@ -3563,7 +3521,7 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
 {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "terminalintegratetest");
 
     let scratch = root.join("scratchroot");
 
@@ -3665,7 +3623,7 @@ struct LinkedWorktreeRefusal {
 fn assert_a_linked_worktree_refuses(verb: &str, not_before: &str) -> LinkedWorktreeRefusal {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "terminalintegratetest");
 
     let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
     let wt_path = wt_parent.path().join(format!("rigger-wt-linked-{verb}"));
@@ -3801,7 +3759,7 @@ fn repo_less_serve_never_attempts_to_anchor_a_run_branch() {
 
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "terminalintegratetest");
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
 
     let mut child = common::rigger_courier()
@@ -3848,7 +3806,7 @@ fn repo_less_serve_never_attempts_to_anchor_a_run_branch() {
 fn step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "terminalintegratetest");
 
     let scratch = root.join("scratchroot");
     let tmp = scratch.to_str().unwrap();
@@ -3871,7 +3829,7 @@ fn step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree(
     // A git-less FIXTURE nested INSIDE that same scratch root (u87c3's exact shape), with its
     // OWN store and config but no `.git` of its own.
     let fixture = scratch.join("nested-fixture");
-    write_reviewless_git_unit_workflow(&fixture);
+    write_reviewless_git_unit_workflow(&fixture, "terminalintegratetest");
 
     let (_out2, err2, ok2) = run_rigger_envs(&fixture, &["step"], &[("RIGGER_TMPDIR", tmp)]);
     assert!(
@@ -4983,36 +4941,6 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
     );
 }
 
-/// Scaffold a project with ONE full unit stage - `agent: worker`, gated by a trivial
-/// always-passing inline gate, `on_pass: merge`, and NO review panel at all
-/// (`review.is_empty()`, "the historical implement-then-integrate behavior" `ReviewPanel`
-/// itself documents) - the minimal shape that reaches a genuine `Ok(true)` integrate. Real
-/// git isolation (no `isolation: none`, same reasoning as
-/// [`write_unit_review_lenses_workflow`]) so the unit's own durable `rigger-wt-<unit>`
-/// worktree on `rigger/u/<unit>` is the SAME checkpoint kind `run_stage`'s
-/// terminal-teardown gate covers.
-fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    write_agent(root, "worker", "Read, Edit", "Do the unit.");
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: terminalintegratetest
-defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: merge
-"#,
-    )
-    .unwrap();
-}
-
 /// The escalating twin of [`write_reviewless_git_unit_workflow`]: identical shape, but
 /// `defaults.max_retries: 1` means `safety::remediate(0, 1)` escalates on the FIRST failed
 /// attempt (`bounded_then_escalates` in `src/safety.rs` pins that arithmetic), so a single
@@ -5094,7 +5022,7 @@ fn assert_the_solo_worktree_is_reclaimed(root: &Path, wt_dir: &Path, outcome: &s
 fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "terminalintegratetest");
 
     // Step 1: the unit is ready, so its implementer parks - the real, git-backed isolation
     // means the unit's own durable worktree is created right here, before the implementer
@@ -9081,7 +9009,7 @@ fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_
 fn a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "terminalintegratetest");
 
     let scratch = root.join("scratchroot");
     let tmp = scratch.to_str().unwrap();
@@ -10847,20 +10775,6 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
         err.contains("already exists and was reused") && err.contains("NOT applied"),
         "an ignored explicit --base must be announced on stderr; got: {err:?}"
     );
-}
-
-/// A throwaway project dir that is deliberately NOT a git repo (no `git init`), so
-/// `git_repo()` resolves to empty and the conductor drives a REPO-LESS run. That is the
-/// offline shape the stepwise driver's own unit tests use (`repo: String::new()`): with
-/// no repo configured, `assert_isolated_cwd` is a no-op, so a reviewer spawn (the
-/// adjudicator) parks with an empty working dir instead of being refused for "would run
-/// in the main repo checkout". A repo-ful run would instead need real worktrees, and a
-/// fabricated `SpawnResult` (no actual diff) would then fail the pre-gate commit with
-/// "nothing to commit" - so repo-less is the faithful offline driver for this test.
-/// `project_identity()` falls back to the dir basename, which is stable across the
-/// step / emit / stats calls this test makes in the same dir.
-fn temp_repoless_project() -> tempfile::TempDir {
-    tempfile::tempdir().unwrap()
 }
 
 /// Scaffold a single-unit workflow whose unit runs a REAL inline gate and reviews itself
@@ -15355,39 +15269,6 @@ fn validate_advises_softly_on_a_snapshot_only_date_suffix_bump() {
     );
 }
 
-/// Seed `<root>/.rigger/events.db` with a stream whose position order and revision order
-/// DISAGREE (spec 71's signature `rigger validate` must detect) by inserting rows directly -
-/// bypassing the store's own revision assignment, the only way to reach this shape (a
-/// correctly functioning append always assigns `MAX(revision) + 1`, so it can never produce
-/// this on its own). Three rows land in stream `run`, in this insertion (position) order:
-/// revision 5, then revision 1, then revision 2 - each value is DISTINCT so
-/// `UNIQUE(stream, revision)` is satisfied (this is the actual on-disk shape a write that
-/// lands in a compaction-opened revision hole leaves: the row it targets is a hole, never a
-/// duplicate), but positions 2 and 3 both carry a revision at or below the stream's already-
-/// recorded maximum (5) - the two out-of-order rows the test asserts on.
-fn seed_order_signature(root: &Path, project: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
-    let db = rigger.join("events.db");
-    // Open through the real store first, so the schema is laid down exactly as the binary
-    // itself would lay it down.
-    rigger::eventstore::sqlite::Store::open(db.to_str().unwrap()).unwrap();
-    let stream = format!(
-        "{}run",
-        rigger::eventstore::namespace::Namespaced::prefix_for(project)
-    );
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    for revision in [5i64, 1, 2] {
-        conn.execute(
-            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
-             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', 0, 0, ?3)",
-            rusqlite::params![stream, format!("seed-{revision}"), revision],
-        )
-        .unwrap();
-    }
-}
-
 /// Spec 71 (`rigger validate` clause, VALIDATE DETECTS THE SIGNATURE): a stream whose
 /// position order and revision order disagree draws an advisory naming the stream, the
 /// out-of-order row count, and the repair doc, while the exit status stays unchanged
@@ -15422,7 +15303,13 @@ fn validate_detects_a_stream_whose_position_order_and_revision_order_disagree() 
         ok,
         "rigger init must scaffold a valid config; stderr:\n{err}"
     );
-    seed_order_signature(droot, "order-signature-project");
+    std::fs::create_dir_all(droot.join(".rigger")).unwrap();
+    std::fs::write(
+        droot.join(".rigger").join("project.id"),
+        "order-signature-project\n",
+    )
+    .unwrap();
+    seed_order_signature(droot, "order-signature-project", 0);
     let (_out, err, ok) = run_rigger(droot, &["validate"]);
     assert!(
         ok,
@@ -24838,12 +24725,7 @@ fn pid_reaches_stopped_state(pid: u32) -> bool {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| {
-                stat.rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string))
-            });
+        let state = rigger::reap::stat_field_after_comm(pid, 0);
         if state.as_deref() == Some("T") {
             return true;
         }
