@@ -73,13 +73,11 @@
 //! together when their shingle-set Jaccard is >= 0.72; a cluster is classified `exact` when
 //! every member's normalized stream is byte-identical (Jaccard 1.0 - a rename-only copy-paste)
 //! and `near` otherwise. To keep this tractable over the whole tree, functions are first grouped
-//! by their exact normalized stream (an O(n) hashmap pass, immune to the cap below - this is
-//! also the entire `exact` pass) and only one representative per distinct stream is fed through
-//! an inverted-shingle-index candidate search for the `near` pass; a shingle shared by more than
-//! [`POSTING_CAP`] representatives is skipped as a candidate GENERATOR (not as similarity
-//! evidence for pairs found via a rarer shared shingle) - true near-duplicates share many
-//! shingles, so this bounds the pathological case (a hyper-common boilerplate shingle) without
-//! materially harming recall; the seeded adversarial sample below is this claim's check.
+//! by their exact normalized stream (an O(n) hashmap pass - this is also the entire `exact`
+//! pass) and only one representative per distinct stream is fed through an inverted index over
+//! each set's PREFIX-FILTER fingerprints ([`prefix_len`]) for the `near` pass. Prefix filtering
+//! is exact: every pair at or above the threshold shares a prefix fingerprint, so no pair is
+//! ever dropped and a helper added anywhere cannot change another cluster's membership.
 //!
 //! THE FIVE MANDATORY SWEEPS (spec 85 Design: "named as mandatory sweeps the catalog must
 //! cover"), each mechanically collected (not similarity-dependent) into its own `semantic`
@@ -2084,11 +2082,15 @@ const SHINGLE_SIZE: usize = 8;
 /// similarity is... at or above 0.72").
 const SIMILARITY_THRESHOLD: f64 = 0.72;
 
-/// A shingle shared by more than this many distinct-normalized-stream representatives is
-/// skipped as a candidate-pair GENERATOR (see this module's doc comment) - bounds the
-/// pathological hyper-common-boilerplate-shingle case without discarding it as similarity
-/// evidence for pairs found via any of the function's OTHER shingles.
-const POSTING_CAP: usize = 32;
+/// The PREFIX-FILTER length of a shingle set of `n` fingerprints: every set whose Jaccard with
+/// it reaches [`SIMILARITY_THRESHOLD`] shares at least one of its first this-many fingerprints,
+/// taken in any one global order. Jaccard >= t forces an overlap of at least `ceil(t * n)`, so the sets cannot
+/// both miss a prefix of `n - ceil(t * n) + 1`; the overlap is rounded DOWN by a hair so float
+/// error can only lengthen the prefix (more candidates), never drop a true pair.
+fn prefix_len(n: usize) -> usize {
+    let min_overlap = ((SIMILARITY_THRESHOLD * n as f64) - 1e-9).ceil().max(0.0) as usize;
+    n - min_overlap.min(n) + 1
+}
 
 const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 
@@ -2721,8 +2723,8 @@ fn build_mechanical_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupClust
     }
 
     let mut dsu = Dsu::new(n);
-    // Phase A: union every function with the same normalized stream (O(n), immune to
-    // POSTING_CAP - this is the entire `exact` pass) and pick one representative per stream.
+    // Phase A: union every function with the same normalized stream (O(n) - this is the entire
+    // `exact` pass) and pick one representative per stream.
     let mut repr_of_key: HashMap<&str, usize> = HashMap::new();
     let mut representatives: Vec<usize> = Vec::new();
     for (i, key) in norm_keys.iter().enumerate() {
@@ -2735,23 +2737,40 @@ fn build_mechanical_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupClust
         }
     }
 
-    // Phase B: an inverted shingle index over the (distinct-stream) representatives only,
-    // candidate pairs verified by exact Jaccard, unioned when >= SIMILARITY_THRESHOLD.
+    // Phase B: an inverted index over each (distinct-stream) representative's PREFIX-FILTER
+    // fingerprints ([`prefix_len`]), taken in one global order - rarest first, so a boilerplate
+    // shingle sits at the back of every set and rarely reaches a prefix. Prefix filtering is
+    // exact under ANY fixed global order: every pair at or above the threshold shares a prefix
+    // fingerprint, so the candidate set is COMPLETE and a cluster's membership depends only on its
+    // members' own similarity - never on how many unrelated functions share a common shingle (the
+    // order only decides how many candidates are checked). A pair whose sizes alone rule out the
+    // threshold is never a candidate. Candidates are verified by exact Jaccard and unioned when
+    // >= SIMILARITY_THRESHOLD.
+    let mut frequency: HashMap<u64, usize> = HashMap::new();
+    for &fi in &representatives {
+        for &sh in &shingle_sets[fi] {
+            *frequency.entry(sh).or_default() += 1;
+        }
+    }
     let mut posting: HashMap<u64, Vec<usize>> = HashMap::new();
     for (ri, &fi) in representatives.iter().enumerate() {
-        for &sh in &shingle_sets[fi] {
+        let mut ordered = shingle_sets[fi].clone();
+        ordered.sort_unstable_by_key(|sh| (frequency[sh], *sh));
+        ordered.truncate(prefix_len(ordered.len()));
+        for sh in ordered {
             posting.entry(sh).or_default().push(ri);
         }
     }
+    let size_of = |ri: usize| shingle_sets[representatives[ri]].len() as f64;
     let mut candidates: HashSet<(usize, usize)> = HashSet::new();
     for list in posting.values() {
-        if list.len() < 2 || list.len() > POSTING_CAP {
-            continue;
-        }
         for a in 0..list.len() {
             for &b in &list[a + 1..] {
                 let (x, y) = (list[a].min(b), list[a].max(b));
-                candidates.insert((x, y));
+                let (small, large) = (size_of(x).min(size_of(y)), size_of(x).max(size_of(y)));
+                if small >= SIMILARITY_THRESHOLD * large - 1e-9 {
+                    candidates.insert((x, y));
+                }
             }
         }
     }
@@ -8166,6 +8185,53 @@ mod tests {
         assert_eq!(clusters[0].sites.len(), 3);
         assert_eq!(clusters[0].classification, "near");
         assert!(!clusters[0].proposed_home.is_empty());
+    }
+
+    /// A near-duplicate pair whose every shared shingle is ALSO carried by many unrelated
+    /// functions (the common-boilerplate shape a struct builder's `..Default::default() }`
+    /// produces) must still cluster: adding a helper anywhere in the tree can never change
+    /// another cluster's membership. `fillers` unrelated functions each open with the pair's
+    /// whole shared body and then diverge far enough to fall below the threshold themselves.
+    fn near_pair_clusters_beside(fillers: usize) {
+        const OPS: [&str; 12] = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "+", "*"];
+        let body: String = OPS
+            .iter()
+            .map(|op| format!("    let v = v {op} 1;\n"))
+            .collect();
+        let pair_fn = |name: &str, last: &str| {
+            format!("fn {name}(v: u32) -> u32 {{\n{body}    v {last} 1\n}}\n")
+        };
+        let mut src = pair_fn("alpha", "+") + &pair_fn("beta", "-");
+        // Every filler carries each shingle alpha and beta share (the whole body, then the
+        // closing `v`), followed by an unrelated tail long enough to keep it below the threshold.
+        let tail = "    if v > 3 { return v; }\n    while v < 2 { break; }\n    \
+                    for i in 0..v { let _ = i; }\n    match v { 0 => return 1, _ => {} }\n    \
+                    loop { break; }\n    let w: Vec<u32> = vec![v];\n    let s = &w[..];\n    \
+                    assert!(!s.is_empty());\n    let t = (v, v);\n    let (a, b) = t;\n    \
+                    let v = a.max(b);\n";
+        for k in 0..fillers {
+            let pad = "    let v = v;\n".repeat(k);
+            src +=
+                &format!("fn filler_{k}(v: u32) -> u32 {{\n{body}    v;\n{tail}{pad}    v\n}}\n");
+        }
+        let clusters = clusters_for(&on_fixture(scan_tree, &[("src/a.rs", src.as_str())]));
+        let names_with_alpha: HashSet<&str> = clusters
+            .iter()
+            .find(|c| c.sites.iter().any(|s| s.name == "alpha"))
+            .map(|c| c.sites.iter().map(|s| s.name.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            names_with_alpha,
+            HashSet::from(["alpha", "beta"]),
+            "the alpha/beta near pair must cluster alone beside {fillers} unrelated fillers"
+        );
+    }
+
+    rigger::test_cases! {
+        a_near_pair_clusters_beside_a_few_functions_sharing_its_shingles:
+            near_pair_clusters_beside(3);
+        a_near_pair_still_clusters_when_many_functions_share_every_one_of_its_shingles:
+            near_pair_clusters_beside(40);
     }
 
     #[test]
