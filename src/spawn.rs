@@ -528,26 +528,27 @@ pub struct SpawnResult {
 }
 
 impl SpawnResult {
-    /// A SUCCESSFUL result: the agent finished and produced `output`.
-    pub fn ok(id: impl Into<String>, output: impl Into<String>) -> SpawnResult {
+    /// The one constructor every named result below is a thin variant over: `output` on a
+    /// success, `error` on a failure, and no courier metadata.
+    fn outcome(id: String, output: String, error: String) -> SpawnResult {
         SpawnResult {
-            id: id.into(),
-            output: output.into(),
-            error: String::new(),
+            id,
+            output,
+            error,
             meta: Value::Null,
         }
+    }
+
+    /// A SUCCESSFUL result: the agent finished and produced `output`.
+    pub fn ok(id: impl Into<String>, output: impl Into<String>) -> SpawnResult {
+        Self::outcome(id.into(), output.into(), String::new())
     }
 
     /// A FAILED result (`rigger result --error`): the spawn errored with `error`. The
     /// replay driver answers a recorded failure with a driver error, never a fake
     /// success.
     pub fn failed(id: impl Into<String>, error: impl Into<String>) -> SpawnResult {
-        SpawnResult {
-            id: id.into(),
-            output: String::new(),
-            error: error.into(),
-            meta: Value::Null,
-        }
+        Self::outcome(id.into(), String::new(), error.into())
     }
 
     /// A LIVENESS-FAULT result `rigger step` records for a hung spawn (spec 10, unit 3):
@@ -561,12 +562,7 @@ impl SpawnResult {
         error: impl Into<String>,
         class: &str,
     ) -> SpawnResult {
-        SpawnResult {
-            id: id.into(),
-            output: String::new(),
-            error: error.into(),
-            meta: serde_json::json!({ META_LIVENESS_CLASS: class }),
-        }
+        Self::failed(id, error).with_meta(serde_json::json!({ META_LIVENESS_CLASS: class }))
     }
 
     /// Builder: attach the optional courier metadata (`rigger result --meta <json>`).

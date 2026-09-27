@@ -908,23 +908,22 @@ struct ReviewOutcome {
 }
 
 impl ReviewOutcome {
-    fn approved(reason: String) -> Self {
+    /// The one constructor: a bare `approved` verdict carrying `reason`, with no rollback, no
+    /// adjudicator resolution and no round-start sha.
+    fn verdict(approved: bool, reason: String) -> Self {
         ReviewOutcome {
-            approved: true,
+            approved,
             reason,
             compensate: None,
             adj_resolved: String::new(),
             round_start_sha: String::new(),
         }
     }
+    fn approved(reason: String) -> Self {
+        Self::verdict(true, reason)
+    }
     fn rejected(reason: String) -> Self {
-        ReviewOutcome {
-            approved: false,
-            reason,
-            compensate: None,
-            adj_resolved: String::new(),
-            round_start_sha: String::new(),
-        }
+        Self::verdict(false, reason)
     }
 }
 

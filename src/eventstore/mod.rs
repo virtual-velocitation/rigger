@@ -209,9 +209,7 @@ impl Appended {
     /// The report for an append that wrote EVERY event it was handed, at `positions`
     /// (in input order). This is what every append that suppresses nothing returns.
     pub fn all(positions: Vec<Position>) -> Self {
-        Appended {
-            placements: positions.into_iter().map(Some).collect(),
-        }
+        Self::from_placements(positions.into_iter().map(Some).collect())
     }
 
     /// The report for an append that wrote only some of the events it was handed:

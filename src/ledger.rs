@@ -220,11 +220,7 @@ impl AttentionEntry {
 
     /// A run-scoped entry (halted / budget-final-tenth) - no single unit is the subject.
     pub fn run_scoped(kind: &'static str, detail: impl Into<String>) -> Self {
-        AttentionEntry {
-            kind,
-            unit: String::new(),
-            detail: detail.into(),
-        }
+        Self::unit_scoped(kind, String::new(), detail)
     }
 
     /// The one-line render (spec 93, criterion 4): `"<subject>: <detail>"`, where a
