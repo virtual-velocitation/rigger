@@ -83,9 +83,9 @@
 
 mod common;
 
+use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
-use common::cli::run_stream_identity;
 use common::cli::seed_run_events;
 use common::cli::temp_git_project_with_commit;
 use common::git::git_ok;
@@ -594,16 +594,7 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_r
 /// at the EXACT path production derives for a spawn of the run a separate, real prior process
 /// just started, without hardcoding or guessing the run id that process minted.
 fn current_run_id(root: &Path) -> String {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    rigger::run::current_run_id(&events)
+    rigger::run::current_run_id(&read_run_events(root))
         .expect("a real prior `rigger step` process must already have minted a run id")
 }
 
