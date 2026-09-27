@@ -905,6 +905,27 @@ fn outer() {
         );
     }
 
+    /// The symbols the Rust grammar extracts from `src`.
+    fn rust_symbols(src: &str) -> FileSymbols {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap()
+    }
+
+    /// Each `(name, is_test, why)` of `expected` names a definition of the Rust source `src` and
+    /// whether it is marked test code; returns the extracted symbols.
+    fn assert_defs_marked_test(src: &str, expected: &[(&str, bool, &str)]) -> FileSymbols {
+        let fs = rust_symbols(src);
+        for (name, is_test, why) in expected {
+            let def = fs
+                .defs
+                .iter()
+                .find(|d| d.name == *name)
+                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs));
+            assert_eq!(def.is_test, *is_test, "{name}: {why}");
+        }
+        fs
+    }
+
     #[test]
     fn test_annotated_definitions_and_everything_nested_inside_them_are_marked_is_test() {
         // Spec 86 criterion 1's own fixture shape: product code alongside a `#[cfg(test)]` module
@@ -931,27 +952,20 @@ mod tests {
     }
 }
 ";
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
-
-        let def_is_test = |name: &str| {
-            fs.defs
-                .iter()
-                .find(|d| d.name == name)
-                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
-                .is_test
-        };
-        assert!(!def_is_test("product"), "product code is never test code");
-        assert!(
-            def_is_test("tests"),
-            "the #[cfg(test)] module itself is test code"
+        let fs = assert_defs_marked_test(
+            src,
+            &[
+                ("product", false, "product code is never test code"),
+                ("tests", true, "the #[cfg(test)] module itself is test code"),
+                (
+                    "helper",
+                    true,
+                    "a plain helper with no attribute of its own is test code by CONTAINMENT \
+                     inside the cfg(test) module",
+                ),
+                ("it_works", true, "a #[test] function is test code"),
+            ],
         );
-        assert!(
-            def_is_test("helper"),
-            "a plain helper with no attribute of its own is test code by CONTAINMENT inside the \
-             cfg(test) module"
-        );
-        assert!(def_is_test("it_works"), "a #[test] function is test code");
 
         // References: the call inside product code is not test code; the calls inside the
         // (transitively) test-scoped `helper`/`it_works` bodies are.
@@ -976,14 +990,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cfg_predicates_naming_test_are_recognized_and_similarly_spelled_tokens_are_not() {
-        // `#[cfg(all(test, feature = "x"))]` is the exact shape this repository's own source uses
-        // (e.g. a `#[cfg(all(test, feature = "symbols"))] mod tests` gate) - a compound predicate
-        // naming `test` as one of several conjuncts must still be recognized. Conversely a
-        // similarly-spelled but DISTINCT token (`testing`) must never false-positive: `test` is
-        // matched as a whole word, never a substring.
-        let src = "\
+    crate::test_cases! {
+        /// `#[cfg(all(test, feature = "x"))]` is the exact shape this repository's own source
+        /// uses (e.g. a `#[cfg(all(test, feature = "symbols"))] mod tests` gate) - a compound
+        /// predicate naming `test` as one of several conjuncts must still be recognized.
+        /// Conversely a similarly-spelled but DISTINCT token (`testing`) must never
+        /// false-positive: `test` is matched as a whole word, never a substring.
+        cfg_predicates_naming_test_are_recognized_and_similarly_spelled_tokens_are_not:
+            assert_defs_marked_test(
+                "\
 #[cfg(all(test, feature = \"x\"))]
 fn compound_predicate() {}
 
@@ -993,154 +1008,131 @@ fn similarly_spelled_feature_is_not_a_test() {}
 #[allow(dead_code)]
 #[cfg(test)]
 fn a_stacked_non_test_attribute_above_does_not_hide_the_real_one() {}
-";
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
-        let def_is_test = |name: &str| {
-            fs.defs
-                .iter()
-                .find(|d| d.name == name)
-                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
-                .is_test
-        };
-        assert!(
-            def_is_test("compound_predicate"),
-            "#[cfg(all(test, ..))] names the test token as one conjunct and must match"
-        );
-        assert!(
-            !def_is_test("similarly_spelled_feature_is_not_a_test"),
-            "\"testing\" is a distinct token from \"test\" and must never false-positive"
-        );
-        assert!(
-            def_is_test("a_stacked_non_test_attribute_above_does_not_hide_the_real_one"),
-            "every attribute in the stack is inspected, not just the one nearest the item"
-        );
-    }
-
-    #[test]
-    fn negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test() {
-        // Round-2 regression (review REJECT adj-u86c1-verdict-reject / adv-u86c1-cfg-predicate-
-        // negation-and-cfg-attr-inverted): the token scan named `test` as a standalone word with
-        // zero cfg-predicate structure, so it wrongly folded two common, ALWAYS-product Rust
-        // idioms to `is_test: true`.
-        let src = "\
+",
+                &[
+                    (
+                        "compound_predicate",
+                        true,
+                        "#[cfg(all(test, ..))] names the test token as one conjunct and must match",
+                    ),
+                    (
+                        "similarly_spelled_feature_is_not_a_test",
+                        false,
+                        "\"testing\" is a distinct token from \"test\" and must never false-positive",
+                    ),
+                    (
+                        "a_stacked_non_test_attribute_above_does_not_hide_the_real_one",
+                        true,
+                        "every attribute in the stack is inspected, not just the one nearest the item",
+                    ),
+                ],
+            );
+        /// Round-2 regression (review REJECT adj-u86c1-verdict-reject / adv-u86c1-cfg-predicate-
+        /// negation-and-cfg-attr-inverted): the token scan named `test` as a standalone word with
+        /// zero cfg-predicate structure, so it wrongly folded two common, ALWAYS-product Rust
+        /// idioms to `is_test: true`. `#[cfg(not(test))]` is the PRODUCTION-only half of a
+        /// dual-cfg mock construct: the item it guards is definitionally the one that SHIPS
+        /// (compiled whenever `test` is NOT set). `cfg_attr` never gates compilation of the
+        /// tagged item itself - it only conditionally attaches the inner attribute - so the item
+        /// is ALWAYS compiled regardless of what its predicate names.
+        negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test:
+            assert_defs_marked_test(
+                "\
 #[cfg(not(test))]
 fn real_client() {}
 
 #[cfg_attr(test, derive(Debug))]
 struct RealConfig;
-";
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
-        let def_is_test = |name: &str| {
-            fs.defs
-                .iter()
-                .find(|d| d.name == name)
-                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
-                .is_test
-        };
-        // `#[cfg(not(test))]` is the PRODUCTION-only half of a dual-cfg mock construct: the item
-        // it guards is definitionally the one that SHIPS (compiled whenever `test` is NOT set),
-        // never test code, so it must never be excluded from the graph.
-        assert!(
-            !def_is_test("real_client"),
-            "#[cfg(not(test))] guards the production half of a dual-cfg construct - never test code"
-        );
-        // `cfg_attr` never gates compilation of the tagged item itself - it only conditionally
-        // attaches the inner attribute - so the item is ALWAYS compiled regardless of what its
-        // predicate names, and must never be excluded on that predicate's account.
-        assert!(
-            !def_is_test("RealConfig"),
-            "cfg_attr's predicate governs the inner attribute, not the tagged item's own compilation"
-        );
-    }
-
-    #[test]
-    fn a_not_wrapping_a_non_test_atom_never_marks_the_item_test() {
-        // Round-6 `cargo mutants` finding: `predicate_group_facts`'s `not` arm used to (in an
-        // earlier version of this fix) invert its inner predicate's answer UNCONDITIONALLY -
-        // sound only when the inner
-        // predicate is built purely from `test` (a `not(test)`/`not(not(test))`/... chain), but
-        // wrongly also applied to a `not(P)` wrapping an UNRELATED atom. `feature = "x"`'s own
-        // truth is independent of `test` altogether (on or off regardless of `test`'s value), so
-        // `not(feature = "x")` compiles whenever `feature` is OFF - in EITHER a test or a
-        // non-test build - and must never be marked test code, exactly as an item under an
-        // ordinary, un-negated `#[cfg(feature = "x")]` never is.
-        let src = "\
+",
+                &[
+                    (
+                        "real_client",
+                        false,
+                        "#[cfg(not(test))] guards the production half of a dual-cfg construct - \
+                         never test code",
+                    ),
+                    (
+                        "RealConfig",
+                        false,
+                        "cfg_attr's predicate governs the inner attribute, not the tagged item's \
+                         own compilation",
+                    ),
+                ],
+            );
+        /// Round-6 `cargo mutants` finding: `predicate_group_facts`'s `not` arm used to (in an
+        /// earlier version of this fix) invert its inner predicate's answer UNCONDITIONALLY -
+        /// sound only when the inner predicate is built purely from `test` (a
+        /// `not(test)`/`not(not(test))`/... chain), but wrongly also applied to a `not(P)`
+        /// wrapping an UNRELATED atom. `feature = "x"`'s own truth is independent of `test`
+        /// altogether (on or off regardless of `test`'s value), so `not(feature = "x")` compiles
+        /// whenever `feature` is OFF - in EITHER a test or a non-test build - and must never be
+        /// marked test code, exactly as an item under an ordinary, un-negated
+        /// `#[cfg(feature = "x")]` never is.
+        a_not_wrapping_a_non_test_atom_never_marks_the_item_test: assert_defs_marked_test(
+            "\
 #[cfg(not(feature = \"x\"))]
 fn real_client() {}
 
 #[cfg(not(not(test)))]
 fn double_negation_is_test_only() {}
-";
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
-        let def_is_test = |name: &str| {
-            fs.defs
-                .iter()
-                .find(|d| d.name == name)
-                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
-                .is_test
-        };
-        assert!(
-            !def_is_test("real_client"),
-            "not(feature = \"x\") is independent of test altogether - never test code"
+",
+            &[
+                (
+                    "real_client",
+                    false,
+                    "not(feature = \"x\") is independent of test altogether - never test code",
+                ),
+                (
+                    "double_negation_is_test_only",
+                    true,
+                    "not(not(test)) cancels back to test-only - a PURE test predicate, so \
+                     inversion is sound here and must still recognize it as test code",
+                ),
+            ],
         );
-        assert!(
-            def_is_test("double_negation_is_test_only"),
-            "not(not(test)) cancels back to test-only - a PURE test predicate, so inversion is \
-             sound here and must still recognize it as test code"
-        );
-    }
-
-    #[test]
-    fn compound_predicates_with_nested_negation_or_a_non_test_disjunct_do_not_mark_the_item_test() {
-        // Round-3 regression (review REJECT adj-u86c1-verdict-reject round 2, findings
-        // arch-u86c1-r2-compound-not-predicate-still-marks-product-code-test and
-        // sdet-u86c1-r2-cfg-predicate-fix-does-not-generalize-to-nested-negation-or-any):
-        // round 2's fix only special-cased a `not(..)` wrapping the WHOLE predicate. A
-        // `not(test)` nested as a sub-clause of `all(..)`, or a `test` disjunct sitting
-        // alongside a non-test one inside `any(..)`, both fell through the flat token scan
-        // and were wrongly folded to `is_test: true`, excluding real product items from the
-        // graph.
-        let src = "\
+        /// Round-3 regression (review REJECT adj-u86c1-verdict-reject round 2, findings
+        /// arch-u86c1-r2-compound-not-predicate-still-marks-product-code-test and
+        /// sdet-u86c1-r2-cfg-predicate-fix-does-not-generalize-to-nested-negation-or-any): round
+        /// 2's fix only special-cased a `not(..)` wrapping the WHOLE predicate. A `not(test)`
+        /// nested as a sub-clause of `all(..)`, or a `test` disjunct sitting alongside a non-test
+        /// one inside `any(..)`, both fell through the flat token scan and were wrongly folded to
+        /// `is_test: true`, excluding real product items from the graph.
+        compound_predicates_with_nested_negation_or_a_non_test_disjunct_do_not_mark_the_item_test:
+            assert_defs_marked_test(
+                "\
 #[cfg(all(not(test), feature = \"x\"))]
 fn dual_cfg_mock_production_half() {}
 
 #[cfg(any(debug_assertions, test))]
 fn debug_only_helper_that_ships_in_every_non_release_build() {}
-";
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
-        let def_is_test = |name: &str| {
-            fs.defs
-                .iter()
-                .find(|d| d.name == name)
-                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
-                .is_test
-        };
-        assert!(
-            !def_is_test("dual_cfg_mock_production_half"),
-            "not(test) nested inside all(..) still means the item compiles whenever test is \
-             NOT set - the production half of a dual-cfg construct, never test code"
-        );
-        assert!(
-            !def_is_test("debug_only_helper_that_ships_in_every_non_release_build"),
-            "any(debug_assertions, test) gives the item a path to compile with test unset - it \
-             is not test-only even though the predicate names the test token"
-        );
-    }
-
-    #[test]
-    fn a_trailing_same_line_comment_on_a_cfg_test_attribute_does_not_sever_the_scan() {
-        // Round-3 regression (review REJECT adj-u86c1-verdict-reject round 2, finding
-        // adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-scan): a same-line `//`
-        // comment after the attribute's closing `]` made `strip_suffix(']')` fail on the
-        // whole line, hit the else-arm `break`, and stopped the upward scan immediately - so
-        // a `#[cfg(test)]` module with a trailing same-line comment on its own attribute was
-        // never recognized as self-attributed test, and the whole module (and everything
-        // nested inside it) leaked into the graph as ordinary product code.
-        let src = "\
+",
+                &[
+                    (
+                        "dual_cfg_mock_production_half",
+                        false,
+                        "not(test) nested inside all(..) still means the item compiles whenever \
+                         test is NOT set - the production half of a dual-cfg construct, never \
+                         test code",
+                    ),
+                    (
+                        "debug_only_helper_that_ships_in_every_non_release_build",
+                        false,
+                        "any(debug_assertions, test) gives the item a path to compile with test \
+                         unset - it is not test-only even though the predicate names the test \
+                         token",
+                    ),
+                ],
+            );
+        /// Round-3 regression (review REJECT adj-u86c1-verdict-reject round 2, finding
+        /// adv-u86c1-r2-trailing-comment-severs-the-attribute-stack-scan): a same-line `//`
+        /// comment after the attribute's closing `]` made `strip_suffix(']')` fail on the whole
+        /// line, hit the else-arm `break`, and stopped the upward scan immediately - so a
+        /// `#[cfg(test)]` module with a trailing same-line comment on its own attribute was never
+        /// recognized as self-attributed test, and the whole module (and everything nested inside
+        /// it) leaked into the graph as ordinary product code.
+        a_trailing_same_line_comment_on_a_cfg_test_attribute_does_not_sever_the_scan:
+            assert_defs_marked_test(
+                "\
 fn product() {}
 
 #[cfg(test)] // module gate, trailing comment
@@ -1150,52 +1142,46 @@ mod tests {
     #[test]
     fn it_works() {}
 }
-";
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
-        let def_is_test = |name: &str| {
-            fs.defs
-                .iter()
-                .find(|d| d.name == name)
-                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
-                .is_test
-        };
-        assert!(!def_is_test("product"), "product code is never test code");
-        assert!(
-            def_is_test("tests"),
-            "the #[cfg(test)] module is still recognized as self-attributed test despite the \
-             trailing same-line comment on its attribute"
-        );
-        assert!(
-            def_is_test("helper"),
-            "an unattributed helper nested inside the trailing-commented cfg(test) module is \
-             test code by containment"
-        );
-        assert!(def_is_test("it_works"), "a #[test] function is test code");
-    }
-
-    #[test]
-    fn an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children() {
-        // Round-5 regression (review REJECT adj-u86c1-verdict-reject round 4, finding
-        // adv-u86c1-r4-inner-cfg-test-attribute-not-recognized): `preceded_by_test_attribute`'s
-        // sibling walk matched only the OUTER `attribute_item` shape (`#[cfg(test)] mod tests {
-        // .. }`, the attribute a sibling BEFORE the mod). The equally idiomatic INNER-attribute
-        // form - `mod tests { #![cfg(test)] fn helper() {} }`, where the attribute is the FIRST
-        // node INSIDE the mod's own body instead - parses to a distinct grammar kind,
-        // `inner_attribute_item` (verified against the real parsed tree: `mod_item body:
-        // declaration_list(inner_attribute_item, function_item)`), which the match fell through
-        // to its `_ => break` arm on, silently treating both the mod and its plain nested helper
-        // as ordinary product code.
-        //
-        // Two distinct gaps, both closed here: (1) `helper` is a normal SIBLING of the inner
-        // attribute inside the mod's declaration_list, so it is caught the same way an
-        // outer-attributed item's sibling stack already was - `inner_attribute_item` added to the
-        // existing sibling-walk match arm. (2) the mod ITSELF has no preceding sibling at all (the
-        // attribute lives inside its own body, not before it), so the sibling walk alone can never
-        // self-attribute it; `leading_inner_test_attribute` closes this by checking whether the
-        // definition's own body OPENS with a test-naming inner attribute, mirroring Rust's actual
-        // semantic (an inner attribute governs the item whose body contains it).
-        let src = "\
+",
+                &[
+                    ("product", false, "product code is never test code"),
+                    (
+                        "tests",
+                        true,
+                        "the #[cfg(test)] module is still recognized as self-attributed test \
+                         despite the trailing same-line comment on its attribute",
+                    ),
+                    (
+                        "helper",
+                        true,
+                        "an unattributed helper nested inside the trailing-commented cfg(test) \
+                         module is test code by containment",
+                    ),
+                    ("it_works", true, "a #[test] function is test code"),
+                ],
+            );
+        /// Round-5 regression (review REJECT adj-u86c1-verdict-reject round 4, finding
+        /// adv-u86c1-r4-inner-cfg-test-attribute-not-recognized): `preceded_by_test_attribute`'s
+        /// sibling walk matched only the OUTER `attribute_item` shape (`#[cfg(test)] mod tests {
+        /// .. }`, the attribute a sibling BEFORE the mod). The equally idiomatic INNER-attribute
+        /// form - `mod tests { #![cfg(test)] fn helper() {} }`, where the attribute is the FIRST
+        /// node INSIDE the mod's own body instead - parses to a distinct grammar kind,
+        /// `inner_attribute_item` (verified against the real parsed tree: `mod_item body:
+        /// declaration_list(inner_attribute_item, function_item)`), which the match fell through
+        /// to its `_ => break` arm on, silently treating both the mod and its plain nested helper
+        /// as ordinary product code.
+        ///
+        /// Two distinct gaps, both closed here: (1) `helper` is a normal SIBLING of the inner
+        /// attribute inside the mod's declaration_list, so it is caught the same way an
+        /// outer-attributed item's sibling stack already was - `inner_attribute_item` added to the
+        /// existing sibling-walk match arm. (2) the mod ITSELF has no preceding sibling at all (the
+        /// attribute lives inside its own body, not before it), so the sibling walk alone can never
+        /// self-attribute it; `leading_inner_test_attribute` closes this by checking whether the
+        /// definition's own body OPENS with a test-naming inner attribute, mirroring Rust's actual
+        /// semantic (an inner attribute governs the item whose body contains it).
+        an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children:
+            assert_defs_marked_test(
+                "\
 mod tests {
     #![cfg(test)]
 
@@ -1207,27 +1193,24 @@ mod tests {
 }
 
 fn product() {}
-";
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
-        let def_is_test = |name: &str| {
-            fs.defs
-                .iter()
-                .find(|d| d.name == name)
-                .unwrap_or_else(|| panic!("no def named {name:?}; got {:?}", fs.defs))
-                .is_test
-        };
-        assert!(
-            def_is_test("tests"),
-            "a mod whose OWN body opens with #![cfg(test)] is self-attributed test code, exactly \
-             as the equivalent outer #[cfg(test)] mod form already is"
-        );
-        assert!(
-            def_is_test("helper"),
-            "a plain helper with no attribute of its own, sitting inside a #![cfg(test)]-gated \
-             mod's body, is test code - by direct sibling position and by containment alike"
-        );
-        assert!(!def_is_test("product"), "product code is never test code");
+",
+                &[
+                    (
+                        "tests",
+                        true,
+                        "a mod whose OWN body opens with #![cfg(test)] is self-attributed test \
+                         code, exactly as the equivalent outer #[cfg(test)] mod form already is",
+                    ),
+                    (
+                        "helper",
+                        true,
+                        "a plain helper with no attribute of its own, sitting inside a \
+                         #![cfg(test)]-gated mod's body, is test code - by direct sibling \
+                         position and by containment alike",
+                    ),
+                    ("product", false, "product code is never test code"),
+                ],
+            );
     }
 
     #[test]
@@ -1318,100 +1301,110 @@ fn product() {}
             .unwrap_or_else(|| panic!("no extent named {name:?} in the tagged source"))
     }
 
-    #[test]
-    fn extent_spans_a_destructuring_or_default_brace_signature_to_the_full_body() {
-        // The exact criterion-1 OUTPUT defect the hand-rolled brace lexer re-triggered
-        // (adv-u58c1-signature-brace-early-close): a `{` ON the signature line - a struct
-        // destructuring parameter, or an `= {}` default - opens and closes a brace on that line, so
-        // a lexer that counts the FIRST `{` truncates the body to the signature alone. The grammar's
-        // OWN node range spans the whole function, so the extent covers the full body.
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        // `config` on line 1 destructures a `Point { x, y }` param (a brace ON the signature); its
-        // body runs to the closing brace on line 4.
-        let destructure = "\
+    /// Each `(name, start_line, end_line, why)` of `expected` is the extent `(language, query)`
+    /// tags for that definition of `source`.
+    fn assert_extents(
+        source: &str,
+        language: tree_sitter::Language,
+        query: &str,
+        expected: &[(&str, u32, u32, &str)],
+    ) {
+        for (name, start_line, end_line, why) in expected {
+            let e = extent_of(source, &language, query, name);
+            assert_eq!(
+                (e.start_line, e.end_line),
+                (*start_line, *end_line),
+                "{name}: {why}"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// The exact criterion-1 OUTPUT defect the hand-rolled brace lexer re-triggered
+        /// (adv-u58c1-signature-brace-early-close): a `{` ON the signature line - a struct
+        /// destructuring parameter, or an `= {}` default - opens and closes a brace on that line,
+        /// so a lexer that counts the FIRST `{` truncates the body to the signature alone. The
+        /// grammar's OWN node range spans the whole function, so the extent covers the full body.
+        extent_spans_a_destructuring_or_default_brace_signature_to_the_full_body: {
+            // `config` on line 1 destructures a `Point { x, y }` param (a brace ON the
+            // signature); its body runs to the closing brace on line 4.
+            assert_extents(
+                "\
 fn config(Point { x, y }: Point) -> u32 {
     let sum = x + y;
     sum
 }
-";
-        let e = extent_of(
-            destructure,
-            &language,
-            tree_sitter_rust::TAGS_QUERY,
-            "config",
-        );
-        assert_eq!(e.start_line, 1, "the site line is the signature line");
-        assert_eq!(
-            e.end_line, 4,
-            "the extent spans the FULL body past the signature brace, not the signature line alone"
-        );
-
-        // The `= {}` default-argument shape of the same defect: a brace that opens and closes on the
-        // signature line still must not bound the body.
-        let default_body = "\
+",
+                tree_sitter_rust::LANGUAGE.into(),
+                tree_sitter_rust::TAGS_QUERY,
+                &[(
+                    "config",
+                    1,
+                    4,
+                    "the extent spans the FULL body past the signature brace, not the signature \
+                     line alone",
+                )],
+            );
+            // The `= {}` default-argument shape of the same defect: a brace that opens and closes
+            // on the signature line still must not bound the body.
+            assert_extents(
+                "\
 fn with_default(opts: Opts) {
     let empty = Opts {};
     use_it(empty);
 }
-";
-        let d = extent_of(
-            default_body,
-            &language,
-            tree_sitter_rust::TAGS_QUERY,
-            "with_default",
-        );
-        assert_eq!(d.start_line, 1);
-        assert_eq!(
-            d.end_line, 4,
-            "an `= {{}}`/`{{}}` literal in the body never early-closes the extent"
-        );
-    }
-
-    #[test]
-    fn extent_generalizes_across_grammars_python_nested_def_and_js_brace_string() {
-        // The multi-grammar face (adv-u58c1-multigrammar-mislex-confirmed): the extent authority is
-        // the grammar's own node range, so it is correct on the BRACELESS and brace-carrying-string
-        // grammars a Rust brace lexer mis-reads. Two ingested grammars beyond Rust:
-
-        // (a) Python (braceless): a nested `def` inside an outer `def`. A Rust lexer finds no brace
-        // and falls back to the next-def-by-line, truncating the outer body at its nested child;
-        // Python's block boundary is the dedent, which the grammar resolves.
-        let py_language: tree_sitter::Language = tree_sitter_python::LANGUAGE.into();
-        let python = "\
+",
+                tree_sitter_rust::LANGUAGE.into(),
+                tree_sitter_rust::TAGS_QUERY,
+                &[(
+                    "with_default",
+                    1,
+                    4,
+                    "an `= {}`/`{}` literal in the body never early-closes the extent",
+                )],
+            );
+        };
+        /// The multi-grammar face (adv-u58c1-multigrammar-mislex-confirmed): the extent authority
+        /// is the grammar's own node range, so it is correct on the BRACELESS and
+        /// brace-carrying-string grammars a Rust brace lexer mis-reads. Two ingested grammars
+        /// beyond Rust.
+        extent_generalizes_across_grammars_python_nested_def_and_js_brace_string: {
+            // (a) Python (braceless): a nested `def` inside an outer `def`. A Rust lexer finds no
+            // brace and falls back to the next-def-by-line, truncating the outer body at its
+            // nested child; Python's block boundary is the dedent, which the grammar resolves.
+            assert_extents(
+                "\
 def outer(n):
     def inner(k):
         return k + 1
     total = inner(n)
     return total
-";
-        let outer = extent_of(
-            python,
-            &py_language,
-            tree_sitter_python::TAGS_QUERY,
-            "outer",
-        );
-        assert_eq!(outer.start_line, 1);
-        assert_eq!(
-            outer.end_line, 5,
-            "the Python outer def spans its whole indented block past the nested inner def"
-        );
-        let inner = extent_of(
-            python,
-            &py_language,
-            tree_sitter_python::TAGS_QUERY,
-            "inner",
-        );
-        assert_eq!(inner.start_line, 2);
-        assert_eq!(
-            inner.end_line, 3,
-            "the nested Python def is bounded by its own dedent, not the outer's tail"
-        );
-
-        // (b) JS: a function whose body holds a single-quote string carrying a lone `{`. A Rust
-        // lexer that does not treat a single-quote as a string delimiter counts that `{` as a body
-        // open and over-reads into the NEXT function; the grammar knows the quote is a string.
-        let js_language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
-        let js = "\
+",
+                tree_sitter_python::LANGUAGE.into(),
+                tree_sitter_python::TAGS_QUERY,
+                &[
+                    (
+                        "outer",
+                        1,
+                        5,
+                        "the Python outer def spans its whole indented block past the nested \
+                         inner def",
+                    ),
+                    (
+                        "inner",
+                        2,
+                        3,
+                        "the nested Python def is bounded by its own dedent, not the outer's tail",
+                    ),
+                ],
+            );
+            // (b) JS: a function whose body holds a single-quote string carrying a lone `{`. A
+            // Rust lexer that does not treat a single-quote as a string delimiter counts that `{`
+            // as a body open and over-reads into the NEXT function; the grammar knows the quote
+            // is a string. The following function is a DISTINCT extent, proving `open` did not
+            // swallow it.
+            assert_extents(
+                "\
 function open() {
     const brace = '{';
     return brace;
@@ -1419,17 +1412,21 @@ function open() {
 function next() {
     return 2;
 }
-";
-        let open = extent_of(js, &js_language, tree_sitter_javascript::TAGS_QUERY, "open");
-        assert_eq!(open.start_line, 1);
-        assert_eq!(
-            open.end_line, 4,
-            "the JS body's single-quote `{{` never over-reads the extent into the next function"
-        );
-        // The following function is a DISTINCT extent, proving `open` did not swallow it.
-        let next = extent_of(js, &js_language, tree_sitter_javascript::TAGS_QUERY, "next");
-        assert_eq!(next.start_line, 5);
-        assert_eq!(next.end_line, 7);
+",
+                tree_sitter_javascript::LANGUAGE.into(),
+                tree_sitter_javascript::TAGS_QUERY,
+                &[
+                    (
+                        "open",
+                        1,
+                        4,
+                        "the JS body's single-quote `{` never over-reads the extent into the \
+                         next function",
+                    ),
+                    ("next", 5, 7, "the following function is its own extent"),
+                ],
+            );
+        };
     }
 
     #[test]

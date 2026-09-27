@@ -655,42 +655,43 @@ mod tests {
         }
     }
 
-    #[test]
-    fn marker_filename_hex_escapes_every_byte_outside_alphanumeric_and_hyphen() {
-        // Spec 77 Design, decision `d77-injective-scratch-naming`: `/` and `#` (the
-        // spawn-id-structure characters) each become a 3-byte `_XX` escape.
-        assert_eq!(
-            marker_filename("unit-3-spawns-a-wall-clock/implementer#1"),
-            Some("unit-3-spawns-a-wall-clock_2fimplementer_231".to_string())
-        );
-        // Every byte outside [A-Za-z0-9-] escapes - space, colon, `/`, `#`, `.`, and `_`
-        // itself (`_` -> `_5f`, never left bare) - while `-` and alphanumerics survive.
-        assert_eq!(
-            marker_filename("a b:c/d#e.f-g_h"),
-            Some("a_20b_3ac_2fd_23e_2ef-g_5fh".to_string())
-        );
+    /// `marker_filename` encodes each `(spawn_id, filename)` of `cases` to exactly that name.
+    fn assert_marker_filenames(cases: &[(&str, &str)]) {
+        for (id, name) in cases {
+            assert_eq!(marker_filename(id), Some(name.to_string()), "{id}");
+        }
     }
 
-    #[test]
-    fn marker_filename_hex_escapes_dots_so_no_encoded_result_can_ever_be_a_path_traversal_component(
-    ) {
-        // `cmd_result`'s positional spawn id is otherwise unvalidated (only checked
-        // non-empty). Under the PRIOR char-by-char map (rounds 1-6), `.` passed through
-        // unescaped, so a spawn id of literally ".." resolved, unchanged, to a traversal
-        // component: `<registered_root>.join("..")` walked UP to the root's parent, and
-        // `reap_then_remove_dir`'s bare `remove_dir_all` deleted everything beside it. The
-        // injective encoding (`d77-injective-scratch-naming`) escapes `.` like any other
-        // disallowed byte (`_2e`), so no encoded output can ever contain a literal `.`
-        // character at all - a dotted input is just an ordinary, uniquely-encoded id now,
-        // never a traversal shape.
-        assert_eq!(marker_filename(".."), Some("_2e_2e".to_string()));
-        assert_eq!(marker_filename("."), Some("_2e".to_string()));
-        assert_eq!(marker_filename("..."), Some("_2e_2e_2e".to_string()));
-        assert_eq!(marker_filename("a.b"), Some("a_2eb".to_string()));
-        assert_eq!(
-            marker_filename("u/implementer#0.retry"),
-            Some("u_2fimplementer_230_2eretry".to_string())
-        );
+    crate::test_cases! {
+        /// Spec 77 Design, decision `d77-injective-scratch-naming`: `/` and `#` (the
+        /// spawn-id-structure characters) each become a 3-byte `_XX` escape. Every byte outside
+        /// [A-Za-z0-9-] escapes - space, colon, `/`, `#`, `.`, and `_` itself (`_` -> `_5f`,
+        /// never left bare) - while `-` and alphanumerics survive.
+        marker_filename_hex_escapes_every_byte_outside_alphanumeric_and_hyphen:
+            assert_marker_filenames(&[
+                (
+                    "unit-3-spawns-a-wall-clock/implementer#1",
+                    "unit-3-spawns-a-wall-clock_2fimplementer_231",
+                ),
+                ("a b:c/d#e.f-g_h", "a_20b_3ac_2fd_23e_2ef-g_5fh"),
+            ]);
+        /// `cmd_result`'s positional spawn id is otherwise unvalidated (only checked non-empty).
+        /// Under the PRIOR char-by-char map (rounds 1-6), `.` passed through unescaped, so a
+        /// spawn id of literally ".." resolved, unchanged, to a traversal component:
+        /// `<registered_root>.join("..")` walked UP to the root's parent, and
+        /// `reap_then_remove_dir`'s bare `remove_dir_all` deleted everything beside it. The
+        /// injective encoding (`d77-injective-scratch-naming`) escapes `.` like any other
+        /// disallowed byte (`_2e`), so no encoded output can ever contain a literal `.`
+        /// character at all - a dotted input is just an ordinary, uniquely-encoded id now, never
+        /// a traversal shape.
+        marker_filename_hex_escapes_dots_so_no_encoded_result_can_ever_be_a_path_traversal_component:
+            assert_marker_filenames(&[
+                ("..", "_2e_2e"),
+                (".", "_2e"),
+                ("...", "_2e_2e_2e"),
+                ("a.b", "a_2eb"),
+                ("u/implementer#0.retry", "u_2fimplementer_230_2eretry"),
+            ]);
     }
 
     #[test]
@@ -1194,36 +1195,38 @@ mod tests {
         assert!(!any_marker_fresh(root, now, bound));
     }
 
-    #[test]
-    fn any_marker_fresh_finds_a_fresh_marker_nested_under_a_run_id_directory() {
+    /// A marker written just now where `marker_path` puts it - `<root>/agent-live/<run>/<spawn>`,
+    /// nested under a run-id directory - reads `fresh` to `any_marker_fresh` evaluated
+    /// `later_secs` from now against a `max_age_secs` bound (`why`).
+    fn assert_marker_fresh(later_secs: u64, max_age_secs: u64, fresh: bool, why: &str) {
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path().to_str().unwrap();
-        // Mirrors the real shape `marker_path` builds: `<root>/agent-live/<run>/<spawn>`.
         let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"").unwrap();
 
-        let now = SystemTime::now();
-        assert!(
-            any_marker_fresh(root, now, Duration::from_secs(900)),
-            "a just-written marker nested under a run-id directory must be found fresh"
+        let now = SystemTime::now() + Duration::from_secs(later_secs);
+        assert_eq!(
+            any_marker_fresh(root, now, Duration::from_secs(max_age_secs)),
+            fresh,
+            "{why}"
         );
     }
 
-    #[test]
-    fn any_marker_fresh_is_false_once_every_marker_is_older_than_max_age() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let path = marker_path(root, "run-1", "u1c1/implementer#0").unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"").unwrap();
-
-        // `now` far enough past the marker's real (just-now) mtime that it falls outside a
-        // tiny bound - the marker exists but is stale relative to `max_age`.
-        let far_future = SystemTime::now() + Duration::from_secs(3600);
-        assert!(
-            !any_marker_fresh(root, far_future, Duration::from_secs(1)),
-            "a marker older than max_age must not read as a live agent signal"
+    crate::test_cases! {
+        any_marker_fresh_finds_a_fresh_marker_nested_under_a_run_id_directory: assert_marker_fresh(
+            0,
+            900,
+            true,
+            "a just-written marker nested under a run-id directory must be found fresh",
+        );
+        /// `now` far enough past the marker's real (just-now) mtime that it falls outside a tiny
+        /// bound - the marker exists but is stale relative to `max_age`.
+        any_marker_fresh_is_false_once_every_marker_is_older_than_max_age: assert_marker_fresh(
+            3600,
+            1,
+            false,
+            "a marker older than max_age must not read as a live agent signal",
         );
     }
 
@@ -1275,101 +1278,87 @@ mod tests {
         );
     }
 
-    #[test]
-    fn spawn_is_halted_is_true_once_the_named_spawns_own_marker_has_gone_stale() {
+    /// `spawn_is_halted` for unit `u`'s spawn named by `setup` - which parks the run's spawns in
+    /// a fresh store and plants their markers under a fresh scratch root - evaluated
+    /// `later_secs` from now.
+    fn halted(setup: impl FnOnce(&Store, &str) -> String, later_secs: u64) -> bool {
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path().to_str().unwrap();
         let store = Store::open(":memory:").unwrap();
-        let req = park_bounded(&store, "u", 300);
+        let named = setup(&store, root);
+        let events = run_log(&store);
+        let now = SystemTime::now() + Duration::from_secs(later_secs);
+        spawn_is_halted(&events, root, TEST_RUN, "u", &named, now).unwrap()
+    }
+
+    /// Park unit `u`'s spawn bounded at 300 s and plant its own live marker.
+    fn parked_with_marker(store: &Store, root: &str) -> String {
+        let req = park_bounded(store, "u", 300);
         plant_marker(root, &req.id);
-        let events = run_log(&store);
-        // Evaluated 400s later, 100s past the 300s bound: the marker is stale, so the
-        // spawn is halted.
-        let now = SystemTime::now() + Duration::from_secs(400);
-        assert!(spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, now).unwrap());
+        req.id
     }
 
-    #[test]
-    fn spawn_is_halted_is_false_when_the_named_spawns_own_marker_is_still_fresh() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let store = Store::open(":memory:").unwrap();
-        let req = park_bounded(&store, "u", 300);
-        plant_marker(root, &req.id);
-        let events = run_log(&store);
-        // Evaluated only 10s later, well inside the 300s bound: still actively working.
-        let now = SystemTime::now() + Duration::from_secs(10);
-        assert!(!spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, now).unwrap());
-    }
-
-    #[test]
-    fn spawn_is_halted_is_false_when_the_named_spawn_already_has_a_real_result() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let store = Store::open(":memory:").unwrap();
-        let req = park_bounded(&store, "u", 300);
-        spawn_store::record_result(&store, &SpawnResult::ok(&req.id, "done")).unwrap();
-        let events = run_log(&store);
-        // A real result means the spawn ended normally - the tree's dirt (if any) belongs
-        // to whatever runs next, never a halt this spawn left behind.
-        assert!(
-            !spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, SystemTime::now(),).unwrap()
-        );
-    }
-
-    #[test]
-    fn spawn_is_halted_is_true_when_the_named_spawns_only_result_is_its_own_liveness_fault() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let store = Store::open(":memory:").unwrap();
-        let req = park_bounded(&store, "u", 300);
-        // The sweep's own stale-marker classification is a diagnosis of the hang, not a
-        // real outcome - the same attempt is still presumed to resume against this tree.
-        spawn_store::record_result(
-            &store,
-            &SpawnResult::liveness_fault(&req.id, "hung", "infra"),
-        )
-        .unwrap();
-        let events = run_log(&store);
-        assert!(
-            spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, SystemTime::now(),).unwrap()
-        );
-    }
-
-    #[test]
-    fn spawn_is_halted_is_false_when_a_sibling_spawn_of_the_same_unit_is_still_live() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let store = Store::open(":memory:").unwrap();
-        // The named spawn (attempt 0) is silent - no marker at all - but a later attempt
-        // spawn of the SAME unit is actively touching its own marker right now.
-        let named = park_bounded_attempt(&store, "u", 0, 300);
-        let live = park_bounded_attempt(&store, "u", 1, 300);
-        assert_ne!(
-            named.id, live.id,
-            "two attempts of the same unit have distinct ids"
-        );
-        plant_marker(root, &live.id);
-        let events = run_log(&store);
-        let now = SystemTime::now() + Duration::from_secs(10);
-        assert!(
-            !spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap(),
+    crate::test_cases! {
+        /// Evaluated 400s later, 100s past the 300s bound: the marker is stale, so the spawn is
+        /// halted.
+        spawn_is_halted_is_true_once_the_named_spawns_own_marker_has_gone_stale:
+            assert!(halted(parked_with_marker, 400));
+        /// Evaluated only 10s later, well inside the 300s bound: still actively working.
+        spawn_is_halted_is_false_when_the_named_spawns_own_marker_is_still_fresh:
+            assert!(!halted(parked_with_marker, 10));
+        /// A real result means the spawn ended normally - the tree's dirt (if any) belongs to
+        /// whatever runs next, never a halt this spawn left behind.
+        spawn_is_halted_is_false_when_the_named_spawn_already_has_a_real_result: assert!(!halted(
+            |store, _| {
+                let req = park_bounded(store, "u", 300);
+                spawn_store::record_result(store, &SpawnResult::ok(&req.id, "done")).unwrap();
+                req.id
+            },
+            0,
+        ));
+        /// The sweep's own stale-marker classification is a diagnosis of the hang, not a real
+        /// outcome - the same attempt is still presumed to resume against this tree.
+        spawn_is_halted_is_true_when_the_named_spawns_only_result_is_its_own_liveness_fault:
+            assert!(halted(
+                |store, _| {
+                    let req = park_bounded(store, "u", 300);
+                    spawn_store::record_result(
+                        store,
+                        &SpawnResult::liveness_fault(&req.id, "hung", "infra"),
+                    )
+                    .unwrap();
+                    req.id
+                },
+                0,
+            ));
+        /// The named spawn (attempt 0) is silent - no marker at all - but a later attempt spawn
+        /// of the SAME unit is actively touching its own marker right now.
+        spawn_is_halted_is_false_when_a_sibling_spawn_of_the_same_unit_is_still_live: assert!(
+            !halted(
+                |store, root| {
+                    let named = park_bounded_attempt(store, "u", 0, 300);
+                    let live = park_bounded_attempt(store, "u", 1, 300);
+                    assert_ne!(
+                        named.id, live.id,
+                        "two attempts of the same unit have distinct ids"
+                    );
+                    plant_marker(root, &live.id);
+                    named.id
+                },
+                10,
+            ),
             "a live sibling spawn of the same unit means the tree is active work, not a halt"
         );
-    }
-
-    #[test]
-    fn spawn_is_halted_ignores_a_live_spawn_belonging_to_a_different_unit() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let store = Store::open(":memory:").unwrap();
-        let named = park_bounded(&store, "u", 300);
-        let other_unit = park_bounded(&store, "v", 300);
-        plant_marker(root, &other_unit.id);
-        let events = run_log(&store);
-        let now = SystemTime::now() + Duration::from_secs(10);
-        // The other unit's spawn is live, but it is not THIS unit's - must not block.
-        assert!(spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap());
+        /// The other unit's spawn is live, but it is not THIS unit's - must not block.
+        spawn_is_halted_ignores_a_live_spawn_belonging_to_a_different_unit: assert!(halted(
+            |store, root| {
+                let named = park_bounded(store, "u", 300);
+                let other_unit = park_bounded(store, "v", 300);
+                plant_marker(root, &other_unit.id);
+                named.id
+            },
+            10,
+        ));
     }
 
     #[test]

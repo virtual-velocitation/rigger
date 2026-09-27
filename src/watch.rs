@@ -667,13 +667,88 @@ mod tests {
 
     // --- detect(): a clean run prints nothing ---
 
-    #[test]
-    fn a_clean_store_detects_no_anomalies() {
-        let events = positioned(vec![
+    /// One started-then-failed round of unit `u` per entry of `causes`, the n-th failure carrying
+    /// `attempts: n` and that entry's cause.
+    fn failed_rounds(causes: &[&str]) -> Vec<Event> {
+        causes
+            .iter()
+            .enumerate()
+            .flat_map(|(i, cause)| {
+                [
+                    ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+                    ev(
+                        ledger::TYPE_UNIT_FAILED,
+                        &format!(r#"{{"id":"u","attempts":{},"cause":"{cause}"}}"#, i + 1),
+                    ),
+                ]
+            })
+            .collect()
+    }
+
+    /// `events` (positioned) with no heartbeats and no dash detect no anomaly.
+    fn assert_no_anomaly(events: Vec<Event>) {
+        let events = positioned(events);
+        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
+    }
+
+    /// `events` (positioned) with no heartbeats and no dash detect exactly one anomaly, of
+    /// `signal` on `subject` at `magnitude`, which is returned for any further assertion.
+    fn one_anomaly(events: Vec<Event>, signal: Signal, subject: &str, magnitude: u32) -> Anomaly {
+        let events = positioned(events);
+        let mut anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
+        assert_eq!(anomalies.len(), 1);
+        let a = anomalies.remove(0);
+        assert_eq!(a.signal, signal);
+        assert_eq!(a.subject, subject);
+        assert_eq!(a.magnitude, magnitude);
+        a
+    }
+
+    crate::test_cases! {
+        a_clean_store_detects_no_anomalies: assert_no_anomaly(vec![
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
             ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
         ]);
-        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
+        two_failures_below_threshold_is_not_reported:
+            assert_no_anomaly(failed_rounds(&["gate:fmt", "gate:fmt"]));
+        /// A changed cause is progress, not continued churn (spec 69 Design): the streak
+        /// restarts at 1, so the third failure is only #1 of the new cause.
+        a_cause_change_resets_the_streak_so_three_failures_split_across_two_causes_do_not_alert:
+            assert_no_anomaly(failed_rounds(&["gate:fmt", "gate:fmt", "integrate-conflict"]));
+        a_spawn_answered_twice_is_below_the_frontier_stall_threshold: assert_no_anomaly(vec![
+            ev(spawn::TYPE_SPAWN_RESULT, r#"{"id":"u/implementer#0"}"#),
+            ev(spawn::TYPE_SPAWN_RESULT, r#"{"id":"u/implementer#0"}"#),
+        ]);
+        a_unit_at_reject_recurrence_three_same_cause_is_reported: {
+            let a = one_anomaly(
+                failed_rounds(&["gate:fmt", "gate:fmt", "gate:fmt"]),
+                Signal::RejectRecurrence,
+                "u",
+                3,
+            );
+            assert!(a.detail.contains("gate:fmt"));
+            assert!(a.line().contains("rigger-diagnose-churn"));
+        };
+        a_spawn_answered_three_times_is_reported_as_a_frontier_stall: {
+            let a = one_anomaly(
+                ["a", "b", "c"]
+                    .iter()
+                    .map(|out| {
+                        ev(
+                            spawn::TYPE_SPAWN_RESULT,
+                            &format!(r#"{{"id":"u/implementer#0","output":"{out}"}}"#),
+                        )
+                    })
+                    .collect(),
+                Signal::FrontierStall,
+                "u/implementer#0",
+                3,
+            );
+            assert!(a.line().contains("frontier progress"));
+            assert!(a
+                .line()
+                .contains("stop the driver and diagnose before another round spends"));
+        };
     }
 
     #[test]
@@ -703,76 +778,6 @@ mod tests {
     // --- Signal 4: reject-recurrence, per cause ---
 
     #[test]
-    fn a_unit_at_reject_recurrence_three_same_cause_is_reported() {
-        let events = positioned(vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
-            ),
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":2,"cause":"gate:fmt"}"#,
-            ),
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":3,"cause":"gate:fmt"}"#,
-            ),
-        ]);
-        let anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
-        assert_eq!(anomalies.len(), 1);
-        let a = &anomalies[0];
-        assert_eq!(a.signal, Signal::RejectRecurrence);
-        assert_eq!(a.subject, "u");
-        assert_eq!(a.magnitude, 3);
-        assert!(a.detail.contains("gate:fmt"));
-        assert!(a.line().contains("rigger-diagnose-churn"));
-    }
-
-    #[test]
-    fn two_failures_below_threshold_is_not_reported() {
-        let events = positioned(vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
-            ),
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":2,"cause":"gate:fmt"}"#,
-            ),
-        ]);
-        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
-    }
-
-    #[test]
-    fn a_cause_change_resets_the_streak_so_three_failures_split_across_two_causes_do_not_alert() {
-        let events = positioned(vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":1,"cause":"gate:fmt"}"#,
-            ),
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":2,"cause":"gate:fmt"}"#,
-            ),
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            // A changed cause is progress, not continued churn (spec 69 Design):
-            // the streak restarts at 1, so this is only #1 of the new cause.
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u","attempts":3,"cause":"integrate-conflict"}"#,
-            ),
-        ]);
-        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
-    }
-
-    #[test]
     fn a_cause_less_failure_reads_as_unknown_and_still_counts_toward_the_streak() {
         // Additive, serde-defaulted: a prior event with no `cause` at all (predating
         // spec 69 c3's cause wire) reads as "unknown", not a decode failure.
@@ -790,43 +795,6 @@ mod tests {
     }
 
     // --- Signal 5: frontier progress (stalled) ---
-
-    #[test]
-    fn a_spawn_answered_three_times_is_reported_as_a_frontier_stall() {
-        let events = positioned(vec![
-            ev(
-                spawn::TYPE_SPAWN_RESULT,
-                r#"{"id":"u/implementer#0","output":"a"}"#,
-            ),
-            ev(
-                spawn::TYPE_SPAWN_RESULT,
-                r#"{"id":"u/implementer#0","output":"b"}"#,
-            ),
-            ev(
-                spawn::TYPE_SPAWN_RESULT,
-                r#"{"id":"u/implementer#0","output":"c"}"#,
-            ),
-        ]);
-        let anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
-        assert_eq!(anomalies.len(), 1);
-        let a = &anomalies[0];
-        assert_eq!(a.signal, Signal::FrontierStall);
-        assert_eq!(a.subject, "u/implementer#0");
-        assert_eq!(a.magnitude, 3);
-        assert!(a.line().contains("frontier progress"));
-        assert!(a
-            .line()
-            .contains("stop the driver and diagnose before another round spends"));
-    }
-
-    #[test]
-    fn a_spawn_answered_twice_is_below_the_frontier_stall_threshold() {
-        let events = positioned(vec![
-            ev(spawn::TYPE_SPAWN_RESULT, r#"{"id":"u/implementer#0"}"#),
-            ev(spawn::TYPE_SPAWN_RESULT, r#"{"id":"u/implementer#0"}"#),
-        ]);
-        assert!(detect(&empty_inputs(&events, &BTreeMap::new())).is_empty());
-    }
 
     // --- Signal 2: dead driver (the conjunction) ---
 
@@ -875,95 +843,51 @@ mod tests {
         assert!(detect(&inputs).is_empty());
     }
 
-    #[test]
-    fn a_fresh_heartbeat_suppresses_the_dead_driver_alert_even_with_a_quiet_store() {
-        // The tuned false positive spec 69 names: "an alert firing on quiet-but-
-        // heartbeating work teaches operators to ignore the watchdog." A long-running
-        // test/build can leave the store quiet an hour while an agent is genuinely
-        // still working - one fresh heartbeat must suppress the whole conjunction.
+    /// A store quiet for 4000 s with the step lock free - every other half of the dead-driver
+    /// conjunction met - and one `u/implementer#0` heartbeat `age_secs` stale detects no
+    /// anomaly (`why`).
+    fn assert_heartbeat_suppresses_the_dead_driver_alert(age_secs: u64, why: &str) {
         let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
         let now = SystemTime::now();
-        let ages: BTreeMap<String, u64> = [("u/implementer#0".to_string(), 60u64)]
+        let ages: BTreeMap<String, u64> = [("u/implementer#0".to_string(), age_secs)]
             .into_iter()
             .collect();
         let inputs = WatchInputs {
-            run_events: &events,
-            full_events: &events,
-            now,
             last_event_at: Some(now - Duration::from_secs(4000)),
-            step_lock_free: true,
-            wave_liveness_ages: &ages,
-            dash: DashProbe::NotRecorded,
-            run_started_at: None,
-            dash_breadcrumb_written_at: None,
-            dash_attempted_this_run: false,
+            now,
+            ..empty_inputs(&events, &ages)
         };
-        assert!(detect(&inputs).is_empty());
+        assert!(detect(&inputs).is_empty(), "{why}");
     }
 
-    #[test]
-    fn a_heartbeat_ten_minutes_stale_does_not_cross_the_thirty_minute_bound() {
-        // Boundary-straddling: 10 minutes (600s) sits well BELOW the real 30-minute
-        // (1800s) bound but well ABOVE a degenerate 90s bound (`30 + 60`, a plausible
-        // `*` -> `+` mutant of the `30 * 60` that builds
-        // [`DEAD_DRIVER_HEARTBEAT_BOUND`]) - so this pins the bound is actually 30
-        // MINUTES, not just "some threshold a big number clears and a small one
-        // doesn't."
-        let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
-        let now = SystemTime::now();
-        let ages: BTreeMap<String, u64> = [("u/implementer#0".to_string(), 600u64)]
-            .into_iter()
-            .collect();
-        let inputs = WatchInputs {
-            run_events: &events,
-            full_events: &events,
-            now,
-            last_event_at: Some(now - Duration::from_secs(4000)),
-            step_lock_free: true,
-            wave_liveness_ages: &ages,
-            dash: DashProbe::NotRecorded,
-            run_started_at: None,
-            dash_breadcrumb_written_at: None,
-            dash_attempted_this_run: false,
-        };
-        assert!(
-            detect(&inputs).is_empty(),
-            "a heartbeat only 10 minutes stale must not cross the 30-minute dead-driver bound"
-        );
-    }
-
-    #[test]
-    fn a_heartbeat_exactly_thirty_minutes_stale_does_not_yet_cross_the_bound() {
-        // The bound is STRICTLY greater than 30 minutes (spec 69 Design: "every
-        // heartbeat stale >30 min") - a heartbeat at EXACTLY the bound has not yet
-        // crossed it. Pins `>` against a `>=` mutant of the comparison itself, and
-        // (since it sits exactly on `DEAD_DRIVER_HEARTBEAT_BOUND`) against a mutant
-        // that shrinks the bound's derivation too.
-        let events = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
-        let now = SystemTime::now();
-        let ages: BTreeMap<String, u64> = [(
-            "u/implementer#0".to_string(),
-            DEAD_DRIVER_HEARTBEAT_BOUND.as_secs(),
-        )]
-        .into_iter()
-        .collect();
-        let inputs = WatchInputs {
-            run_events: &events,
-            full_events: &events,
-            now,
-            last_event_at: Some(now - Duration::from_secs(4000)),
-            step_lock_free: true,
-            wave_liveness_ages: &ages,
-            dash: DashProbe::NotRecorded,
-            run_started_at: None,
-            dash_breadcrumb_written_at: None,
-            dash_attempted_this_run: false,
-        };
-        assert!(
-            detect(&inputs).is_empty(),
-            "a heartbeat AT exactly the 30-minute bound has not yet crossed it (the bound is a \
-             strict >, not >=)"
-        );
+    crate::test_cases! {
+        /// The tuned false positive spec 69 names: "an alert firing on quiet-but-heartbeating
+        /// work teaches operators to ignore the watchdog." A long-running test/build can leave
+        /// the store quiet an hour while an agent is genuinely still working - one fresh
+        /// heartbeat must suppress the whole conjunction.
+        a_fresh_heartbeat_suppresses_the_dead_driver_alert_even_with_a_quiet_store:
+            assert_heartbeat_suppresses_the_dead_driver_alert(60, "a fresh heartbeat suppresses");
+        /// Boundary-straddling: 10 minutes (600s) sits well BELOW the real 30-minute (1800s)
+        /// bound but well ABOVE a degenerate 90s bound (`30 + 60`, a plausible `*` -> `+`
+        /// mutant of the `30 * 60` that builds [`DEAD_DRIVER_HEARTBEAT_BOUND`]) - so this pins
+        /// the bound is actually 30 MINUTES, not just "some threshold a big number clears and a
+        /// small one doesn't."
+        a_heartbeat_ten_minutes_stale_does_not_cross_the_thirty_minute_bound:
+            assert_heartbeat_suppresses_the_dead_driver_alert(
+                600,
+                "a heartbeat only 10 minutes stale must not cross the 30-minute dead-driver bound",
+            );
+        /// The bound is STRICTLY greater than 30 minutes (spec 69 Design: "every heartbeat
+        /// stale >30 min") - a heartbeat at EXACTLY the bound has not yet crossed it. Pins `>`
+        /// against a `>=` mutant of the comparison itself, and (since it sits exactly on
+        /// `DEAD_DRIVER_HEARTBEAT_BOUND`) against a mutant that shrinks the bound's derivation
+        /// too.
+        a_heartbeat_exactly_thirty_minutes_stale_does_not_yet_cross_the_bound:
+            assert_heartbeat_suppresses_the_dead_driver_alert(
+                DEAD_DRIVER_HEARTBEAT_BOUND.as_secs(),
+                "a heartbeat AT exactly the 30-minute bound has not yet crossed it (the bound is \
+                 a strict >, not >=)",
+            );
     }
 
     #[test]
@@ -1022,68 +946,124 @@ mod tests {
 
     // --- Signal 3: dash liveness ---
 
-    #[test]
-    fn a_dash_marker_naming_a_dead_pid_is_reported() {
+    /// A dash on port 7420 probed `NotServing` (naming `pid`, when a marker recorded one) for a
+    /// run that began `run_started_ago` seconds ago with its breadcrumb written
+    /// `breadcrumb_ago` seconds ago, `attempted` this run, must be reported as exactly one
+    /// `DashNotServing` anomaly whose detail names `detail` (`why`); returned for any further
+    /// assertion.
+    fn dead_dash_anomaly(
+        pid: Option<u32>,
+        run_started_ago: u64,
+        breadcrumb_ago: u64,
+        attempted: bool,
+        detail: &str,
+        why: &str,
+    ) -> Anomaly {
         let now = SystemTime::now();
+        let no_heartbeats = BTreeMap::new();
         let inputs = WatchInputs {
-            run_events: &[],
-            full_events: &[],
+            dash: DashProbe::NotServing { pid, port: 7420 },
+            run_started_at: Some(now - Duration::from_secs(run_started_ago)),
+            dash_breadcrumb_written_at: Some(now - Duration::from_secs(breadcrumb_ago)),
+            dash_attempted_this_run: attempted,
             now,
-            last_event_at: None,
-            step_lock_free: true,
-            wave_liveness_ages: &BTreeMap::new(),
-            dash: DashProbe::NotServing {
-                pid: Some(424_242),
-                port: 7420,
-            },
-            // The breadcrumb was written AFTER this run began - THIS run's own dash.
-            run_started_at: Some(now - Duration::from_secs(60)),
-            dash_breadcrumb_written_at: Some(now - Duration::from_secs(30)),
-            dash_attempted_this_run: false,
+            ..empty_inputs(&[], &no_heartbeats)
         };
-        let anomalies = detect(&inputs);
-        assert_eq!(anomalies.len(), 1);
-        assert_eq!(anomalies[0].signal, Signal::DashNotServing);
-        assert!(anomalies[0].detail.contains("424242"));
-        assert!(anomalies[0].line().contains("rigger-restore-the-dash"));
+        let mut anomalies = detect(&inputs);
+        assert_eq!(anomalies.len(), 1, "{why}");
+        let a = anomalies.remove(0);
+        assert_eq!(a.signal, Signal::DashNotServing);
+        assert!(a.detail.contains(detail));
+        a
     }
 
-    /// The marker-absent case (`rigger run` / `rigger serve`, which record only the URL
-    /// breadcrumb, never a marker - see `DashProbe` docs): a dead port is STILL reported,
-    /// with no pid invented. This is the round-3 reject's own root cause
-    /// (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot) - before this fix
-    /// `NotServing` required a `u32` pid unconditionally, so the caller had nothing to
-    /// construct here and had to map this exact shape to `NotRecorded`, the non-anomaly
-    /// variant, leaving `rigger watch --once` silently blind for 2 of the 3 real drivers.
-    #[test]
-    fn a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid() {
-        let now = SystemTime::now();
-        let inputs = WatchInputs {
-            run_events: &[],
-            full_events: &[],
-            now,
-            last_event_at: None,
-            step_lock_free: true,
-            wave_liveness_ages: &BTreeMap::new(),
-            dash: DashProbe::NotServing {
-                pid: None,
-                port: 7420,
-            },
-            // The breadcrumb was written AFTER this run began - THIS run's own dash.
-            run_started_at: Some(now - Duration::from_secs(60)),
-            dash_breadcrumb_written_at: Some(now - Duration::from_secs(30)),
-            dash_attempted_this_run: false,
+    crate::test_cases! {
+        /// The breadcrumb was written AFTER this run began - THIS run's own dash.
+        a_dash_marker_naming_a_dead_pid_is_reported: assert!(dead_dash_anomaly(
+            Some(424_242),
+            60,
+            30,
+            false,
+            "424242",
+            "this run's own dead dash is reported",
+        )
+        .line()
+        .contains("rigger-restore-the-dash"));
+        /// The marker-absent case (`rigger run` / `rigger serve`, which record only the URL
+        /// breadcrumb, never a marker - see `DashProbe` docs): a dead port is STILL reported,
+        /// with no pid invented. This is the round-3 reject's own root cause
+        /// (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot) - before this fix
+        /// `NotServing` required a `u32` pid unconditionally, so the caller had nothing to
+        /// construct here and had to map this exact shape to `NotRecorded`, the non-anomaly
+        /// variant, leaving `rigger watch --once` silently blind for 2 of the 3 real drivers.
+        a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid: {
+            let a = dead_dash_anomaly(None, 60, 30, false, "7420", "a marker-absent dead dash");
+            assert!(
+                !a.detail.contains("pid ") || a.detail.contains("no pid"),
+                "a marker-absent report must never claim a specific pid: {}",
+                a.detail
+            );
+            assert!(a.line().contains("rigger-restore-the-dash"));
         };
-        let anomalies = detect(&inputs);
-        assert_eq!(anomalies.len(), 1);
-        assert_eq!(anomalies[0].signal, Signal::DashNotServing);
-        assert!(anomalies[0].detail.contains("7420"));
-        assert!(
-            !anomalies[0].detail.contains("pid ") || anomalies[0].detail.contains("no pid"),
-            "a marker-absent report must never claim a specific pid: {}",
-            anomalies[0].detail
+        /// Round-8 fix (spec 69, adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap):
+        /// the EXACT SAME timestamp shape as the sibling test
+        /// `a_dead_marker_predating_this_runs_own_start_is_not_this_runs_anomaly` - a
+        /// breadcrumb mtime strictly OLDER than `run_started_at`, which alone would suppress per
+        /// the pre-existing fallback comparison. The only difference: `dash_attempted_this_run`
+        /// is `true` here - an explicit, run-id-matched fact (in production,
+        /// `main.rs::watch_poll` setting it means `DASH_ATTEMPT_FILE` names THIS exact run,
+        /// written by `record_dash_attempt` from `ensure_run_dashboard`/`start_run_dashboard`).
+        /// This proves the explicit fact WINS over the timestamp fallback: a real per-run
+        /// attempt is never suppressed by a stale-looking mtime pair, however that pair arose (a
+        /// coarse filesystem clock, a future refactor that reorders the mint relative to the
+        /// ensure call, or any other reason the timestamps alone might mislead) - exactly the
+        /// robustness round 7's review asked for: a fact, not an inference from wall-clock
+        /// order.
+        dash_attempted_this_run_overrides_a_breadcrumb_that_looks_like_it_predates_the_run:
+            dead_dash_anomaly(
+                Some(424_242),
+                30,
+                60,
+                true,
+                "424242",
+                "an explicit dash_attempted_this_run=true fact must force reporting even when \
+                 the mtime fallback alone would suppress",
+            );
+    }
+
+    /// A `Dedup` fed `a` (when `present`) or nothing each poll of `polls` alerts `a` exactly on
+    /// the polls marked `alerts`.
+    fn assert_dedup_alerts(a: Anomaly, polls: &[(bool, bool)]) {
+        let mut d = Dedup::new();
+        for (i, (present, alerts)) in polls.iter().enumerate() {
+            let input = if *present { vec![a.clone()] } else { vec![] };
+            let expected = if *alerts { vec![a.clone()] } else { vec![] };
+            assert_eq!(d.step(input), expected, "poll {i}");
+        }
+    }
+
+    crate::test_cases! {
+        /// Same anomaly, same poll again: suppressed.
+        dedup_suppresses_a_persisting_anomaly_at_the_same_magnitude: assert_dedup_alerts(
+            Anomaly {
+                signal: Signal::Escalated,
+                subject: "u".to_string(),
+                magnitude: 0,
+                detail: "escalated".to_string(),
+            },
+            &[(true, true), (true, false), (true, false)],
         );
-        assert!(anomalies[0].line().contains("rigger-restore-the-dash"));
+        /// It clears (an empty poll), then recurs: re-alerts fresh, not suppressed as a stale
+        /// repeat.
+        dedup_re_alerts_a_cleared_and_later_recurring_anomaly: assert_dedup_alerts(
+            Anomaly {
+                signal: Signal::DashNotServing,
+                subject: "dash".to_string(),
+                magnitude: 0,
+                detail: "dead".to_string(),
+            },
+            &[(true, true), (false, false), (true, true)],
+        );
     }
 
     /// An otherwise quiet run whose dash probe reads `dash` draws no anomaly.
@@ -1140,50 +1120,6 @@ mod tests {
             "a breadcrumb written BEFORE this run began must never be reported as this run's \
              own dead dash"
         );
-    }
-
-    /// Round-8 fix (spec 69, adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): the
-    /// EXACT SAME timestamp shape as the sibling test above -
-    /// `a_dead_marker_predating_this_runs_own_start_is_not_this_runs_anomaly` - a breadcrumb
-    /// mtime strictly OLDER than `run_started_at`, which alone would suppress per the
-    /// pre-existing fallback comparison. The only difference: `dash_attempted_this_run` is
-    /// `true` here - an explicit, run-id-matched fact (in production, `main.rs::watch_poll`
-    /// setting it means `DASH_ATTEMPT_FILE` names THIS exact run, written by
-    /// `record_dash_attempt` from `ensure_run_dashboard`/`start_run_dashboard`). This proves the
-    /// explicit fact WINS over the timestamp fallback: a real per-run attempt is never
-    /// suppressed by a stale-looking mtime pair, however that pair arose (a coarse filesystem
-    /// clock, a future refactor that reorders the mint relative to the ensure call, or any
-    /// other reason the timestamps alone might mislead) - exactly the robustness round 7's
-    /// review asked for: a fact, not an inference from wall-clock order.
-    #[test]
-    fn dash_attempted_this_run_overrides_a_breadcrumb_that_looks_like_it_predates_the_run() {
-        let now = SystemTime::now();
-        let inputs = WatchInputs {
-            run_events: &[],
-            full_events: &[],
-            now,
-            last_event_at: None,
-            step_lock_free: true,
-            wave_liveness_ages: &BTreeMap::new(),
-            dash: DashProbe::NotServing {
-                pid: Some(424_242),
-                port: 7420,
-            },
-            // The IDENTICAL "predates this run" timestamp shape the sibling test above proves
-            // suppresses - the only variable changed below is `dash_attempted_this_run`.
-            run_started_at: Some(now - Duration::from_secs(30)),
-            dash_breadcrumb_written_at: Some(now - Duration::from_secs(60)),
-            dash_attempted_this_run: true,
-        };
-        let anomalies = detect(&inputs);
-        assert_eq!(
-            anomalies.len(),
-            1,
-            "an explicit dash_attempted_this_run=true fact must force reporting even when the \
-             mtime fallback alone would suppress"
-        );
-        assert_eq!(anomalies[0].signal, Signal::DashNotServing);
-        assert!(anomalies[0].detail.contains("424242"));
     }
 
     /// The burden of proof runs toward REPORTING, not suppressing: only a breadcrumb
@@ -1435,21 +1371,6 @@ mod tests {
     // --- Dedup ---
 
     #[test]
-    fn dedup_suppresses_a_persisting_anomaly_at_the_same_magnitude() {
-        let mut d = Dedup::new();
-        let a = Anomaly {
-            signal: Signal::Escalated,
-            subject: "u".to_string(),
-            magnitude: 0,
-            detail: "escalated".to_string(),
-        };
-        assert_eq!(d.step(vec![a.clone()]), vec![a.clone()]);
-        // Same anomaly, same poll again: suppressed.
-        assert!(d.step(vec![a.clone()]).is_empty());
-        assert!(d.step(vec![a]).is_empty());
-    }
-
-    #[test]
     fn dedup_re_alerts_when_the_magnitude_increments() {
         let mut d = Dedup::new();
         let at = |n: u32| Anomaly {
@@ -1463,21 +1384,5 @@ mod tests {
         // The churn count climbed: re-alert.
         assert_eq!(d.step(vec![at(4)]), vec![at(4)]);
         assert!(d.step(vec![at(4)]).is_empty());
-    }
-
-    #[test]
-    fn dedup_re_alerts_a_cleared_and_later_recurring_anomaly() {
-        let mut d = Dedup::new();
-        let a = Anomaly {
-            signal: Signal::DashNotServing,
-            subject: "dash".to_string(),
-            magnitude: 0,
-            detail: "dead".to_string(),
-        };
-        assert_eq!(d.step(vec![a.clone()]), vec![a.clone()]);
-        // It clears: an empty poll.
-        assert!(d.step(vec![]).is_empty());
-        // It recurs: re-alerts fresh, not suppressed as a stale repeat.
-        assert_eq!(d.step(vec![a.clone()]), vec![a]);
     }
 }

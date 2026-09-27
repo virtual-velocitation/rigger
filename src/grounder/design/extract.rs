@@ -528,19 +528,22 @@ fn rationale_in_line(line: &str) -> Option<String> {
     None
 }
 
-/// The text of the first markdown `#` H1 heading, if any (the whole-doc node's title).
-fn first_heading(contents: &str) -> Option<String> {
+/// The text of every markdown heading line opening with `marker` (`"# "` for H1, `"## "` for
+/// H2), trimmed, in document order - empty headings included.
+fn headings<'a>(contents: &'a str, marker: &'a str) -> impl Iterator<Item = String> + 'a {
     contents
         .lines()
-        .find_map(|l| l.strip_prefix("# ").map(|h| h.trim().to_string()))
-        .filter(|h| !h.is_empty())
+        .filter_map(move |l| l.strip_prefix(marker).map(|h| h.trim().to_string()))
+}
+
+/// The text of the first markdown `#` H1 heading, if any (the whole-doc node's title).
+fn first_heading(contents: &str) -> Option<String> {
+    headings(contents, "# ").next().filter(|h| !h.is_empty())
 }
 
 /// The text of every top-level `##` H2 heading, in document order (a design-doc's section nodes).
 fn section_headings(contents: &str) -> Vec<String> {
-    contents
-        .lines()
-        .filter_map(|l| l.strip_prefix("## ").map(|h| h.trim().to_string()))
+    headings(contents, "## ")
         .filter(|h| !h.is_empty())
         .collect()
 }
@@ -598,42 +601,89 @@ mod tests {
             .any(|c| c.id == "docs/architecture.md#edge-taxonomy" && c.title == "Edge taxonomy"));
     }
 
-    #[test]
-    fn a_load_bearing_decision_doc_becomes_a_single_arch_decision_node() {
-        // A decision / ADR doc classifies as arch-decision and is ONE node (atomic design intent,
-        // not a sectioned reference doc), even when it has `##` sections.
-        let md = "# Ingest code as events\n\n## Context\n\n## Decision\n";
-        let cs = extract_concepts("docs/adr/0001-code-as-events.md", md);
-        assert_eq!(cs.len(), 1, "a decision doc is one node; got {cs:?}");
-        assert_eq!(cs[0].kind, ConceptKind::ArchDecision);
-        assert_eq!(cs[0].id, "docs/adr/0001-code-as-events.md");
-        assert_eq!(cs[0].title, "Ingest code as events");
+    /// `extract_concepts` over `path` yields exactly one concept, of `kind` and keyed `id`,
+    /// which is returned for any further assertion.
+    fn one_concept(path: &str, contents: &str, kind: ConceptKind, id: &str) -> DesignConcept {
+        let mut cs = extract_concepts(path, contents);
+        assert_eq!(cs.len(), 1, "exactly one concept; got {cs:?}");
+        assert_eq!(cs[0].kind, kind);
+        assert_eq!(cs[0].id, id);
+        cs.remove(0)
     }
 
-    #[test]
-    fn a_spec_shape_or_loop_discipline_doc_becomes_a_handbook_rule_node() {
-        let md = "# Loop discipline handbook\n\n## One owner per criterion\n";
-        let cs = extract_concepts("docs/handbook-rules.md", md);
-        assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].kind, ConceptKind::HandbookRule);
-        assert_eq!(cs[0].id, "docs/handbook-rules.md");
-    }
-
-    #[test]
-    fn a_why_comment_in_a_source_file_becomes_a_rationale_node() {
-        // A `WHY:` / `NOTE:` comment line becomes a rationale concept keyed by its source line; a
-        // plain doc comment and a `//` inside a string literal are NOT rationale.
-        let rs = "fn clamp(x: i32) -> i32 {\n    // WHY: damage must never go negative\n    x.max(0)\n}\n/// a plain doc comment\nlet url = \"http://example\"; // trailing not scanned\n";
-        let cs = extract_concepts("src/combat.rs", rs);
-        assert_eq!(
-            cs.len(),
-            1,
-            "exactly the WHY line is a rationale; got {cs:?}"
+    crate::test_cases! {
+        /// A decision / ADR doc classifies as arch-decision and is ONE node (atomic design intent,
+        /// not a sectioned reference doc), even when it has `##` sections.
+        a_load_bearing_decision_doc_becomes_a_single_arch_decision_node: assert_eq!(
+            one_concept(
+                "docs/adr/0001-code-as-events.md",
+                "# Ingest code as events\n\n## Context\n\n## Decision\n",
+                ConceptKind::ArchDecision,
+                "docs/adr/0001-code-as-events.md",
+            )
+            .title,
+            "Ingest code as events"
         );
-        assert_eq!(cs[0].kind, ConceptKind::Rationale);
-        assert_eq!(cs[0].id, "src/combat.rs#L2");
-        assert_eq!(cs[0].title, "WHY: damage must never go negative");
-        assert_eq!(cs[0].doc, "src/combat.rs");
+        a_spec_shape_or_loop_discipline_doc_becomes_a_handbook_rule_node: one_concept(
+            "docs/handbook-rules.md",
+            "# Loop discipline handbook\n\n## One owner per criterion\n",
+            ConceptKind::HandbookRule,
+            "docs/handbook-rules.md",
+        );
+        /// A `WHY:` / `NOTE:` comment line becomes a rationale concept keyed by its source line;
+        /// a plain doc comment and a `//` inside a string literal are NOT rationale.
+        a_why_comment_in_a_source_file_becomes_a_rationale_node: {
+            let c = one_concept(
+                "src/combat.rs",
+                "fn clamp(x: i32) -> i32 {\n    // WHY: damage must never go negative\n    x.max(0)\n}\n/// a plain doc comment\nlet url = \"http://example\"; // trailing not scanned\n",
+                ConceptKind::Rationale,
+                "src/combat.rs#L2",
+            );
+            assert_eq!(c.title, "WHY: damage must never go negative");
+            assert_eq!(c.doc, "src/combat.rs");
+        };
+        /// The scope gate is a DOC gate: it only ever drops markdown usage docs. A source file is
+        /// scanned for `# WHY:` rationale regardless of a usage word in its path, because inline
+        /// rationale is design intent (spec 29b) wherever the code lives.
+        a_source_file_is_never_a_usage_doc_and_its_rationale_stays_in_scope: one_concept(
+            "src/usage_meter.rs",
+            "fn run() {}\n// WHY: usage is metered per call\n",
+            ConceptKind::Rationale,
+            "src/usage_meter.rs#L2",
+        );
+    }
+
+    /// `extract_links` over `path` yields exactly the `(from, rel, to)` links of `expected`.
+    fn assert_links(path: &str, contents: &str, expected: &[(&str, LinkRel, &str)]) {
+        let ls = extract_links(path, contents);
+        let expected: Vec<DesignLink> = expected
+            .iter()
+            .map(|(from, rel, to)| DesignLink {
+                from: from.to_string(),
+                rel: *rel,
+                to: to.to_string(),
+            })
+            .collect();
+        assert_eq!(ls, expected, "got {ls:?}");
+    }
+
+    crate::test_cases! {
+        /// Each `# WHY:` / `# NOTE:` site yields one explains link, from the SAME
+        /// `<file>#L<line>` id extract_concepts gives the rationale node, to the file it annotates.
+        a_rationale_explains_the_file_it_annotates: assert_links(
+            "src/combat.rs",
+            "fn clamp() {}\n// WHY: damage must never go negative\nlet x = 1;\n",
+            &[("src/combat.rs#L2", LinkRel::Explains, "src/combat.rs")],
+        );
+        /// A path inside a fenced code block is an EXAMPLE, not the doc specifying that code; only
+        /// the prose inline-code mention links.
+        a_fenced_code_example_path_is_not_mistaken_for_a_specifies_link: assert_links(
+            "docs/architecture.md",
+            "# Reference architecture\n\n\
+             Real: `src/real.rs`.\n\n\
+             ```\nlet p = \"src/example.rs\";\nuse `src/fenced.rs`;\n```\n",
+            &[("docs/architecture.md", LinkRel::Specifies, "src/real.rs")],
+        );
     }
 
     #[test]
@@ -742,41 +792,6 @@ mod tests {
         );
         assert_eq!(cite.len(), 1);
         assert_eq!(cite[0].rel, LinkRel::Constrains);
-    }
-
-    #[test]
-    fn a_rationale_explains_the_file_it_annotates() {
-        // Each `# WHY:` / `# NOTE:` site yields one explains link, from the SAME `<file>#L<line>` id
-        // extract_concepts gives the rationale node, to the file it annotates.
-        let rs = "fn clamp() {}\n// WHY: damage must never go negative\nlet x = 1;\n";
-        let ls = extract_links("src/combat.rs", rs);
-        assert_eq!(
-            ls,
-            vec![DesignLink {
-                from: "src/combat.rs#L2".to_string(),
-                rel: LinkRel::Explains,
-                to: "src/combat.rs".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn a_fenced_code_example_path_is_not_mistaken_for_a_specifies_link() {
-        // A path inside a fenced code block is an EXAMPLE, not the doc specifying that code; only the
-        // prose inline-code mention links.
-        let md = "# Reference architecture\n\n\
-                  Real: `src/real.rs`.\n\n\
-                  ```\nlet p = \"src/example.rs\";\nuse `src/fenced.rs`;\n```\n";
-        let ls = extract_links("docs/architecture.md", md);
-        assert_eq!(
-            ls,
-            vec![DesignLink {
-                from: "docs/architecture.md".to_string(),
-                rel: LinkRel::Specifies,
-                to: "src/real.rs".to_string(),
-            }],
-            "only the unfenced inline-code path links; got {ls:?}"
-        );
     }
 
     #[test]
@@ -951,17 +966,5 @@ mod tests {
             .is_empty(),
             "a pure end-user guide under a handbook path is still gated out"
         );
-    }
-
-    #[test]
-    fn a_source_file_is_never_a_usage_doc_and_its_rationale_stays_in_scope() {
-        // The scope gate is a DOC gate: it only ever drops markdown usage docs. A source file is
-        // scanned for `# WHY:` rationale regardless of a usage word in its path, because inline
-        // rationale is design intent (spec 29b) wherever the code lives.
-        let rs = "fn run() {}\n// WHY: usage is metered per call\n";
-        let cs = extract_concepts("src/usage_meter.rs", rs);
-        assert_eq!(cs.len(), 1, "the rationale is extracted; got {cs:?}");
-        assert_eq!(cs[0].kind, ConceptKind::Rationale);
-        assert_eq!(cs[0].id, "src/usage_meter.rs#L2");
     }
 }

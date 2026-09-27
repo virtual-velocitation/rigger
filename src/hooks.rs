@@ -157,43 +157,134 @@ pub fn install_status_line(existing: &[u8], command: &str) -> Result<Vec<u8>, Er
 mod tests {
     use super::*;
 
-    #[test]
-    fn installs_and_is_idempotent() {
-        let first = install_session_start(b"", "rigger prime").unwrap();
+    /// `install` onto an empty settings file writes every one of `needles`, and installing again
+    /// onto its own output does not duplicate `command`.
+    fn assert_installs_idempotently(
+        install: impl Fn(&[u8]) -> Result<Vec<u8>, Error>,
+        needles: &[&str],
+        command: &str,
+    ) {
+        let first = install(b"").unwrap();
         let s = String::from_utf8(first.clone()).unwrap();
-        assert!(s.contains("SessionStart") && s.contains("rigger prime"));
-        let second = install_session_start(&first, "rigger prime").unwrap();
-        let s2 = String::from_utf8(second).unwrap();
+        for needle in needles {
+            assert!(s.contains(needle), "{needle} is installed: {s}");
+        }
+        let s2 = String::from_utf8(install(&first).unwrap()).unwrap();
         assert_eq!(
-            s2.matches("rigger prime").count(),
+            s2.matches(command).count(),
             1,
             "installing twice must not duplicate"
         );
     }
 
-    #[test]
-    fn preserves_other_settings() {
-        let out = install_session_start(br#"{"model":"opus"}"#, "rigger prime").unwrap();
+    crate::test_cases! {
+        installs_and_is_idempotent: assert_installs_idempotently(
+            |existing| install_session_start(existing, "rigger prime"),
+            &["SessionStart", "rigger prime"],
+            "rigger prime",
+        );
+        pretooluse_hook_installs_and_is_idempotent: assert_installs_idempotently(
+            |existing| install_pretooluse_hook(existing, "Grep|Bash", "rigger grep-guard"),
+            &["PreToolUse", "rigger grep-guard", "\"matcher\": \"Grep|Bash\""],
+            "rigger grep-guard",
+        );
+    }
+
+    /// The installed settings JSON `out` holds each `(pointer, value)` of `expected`.
+    fn assert_settings(out: Vec<u8>, expected: &[(&str, Value)]) {
         let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["model"], "opus");
-        assert_eq!(
-            v["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            "rigger prime"
-        );
+        for (pointer, value) in expected {
+            assert_eq!(v.pointer(pointer), Some(value), "{pointer} in {v}");
+        }
     }
 
-    #[test]
-    fn pretooluse_hook_installs_and_is_idempotent() {
-        let first = install_pretooluse_hook(b"", "Grep|Bash", "rigger grep-guard").unwrap();
-        let s = String::from_utf8(first.clone()).unwrap();
-        assert!(s.contains("PreToolUse") && s.contains("rigger grep-guard"));
-        assert!(s.contains("\"matcher\": \"Grep|Bash\""));
-        let second = install_pretooluse_hook(&first, "Grep|Bash", "rigger grep-guard").unwrap();
-        let s2 = String::from_utf8(second).unwrap();
-        assert_eq!(
-            s2.matches("rigger grep-guard").count(),
-            1,
-            "installing twice must not duplicate"
+    crate::test_cases! {
+        preserves_other_settings: assert_settings(
+            install_session_start(br#"{"model":"opus"}"#, "rigger prime").unwrap(),
+            &[
+                ("/model", Value::from("opus")),
+                ("/hooks/SessionStart/0/hooks/0/command", Value::from("rigger prime")),
+            ],
+        );
+        /// Both installers merge into the SAME settings.json's "hooks" object (SessionStart vs
+        /// PreToolUse) - neither must clobber the other's event key.
+        pretooluse_hook_composes_with_the_session_start_hook: assert_settings(
+            install_pretooluse_hook(
+                &install_session_start(b"", "rigger prime").unwrap(),
+                "Grep|Bash",
+                "rigger grep-guard",
+            )
+            .unwrap(),
+            &[
+                ("/hooks/SessionStart/0/hooks/0/command", Value::from("rigger prime")),
+                ("/hooks/PreToolUse/0/hooks/0/command", Value::from("rigger grep-guard")),
+            ],
+        );
+        mcp_server_preserves_other_servers_and_other_top_level_keys: assert_settings(
+            install_mcp_server(
+                br#"{
+            "someOtherSetting": true,
+            "mcpServers": {
+                "unrelated": {"command": "some-other-tool", "args": []}
+            }
+        }"#,
+                "rigger",
+                "rigger",
+                &["mcp"],
+            )
+            .unwrap(),
+            &[
+                ("/someOtherSetting", Value::from(true)),
+                ("/mcpServers/unrelated/command", Value::from("some-other-tool")),
+                ("/mcpServers/rigger/command", Value::from("rigger")),
+            ],
+        );
+        /// An older rigger build (or a hand edit) wrote a different shape under "rigger" - a
+        /// fresh install self-heals it to the current shape, the same drift-repair every other
+        /// `rigger setup` step performs.
+        mcp_server_self_heals_a_drifted_entry: assert_settings(
+            install_mcp_server(
+                br#"{"mcpServers": {"rigger": {"command": "/old/stale/path", "args": []}}}"#,
+                "rigger",
+                "rigger",
+                &["mcp"],
+            )
+            .unwrap(),
+            &[
+                ("/mcpServers/rigger/command", Value::from("rigger")),
+                ("/mcpServers/rigger/args/0", Value::from("mcp")),
+            ],
+        );
+        status_line_preserves_other_top_level_settings: assert_settings(
+            install_status_line(
+                br#"{
+            "model": "opus",
+            "hooks": {
+                "SessionStart": [
+                    {"matcher": "", "hooks": [{"type": "command", "command": "rigger prime"}]}
+                ]
+            }
+        }"#,
+                "rigger status --line",
+            )
+            .unwrap(),
+            &[
+                ("/model", Value::from("opus")),
+                ("/hooks/SessionStart/0/hooks/0/command", Value::from("rigger prime")),
+                ("/statusLine/command", Value::from("rigger status --line")),
+            ],
+        );
+        /// An older rigger build (or a hand edit, or someone else's status line) left a
+        /// different shape under "statusLine" - a fresh install self-heals it, the same
+        /// drift-repair every other `rigger setup` step performs and `install_mcp_server`'s own
+        /// "rigger" entry documents.
+        status_line_self_heals_a_drifted_entry: assert_settings(
+            install_status_line(
+                br#"{"statusLine": {"type": "command", "command": "/old/stale/statusline.sh"}}"#,
+                "rigger status --line",
+            )
+            .unwrap(),
+            &[("/statusLine/command", Value::from("rigger status --line"))],
         );
     }
 
@@ -228,24 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn pretooluse_hook_composes_with_the_session_start_hook() {
-        // Both installers merge into the SAME settings.json's "hooks" object (SessionStart
-        // vs PreToolUse) - neither must clobber the other's event key.
-        let after_session_start = install_session_start(b"", "rigger prime").unwrap();
-        let out = install_pretooluse_hook(&after_session_start, "Grep|Bash", "rigger grep-guard")
-            .unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(
-            v["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            "rigger prime"
-        );
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            "rigger grep-guard"
-        );
-    }
-
-    #[test]
     fn mcp_server_installs_and_is_idempotent() {
         let first = install_mcp_server(b"", "rigger", "rigger", &["mcp"]).unwrap();
         let v: Value = serde_json::from_slice(&first).unwrap();
@@ -260,33 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_server_preserves_other_servers_and_other_top_level_keys() {
-        let existing = br#"{
-            "someOtherSetting": true,
-            "mcpServers": {
-                "unrelated": {"command": "some-other-tool", "args": []}
-            }
-        }"#;
-        let out = install_mcp_server(existing, "rigger", "rigger", &["mcp"]).unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["someOtherSetting"], true);
-        assert_eq!(v["mcpServers"]["unrelated"]["command"], "some-other-tool");
-        assert_eq!(v["mcpServers"]["rigger"]["command"], "rigger");
-    }
-
-    #[test]
-    fn mcp_server_self_heals_a_drifted_entry() {
-        // An older rigger build (or a hand edit) wrote a different shape under "rigger" -
-        // a fresh install self-heals it to the current shape, the same drift-repair every
-        // other `rigger setup` step performs.
-        let existing = br#"{"mcpServers": {"rigger": {"command": "/old/stale/path", "args": []}}}"#;
-        let out = install_mcp_server(existing, "rigger", "rigger", &["mcp"]).unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["mcpServers"]["rigger"]["command"], "rigger");
-        assert_eq!(v["mcpServers"]["rigger"]["args"][0], "mcp");
-    }
-
-    #[test]
     fn status_line_installs_and_is_idempotent() {
         let first = install_status_line(b"", "rigger status --line").unwrap();
         let v: Value = serde_json::from_slice(&first).unwrap();
@@ -298,38 +344,5 @@ mod tests {
             first, second,
             "installing twice must reproduce the same bytes"
         );
-    }
-
-    #[test]
-    fn status_line_preserves_other_top_level_settings() {
-        let existing = br#"{
-            "model": "opus",
-            "hooks": {
-                "SessionStart": [
-                    {"matcher": "", "hooks": [{"type": "command", "command": "rigger prime"}]}
-                ]
-            }
-        }"#;
-        let out = install_status_line(existing, "rigger status --line").unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["model"], "opus");
-        assert_eq!(
-            v["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            "rigger prime"
-        );
-        assert_eq!(v["statusLine"]["command"], "rigger status --line");
-    }
-
-    #[test]
-    fn status_line_self_heals_a_drifted_entry() {
-        // An older rigger build (or a hand edit, or someone else's status line) left a
-        // different shape under "statusLine" - a fresh install self-heals it, the same
-        // drift-repair every other `rigger setup` step performs and `install_mcp_server`'s
-        // own "rigger" entry documents.
-        let existing =
-            br#"{"statusLine": {"type": "command", "command": "/old/stale/statusline.sh"}}"#;
-        let out = install_status_line(existing, "rigger status --line").unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["statusLine"]["command"], "rigger status --line");
     }
 }
