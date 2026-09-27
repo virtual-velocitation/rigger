@@ -55,7 +55,7 @@ pub mod docs;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod driver;
 pub mod eventstore;
-pub mod failure;
+pub use rigger_domain::failure;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod gate;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -95,7 +95,7 @@ pub mod run;
 /// The write half of [`run`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod run_store;
-pub mod safety;
+pub use rigger_domain::safety;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sidecar;
 pub mod spawn;
@@ -103,7 +103,7 @@ pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod spawn_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod spec;
+pub use rigger_domain::spec;
 /// The one opener every SQLite store connection goes through: see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sqlite;
@@ -119,7 +119,7 @@ pub mod watch;
 pub mod worktree;
 
 /// Parameterised tests: one shared case helper, one generated `#[test]` per named case.
-mod test_cases;
+pub use rigger_domain::test_cases;
 
 /// Spec 16 unit 2 - the partitioning + routing SAFETY EVAL (architecture 5.5.8). A GATE, not a
 /// runtime surface: it is compiled ONLY under `cfg(test)`, adds no API and no event, and its

@@ -2,7 +2,7 @@
 
 **Goal:** an API-side failure has no place in the run's model. `RunStarted` is the only
 run-level event (`src/run.rs:33`); the failure taxonomy classifies gate output only
-(`src/failure.rs:23`), so a spawn error charges the unit; the liveness sweep measures wall
+(`crates/rigger-domain/src/failure.rs:23`), so a spawn error charges the unit; the liveness sweep measures wall
 time (`src/liveness.rs:342`), so after a 17 h credential outage the first step read a marker
 61,963 s stale, recorded a liveness fault and halted; needs-you knows three conditions
 (`src/console/mod.rs:91`), none of them an outage, so status read "working" throughout. This

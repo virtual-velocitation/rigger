@@ -1885,6 +1885,7 @@ dependencies = [
  "ignore",
  "kurrentdb",
  "regex",
+ "rigger-domain",
  "rusqlite",
  "rustix 1.1.4",
  "serde",
@@ -1905,6 +1906,18 @@ dependencies = [
  "tree-sitter-tags",
  "tree-sitter-typescript",
  "uuid",
+]
+
+[[package]]
+name = "rigger-domain"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_yaml",
+ "thiserror",
 ]
 
 [[package]]

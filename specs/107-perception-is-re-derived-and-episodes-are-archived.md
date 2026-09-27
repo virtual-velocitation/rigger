@@ -8,7 +8,7 @@ events, 609 MB payload, 1.4 GB file): 2,443,614 events (97.9%) are the derived i
 `EdgeInferred` 2,101,788, `DocLinkExtracted` 206,363, `CodeEntityExtracted` 133,591,
 `DocConceptExtracted` 1,872 - re-derivable from the tree and already folded into `graph.db` at emit time
 (`ingest::append_and_fold_batch`, `src/ingest.rs:46`; `RunCtx::emit_keyed_batch`,
-`src/conductor.rs:3400`), so the log's copy has no production reader: `graph.db` is a persisted
+`src/conductor.rs:3261`), so the log's copy has no production reader: `graph.db` is a persisted
 incremental projection, no command rebuilds it from the log (only tests do,
 `src/contextgraph/sqlite.rs:7177`), and `src/docs.rs:728` forbids deleting it. They are
 appended on every step (`conductor.rs:10557`), on every landed merge (`conductor.rs:9504`) and
@@ -17,7 +17,7 @@ inside the two ingest sinks (`project_scoped_replay_keys`, `src/ingest.rs:518`),
 itself accepts any derived append. Spec 101 stops READING them;
 nothing stops WRITING them. 35,334 events are a run's own
 mechanics and carry 333 MB, 55% of every byte: `SpawnRequested` alone is 6,729 events and
-302 MB of prompts (`SpawnRequest::prompt`, `src/spawn.rs:317`, parked whole by
+302 MB of prompts (`SpawnRequest::prompt`, `crates/rigger-domain/src/spawn.rs:290`, parked whole by
 `spawn_store::park_in_run`, `src/spawn_store.rs:31`). The knowledge the hive keeps across runs - `DecisionMade`, `LessonLearned`,
 `ReviewFinding` - is 17,424 events and 23 MB. 149 runs are recorded; the current one spans
 90,008 events and 12 MB. Every courier replays the whole file: `rigger status` peaks at 3.2 GB
@@ -46,7 +46,7 @@ seam loudly, so a future event type is classified the day it is added.
 
 **PERCEPTION IS A LEDGER ENTRY, NOT A PAYLOAD.** The two fold-at-emit seams,
 `ingest::append_and_fold_batch` (`src/ingest.rs:46`) and `RunCtx::emit_keyed_batch`
-(`src/conductor.rs:3400`), append ONE event per file generation,
+(`src/conductor.rs:3261`), append ONE event per file generation,
 `GenerationIngested { prefix, file, blob, extractor }`, where `blob` is the git blob id of the
 content ingested and `extractor` the extraction version, and fold the extracted batch
 (`symbols::events::extract_events`, `src/grounder/symbols/events.rs:171`; the design and

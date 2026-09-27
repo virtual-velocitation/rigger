@@ -1,6 +1,6 @@
 [
   {
-    "id": "dup-d95a94647dcd",
+    "id": "dup-b4bb8ede3da2",
     "disposition": "not-a-duplicate",
     "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity); the shared token shape is a one-line `format!`."
   },
@@ -60,27 +60,27 @@
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
   {
-    "id": "dup-0b5573eeaebe",
+    "id": "dup-a7aab8169c0b",
     "disposition": "not-a-duplicate",
     "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
   },
   {
-    "id": "dup-66994196ec07",
+    "id": "dup-566726473a7a",
     "disposition": "not-a-duplicate",
     "reason": "Three slice accessors returning three different fields of three different types (community nodes, filter types, failure rules)."
   },
   {
-    "id": "dup-4f8625f176c2",
+    "id": "dup-4819f408aeb3",
     "disposition": "not-a-duplicate",
     "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
   },
   {
-    "id": "dup-c10a9e4a46df",
+    "id": "dup-09373b2db35f",
     "disposition": "not-a-duplicate",
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
   {
-    "id": "dup-7081e6d4e9ca",
+    "id": "dup-53976e6dadff",
     "disposition": "not-a-duplicate",
     "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
   },
@@ -95,7 +95,7 @@
     "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
   },
   {
-    "id": "dup-c5228cf29179",
+    "id": "dup-12715fa5fa13",
     "disposition": "not-a-duplicate",
     "reason": "Two builder setters on two different types setting different fields (`valid_from` on an event, `meta` on a spawn result)."
   },
@@ -105,12 +105,12 @@
     "reason": "`factor` and `cost_per_upheld` are different ratios over different fields with different zero-denominator answers (1.0 versus 0.0)."
   },
   {
-    "id": "dup-783dbb4d5f73",
+    "id": "dup-c71a16708556",
     "disposition": "not-a-duplicate",
     "reason": "Three predicates over two different enums, each excluding a different variant (`Product`, `Infra`, `Deferred`) for a different policy."
   },
   {
-    "id": "dup-c213c764b52f",
+    "id": "dup-48b52977d9de",
     "disposition": "not-a-duplicate",
     "reason": "Two unit tests over two different functions (`marker_filename` and `heading_level`) each asserting their own `None` boundary."
   },
@@ -120,7 +120,7 @@
     "reason": "Two platform-tolerance tests over two different functions (`leaked_process_advisories` and `processes_rooted_under`) on an absent directory."
   },
   {
-    "id": "dup-09df6ba9a4c6",
+    "id": "dup-46c8a0b0a101",
     "disposition": "not-a-duplicate",
     "reason": "`changed` and `is_error` test emptiness of two different fields on two different types for two different questions."
   },
@@ -240,7 +240,7 @@
     "reason": "Both already read through the shared `call_edge_rows`; they are the two opposite directions of a direct CALLS hop (a node's callees vs its callers), each with its own query."
   },
   {
-    "id": "dup-1a713042d2fe",
+    "id": "dup-42b8a5023d8d",
     "disposition": "not-a-duplicate",
     "reason": "Two named modes of the shared `find_word_boundary` (a hyphen as a word character vs as a boundary), each serving a different caller's matching rule."
   },
@@ -475,7 +475,7 @@
     "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store, the on-disk run stream) and call it."
   },
   {
-    "id": "dup-11d42739b7f6",
+    "id": "dup-2b572fcabbd4",
     "disposition": "not-a-duplicate",
     "reason": "`SpawnResult::liveness_fault` is the product constructor, and the test fixture calls it and encodes the result as an event for a fold input."
   },
@@ -500,12 +500,12 @@
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
   {
-    "id": "dup-2f724ff9616c",
+    "id": "dup-495cf87c4673",
     "disposition": "not-a-duplicate",
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
   },
   {
-    "id": "dup-acc2ed196b43",
+    "id": "dup-16b57df5dd8d",
     "disposition": "not-a-duplicate",
     "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
   },
@@ -545,12 +545,12 @@
     "reason": "Two different workflows built from the already-shared config fixtures: `critique_cfg` wires an adversary into the plan-critique gate while `two_episode_cfg` runs it with no adversary and a different agent roster."
   },
   {
-    "id": "dup-2148fe41cedc",
+    "id": "dup-1f030cd524f7",
     "disposition": "not-a-duplicate",
     "reason": "`is_empty`/`is_any` report emptiness of three different types (a config section, a failure filter, a CLI selection) over their own fields."
   },
   {
-    "id": "dup-e47e931c741d",
+    "id": "dup-619325cc4dc0",
     "disposition": "not-a-duplicate",
     "reason": "Three word-character predicates with different domains: a byte-level config scanner, a char-level alphabetic-only kill-word audit, and a char-level identifier test that also admits digits."
   },
@@ -630,12 +630,12 @@
     "reason": "Three enum-to-string mappings over different enums (edge direction to SQL, entity kind, language)."
   },
   {
-    "id": "dup-bf3c46e0b3c8",
+    "id": "dup-806054b76345",
     "disposition": "not-a-duplicate",
     "reason": "`as_str`/`response` map four different enums (failure cause, gate outcome, ledger status, watch response) to their own strings."
   },
   {
-    "id": "dup-d6fb24114b41",
+    "id": "dup-15058e86d477",
     "disposition": "not-a-duplicate",
     "reason": "Three predicates over different inputs (a markdown path extension, a spec element start, an error-shaping identifier)."
   },
@@ -855,7 +855,7 @@
     "reason": "The two sides of the reclaim guard: a dirty worktree the workflow still declares is spared (and reclaimed once clean), while an undeclared dirty one is removed; different declared sets, outcomes and follow-up checks."
   },
   {
-    "id": "dup-5bb2147904eb",
+    "id": "dup-81e8434ac795",
     "disposition": "not-a-duplicate",
     "reason": "Scanner unit tests that each feed a different text shape and assert a different outcome (a fail-closed quote state, scanning resuming after Notes, a bodiless trait method); they share only the parse-then-assert idiom."
   },
@@ -903,5 +903,10 @@
     "id": "dup-d5a2e2020223",
     "disposition": "not-a-duplicate",
     "reason": "Assertions over two different audit scanners in two suites (the OS-kill scan and the same-named-helper clustering), each with its own finding type and message."
+  },
+  {
+    "id": "dup-16364017e547",
+    "disposition": "not-a-duplicate",
+    "reason": "Two levels of one rule, not two copies: `ReviewPanel::gating_agent_ids` names one panel's gating agents, and the config-level `gating_agent_ids` unions that method over the default panel and every stage's panel plus each stage's standalone adjudicator. The workspace split put the panel method in the domain crate and the Config-level fold beside `Config`, so the two same-named functions now sit in different files."
   }
 ]

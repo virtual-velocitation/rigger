@@ -6,7 +6,7 @@ hook entries in `.claude/settings.json`, an `.mcp.json` entry, a workflow script
 chat session: the script relays `rigger step` through an agent under a 10-minute tool cap, a
 chat message can halt it, and the session learns of run events only by polling
 (`src/watch.rs:150`, 180 s). Reviewer verdicts are parsed from prose
-(`src/conductor.rs:10959`). This spec ships the operator seam of
+(`src/conductor.rs:10820`). This spec ships the operator seam of
 docs/architecture-addendum-claude-code-integration.md (section 6) on the host of spec 104 and
 the hold of spec 105, and retires the script and the shim.
 

@@ -56,7 +56,7 @@ moved by hand.
 
 THE FAN-OUT IS A DEFINITION KNOB, decided: the number of units a run builds at once is
 `defaults.max_parallel_units` in workflow.yml (default 2), replacing the conductor constant
-`MAX_CONCURRENCY = 4` (src/conductor.rs:35); a review round costs one SDET author, two lenses,
+`MAX_CONCURRENCY = 4` (src/conductor.rs:50); a review round costs one SDET author, two lenses,
 an adversary and an adjudicator, each an independent cold build in its own target dir, so four
 parallel units put ~90 cargo/rustc processes on a 32-core workstation at once (load average
 125, 2026-09-11) and ~200G of embedded worktree targets on disk. The operator sizes the run to

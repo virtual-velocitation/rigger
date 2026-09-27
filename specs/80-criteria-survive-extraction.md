@@ -1,11 +1,11 @@
 # 80 - Criteria survive extraction: a checkbox's whole text reaches every consumer
 
-**Goal:** `src/spec.rs::extract_criteria` (via `checkbox_text`, src/spec.rs:6-11,76-90) matches
+**Goal:** `src/spec.rs::extract_criteria` (via `checkbox_text`, crates/rigger-domain/src/spec.rs:6-11,76-90) matches
 ONLY a checkbox's first physical line, so every `Done when` criterion wrapped across lines -
 which the planning discipline mandates, since OWNS/exclusion clauses and verify-wording rarely
 fit one line - is silently truncated to its first ~88 columns in `self.deps.criteria`
-(wired at src/conductor.rs:13272; the only other call site is src/main.rs:3610). Downstream,
-`resolve_served_criterion` (src/conductor.rs:8320-8342) canonicalizes every proposal's
+(wired at src/conductor.rs:13019; the only other call site is src/main.rs:3610). Downstream,
+`resolve_served_criterion` (src/conductor.rs:8181-8342) canonicalizes every proposal's
 `st.coverage` to that truncated text BY DESIGN (anti-paraphrase), so the loss is structural: no
 replan can restore it, unit titles / grounding queries / `UnitStarted.spec_criterion` /
 `build_dag_critique_prompt` all serve OWNS-stripped criteria, and plan-critique correctly

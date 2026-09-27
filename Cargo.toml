@@ -20,7 +20,7 @@ repository = "https://github.com/virtual-velocitation/rigger"
 # edition 2021's default for a non-virtual root anyway; named explicitly so the workspace's
 # resolution behavior never depends on an implicit default.
 [workspace]
-members = [".", "crates/console-core"]
+members = [".", "crates/console-core", "crates/rigger-domain"]
 resolver = "2"
 
 # THE PRINCIPLES AS LINTS (workspace split, step 0): an enum whose largest variant dwarfs the
@@ -59,7 +59,7 @@ default = ["symbols", "store"]
 # that lane. `store` stays the name-carrying half of the check and the literal feature
 # a caller can pass explicitly (e.g. alongside `--no-default-features`) to get the same
 # surface without `symbols`.
-store = []
+store = ["rigger-domain/store"]
 # THE PURE SUBSET (spec 93, criterion 1): a `core` module imports none of `std::fs`,
 # `std::process`, `std::net`, `std::time::SystemTime::now`, `rusqlite`, `tokio`,
 # `rustix`, `fs2`, `ignore` or `uuid` - every time and age it needs is an input. Every
@@ -68,7 +68,7 @@ store = []
 # builds only the pure subset, natively and for `wasm32-unknown-unknown`. Carries no
 # dependency of its own: the pure subset needs nothing beyond `serde`/`serde_json`,
 # already unconditional.
-core = []
+core = ["rigger-domain/core"]
 # Deterministic, dependency-light STRUCTURAL grounding (spec 15): tree-sitter parsers +
 # the tags mechanism, compiled into the binary (no runtime-loaded artifacts). Carried in
 # `default`, so a plain `cargo build` ships it; a minimal build drops it via
@@ -89,6 +89,8 @@ symbols = [
 ]
 
 [dependencies]
+# The domain ring (workspace split): its lanes follow this crate's `store`/`core` features.
+rigger-domain = { path = "crates/rigger-domain", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # The declarative failure taxonomy (spec 10, unit 2) matches a failure's captured
 # output against a rule's `output_regex`. Pure-Rust and non-optional: `output_regex`

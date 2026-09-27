@@ -2075,6 +2075,11 @@ fn replace_section_1(existing: &str, section_1: &str) -> String {
 /// one place ANYWHERE in the codebase is a violation"), unlike criterion 1's 3-file scope.
 const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 
+/// The member crates the workspace split carved out of the root package's `src/`: the
+/// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
+/// scanned that code before the move.
+const SPLIT_CRATES: [&str; 1] = ["crates/rigger-domain"];
+
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
 const SHINGLE_SIZE: usize = 8;
 
@@ -2689,10 +2694,16 @@ struct FileScan {
     mod_spans: Vec<ModSpan>,
 }
 
-/// Scan every `.rs` file under [`SCAN_ROOTS`], deterministically ordered ([`collect_rs_files`]
-/// sorts within each root; `src` is scanned before `tests`).
+/// Scan every `.rs` file under [`SCAN_ROOTS`] and then each [`SPLIT_CRATES`] member's
+/// `src`/`tests`, deterministically ordered ([`collect_rs_files`] sorts within each root; `src`
+/// is scanned before `tests`).
 fn scan_tree(root: &Path) -> Vec<FileScan> {
-    scan_dirs(root, &SCAN_ROOTS.map(String::from))
+    let mut dirs: Vec<String> = SCAN_ROOTS.map(String::from).to_vec();
+    for member in SPLIT_CRATES {
+        dirs.push(format!("{member}/src"));
+        dirs.push(format!("{member}/tests"));
+    }
+    scan_dirs(root, &dirs)
 }
 
 /// The workspace's member crates: every directory under `crates/` that holds a `src/`, as a
@@ -4335,7 +4346,7 @@ fn render_section_3(files: &[FileScan]) -> String {
     let use_case_files = [
         CONDUCTOR,
         "src/blocker.rs",
-        "src/spec.rs",
+        "crates/rigger-domain/src/spec.rs",
         "src/watch.rs",
         "src/community.rs",
     ];
@@ -8969,7 +8980,7 @@ mod tests {
             .iter()
             .filter(|c| c.note.starts_with(prefix))
             .flat_map(|c| c.sites.iter())
-            .filter(|s| s.file == "src/spawn.rs")
+            .filter(|s| s.file == "crates/rigger-domain/src/spawn.rs")
             .map(|s| s.name.as_str())
             .collect();
         assert!(
@@ -11435,7 +11446,7 @@ mod config_key_readers {
     use super::*;
 
     /// The file that declares the configurable schema.
-    const CONFIG_SCHEMA_FILE: &str = "src/config.rs";
+    const CONFIG_SCHEMA_FILE: &str = "crates/rigger-domain/src/config.rs";
 
     /// `Struct.field` entries exempt from the reader gate. Must stay EMPTY: a key without a
     /// reader is wired or deleted, never allowlisted.

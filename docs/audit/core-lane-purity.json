@@ -2,6 +2,10 @@
   "spec": "93",
   "criterion": "1 - THE CORE LANE IS PURE",
   "core_modules": [
+    "crates/rigger-domain/src/config.rs",
+    "crates/rigger-domain/src/failure.rs",
+    "crates/rigger-domain/src/safety.rs",
+    "crates/rigger-domain/src/spawn.rs",
     "src/blocker.rs",
     "src/canary.rs",
     "src/community.rs",
@@ -13,15 +17,13 @@
     "src/contextgraph/query.rs",
     "src/eventstore/mod.rs",
     "src/eventstore/namespace.rs",
-    "src/failure.rs",
     "src/ledger.rs",
     "src/metrics.rs",
     "src/progress.rs",
     "src/run.rs",
-    "src/safety.rs",
     "src/spawn.rs"
   ],
-  "core_modules_note": "The exact set of `pub mod X;` / `mod X;` declarations in src/lib.rs (and their own always-on submodules: contextgraph::mod's `sqlite` is gated so excluded, eventstore::mod's `sqlite`/`kurrentdb`/`contract` are gated so excluded, `namespace` is not so included; console::mod's `map` submodule, spec 84 criterion 1's map engine, is likewise not gated so included - console.rs itself became console/mod.rs when that submodule was added) that carry NO `#[cfg(any(feature = \"store\", not(feature = \"core\")))]` gate - i.e. the modules the `core` feature ships. `budget`, `conductor`, `dash`, `distiller`, `docs`, `driver`, `gate`, `grounder`, `hooks`, `ingest`, `liveness`, `mcpserver`, `parallel`, `playbooks`, `reap`, `registry`, `sidecar`, `spec`, `watch`, `worktree`, and the five `*_store` write-half siblings are all gated and so excluded from this list.",
+  "core_modules_note": "The exact set of `pub mod X;` / `mod X;` declarations in src/lib.rs (and their own always-on submodules: contextgraph::mod's `sqlite` is gated so excluded, eventstore::mod's `sqlite`/`kurrentdb`/`contract` are gated so excluded, `namespace` is not so included; console::mod's `map` submodule, spec 84 criterion 1's map engine, is likewise not gated so included - console.rs itself became console/mod.rs when that submodule was added) that carry NO `#[cfg(any(feature = \"store\", not(feature = \"core\")))]` gate - i.e. the modules the `core` feature ships - plus the same ungated declarations in crates/rigger-domain/src/lib.rs, the domain ring the root re-exports (its gated `playbooks`, `review`, `spec` and `wave` are excluded). `budget`, `conductor`, `dash`, `distiller`, `docs`, `driver`, `gate`, `grounder`, `hooks`, `ingest`, `liveness`, `mcpserver`, `parallel`, `playbooks`, `reap`, `registry`, `sidecar`, `spec`, `watch`, `worktree`, and the five `*_store` write-half siblings are all gated and so excluded from this list.",
   "banned_patterns": {
     "std_paths": ["std::fs", "std::process", "std::net", "SystemTime::now"],
     "crates": ["rusqlite", "tokio::", "use tokio", "rustix::", "use rustix", "fs2::", "use fs2", "ignore::", "use ignore", "uuid::", "use uuid", "kurrentdb::", "use kurrentdb"],

@@ -174,6 +174,8 @@ fn every_listed_core_module_is_declared_ungated_in_its_parent() {
         fs::read_to_string("src/eventstore/mod.rs").expect("reading src/eventstore/mod.rs");
     let console_text =
         fs::read_to_string("src/console/mod.rs").expect("reading src/console/mod.rs");
+    let domain_lib_text = fs::read_to_string("crates/rigger-domain/src/lib.rs")
+        .expect("reading crates/rigger-domain/src/lib.rs");
 
     for m in &modules {
         let (parent_text, name): (&str, &str) = if m == "src/contextgraph/mod.rs" {
@@ -188,6 +190,8 @@ fn every_listed_core_module_is_declared_ungated_in_its_parent() {
             (&eventstore_text, rest.trim_end_matches(".rs"))
         } else if let Some(rest) = m.strip_prefix("src/console/") {
             (&console_text, rest.trim_end_matches(".rs"))
+        } else if let Some(rest) = m.strip_prefix("crates/rigger-domain/src/") {
+            (&domain_lib_text, rest.trim_end_matches(".rs"))
         } else {
             let name = m
                 .strip_prefix("src/")

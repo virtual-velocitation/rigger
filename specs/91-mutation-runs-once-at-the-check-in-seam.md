@@ -11,7 +11,7 @@ and the code is about to be checked in, and remediates once - and that belongs i
 flow, not in application code. Today the DAG cannot say it: a stage's `needs` are satisfied by
 integrated STAGE names (`ready_stages`, src/conductor.rs), and the fan-out `implement`
 template never integrates as itself (only its units do), so a stage after it never becomes
-ready; and `max_retries` is run-wide (`defaults.max_retries`, src/config.rs:374), so no stage
+ready; and `max_retries` is run-wide (`defaults.max_retries`, crates/rigger-domain/src/config.rs:374), so no stage
 can bound its own remediation.
 
 ## Design

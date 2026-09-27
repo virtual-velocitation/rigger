@@ -49,30 +49,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "glob_matches",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "19e83916628a4a5d"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "path_is_high_risk",
-    "is_test": false,
-    "proposed_module": "conductor::support",
-    "reason": "name contains \"is_\" (predicate helper); grouped under `conductor::support`.",
-    "content_hash": "d37665b2a9c5c088"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "route_review_tier",
-    "is_test": false,
-    "proposed_module": "conductor::review",
-    "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
-    "content_hash": "05d6b21cd8e58163"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "unit_of_gate_key",
     "is_test": false,
     "proposed_module": "conductor::gate",
@@ -1425,27 +1401,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "normalize_ws",
-    "is_test": false,
-    "proposed_module": "conductor::support",
-    "reason": "name contains \"normalize\" (normalization helper); grouped under `conductor::support`.",
-    "content_hash": "bee7ff4844c6f51a"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "normalize_criterion_id",
     "is_test": false,
     "proposed_module": "conductor::schedule",
     "reason": "name contains \"criterion\" (unit scheduling); grouped under `conductor::schedule`.",
     "content_hash": "60d82f6ce822518c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "criterion_stable_id",
-    "is_test": false,
-    "proposed_module": "conductor::schedule",
-    "reason": "name contains \"criterion\" (unit scheduling); grouped under `conductor::schedule`.",
-    "content_hash": "570b503f353de874"
   },
   {
     "file": "src/conductor.rs",
@@ -1470,46 +1430,6 @@
     "proposed_module": "conductor::gate",
     "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
     "content_hash": "b9b809406f692853"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "verdict_approves",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"verdict\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "bd1611bbab4db540"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "last_verdict",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"verdict\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "bda15bc86008eef0"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "has_verdict_line",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"verdict\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "b15dcdde305629a0"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "emitted_verdict_approves",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"verdict\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "b4b014a603330334"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "verdict_compensates",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"verdict\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "c8dfc8c0cc8e4352"
   },
   {
     "file": "src/conductor.rs",
@@ -1761,54 +1681,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "blast_radius_conflicts",
-    "is_test": false,
-    "proposed_module": "conductor::schedule",
-    "reason": "name contains \"blast\" (unit scheduling); grouped under `conductor::schedule`.",
-    "content_hash": "dd1e89a188505ad3"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "is_fan_out",
-    "is_test": false,
-    "proposed_module": "conductor::support",
-    "reason": "name contains \"is_\" (predicate helper); grouped under `conductor::support`.",
-    "content_hash": "c6665b2e4b7f61b1"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "first_stage_named",
-    "is_test": false,
-    "proposed_module": "conductor::schedule",
-    "reason": "name contains \"stage\" (unit scheduling); grouped under `conductor::schedule`.",
-    "content_hash": "7ad23efeb11bdfaa"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "is_fan_out_template",
-    "is_test": false,
-    "proposed_module": "conductor::support",
-    "reason": "name contains \"is_\" (predicate helper); grouped under `conductor::support`.",
-    "content_hash": "efc2fad73f8f4df4"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "ungated_fan_out_templates",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "4a364ba9228b3c90"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "is_producer",
-    "is_test": false,
-    "proposed_module": "conductor::support",
-    "reason": "name contains \"is_\" (predicate helper); grouped under `conductor::support`.",
-    "content_hash": "bee70b3b3f9b3283"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "implement_slice",
     "is_test": false,
     "proposed_module": null,
@@ -1833,99 +1705,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "critique_gate_name",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "857441735bca71a9"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "unit_slug",
-    "is_test": false,
-    "proposed_module": "conductor::run",
-    "reason": "name contains \"unit\" (unit run loop); grouped under `conductor::run`.",
-    "content_hash": "2e1d1d5adf7c5745"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "baseline_units",
-    "is_test": false,
-    "proposed_module": "conductor::run",
-    "reason": "name contains \"unit\" (unit run loop); grouped under `conductor::run`.",
-    "content_hash": "7b185c1f5f5eba62"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "fan_out_lenses",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "e858a4f11ab702c8"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "review_roster",
-    "is_test": false,
-    "proposed_module": "conductor::review",
-    "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
-    "content_hash": "298e67f94049a0a2"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "adjudicator_roster",
-    "is_test": false,
-    "proposed_module": "conductor::review",
-    "reason": "name contains \"adjudicat\" (review orchestration); grouped under `conductor::review`.",
-    "content_hash": "35e2d8af74e71860"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "has_llm_verifier",
-    "is_test": false,
-    "proposed_module": "conductor::support",
-    "reason": "name contains \"has_\" (predicate helper); grouped under `conductor::support`.",
-    "content_hash": "2ca9641cbdd4901b"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "coverage_gap",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "9084585556ed2074"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "assert_no_ungated_fanout_unit",
     "is_test": false,
     "proposed_module": "conductor::gate",
     "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
     "content_hash": "b4c3a7572430c7a4"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "wave_ready",
-    "is_test": false,
-    "proposed_module": "conductor::spawn",
-    "reason": "name contains \"wave\" (spawn lifecycle); grouped under `conductor::spawn`.",
-    "content_hash": "9447b9dae7133410"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "need_satisfied",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "551aa89870e21b83"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "ready_stages",
-    "is_test": false,
-    "proposed_module": "conductor::schedule",
-    "reason": "name contains \"stage\" (unit scheduling); grouped under `conductor::schedule`.",
-    "content_hash": "02cf17328a4641aa"
   },
   {
     "file": "src/conductor.rs",
