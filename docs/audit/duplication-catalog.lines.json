@@ -6219,8 +6219,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 252,
-        "end_line": 252
+        "start_line": 270,
+        "end_line": 270
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -10979,8 +10979,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 423,
-        "end_line": 437
+        "start_line": 441,
+        "end_line": 455
       }
     ]
   },
@@ -11444,8 +11444,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 400,
-        "end_line": 408
+        "start_line": 418,
+        "end_line": 426
       },
       {
         "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
@@ -11924,8 +11924,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 414,
-        "end_line": 419
+        "start_line": 432,
+        "end_line": 437
       }
     ]
   },
@@ -19879,8 +19879,8 @@
       },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
-        "start_line": 357,
-        "end_line": 364
+        "start_line": 339,
+        "end_line": 346
       },
       {
         "file": "tests/responsibility_map_contract_periphery.rs",
@@ -19899,8 +19899,8 @@
       },
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
-        "start_line": 314,
-        "end_line": 326
+        "start_line": 296,
+        "end_line": 308
       },
       {
         "file": "tests/responsibility_map_contract_periphery.rs",
@@ -20320,32 +20320,17 @@
     ]
   },
   {
-    "id": "dup-c3da05bb2e4c",
+    "id": "dup-d6f58172590a",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
         "start_line": 229,
-        "end_line": 269
+        "end_line": 262
       },
       {
         "file": "tests/graph_around_governance_boundaries.rs",
         "start_line": 387,
-        "end_line": 424
-      }
-    ]
-  },
-  {
-    "id": "dup-1b1b02dfa8b3",
-    "sites": [
-      {
-        "file": "tests/graph_around_code_first.rs",
-        "start_line": 233,
-        "end_line": 235
-      },
-      {
-        "file": "tests/graph_around_governance_boundaries.rs",
-        "start_line": 391,
-        "end_line": 393
+        "end_line": 417
       }
     ]
   },

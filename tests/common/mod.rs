@@ -161,6 +161,24 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
+/// Clears this test process's own ambient `STORE_FENCE_ENV` (the fence a gate pins on its
+/// whole subprocess tree) when created AND again when dropped, so a test that sets the fence
+/// itself to simulate a fenced gate never leaks it into the next test on the same process.
+pub struct StoreFenceCleared;
+
+impl StoreFenceCleared {
+    pub fn new() -> Self {
+        std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
+        StoreFenceCleared
+    }
+}
+
+impl Drop for StoreFenceCleared {
+    fn drop(&mut self) {
+        std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
+    }
+}
+
 /// One throwaway `XDG_CACHE_HOME` shared by every `rigger` subprocess the CURRENT TEST
 /// spawns (spec 89, criterion 2) - PER TEST-OWNED THREAD, not a single directory for the
 /// whole test binary, and that distinction is load-bearing, not cosmetic.

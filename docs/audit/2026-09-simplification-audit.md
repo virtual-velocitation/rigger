@@ -1787,7 +1787,7 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1727 func
 
 ## 2. Duplication Catalog
 
-752 clusters (3920 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+751 clusters (3918 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1797,7 +1797,7 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1727 func
 - **.rigger-path string literals**: 787 site(s) - `dup-57f15af532d4`
 - **error-shaping helper functions**: 12 site(s) - `dup-83a6d4922163`
 
-### Clusters (151 exact, 507 near, 94 semantic)
+### Clusters (150 exact, 507 near, 94 semantic)
 
 #### `dup-7dfa0dd1a6a8` (near, 2 sites)
 
@@ -3904,7 +3904,7 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/common/layer_cli.rs:29-29` `".rigger"`
 - `tests/common/layer_cli.rs:30-30` `".rigger"`
 - `tests/common/layer_cli.rs:36-36` `".rigger"`
-- `tests/common/mod.rs:252-252` `"{}/.rigger-test-scratch"`
+- `tests/common/mod.rs:270-270` `"{}/.rigger-test-scratch"`
 - `tests/common/workflow_probe.rs:16-16` `".rigger"`
 - `tests/common/workflow_probe.rs:17-17` `"create .rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:149-149` `".rigger"`
@@ -5908,7 +5908,7 @@ Proposed home: `one shared `spawn_request` helper (e.g. relocated into `tests/co
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/driver/replay.rs:256-277` `spawn_request`
-- `tests/common/mod.rs:423-437` `spawn_request`
+- `tests/common/mod.rs:441-455` `spawn_request`
 
 #### `dup-458f5abd58de` (exact, 2 sites)
 
@@ -6157,7 +6157,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/gate.rs:1304-1312` `wait_until`
 - `src/reap.rs:762-770` `wait_until`
-- `tests/common/mod.rs:400-408` `wait_until`
+- `tests/common/mod.rs:418-426` `wait_until`
 - `tests/mutation_scratch_reap_base_guard_periphery.rs:65-73` `wait_until`
 - `tests/reap_before_removal_periphery.rs:52-60` `wait_until`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:149-157` `wait_until`
@@ -6409,7 +6409,7 @@ Proposed home: `one shared `project_events` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/grounder/workflowdef.rs:232-238` `project_events`
-- `tests/common/mod.rs:414-419` `project_events`
+- `tests/common/mod.rs:432-437` `project_events`
 
 #### `dup-a9ddd3832b37` (semantic, 2 sites)
 
@@ -10070,7 +10070,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_co
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/dead_code_json_contract_periphery.rs:328-335` `deserialize_committed_dead_code_lines`
-- `tests/duplication_catalog_contract_periphery.rs:357-364` `deserialize_committed_catalog_lines`
+- `tests/duplication_catalog_contract_periphery.rs:339-346` `deserialize_committed_catalog_lines`
 - `tests/responsibility_map_contract_periphery.rs:275-282` `deserialize_committed_map_lines`
 
 #### `dup-d3e2a91f4c34` (exact, 3 sites)
@@ -10080,7 +10080,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_co
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/dead_code_json_contract_periphery.rs:401-414` `deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly`
-- `tests/duplication_catalog_contract_periphery.rs:314-326` `deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly`
+- `tests/duplication_catalog_contract_periphery.rs:296-308` `deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly`
 - `tests/responsibility_map_contract_periphery.rs:241-253` `deserializing_then_reserializing_reproduces_the_committed_bytes_exactly`
 
 #### `dup-d64d702abca2` (near, 4 sites)
@@ -10285,23 +10285,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_staleness.rs:86-93` `seed_def`
 - `tests/graph_show_surface.rs:94-101` `seed_def`
 
-#### `dup-c3da05bb2e4c` (exact, 2 sites)
+#### `dup-d6f58172590a` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/graph_around_code_first.rs:229-269` `run_rigger_ignores_an_inherited_ambient_store_fence`
-- `tests/graph_around_governance_boundaries.rs:387-424` `run_rigger_ignores_an_inherited_ambient_store_fence`
-
-#### `dup-1b1b02dfa8b3` (exact, 2 sites)
-
-Proposed home: `graph_around_code_first::restore`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/graph_around_code_first.rs:233-235` `drop`
-- `tests/graph_around_governance_boundaries.rs:391-393` `drop`
+- `tests/graph_around_code_first.rs:229-262` `run_rigger_ignores_an_inherited_ambient_store_fence`
+- `tests/graph_around_governance_boundaries.rs:387-417` `run_rigger_ignores_an_inherited_ambient_store_fence`
 
 #### `dup-14936792d6c7` (exact, 2 sites)
 
@@ -11784,9 +11775,9 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (
 - `tests/cli.rs:2348-2395` `a_real_underscore_run_spawns_mutation_scratch_survives_an_unrelated_degenerate_spawn_id` - no duplicate found by reading
 - `tests/cli.rs:3648-3704` `worktree_sweep_completes_before_any_add_within_one_step` - caught: `dup-e81b025c9d07`
 - `tests/code_entity_test_exclusion_periphery.rs:456-494` `a_pre_round7_persisted_index_with_no_path_override_key_loads_defaulting_to_none` - caught: `dup-93ee1bbdb003`
-- `tests/dash_console_stream_periphery.rs:225-245` `send_stream_request` - no duplicate found by reading
-- `tests/dead_code_json_contract_periphery.rs:467-475` `default_build_config_referenced_only_via_a_serde_default_attribute_is_absent` - no duplicate found by reading
-- `tests/design_intent_events.rs:381-402` `a_doc_link_with_an_unrecognized_rel_folds_nothing_and_never_errors` - no duplicate found by reading
+- `tests/dash_console_stream_periphery.rs:201-210` `open_stream_with_progress_since` - no duplicate found by reading
+- `tests/dead_code_json_contract_periphery.rs:401-414` `deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly` - caught: `dup-d3e2a91f4c34`
+- `tests/design_intent_events.rs:332-336` `has_edge` - no duplicate found by reading
 - `tests/graph_show_periphery.rs:975-1027` `graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file` - caught: `dup-2601722bfe68`
 - `tests/model_pinning_periphery.rs:70-80` `item` - no duplicate found by reading
 - `tests/simplification_audit.rs:6628-6631` `an_inline_mod_is_not_recorded_as_out_of_line` - no duplicate found by reading

@@ -385,14 +385,7 @@ fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_c
 #[test]
 #[serial_test::serial(cwd)]
 fn run_rigger_ignores_an_inherited_ambient_store_fence() {
-    std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
-        }
-    }
-    let _restore = Restore;
+    let _fence_cleared = common::StoreFenceCleared::new();
 
     let dir = temp_project();
     let root = dir.path();

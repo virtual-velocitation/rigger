@@ -22144,39 +22144,21 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-c3da05bb2e4c",
+    "id": "dup-d6f58172590a",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
         "name": "run_rigger_ignores_an_inherited_ambient_store_fence",
-        "content_hash": "95516e69c52caa94"
+        "content_hash": "c32398c3c5d17b19"
       },
       {
         "file": "tests/graph_around_governance_boundaries.rs",
         "name": "run_rigger_ignores_an_inherited_ambient_store_fence",
-        "content_hash": "95516e69c52caa94"
+        "content_hash": "c32398c3c5d17b19"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-1b1b02dfa8b3",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/graph_around_code_first.rs",
-        "name": "drop",
-        "content_hash": "e73f5c4d56d805ea"
-      },
-      {
-        "file": "tests/graph_around_governance_boundaries.rs",
-        "name": "drop",
-        "content_hash": "e73f5c4d56d805ea"
-      }
-    ],
-    "proposed_home": "graph_around_code_first::restore",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
