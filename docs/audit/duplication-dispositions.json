@@ -148,5 +148,10 @@
     "id": "dup-1772cddc48d8",
     "disposition": "not-a-duplicate",
     "reason": "Both are one-line public probes over the one shared `read_workflow_probe` read, each declaring the single workflow key its own caller needs (`store:` versus `defaults:`); the read itself is already one definition."
+  },
+  {
+    "id": "dup-35908fb8ceff",
+    "disposition": "not-a-duplicate",
+    "reason": "The mandatory Command::new sweep now holds only the process-spawn port's own construction site plus test code spawning distinct fixture processes (the rigger binary under test, git fixtures, shells); every production spawn routes through src/subprocess.rs, which the process-spawn port gate pins."
   }
 ]

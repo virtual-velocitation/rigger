@@ -1309,7 +1309,8 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 247 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 247 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-15530d0e8b19",
