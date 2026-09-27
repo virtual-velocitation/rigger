@@ -142,14 +142,17 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
+use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{AgentDef, BuildConfig, Config, Gate, Stage};
 use rigger::config_store;
 use rigger::contextgraph::TYPE_GATE_VERDICT;
-use rigger::driver::cli;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::gate::{BuildEnv, ExecRunner};
+
+#[path = "common/real_driver_spy.rs"]
+mod real_driver_spy;
+use real_driver_spy::RealDriverSpy;
 
 /// Write a minimal but real `.rigger/agents/worker.md` + `.rigger/workflow.yml` at
 /// `root`, so `config::load` reaches all the way through agent parsing and
@@ -347,46 +350,6 @@ fn build_env_resolve_falls_back_to_the_default_cache_dir_when_unset() {
         resolved.get("CARGO_INCREMENTAL").map(String::as_str),
         Some("0")
     );
-}
-
-/// A driver that delegates EVERY spawn to the REAL `driver::cli::Driver` (spec 65's
-/// second injection site, unmodified production code) and records only the raw stdout
-/// it produced. This is an OBSERVATION point, not a substitute implementation: every
-/// subprocess this test drives is the actual `Command` the shipped driver builds,
-/// spawned for real, with `SpawnOpts.env` applied by the real `Driver::spawn` - nothing
-/// about the spawn itself is faked.
-struct RealDriverSpy {
-    inner: cli::Driver,
-    outputs: Mutex<Vec<String>>,
-}
-
-impl RealDriverSpy {
-    fn new(bin: &Path) -> Self {
-        RealDriverSpy {
-            inner: cli::Driver {
-                bin: bin.to_string_lossy().into_owned(),
-            },
-            outputs: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn outputs(&self) -> Vec<String> {
-        self.outputs.lock().unwrap().clone()
-    }
-}
-
-impl AgentDriver for RealDriverSpy {
-    fn spawn(
-        &self,
-        agent: &AgentDef,
-        prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        let result = self.inner.spawn(agent, prompt, opts, emit)?;
-        self.outputs.lock().unwrap().push(result.output.clone());
-        Ok(result)
-    }
 }
 
 const UNIT: &str = "a";
