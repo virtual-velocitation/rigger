@@ -23802,10 +23802,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, _) = run_logged(
+            &cfg,
+            &Stub::answering(r#"{"verdict":"reject","issues":[]}"#),
+        );
         assert_eq!(
             rs.units["review"].status,
             ledger::Status::Escalated,
