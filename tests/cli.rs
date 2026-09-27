@@ -25484,22 +25484,19 @@ impl McpSession {
     }
 }
 
-/// `rigger mcp` (the command `.mcp.json` registers) answers `tools/list` with exactly
-/// `rigger_peers`/`rigger_ground`/`rigger_graph`, and each tool round-trips over real stdio
-/// against a real project: `rigger_peers` returns a decision seeded into the store,
-/// `rigger_ground` and `rigger_graph` reach the same underlying calls `rigger ground` /
-/// `rigger graph --around` make (an empty result on a fresh, unindexed project is the
-/// correct honest answer - the plumbing, not the ranking or the index, is this test's
-/// subject).
-#[test]
-fn mcp_serves_peers_ground_and_graph_over_stdio() {
+/// A live `rigger mcp` session over a store holding one decision, its workflow pinning
+/// `grounder`: the lookup surface is exactly the three tools, `rigger_peers` answers from the
+/// real store and `rigger_graph` around an unknown entity answers honestly empty (both
+/// unrelated to grounding), `rigger_ground` over `query` is judged by `check_ground`, and the
+/// session exits 0 on EOF.
+fn assert_mcp_serves_its_three_tools(
+    grounder: &str,
+    query: &str,
+    check_ground: fn(&serde_json::Value),
+) {
     let dir = temp_project();
     let root = dir.path();
-    // Pin the literal grep grounder (same helper `ground_returns_references_from_the_repo`
-    // uses): the default `symbols` grounder is unavailable in a `--no-default-features`
-    // build, and this test's subject is the MCP plumbing, not which grounder answers - so
-    // pinning `grep` keeps the assertion below true in EITHER feature lane.
-    write_grounder_workflow(root, "grep");
+    write_grounder_workflow(root, grounder);
     seed_store(root);
     seed_run_events(
         root,
@@ -25510,26 +25507,16 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
     );
 
     let mut mcp = McpSession::start(root);
-
-    let tool_names = mcp.tool_names();
     assert_eq!(
-        tool_names,
-        vec!["rigger_peers", "rigger_ground", "rigger_graph"]
+        mcp.tool_names(),
+        vec!["rigger_peers", "rigger_ground", "rigger_graph"],
+        "the lookup surface must be exactly the three tools, whatever the grounder"
     );
 
     let peers = mcp.peers();
     assert_eq!(
         peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
         "rigger_peers must reflect the real store; got:\n{peers}"
-    );
-
-    let ground = mcp.call(
-        "tools/call",
-        serde_json::json!({"name": "rigger_ground", "arguments": {"query": "nothing indexed yet"}}),
-    );
-    assert!(
-        ground["result"]["structuredContent"]["results"].is_array(),
-        "rigger_ground must answer with a results array; got:\n{ground}"
     );
 
     let graph = mcp.call(
@@ -25543,12 +25530,66 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
          got:\n{graph}"
     );
 
+    let ground = mcp.call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_ground", "arguments": {"query": query}}),
+    );
+    check_ground(&ground);
+
     let out = mcp.finish();
     assert!(
         out.status.success(),
         "rigger mcp must exit 0; stderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+rigger::test_cases! {
+    /// `rigger mcp` (the command `.mcp.json` registers) answers `tools/list` with exactly
+    /// `rigger_peers`/`rigger_ground`/`rigger_graph`, and each tool round-trips over real stdio
+    /// against a real project: `rigger_peers` returns a decision seeded into the store,
+    /// `rigger_ground` and `rigger_graph` reach the same underlying calls `rigger ground` /
+    /// `rigger graph --around` make (an empty result on a fresh, unindexed project is the
+    /// correct honest answer - the plumbing, not the ranking or the index, is this test's
+    /// subject).
+    mcp_serves_peers_ground_and_graph_over_stdio:
+        // Pin the literal grep grounder (same helper `ground_returns_references_from_the_repo`
+        // uses): the default `symbols` grounder is unavailable in a `--no-default-features`
+        // build, and this test's subject is the MCP plumbing, not which grounder answers - so
+        // pinning `grep` keeps the assertion true in EITHER feature lane.
+        assert_mcp_serves_its_three_tools("grep", "nothing indexed yet", |ground| {
+            assert!(
+                ground["result"]["structuredContent"]["results"].is_array(),
+                "rigger_ground must answer with a results array; got:\n{ground}"
+            );
+        });
+    /// Reject-fix regression: a grounder that fails to RESOLVE (here, an unset/misconfigured
+    /// name - `turbovec`, retired regardless of feature flags, is a feature-independent way to
+    /// force the same failure `--no-default-features` with no `defaults.grounder` pinned hits)
+    /// must never take the WHOLE `rigger mcp` server down. `rigger_peers` and `rigger_graph` have
+    /// nothing to do with grounding and must keep answering; only `rigger_ground` itself reports
+    /// the resolution failure, lazily, as its own tool-call error - exactly as the pre-fix
+    /// operator surface did, and the process still exits 0. Before this fix, `cmd_mcp` resolved
+    /// the grounder EAGERLY with `?`, so this exact misconfiguration aborted the process before
+    /// it ever answered a single request.
+    mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph:
+        // rigger_ground alone reports the resolution failure - lazily, as its own tool-call
+        // error, never a silently-empty results array (spec 57's never-silently-degrade
+        // contract).
+        assert_mcp_serves_its_three_tools("turbovec", "anything", |ground| {
+            assert!(
+                ground.get("error").is_some(),
+                "rigger_ground must report the grounder resolution failure as an error, not \
+                 silently empty results; got:\n{ground}"
+            );
+            assert!(
+                ground["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("retired"),
+                "the error must carry the real resolution failure reason; got:\n{ground}"
+            );
+        });
 }
 
 /// `rigger mcp --spawn <id>` (spec 104, criterion 3, THE SPAWN MCP SERVER): the launched
@@ -25900,22 +25941,22 @@ fn mcp_spawn_scratch_tool_agrees_byte_for_byte_with_rigger_scratch() {
     );
 }
 
-/// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
-/// parse its one printed JSON object. Shared by every end-to-end `grep-guard` test below (the
-/// happy-path test and the SDET periphery additions that follow it): each drives a DIFFERENT
-/// decision surface, but the subprocess plumbing to get there is identical, so it lives once
-/// here rather than as a near-identical closure repeated at every call site.
-fn run_grep_guard(root: &Path, payload: &str) -> serde_json::Value {
+/// Pipe `payload` into `rigger <args>` (a Claude Code hook verb) run from `cwd`: it must
+/// always exit 0 for a well-formed invocation - the decision rides in the JSON body - and
+/// print one JSON object, returned.
+fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value {
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["grep-guard"])
-        .current_dir(root)
+    let verb = args[0];
+    let mut child = common::rigger_courier()
+        .args(args)
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger grep-guard");
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("spawn rigger {verb}: {e}"));
     child
         .stdin
         .take()
@@ -25924,14 +25965,37 @@ fn run_grep_guard(root: &Path, payload: &str) -> serde_json::Value {
         .unwrap();
     let out = child
         .wait_with_output()
-        .expect("rigger grep-guard must exit");
+        .unwrap_or_else(|e| panic!("rigger {verb} must exit: {e}"));
     assert!(
         out.status.success(),
-        "rigger grep-guard must always exit 0 (the decision rides in the JSON body); \
-         stderr:\n{}",
+        "rigger {verb} must always exit 0 for a well-formed invocation (the decision rides in \
+         the JSON body); stderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    serde_json::from_slice(&out.stdout).expect("grep-guard must print one JSON object")
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{verb} must print one JSON object: {e}"))
+}
+
+/// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
+/// parse its one printed JSON object. Shared by every end-to-end `grep-guard` test below (the
+/// happy-path test and the SDET periphery additions that follow it): each drives a DIFFERENT
+/// decision surface, but the subprocess plumbing to get there is identical, so it lives once
+/// here rather than as a near-identical closure repeated at every call site.
+fn run_grep_guard(root: &Path, payload: &str) -> serde_json::Value {
+    run_hook_verb(root, &["grep-guard"], payload)
+}
+
+/// Spawn `rigger guard-write --root <r>...`, write one PreToolUse `payload` to its stdin,
+/// and parse its one printed JSON object - the write-guard analog of [`run_grep_guard`].
+/// `process_cwd` is only the SUBPROCESS's own cwd (irrelevant to the decision, which reads
+/// `cwd` from the payload instead, per THE WRITE GUARD's own stated "resolves the target
+/// ... against the hook's `cwd`" - never this process's).
+fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_json::Value {
+    let mut args = vec!["guard-write"];
+    for root in roots {
+        args.extend(["--root", root]);
+    }
+    run_hook_verb(process_cwd, &args, payload)
 }
 
 /// Asserts `out` (a [`run_grep_guard`] result) is an "allow" verdict carrying an
@@ -26022,43 +26086,6 @@ fn grep_guard_bounces_every_bash_grep_target_and_passes_literal() {
 // compiled binary: real PreToolUse JSON on stdin, real roots on argv, a real filesystem for
 // the `..`/symlink-escape cases a pure in-process test cannot exercise honestly.
 
-/// Spawn `rigger guard-write --root <r>...`, write one PreToolUse `payload` to its stdin,
-/// and parse its one printed JSON object - the write-guard analog of [`run_grep_guard`].
-/// `process_cwd` is only the SUBPROCESS's own cwd (irrelevant to the decision, which reads
-/// `cwd` from the payload instead, per THE WRITE GUARD's own stated "resolves the target
-/// ... against the hook's `cwd`" - never this process's).
-fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_json::Value {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let mut cmd = common::rigger_courier();
-    cmd.arg("guard-write");
-    for root in roots {
-        cmd.arg("--root").arg(root);
-    }
-    cmd.current_dir(process_cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger guard-write");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(payload.as_bytes())
-        .unwrap();
-    let out = child
-        .wait_with_output()
-        .expect("rigger guard-write must exit");
-    assert!(
-        out.status.success(),
-        "rigger guard-write must always exit 0 for a well-formed invocation (the decision \
-         rides in the JSON body); stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("guard-write must print one JSON object")
-}
-
 /// `Edit`/`Write` targets under the root are allowed; the SAME target outside every root is
 /// denied, naming the first root exactly.
 #[test]
@@ -26111,29 +26138,68 @@ fn guard_write_allows_under_the_root_and_denies_outside_naming_the_first() {
     }
 }
 
-/// A relative `file_path` resolves against the PAYLOAD's own `cwd`, not the guard process's.
-#[test]
-fn guard_write_resolves_a_relative_target_against_the_payloads_cwd() {
+/// `rigger guard-write --root <root>` (run from an unrelated project) over a `Write` payload
+/// whose `cwd` is `cwd_in(root)` and whose target is `file_path`, `root` being a canonical
+/// temp dir. Returns the hook's JSON decision.
+fn guard_write_under_a_root(
+    cwd_in: impl FnOnce(&Path) -> std::path::PathBuf,
+    file_path: &str,
+) -> serde_json::Value {
     let cwd_dir = temp_project();
     let root = tempfile::tempdir().unwrap();
     let root_real = std::fs::canonicalize(root.path()).unwrap();
-    let subdir = root_real.join("sub");
-    std::fs::create_dir_all(&subdir).unwrap();
+    let cwd = cwd_in(&root_real);
+    std::fs::create_dir_all(&cwd).unwrap();
 
-    let out = run_guard_write(
+    run_guard_write(
         cwd_dir.path(),
         &[root_real.to_str().unwrap()],
         &serde_json::json!({
             "tool_name": "Write",
-            "cwd": subdir.to_str().unwrap(),
-            "tool_input": {"file_path": "leaf.txt"},
+            "cwd": cwd.to_str().unwrap(),
+            "tool_input": {"file_path": file_path},
         })
         .to_string(),
-    );
+    )
+}
+
+/// A relative `file_path` resolves against the PAYLOAD's own `cwd`, not the guard process's.
+#[test]
+fn guard_write_resolves_a_relative_target_against_the_payloads_cwd() {
+    let out = guard_write_under_a_root(|root| root.join("sub"), "leaf.txt");
     assert_eq!(
         out,
         serde_json::json!({}),
         "a relative target under the payload's own cwd must resolve inside the root; got:\n{out}"
+    );
+}
+
+/// A `..` walk that climbs back out of the root through otherwise-ordinary relative
+/// components is denied - not just an absolute path pointed elsewhere.
+#[test]
+fn guard_write_denies_a_dot_dot_escape_from_inside_the_root() {
+    let out = guard_write_under_a_root(|root| root.join("inside"), "../../outside.txt");
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a `..` escape must be denied; got:\n{out}"
+    );
+}
+
+/// A symlink planted INSIDE the root but pointing OUTSIDE it must not smuggle a write past
+/// the guard - the target's REAL location decides, not the raw text of the path.
+#[test]
+fn guard_write_denies_a_symlink_escape() {
+    let outside = tempfile::tempdir().unwrap();
+    let out = guard_write_under_a_root(
+        |root| {
+            std::os::unix::fs::symlink(outside.path(), root.join("escape")).unwrap();
+            root.to_path_buf()
+        },
+        "escape/secret.txt",
+    );
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a write reached through a symlink escaping the root must be denied; got:\n{out}"
     );
 }
 
@@ -26159,58 +26225,6 @@ fn guard_write_allows_a_target_under_any_of_several_roots() {
         .to_string(),
     );
     assert_eq!(out, serde_json::json!({}));
-}
-
-/// A `..` walk that climbs back out of the root through otherwise-ordinary relative
-/// components is denied - not just an absolute path pointed elsewhere.
-#[test]
-fn guard_write_denies_a_dot_dot_escape_from_inside_the_root() {
-    let cwd_dir = temp_project();
-    let root = tempfile::tempdir().unwrap();
-    let root_real = std::fs::canonicalize(root.path()).unwrap();
-    let inside = root_real.join("inside");
-    std::fs::create_dir_all(&inside).unwrap();
-
-    let out = run_guard_write(
-        cwd_dir.path(),
-        &[root_real.to_str().unwrap()],
-        &serde_json::json!({
-            "tool_name": "Write",
-            "cwd": inside.to_str().unwrap(),
-            "tool_input": {"file_path": "../../outside.txt"},
-        })
-        .to_string(),
-    );
-    assert_eq!(
-        out["hookSpecificOutput"]["permissionDecision"], "deny",
-        "a `..` escape must be denied; got:\n{out}"
-    );
-}
-
-/// A symlink planted INSIDE the root but pointing OUTSIDE it must not smuggle a write past
-/// the guard - the target's REAL location decides, not the raw text of the path.
-#[test]
-fn guard_write_denies_a_symlink_escape() {
-    let cwd_dir = temp_project();
-    let root = tempfile::tempdir().unwrap();
-    let root_real = std::fs::canonicalize(root.path()).unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink(outside.path(), root_real.join("escape")).unwrap();
-
-    let out = run_guard_write(
-        cwd_dir.path(),
-        &[root_real.to_str().unwrap()],
-        &serde_json::json!({
-            "tool_name": "Write",
-            "cwd": root_real.to_str().unwrap(),
-            "tool_input": {"file_path": "escape/secret.txt"},
-        })
-        .to_string(),
-    );
-    assert_eq!(
-        out["hookSpecificOutput"]["permissionDecision"], "deny",
-        "a write reached through a symlink escaping the root must be denied; got:\n{out}"
-    );
 }
 
 /// `NotebookEdit` is covered through `notebook_path`; a tool this guard does not cover (e.g.
@@ -26661,6 +26675,151 @@ fn grep_guard_denies_the_formerly_exempt_target_shapes_end_to_end() {
     }
 }
 
+/// `rigger grep-guard` over a `tool_name`/`tool_input` payload, in a fresh project.
+fn grep_guard_over(tool_name: &str, tool_input: serde_json::Value) -> serde_json::Value {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    let payload = serde_json::json!({"tool_name": tool_name, "tool_input": tool_input});
+    run_grep_guard(root, &payload.to_string())
+}
+
+/// `rigger grep-guard` over a Bash `command`.
+fn grep_guard_bash(command: &str) -> serde_json::Value {
+    grep_guard_over("Bash", serde_json::json!({"command": command}))
+}
+
+/// `rigger grep-guard`'s JSON decision `out` denies the call (`why` names the call).
+fn assert_grep_guard_denies(out: &serde_json::Value, why: &str) {
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{why} must be denied through the compiled binary; got:\n{out}"
+    );
+}
+
+/// Every Bash command in `commands` is denied through the compiled binary (`why` names what
+/// the commands have in common).
+fn assert_grep_guard_denies_each(commands: &[&str], why: &str) {
+    for command in commands {
+        assert_grep_guard_denies(&grep_guard_bash(command), &format!("{why}: {command:?}"));
+    }
+}
+
+/// Every Bash command in `commands` carries `--literal` and is allowed through, the marker and
+/// its one adjacent space removed; when given, the rewritten command is exactly `stripped` -
+/// nothing else rewritten.
+fn assert_grep_guard_passes_literal(commands: &[&str], stripped: Option<&str>) {
+    for command in commands {
+        let rewritten = assert_grep_guard_allows_with_literal_stripped(&grep_guard_bash(command));
+        if let Some(stripped) = stripped {
+            assert_eq!(
+                rewritten, stripped,
+                "the marker and its one adjacent space must be removed, nothing else rewritten"
+            );
+        }
+    }
+}
+
+rigger::test_cases! {
+    /// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass), end to end through the
+    /// compiled binary: a `grep` invocation fused to an adjacent command with NO surrounding
+    /// whitespace - a pipe, a semicolon, a `$( )` command substitution, a backgrounded `&`, a
+    /// chained `&&`, or a backtick command substitution - is bounced exactly like the spaced
+    /// form. Detecting the INVOCATION (not its target) is still exactly what the tokenizer must
+    /// get right after d-spec92-hook-no-target-axis, so this proof survives unchanged.
+    grep_guard_bounces_a_shell_metacharacter_fused_grep_end_to_end:
+        assert_grep_guard_denies_each(
+            &[
+                "cat src/main.rs|grep pattern",
+                "true;grep pattern src/main.rs",
+                "if $(grep -q pattern src/main.rs); then echo yes; fi",
+                "grep pattern src/main.rs&",
+                "echo hi&&grep pattern src/main.rs",
+                "echo `grep pattern src/main.rs`",
+            ],
+            "a grep fused to an adjacent command via a shell metacharacter",
+        );
+    /// SDET periphery gap closed (round-4 accounting): the round-4 fix
+    /// (adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard) adds `shell_word_value`, a
+    /// per-token shell quote/escape resolution pass, so a `grep` word wrapped in double quotes,
+    /// wrapped in single quotes, split by a backslash escape, or split by an empty quoted run in
+    /// the middle of the word all still tokenize as the plain word `grep`. This test drives the
+    /// SAME four shapes through the compiled `rigger grep-guard` binary reading real PreToolUse
+    /// JSON on stdin, proving the quote/escape normalization actually reaches an operator's
+    /// shell, not only the function under test.
+    grep_guard_bounces_a_quoted_or_escaped_grep_end_to_end:
+        assert_grep_guard_denies_each(
+            &[
+                r#""grep" pattern src/main.rs"#,
+                "'grep' pattern src/main.rs",
+                r"gr\ep pattern src/main.rs",
+                "g''rep pattern src/main.rs",
+            ],
+            "a quoted or escaped grep (matching the round-4 fix's pure-function coverage)",
+        );
+    /// SDET periphery gap closed (round-5 accounting, adv-u92c4-r4-path-qualified-grep-bypasses-
+    /// command-check): a path-qualified spelling of the same binary (`/usr/bin/grep`, `./grep`, a
+    /// relative `bin/grep`) must be denied exactly like the bare form already is.
+    grep_guard_bounces_a_path_qualified_grep_end_to_end:
+        assert_grep_guard_denies_each(
+            &[
+                "/usr/bin/grep pattern src/main.rs",
+                "./grep pattern src/main.rs",
+                "bin/grep pattern src/main.rs",
+            ],
+            "a path-qualified grep",
+        );
+    /// SDET periphery gap closed (round-5 accounting, sdet-u92c4r4-backslash-newline-continuation-
+    /// still-bypasses-the-guard): an ordinary bash line continuation - a backslash immediately
+    /// followed by a newline, which a real shell removes with no separator - must not let `grep`
+    /// hide from the guard by splitting into two dead fragments.
+    grep_guard_bounces_a_grep_split_by_a_line_continuation_end_to_end:
+        assert_grep_guard_denies_each(
+            &["gr\\\nep pattern src/main.rs"],
+            "a grep split by a line continuation (matching the round-5 fix's pure-function \
+             coverage)",
+        );
+    /// SDET periphery gap closed: the round-3 fix's own end-to-end test proves a FUSED grep is
+    /// denied, but never that `--literal` still escapes a fused command through the compiled
+    /// binary - only `grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep`
+    /// (a pure-function unit test in `src/main.rs`) does. Without this, a regression that broke
+    /// `--literal` specifically for a fused command - while leaving the fused denial intact -
+    /// would pass every currently-committed periphery test.
+    grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_end:
+        assert_grep_guard_passes_literal(
+            &["true;grep --literal pattern src/main.rs"],
+            Some("true;grep pattern src/main.rs"),
+        );
+    /// SDET periphery gap closed (round-4 accounting): the round-4 fix's own end-to-end coverage
+    /// never proves `--literal` survives quote/escape normalization when the escape hatch flag
+    /// itself is quoted too - only the pure-function unit test
+    /// (`grep_guard_decision_literal_survives_a_quoted_literal_on_a_quoted_grep` in `src/main.rs`)
+    /// does.
+    grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end:
+        assert_grep_guard_passes_literal(
+            &[r#""grep" "--literal" pattern src/main.rs"#],
+            // The whole quoted marker token is excised, not merely its interior.
+            Some(r#""grep" pattern src/main.rs"#),
+        );
+    /// The same path-qualified shapes with `--literal` added must still pass through end to end,
+    /// mirroring `grep_guard_decision_literal_survives_a_path_qualified_grep` (`src/main.rs`)
+    /// at the compiled-binary boundary.
+    grep_guard_still_allows_literal_on_a_path_qualified_grep_end_to_end:
+        assert_grep_guard_passes_literal(
+            &[
+                "/usr/bin/grep --literal pattern src/main.rs",
+                "./grep --literal pattern src/main.rs",
+                "bin/grep --literal pattern src/main.rs",
+            ],
+            None,
+        );
+    /// The same line-continuation-split shape with `--literal` added must still pass through end
+    /// to end, mirroring `grep_guard_decision_literal_survives_a_line_continuation_split_grep`
+    /// (`src/main.rs`) at the compiled-binary boundary.
+    grep_guard_still_allows_literal_on_a_line_continuation_split_grep_end_to_end:
+        assert_grep_guard_passes_literal(&["gr\\\nep --literal pattern src/main.rs"], None);
+}
+
 /// SDET periphery gap (round-9 accounting): the round's own pure-function test
 /// (`grep_guard_decision_denies_every_bash_grep_target_and_passes_literal` /
 /// `grep_guard_decision_denies_every_grep_tool_path`, `main.rs`) proves an ancestor target
@@ -26673,240 +26832,35 @@ fn grep_guard_denies_the_formerly_exempt_target_shapes_end_to_end() {
 /// `--literal` escape on the Bash form.
 #[test]
 fn grep_guard_denies_an_ancestor_target_end_to_end_and_passes_literal() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    let grep_tool = run_grep_guard(root, r#"{"tool_name":"Grep","tool_input":{"path":".."}}"#);
-    assert_eq!(
-        grep_tool["hookSpecificOutput"]["permissionDecision"], "deny",
-        "Grep path=\"..\" must be denied; got:\n{grep_tool}"
+    assert_grep_guard_denies(
+        &grep_guard_over("Grep", serde_json::json!({"path": ".."})),
+        "Grep path=\"..\"",
     );
-
-    let bash = run_grep_guard(
-        root,
-        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO .."}}"#,
+    assert_grep_guard_denies(
+        &grep_guard_bash("grep -rn TODO .."),
+        "a Bash grep targeting ..",
     );
-    assert_eq!(
-        bash["hookSpecificOutput"]["permissionDecision"], "deny",
-        "a Bash grep targeting .. must be denied; got:\n{bash}"
-    );
-
-    let literal = run_grep_guard(
-        root,
-        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal -rn TODO .."}}"#,
-    );
-    let stripped = assert_grep_guard_allows_with_literal_stripped(&literal);
-    assert_eq!(
-        stripped, "grep -rn TODO ..",
-        "the marker and its one adjacent space must be removed, nothing else rewritten"
-    );
+    assert_grep_guard_passes_literal(&["grep --literal -rn TODO .."], Some("grep -rn TODO .."));
 }
 
-/// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass), end to end through the
-/// compiled binary: a `grep` invocation fused to an adjacent command with NO surrounding
-/// whitespace - a pipe, a semicolon, a `$( )` command substitution, a backgrounded `&`, a
-/// chained `&&`, or a backtick command substitution - is bounced exactly like the spaced
-/// form. Detecting the INVOCATION (not its target) is still exactly what the tokenizer must
-/// get right after d-spec92-hook-no-target-axis, so this proof survives unchanged.
+/// SDET periphery gap (round-6 accounting, generalized past d-spec92-hook-no-target-axis):
+/// an OUTPUT redirect fused directly to the command name with no whitespace
+/// (`grep>out.txt pattern`) must be denied on its own - the same command name detection
+/// `<` requires - regardless of what the redirect writes to, since the hook no longer
+/// inspects any target at all.
 #[test]
-fn grep_guard_bounces_a_shell_metacharacter_fused_grep_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    for command in [
-        "cat src/main.rs|grep pattern",
-        "true;grep pattern src/main.rs",
-        "if $(grep -q pattern src/main.rs); then echo yes; fi",
-        "grep pattern src/main.rs&",
-        "echo hi&&grep pattern src/main.rs",
-        "echo `grep pattern src/main.rs`",
-    ] {
-        let payload = serde_json::json!({
-            "tool_name": "Bash",
-            "tool_input": {"command": command}
-        })
-        .to_string();
-        let out = run_grep_guard(root, &payload);
-        assert_eq!(
-            out["hookSpecificOutput"]["permissionDecision"], "deny",
-            "a grep fused to an adjacent command via a shell metacharacter must be denied: \
-             {command:?}; got:\n{out}"
-        );
-    }
-}
-
-/// SDET periphery gap closed: the round-3 fix's own end-to-end test proves a FUSED grep is
-/// denied, but never that `--literal` still escapes a fused command through the compiled
-/// binary - only `grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep`
-/// (a pure-function unit test in `src/main.rs`) does. Without this, a regression that broke
-/// `--literal` specifically for a fused command - while leaving the fused denial intact -
-/// would pass every currently-committed periphery test.
-#[test]
-fn grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    let out = run_grep_guard(
-        root,
-        r#"{"tool_name":"Bash","tool_input":{"command":"true;grep --literal pattern src/main.rs"}}"#,
+fn grep_guard_bounces_an_output_redirect_metacharacter_fused_grep_end_to_end() {
+    // Denied no matter where its output redirects to, since the hook has no target axis.
+    assert_grep_guard_denies(
+        &grep_guard_bash("grep pattern file.txt >output.log"),
+        "a grep invocation redirecting its output",
     );
-    let stripped = assert_grep_guard_allows_with_literal_stripped(&out);
-    assert_eq!(
-        stripped, "true;grep pattern src/main.rs",
-        "the marker and its one adjacent space must be removed, the fusion left untouched"
+    // --literal must still pass an output-redirect-carrying command through, the redirection
+    // itself surviving the marker's removal untouched.
+    assert_grep_guard_passes_literal(
+        &["grep --literal pattern file.txt >output.log"],
+        Some("grep pattern file.txt >output.log"),
     );
-}
-
-/// SDET periphery gap closed (round-4 accounting): the round-4 fix
-/// (adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard) adds `shell_word_value`, a
-/// per-token shell quote/escape resolution pass, so a `grep` word wrapped in double quotes,
-/// wrapped in single quotes, split by a backslash escape, or split by an empty quoted run in
-/// the middle of the word all still tokenize as the plain word `grep`. This test drives the
-/// SAME four shapes through the compiled `rigger grep-guard` binary reading real PreToolUse
-/// JSON on stdin, proving the quote/escape normalization actually reaches an operator's
-/// shell, not only the function under test.
-#[test]
-fn grep_guard_bounces_a_quoted_or_escaped_grep_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    for command in [
-        r#""grep" pattern src/main.rs"#,
-        "'grep' pattern src/main.rs",
-        r"gr\ep pattern src/main.rs",
-        "g''rep pattern src/main.rs",
-    ] {
-        let payload = serde_json::json!({
-            "tool_name": "Bash",
-            "tool_input": {"command": command}
-        })
-        .to_string();
-        let out = run_grep_guard(root, &payload);
-        assert_eq!(
-            out["hookSpecificOutput"]["permissionDecision"], "deny",
-            "a quoted or escaped grep must be denied through the compiled binary, matching the \
-             round-4 fix's pure-function coverage: {command:?}; got:\n{out}"
-        );
-    }
-}
-
-/// SDET periphery gap closed (round-4 accounting): the round-4 fix's own end-to-end coverage
-/// never proves `--literal` survives quote/escape normalization when the escape hatch flag
-/// itself is quoted too - only the pure-function unit test
-/// (`grep_guard_decision_literal_survives_a_quoted_literal_on_a_quoted_grep` in `src/main.rs`)
-/// does.
-#[test]
-fn grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    let out = run_grep_guard(
-        root,
-        r#"{"tool_name":"Bash","tool_input":{"command":"\"grep\" \"--literal\" pattern src/main.rs"}}"#,
-    );
-    let stripped = assert_grep_guard_allows_with_literal_stripped(&out);
-    assert_eq!(
-        stripped, r#""grep" pattern src/main.rs"#,
-        "the whole quoted marker token must be excised, not merely its interior"
-    );
-}
-
-/// SDET periphery gap closed (round-5 accounting, sdet-u92c4r4-backslash-newline-continuation-
-/// still-bypasses-the-guard): an ordinary bash line continuation - a backslash immediately
-/// followed by a newline, which a real shell removes with no separator - must not let `grep`
-/// hide from the guard by splitting into two dead fragments.
-#[test]
-fn grep_guard_bounces_a_grep_split_by_a_line_continuation_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    let payload = serde_json::json!({
-        "tool_name": "Bash",
-        "tool_input": {"command": "gr\\\nep pattern src/main.rs"}
-    })
-    .to_string();
-    let out = run_grep_guard(root, &payload);
-    assert_eq!(
-        out["hookSpecificOutput"]["permissionDecision"], "deny",
-        "a grep split by a line continuation must be denied through the compiled binary, \
-         matching the round-5 fix's pure-function coverage; got:\n{out}"
-    );
-}
-
-/// The same line-continuation-split shape with `--literal` added must still pass through end
-/// to end, mirroring `grep_guard_decision_literal_survives_a_line_continuation_split_grep`
-/// (`src/main.rs`) at the compiled-binary boundary.
-#[test]
-fn grep_guard_still_allows_literal_on_a_line_continuation_split_grep_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    let payload = serde_json::json!({
-        "tool_name": "Bash",
-        "tool_input": {"command": "gr\\\nep --literal pattern src/main.rs"}
-    })
-    .to_string();
-    let out = run_grep_guard(root, &payload);
-    assert_grep_guard_allows_with_literal_stripped(&out);
-}
-
-/// SDET periphery gap closed (round-5 accounting, adv-u92c4-r4-path-qualified-grep-bypasses-
-/// command-check): a path-qualified spelling of the same binary (`/usr/bin/grep`, `./grep`, a
-/// relative `bin/grep`) must be denied exactly like the bare form already is.
-#[test]
-fn grep_guard_bounces_a_path_qualified_grep_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    for command in [
-        "/usr/bin/grep pattern src/main.rs",
-        "./grep pattern src/main.rs",
-        "bin/grep pattern src/main.rs",
-    ] {
-        let payload = serde_json::json!({
-            "tool_name": "Bash",
-            "tool_input": {"command": command}
-        })
-        .to_string();
-        let out = run_grep_guard(root, &payload);
-        assert_eq!(
-            out["hookSpecificOutput"]["permissionDecision"], "deny",
-            "a path-qualified grep must be denied through the compiled binary: {command:?}; \
-             got:\n{out}"
-        );
-    }
-}
-
-/// The same path-qualified shapes with `--literal` added must still pass through end to end,
-/// mirroring `grep_guard_decision_literal_survives_a_path_qualified_grep` (`src/main.rs`)
-/// at the compiled-binary boundary.
-#[test]
-fn grep_guard_still_allows_literal_on_a_path_qualified_grep_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    for command in [
-        "/usr/bin/grep --literal pattern src/main.rs",
-        "./grep --literal pattern src/main.rs",
-        "bin/grep --literal pattern src/main.rs",
-    ] {
-        let payload = serde_json::json!({
-            "tool_name": "Bash",
-            "tool_input": {"command": command}
-        })
-        .to_string();
-        let out = run_grep_guard(root, &payload);
-        assert_grep_guard_allows_with_literal_stripped(&out);
-    }
 }
 
 rigger::test_cases! {
@@ -26998,40 +26952,6 @@ fn grep_guard_stripped_literal_command_actually_runs_via_a_real_shell() {
     );
 }
 
-/// SDET periphery gap (round-6 accounting, generalized past d-spec92-hook-no-target-axis):
-/// an OUTPUT redirect fused directly to the command name with no whitespace
-/// (`grep>out.txt pattern`) must be denied on its own - the same command name detection
-/// `<` requires - regardless of what the redirect writes to, since the hook no longer
-/// inspects any target at all.
-#[test]
-fn grep_guard_bounces_an_output_redirect_metacharacter_fused_grep_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    let out = run_grep_guard(
-        root,
-        r#"{"tool_name":"Bash","tool_input":{"command":"grep pattern file.txt >output.log"}}"#,
-    );
-    assert_eq!(
-        out["hookSpecificOutput"]["permissionDecision"], "deny",
-        "a grep invocation must be denied no matter where its output redirects to, since the \
-         hook has no target axis; got:\n{out}"
-    );
-
-    // --literal must still pass an output-redirect-carrying command through, the redirection
-    // itself surviving the marker's removal untouched.
-    let literal_out = run_grep_guard(
-        root,
-        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal pattern file.txt >output.log"}}"#,
-    );
-    let stripped = assert_grep_guard_allows_with_literal_stripped(&literal_out);
-    assert_eq!(
-        stripped, "grep pattern file.txt >output.log",
-        "only the marker and its one adjacent space must be removed, the redirect untouched"
-    );
-}
-
 /// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
 /// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
 /// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
@@ -27097,84 +27017,6 @@ fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_argum
     assert!(
         out.status.success(),
         "rigger mcp must exit 0 after an error-only session; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// Reject-fix regression: a grounder that fails to RESOLVE (here, an unset/misconfigured
-/// name - `turbovec`, retired regardless of feature flags, is a feature-independent way to
-/// force the same failure `--no-default-features` with no `defaults.grounder` pinned hits)
-/// must never take the WHOLE `rigger mcp` server down. `rigger_peers` and `rigger_graph` have
-/// nothing to do with grounding and must keep answering; only `rigger_ground` itself reports
-/// the resolution failure, lazily, as its own tool-call error - exactly as the pre-fix
-/// operator surface did, and the process still exits 0. Before this fix, `cmd_mcp` resolved
-/// the grounder EAGERLY with `?`, so this exact misconfiguration aborted the process before
-/// it ever answered a single request.
-#[test]
-fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_grounder_workflow(root, "turbovec");
-    seed_store(root);
-    seed_run_events(
-        root,
-        &[(
-            "DecisionMade",
-            r#"{"id":"d1","summary":"x","governs":["a.rs"]}"#,
-        )],
-    );
-
-    let mut mcp = McpSession::start(root);
-
-    // The lookup surface is still exactly the three tools - unchanged by the grounder failure.
-    let tool_names = mcp.tool_names();
-    assert_eq!(
-        tool_names,
-        vec!["rigger_peers", "rigger_ground", "rigger_graph"],
-        "a grounder resolution failure must not change which tools are advertised"
-    );
-
-    // rigger_peers, unrelated to grounding, still answers from the real store.
-    let peers = mcp.peers();
-    assert_eq!(
-        peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
-        "rigger_peers must keep answering even though the grounder failed to resolve; got:\n{peers}"
-    );
-
-    // rigger_graph, also unrelated to grounding, still answers honestly.
-    let graph = mcp.call(
-        "tools/call",
-        serde_json::json!({"name": "rigger_graph", "arguments": {"around": "does-not-exist.rs"}}),
-    );
-    assert_eq!(
-        graph["result"]["structuredContent"]["nodes"],
-        serde_json::json!([]),
-        "rigger_graph must keep answering even though the grounder failed to resolve; got:\n{graph}"
-    );
-
-    // rigger_ground alone reports the resolution failure - lazily, as its own tool-call error,
-    // never a silently-empty results array (spec 57's never-silently-degrade contract).
-    let ground = mcp.call(
-        "tools/call",
-        serde_json::json!({"name": "rigger_ground", "arguments": {"query": "anything"}}),
-    );
-    assert!(
-        ground.get("error").is_some(),
-        "rigger_ground must report the grounder resolution failure as an error, not silently \
-         empty results; got:\n{ground}"
-    );
-    assert!(
-        ground["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("retired"),
-        "the error must carry the real resolution failure reason; got:\n{ground}"
-    );
-
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must still exit 0 despite the grounder resolution failure; stderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
