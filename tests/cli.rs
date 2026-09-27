@@ -11789,12 +11789,13 @@ fn validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants(
 /// `rigger validate` over an initialized project with `build_block(root)` appended to its
 /// config (empty = none) and `PATH` set to `path(root)` must SUCCEED - a discovered-implicit
 /// degrade never fails validate - and report every line `expected(root)` names through its
-/// output, so what the build layer actually resolved (or silently skipped) is SEEN.
+/// output, so what the build layer actually resolved (or silently skipped) is SEEN. Returns the
+/// stdout.
 fn assert_validate_reports(
     build_block: fn(&Path) -> String,
     path: fn(&Path) -> String,
     expected: fn(&Path) -> Vec<String>,
-) {
+) -> String {
     let dir = initialized_project();
     let root = dir.path();
     let block = build_block(root);
@@ -11812,6 +11813,7 @@ fn assert_validate_reports(
             "validate must report {line:?} over build block {block:?}; stdout:\n{out}"
         );
     }
+    out
 }
 
 /// The `build.wrapper: auto` config block.
@@ -11908,19 +11910,15 @@ rigger::test_cases! {
 /// layer touches no cache dir, so a claimed one would be fabricated.
 #[test]
 fn validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off() {
-    let dir = initialized_project();
-    let root = dir.path();
-    append_build_block(root, "build:\n  wrapper: off\n  max_concurrent: 2\n");
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "wrapper: off must not fail validate; stderr:\n{err}");
-    assert!(
-        out.lines().any(|l| l == "build wrapper: none"),
-        "an off wrapper reports none; stdout:\n{out}"
-    );
-    assert!(
-        out.lines().any(|l| l == "build budget: 2"),
-        "the budget is still reported with the wrapper off; stdout:\n{out}"
+    let out = assert_validate_reports(
+        |_| "build:\n  wrapper: off\n  max_concurrent: 2\n".to_string(),
+        |_| std::env::var("PATH").unwrap_or_default(),
+        |_| {
+            vec![
+                "build wrapper: none".to_string(),
+                "build budget: 2".to_string(),
+            ]
+        },
     );
     assert!(
         !out.lines().any(|l| l.starts_with("build cache dir:")),
