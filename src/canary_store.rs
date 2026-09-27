@@ -32,6 +32,7 @@ use crate::conductor::{
 use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel};
 use crate::contextgraph::TYPE_REVIEW_FINDING;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
+use crate::instructions::Instruction;
 use crate::ledger::TYPE_UNIT_STATUS;
 use crate::spawn::{lens_role, ROLE_ADJUDICATOR, ROLE_ADVERSARY};
 
@@ -538,7 +539,7 @@ fn run_review_tier(
 ) -> Result<(Vec<Finding>, String), Error> {
     let agent = agent_of(cfg, agent_id, role)?;
     let prompt = format!("{}\n\n{}", review_header(item), review_protocol(role));
-    let opts = canary_opts(item, role, agent);
+    let opts = canary_opts(item, role, agent, &cfg.instructions);
     let (result, findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
     Ok((findings, result.resolved_model))
 }
@@ -557,7 +558,7 @@ fn adjudicate(
 ) -> Result<(bool, String), Error> {
     let agent = agent_of(cfg, &panel.adjudicator, ROLE_ADJUDICATOR)?;
     let prompt = adjudicator_prompt(item, findings);
-    let mut opts = canary_opts(item, ROLE_ADJUDICATOR, agent);
+    let mut opts = canary_opts(item, ROLE_ADJUDICATOR, agent, &cfg.instructions);
     // Distinguish the two probe spawns (natural vs reversed order) by id.
     opts.id = format!("{}:{ordinal}", opts.id);
     let (result, _findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
@@ -577,13 +578,18 @@ fn agent_of<'a>(cfg: &'a Config, agent_id: &str, role: &str) -> Result<&'a Agent
 /// The spawn options for a canary reviewer: a deterministic per-item, per-role id and the
 /// discipline-composed system prompt. A canary reviewer owns no worktree - it reviews the
 /// corpus snippet in the prompt - so it runs with no isolation and an empty blast radius.
-fn canary_opts(item: &CanaryItem, role: &str, agent: &AgentDef) -> SpawnOpts {
+fn canary_opts(
+    item: &CanaryItem,
+    role: &str,
+    agent: &AgentDef,
+    instructions: &[Instruction],
+) -> SpawnOpts {
     SpawnOpts {
         id: format!("canary:{}:{role}", item.id),
         unit: format!("canary:{}", item.id),
         stage: "canary".to_string(),
         attempt: 0,
-        system_prompt: build_system_prompt(&agent.prompt),
+        system_prompt: build_system_prompt(&agent.prompt, instructions),
         dir: String::new(),
         isolation: false,
         parallel: false,
@@ -719,12 +725,22 @@ mod tests {
             prompt: "REVIEW CAREFULLY".to_string(),
             ..Default::default()
         };
-        let opts = canary_opts(&item, "lens:sdet", &a);
+        let opts = canary_opts(&item, "lens:sdet", &a, &[]);
         assert_eq!(opts.id, "canary:item-1:lens:sdet");
         assert_eq!(opts.unit, "canary:item-1");
         assert_eq!(opts.stage, "canary");
         assert_eq!(opts.attempt, 0);
-        assert_eq!(opts.system_prompt, build_system_prompt(&a.prompt));
+        assert_eq!(opts.system_prompt, build_system_prompt(&a.prompt, &[]));
+        let house = [Instruction {
+            name: "10-house".to_string(),
+            body: "House rule for canaries.".to_string(),
+        }];
+        assert!(
+            canary_opts(&item, "lens:sdet", &a, &house)
+                .system_prompt
+                .contains("House rule for canaries."),
+            "the operator instruction layer must reach a canary reviewer's system prompt"
+        );
         assert!(
             !opts.system_prompt.is_empty(),
             "a real agent persona must produce a non-empty composed system prompt"

@@ -31094,3 +31094,122 @@ fn status_reports_a_run_without_creating_the_projects_scratch_root() {
         scratch.display()
     );
 }
+
+/// Instruction injection, operator-facing: `rigger instructions` on a project with no operator
+/// layer prints the built-in law by name and says the operator layer is empty.
+#[test]
+fn instructions_on_a_fresh_project_prints_the_built_in_law_and_no_operator_layer() {
+    let proj = temp_project();
+    let (out, err, ok) = run_rigger(proj.path(), &["instructions"]);
+    assert!(ok, "`rigger instructions` must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("## engineering-principles"),
+        "the built-in law must be named; got:\n{out}"
+    );
+    assert!(
+        out.contains("(none)"),
+        "an absent operator layer reads as (none); got:\n{out}"
+    );
+}
+
+/// Given an operator file in `.rigger/instructions/`, when the operator runs `rigger
+/// instructions`, then the file is listed by name with its body, after the built-in law.
+#[test]
+fn instructions_prints_an_operator_file_after_the_built_in_law() {
+    let proj = temp_project();
+    let dir = proj.path().join(".rigger").join("instructions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("10-house.md"),
+        "House rule: name every error path.\n",
+    )
+    .unwrap();
+    let (out, err, ok) = run_rigger(proj.path(), &["instructions"]);
+    assert!(ok, "`rigger instructions` must succeed; stderr:\n{err}");
+    let builtin = out
+        .find("## engineering-principles")
+        .unwrap_or_else(|| panic!("built-in missing; got:\n{out}"));
+    let house = out
+        .find("## 10-house")
+        .unwrap_or_else(|| panic!("operator file missing; got:\n{out}"));
+    assert!(
+        builtin < house,
+        "the built-in law renders first; got:\n{out}"
+    );
+    assert!(
+        out.contains("House rule: name every error path."),
+        "the operator file's body is printed; got:\n{out}"
+    );
+    assert!(
+        !out.contains("(none)"),
+        "a present layer is not (none); got:\n{out}"
+    );
+}
+
+/// `rigger prime` opens with the instructions in force on the absent-db path, counting the
+/// operator files.
+#[test]
+fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
+    let proj = temp_project();
+    let (out, err, ok) = run_rigger(proj.path(), &["prime"]);
+    assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
+    assert_eq!(
+        out.lines().next(),
+        Some("# Rigger instructions in force: engineering-principles - see rigger instructions"),
+        "with no operator files the parenthetical is omitted; got:\n{out}"
+    );
+}
+
+/// `rigger prime` opens with the instructions in force on the recent-decisions path too,
+/// counting the operator files, and keeps the recent-decisions heading next.
+#[test]
+fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+    let dir = root.join(".rigger").join("instructions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("10-house.md"), "House rule.").unwrap();
+    std::fs::write(dir.join("20-team.md"), "Team rule.").unwrap();
+    let (out, err, ok) = run_rigger(root, &["prime"]);
+    assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
+    let mut lines = out.lines();
+    assert_eq!(
+        lines.next(),
+        Some(
+            "# Rigger instructions in force: engineering-principles (+2 operator files) - see \
+             rigger instructions"
+        ),
+        "got:\n{out}"
+    );
+    assert_eq!(
+        lines.next(),
+        Some("# Rigger: recent decisions"),
+        "got:\n{out}"
+    );
+}
+
+/// `rigger init` scaffolds the operator instruction directory with its README and names it
+/// in the first-run summary.
+#[test]
+fn init_scaffolds_the_instructions_readme_and_names_it() {
+    let proj = temp_project();
+    let root = proj.path();
+    let (out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("scaffolded .rigger/instructions/README.md"),
+        "the first init names the instructions README; got:\n{out}"
+    );
+    assert!(
+        root.join(".rigger/instructions/README.md").is_file(),
+        "the README exists after init"
+    );
+    // The README documents the layer; it is not itself an operator instruction.
+    let (out, err, ok) = run_rigger(root, &["instructions"]);
+    assert!(ok, "`rigger instructions` must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("(none)"),
+        "the scaffolded README is not injected as an instruction; got:\n{out}"
+    );
+}

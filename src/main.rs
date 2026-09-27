@@ -20636,6 +20636,29 @@ mod tests {
             definition_hash(dir).unwrap(),
             "a workflow edit changes the hash"
         );
+        // The operator instruction layer is part of the definition: adding a file changes the
+        // hash, editing it changes it again, and trailing-whitespace noise does not.
+        let before_instructions = definition_hash(dir).unwrap();
+        let ins_dir = base.path().join(".rigger").join("instructions");
+        std::fs::create_dir_all(&ins_dir).unwrap();
+        std::fs::write(ins_dir.join("10-house.md"), "House rule.\n").unwrap();
+        let with_instruction = definition_hash(dir).unwrap();
+        assert_ne!(
+            before_instructions, with_instruction,
+            "adding an operator instruction changes the hash"
+        );
+        std::fs::write(ins_dir.join("10-house.md"), "House rule.   \r\n").unwrap();
+        assert_eq!(
+            with_instruction,
+            definition_hash(dir).unwrap(),
+            "trailing-ws / CRLF noise in an instruction is canonicalized away"
+        );
+        std::fs::write(ins_dir.join("10-house.md"), "A different house rule.\n").unwrap();
+        assert_ne!(
+            with_instruction,
+            definition_hash(dir).unwrap(),
+            "editing an operator instruction changes the hash"
+        );
     }
 
     /// KurrentDB is ALWAYS AVAILABLE (spec 47): the adapter is compiled into every

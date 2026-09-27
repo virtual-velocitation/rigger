@@ -18,6 +18,7 @@ use crate::config::{
     err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
     resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow,
 };
+use crate::instructions::Instruction;
 // The rest of `config`'s pure surface this file's own PRODUCTION code never touches, but its
 // moved test module (spec 93, criterion 1 - see this file's own doc) does: Duration for a
 // backoff fixture, `failure` for classify() round-trips, and the lint/validate helpers'
@@ -41,9 +42,23 @@ pub fn load(dir: &str) -> Result<Config, Error> {
     let mut agents = load_agents(&base.join("agents"))?;
     let workflow = load_workflow(&base.join("workflow.yml"))?;
     resolve_wall_clocks(&mut agents, &workflow.defaults);
-    let cfg = Config { agents, workflow };
+    let instructions = load_instructions(Path::new(dir))?;
+    let cfg = Config {
+        agents,
+        workflow,
+        instructions,
+    };
     cfg.validate()?;
     Ok(cfg)
+}
+
+/// Read the operator instruction layer: every `<dir>/.rigger/instructions/*.md` in filename
+/// order, each named by its file stem. The directory's own `README.md` documents the layer and
+/// is not part of it. An absent directory is an empty layer; any other read failure is an
+/// error naming the path, never a silently thinner layer.
+pub fn load_instructions(dir: &Path) -> Result<Vec<Instruction>, Error> {
+    let _ = dir;
+    Ok(Vec::new())
 }
 
 fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
@@ -292,6 +307,106 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- instruction injection: the operator layer loader ----
+
+    fn instructions_dir(root: &Path) -> std::path::PathBuf {
+        let d = root.join(".rigger").join("instructions");
+        std::fs::create_dir_all(&d).expect("create .rigger/instructions");
+        d
+    }
+
+    #[test]
+    fn load_instructions_is_empty_when_the_directory_is_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            load_instructions(tmp.path()).expect("an absent directory is not an error"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn load_instructions_reads_md_files_in_filename_order_named_by_stem() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let d = instructions_dir(tmp.path());
+        std::fs::write(d.join("20-team.md"), "Team rule.\n").unwrap();
+        std::fs::write(d.join("10-house.md"), "House rule.\n").unwrap();
+        let got = load_instructions(tmp.path()).expect("load");
+        assert_eq!(
+            got,
+            vec![
+                Instruction {
+                    name: "10-house".into(),
+                    body: "House rule.\n".into()
+                },
+                Instruction {
+                    name: "20-team".into(),
+                    body: "Team rule.\n".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn load_instructions_ignores_non_md_files_and_the_directory_readme() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let d = instructions_dir(tmp.path());
+        std::fs::write(d.join("notes.txt"), "not an instruction").unwrap();
+        std::fs::write(d.join("README.md"), "what this directory is").unwrap();
+        std::fs::write(d.join("10-house.md"), "House rule.").unwrap();
+        let names: Vec<String> = load_instructions(tmp.path())
+            .expect("load")
+            .into_iter()
+            .map(|i| i.name)
+            .collect();
+        assert_eq!(names, vec!["10-house".to_string()]);
+    }
+
+    #[test]
+    fn load_instructions_errors_naming_the_path_when_it_is_not_a_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join(".rigger")).unwrap();
+        std::fs::write(tmp.path().join(".rigger").join("instructions"), "a file").unwrap();
+        let msg = load_instructions(tmp.path()).unwrap_err().to_string();
+        assert!(
+            msg.contains("instructions"),
+            "the error must name the path it could not read; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_carries_the_operator_instructions_on_the_config() {
+        fn copy_tree(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for e in std::fs::read_dir(from).unwrap() {
+                let p = e.unwrap().path();
+                let dest = to.join(p.file_name().unwrap());
+                if p.is_dir() {
+                    copy_tree(&p, &dest);
+                } else {
+                    std::fs::copy(&p, &dest).unwrap();
+                }
+            }
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        copy_tree(
+            Path::new("examples/demo/.rigger"),
+            &tmp.path().join(".rigger"),
+        );
+        std::fs::write(
+            instructions_dir(tmp.path()).join("10-house.md"),
+            "House rule.",
+        )
+        .unwrap();
+        let cfg = load(tmp.path().to_str().unwrap()).expect("the demo definition loads");
+        assert_eq!(
+            cfg.instructions,
+            vec![Instruction {
+                name: "10-house".into(),
+                body: "House rule.".into()
+            }]
+        );
+    }
 
     // ---- spec 18, unit 1: gating-persona verdict-line static lint ----
 

@@ -20,6 +20,7 @@ use crate::eventstore::{Appended, Direction, Event, EventStore};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
+use crate::instructions::Instruction;
 use crate::ledger::{self, RunState};
 use crate::liveness;
 use crate::safety;
@@ -10415,7 +10416,7 @@ impl RunCtx<'_> {
     /// `options.systemPrompt`) receive an identical persona + discipline and cannot
     /// diverge.
     fn build_system_prompt(&self, agent: &AgentDef) -> String {
-        build_system_prompt(&agent.prompt)
+        build_system_prompt(&agent.prompt, &self.cfg.instructions)
     }
 
     /// The grounding QUERY for a stage. A normal unit grounds on its `coverage` (now
@@ -12085,7 +12086,8 @@ section governs the DISCIPLINE and cadence - follow it on every turn.";
 /// `pub(crate)` so the canary runner (spec 13, unit 5) composes a canary reviewer's
 /// system prompt through the SAME single authority, rather than a second copy that
 /// could drift from the discipline every live spawn receives.
-pub(crate) fn build_system_prompt(persona: &str) -> String {
+pub(crate) fn build_system_prompt(persona: &str, operator: &[Instruction]) -> String {
+    let _ = operator;
     format!("{persona}{RIGGER_COMMUNICATION}")
 }
 
@@ -27894,8 +27896,8 @@ mod tests {
             // The exact composition: persona, then the rigger discipline.
             assert_eq!(
                 sys,
-                build_system_prompt(persona),
-                "agent {id:?}'s system prompt must be exactly persona + RIGGER_COMMUNICATION"
+                build_system_prompt(persona, &[]),
+                "agent {id:?}'s system prompt must be exactly persona + instructions + RIGGER_COMMUNICATION"
             );
         }
     }
@@ -27991,13 +27993,95 @@ mod tests {
         let sys = driver.system_prompt_for("a").expect("agent a was spawned");
         assert_eq!(
             sys,
-            build_system_prompt(""),
-            "an agent with no body threads (empty persona) + RIGGER_COMMUNICATION, nothing fabricated"
+            build_system_prompt("", &[]),
+            "an agent with no body threads (empty persona) + instructions + RIGGER_COMMUNICATION, nothing fabricated"
         );
         assert!(
             sys.contains("Rigger communication discipline"),
             "even a persona-less agent receives the communication discipline"
         );
+        assert!(
+            sys.contains("## engineering-principles"),
+            "even a persona-less agent receives the built-in engineering principles"
+        );
+    }
+
+    #[test]
+    fn operator_instructions_reach_every_spawned_agent_between_persona_and_discipline() {
+        // The operator layer on `cfg.instructions` is composed into EVERY spawned agent's
+        // system prompt - the implementer and all three review tiers - after the persona and
+        // the built-in law, and before the communication discipline. An agent with no
+        // persona still carries the built-in engineering principles.
+        let mut cfg = Config::default();
+        cfg.instructions = vec![Instruction {
+            name: "10-house".into(),
+            body: "House rule: every public fn carries a doc comment.".into(),
+        }];
+        for (id, persona) in [
+            ("worker", "You are the rust engineer."),
+            ("lensA", "You are the architecture lens."),
+            ("adversary", "You are the adversary."),
+            ("adj", ""),
+        ] {
+            cfg.agents.insert(id.into(), agent_with_prompt(id, persona));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+            tiers: None,
+        };
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        for (id, persona) in [
+            ("worker", "You are the rust engineer."),
+            ("lensA", "You are the architecture lens."),
+            ("adversary", "You are the adversary."),
+            ("adj", ""),
+        ] {
+            let sys = driver
+                .system_prompt_for(id)
+                .unwrap_or_else(|| panic!("agent {id:?} was never spawned"));
+            let persona_at = sys.find(persona).expect("persona present");
+            let builtin_at = sys
+                .find("## engineering-principles")
+                .unwrap_or_else(|| panic!("agent {id:?} lacks the built-in law; got: {sys:?}"));
+            let operator_at = sys
+                .find("House rule: every public fn carries a doc comment.")
+                .unwrap_or_else(|| panic!("agent {id:?} lacks the operator layer; got: {sys:?}"));
+            let discipline_at = sys
+                .find("Rigger communication discipline")
+                .expect("discipline present");
+            assert!(
+                persona_at < builtin_at && builtin_at < operator_at && operator_at < discipline_at,
+                "agent {id:?}: persona, built-in, operator, discipline must appear in order; got: {sys:?}"
+            );
+        }
     }
 
     #[test]

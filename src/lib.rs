@@ -72,6 +72,9 @@ pub mod hooks;
 /// content key an event is deduped under can never drift between the two ingest entries.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
+/// Instruction injection: the built-in engineering law and the operator's
+/// `.rigger/instructions/*.md` layered into every spawned agent's system prompt.
+pub mod instructions;
 pub mod ledger;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod liveness;

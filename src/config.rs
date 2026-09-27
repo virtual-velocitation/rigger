@@ -1000,6 +1000,10 @@ impl Workflow {
 pub struct Config {
     pub agents: BTreeMap<String, AgentDef>,
     pub workflow: Workflow,
+    /// The operator instruction layer (`.rigger/instructions/*.md`, filename order), composed
+    /// into every spawned agent's system prompt after the built-in layer
+    /// ([`crate::instructions::compose`]).
+    pub instructions: Vec<crate::instructions::Instruction>,
 }
 
 /// Fold `defaults.max_wall_clock` onto every agent that did not set its own (spec 10,
