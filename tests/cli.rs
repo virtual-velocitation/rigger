@@ -18535,14 +18535,7 @@ fn setup_precommit_hook_stays_inert_in_an_operator_repo() {
     // An ordinary operator commit of the operator's OWN code.
     std::fs::write(root.join("src/app.rs"), "fn main() { let _ = 1; }\n").unwrap();
     git_ok(root, &["add", "src/app.rs"]);
-    let commit_ok = Command::new("git")
-        .args(["commit", "-q", "-m", "operator changes their own code"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .status()
-        .expect("git must be runnable")
-        .success();
+    let (commit_ok, _) = commit_staged(root, &commit_path, "operator changes their own code");
     assert!(
         commit_ok,
         "the commit must succeed - the hook must never block it"
@@ -18882,16 +18875,12 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
     );
 
     let commit_path = stage_rigger_shim(root);
-    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let commit_ok = Command::new("git")
-        .args(["commit", "-q", "-m", "change a documented fact"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .status()
-        .expect("git must be runnable")
-        .success();
+    let (commit_ok, _) = commit_a_code_change(
+        root,
+        &commit_path,
+        "a documented fact changed\n",
+        "change a documented fact",
+    );
     assert!(
         commit_ok,
         "a matching render must let the commit through - the hook must never block it"
@@ -18943,14 +18932,7 @@ fn setup_precommit_hook_never_touches_unrelated_files() {
     // Stage ONE unrelated change and commit; the docs are already fresh so nothing else happens.
     std::fs::write(root.join("trigger.txt"), "trigger\n").unwrap();
     git_ok(root, &["add", "trigger.txt"]);
-    let commit_ok = Command::new("git")
-        .args(["commit", "-q", "-m", "trigger"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .status()
-        .expect("git must be runnable")
-        .success();
+    let (commit_ok, _) = commit_staged(root, &commit_path, "trigger");
     assert!(commit_ok, "a matching render must let the commit through");
 
     let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
@@ -19065,16 +19047,12 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
     // `rigger` IS on PATH at commit time, so the ONLY thing keeping the hook inert is the
     // all-tracked gate (the handbook is untracked).
     let commit_path = stage_rigger_shim(root);
-    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let commit_ok = Command::new("git")
-        .args(["commit", "-q", "-m", "change with only the skill tracked"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .status()
-        .expect("git must be runnable")
-        .success();
+    let (commit_ok, _) = commit_a_code_change(
+        root,
+        &commit_path,
+        "a documented fact changed\n",
+        "change with only the skill tracked",
+    );
     assert!(
         commit_ok,
         "the commit must succeed - the hook must never block it"
@@ -19140,18 +19118,15 @@ fn setup_precommit_hook_refusal_aborts_a_chained_hook_body() {
     );
 
     let commit_path = stage_rigger_shim(root);
-    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let out = Command::new("git")
-        .args(["commit", "-q", "-m", "change a documented fact"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
+    let (committed, _) = commit_a_code_change(
+        root,
+        &commit_path,
+        "a documented fact changed\n",
+        "change a documented fact",
+    );
 
     assert!(
-        !out.status.success(),
+        !committed,
         "a drifted render must refuse the commit even with a chained hook present"
     );
     assert!(
@@ -19239,19 +19214,13 @@ fn setup_precommit_hook_refusal_leaves_the_fresh_render_in_the_working_tree() {
     seed_stale_tracked_docs(root);
 
     let commit_path = stage_rigger_shim(root);
-    std::fs::write(root.join("code.txt"), "a documented fact changed\n").unwrap();
-    git_ok(root, &["add", "code.txt"]);
-    let commit_out = Command::new("git")
-        .args(["commit", "-q", "-m", "change a documented fact"])
-        .current_dir(root)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    assert!(
-        !commit_out.status.success(),
-        "the drifted render must refuse the commit"
+    let (committed, _) = commit_a_code_change(
+        root,
+        &commit_path,
+        "a documented fact changed\n",
+        "change a documented fact",
     );
+    assert!(!committed, "the drifted render must refuse the commit");
 
     // The raw working-tree file (NOT `git show HEAD:...`, NOT the index) must already hold the
     // fresh render the hook's own `rigger docs` call wrote before comparing - not the stale seed.
