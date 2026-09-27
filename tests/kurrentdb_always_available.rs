@@ -31,7 +31,6 @@ mod common;
 use common::repo::repo_text;
 use common::repo::table_declares_key;
 use common::repo::table_lines;
-use std::path::PathBuf;
 
 #[path = "common/retired_feature.rs"]
 mod retired_feature;
@@ -222,11 +221,7 @@ fn line_references_retired_kurrentdb_feature(raw: &str) -> bool {
 /// so it runs identically in both feature lanes.
 #[test]
 fn architecture_blueprint_has_no_retired_kurrentdb_feature_reference() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("docs")
-        .join("architecture.md");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let text = repo_text("docs/architecture.md");
 
     let offenders: Vec<String> = text
         .lines()

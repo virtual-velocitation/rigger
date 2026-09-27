@@ -38,7 +38,7 @@
 mod common;
 
 use common::fixtures::tool_available;
-use std::path::Path;
+use common::repo::repo_text;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -49,11 +49,7 @@ use std::time::{Duration, Instant};
 /// inside a plain script/`vm` context, and `meta` (the workflow's display metadata) carries none
 /// of the loop's own logic, so slicing it off loses nothing this test needs.
 fn rigger_js_driver_body() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let src = repo_text("workflows/rigger.js");
     let anchor = "// args: a spec path string, or { repo, spec, base, fresh }.";
     let at = src.find(anchor).unwrap_or_else(|| {
         panic!(

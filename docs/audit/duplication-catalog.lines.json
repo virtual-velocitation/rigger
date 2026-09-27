@@ -364,18 +364,18 @@
       },
       {
         "file": "tests/hermetic_test_git_audit.rs",
-        "start_line": 215,
-        "end_line": 215
+        "start_line": 203,
+        "end_line": 203
       },
       {
         "file": "tests/hermetic_test_git_audit.rs",
-        "start_line": 247,
-        "end_line": 247
+        "start_line": 235,
+        "end_line": 235
       },
       {
         "file": "tests/hermetic_test_git_audit.rs",
-        "start_line": 319,
-        "end_line": 319
+        "start_line": 307,
+        "end_line": 307
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -409,8 +409,8 @@
       },
       {
         "file": "tests/native_driver_pipelining_behavior.rs",
-        "start_line": 297,
-        "end_line": 297
+        "start_line": 293,
+        "end_line": 293
       },
       {
         "file": "tests/no_os_kill_test_helper_periphery.rs",
@@ -774,8 +774,8 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2503,
-        "end_line": 2505
+        "start_line": 2497,
+        "end_line": 2499
       }
     ]
   },
@@ -3379,28 +3379,28 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 1284,
-        "end_line": 1284
+        "start_line": 1278,
+        "end_line": 1278
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2977,
-        "end_line": 2977
+        "start_line": 2971,
+        "end_line": 2971
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2977,
-        "end_line": 2977
+        "start_line": 2971,
+        "end_line": 2971
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2992,
-        "end_line": 2992
+        "start_line": 2986,
+        "end_line": 2986
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 3027,
-        "end_line": 3027
+        "start_line": 3021,
+        "end_line": 3021
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -4309,48 +4309,48 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 111,
-        "end_line": 111
+        "start_line": 112,
+        "end_line": 112
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 549,
-        "end_line": 549
+        "start_line": 550,
+        "end_line": 550
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 1293,
-        "end_line": 1293
+        "start_line": 1287,
+        "end_line": 1287
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2544,
-        "end_line": 2544
+        "start_line": 2538,
+        "end_line": 2538
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2749,
-        "end_line": 2749
+        "start_line": 2743,
+        "end_line": 2743
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 3539,
-        "end_line": 3539
+        "start_line": 3531,
+        "end_line": 3531
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 3631,
-        "end_line": 3631
+        "start_line": 3623,
+        "end_line": 3623
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 3640,
-        "end_line": 3640
+        "start_line": 3632,
+        "end_line": 3632
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 4232,
-        "end_line": 4232
+        "start_line": 4220,
+        "end_line": 4220
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -4739,8 +4739,8 @@
       },
       {
         "file": "tests/ci_lanes.rs",
-        "start_line": 305,
-        "end_line": 321
+        "start_line": 301,
+        "end_line": 317
       }
     ]
   },
@@ -7059,8 +7059,8 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 110,
-        "end_line": 133
+        "start_line": 111,
+        "end_line": 134
       }
     ]
   },

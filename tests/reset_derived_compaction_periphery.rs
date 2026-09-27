@@ -88,6 +88,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
+use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
@@ -1113,17 +1114,10 @@ const SHIPPED_DOCS: [&str; 2] = [
 /// the real one, so a paragraph that varied with the context could not match.
 #[test]
 fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paragraphs: Vec<(String, String)> = Vec::new();
 
     for rel in SHIPPED_DOCS {
-        let path = manifest.join(rel);
-        let shipped = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!(
-                "the operator document {rel} must ship from {}: {e}",
-                path.display()
-            )
-        });
+        let shipped = repo_text(rel);
 
         for (fact, needle) in [
             ("name the prune", "rigger reset --derived"),
@@ -3463,10 +3457,8 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     // THE SHIPPED DOCUMENT PROMISED EXACTLY THIS, and the promise is only worth what the binary
     // does. Read from the committed bytes an operator opens, so the two cannot drift apart with
     // the renderer green.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         assert!(
             shipped.contains("deletes ZERO rows from it and reports so"),
             "the committed {rel} must tell an operator what a clean log reports, or the run above \
@@ -3837,10 +3829,8 @@ fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
 
     // THE COMMITTED DOCUMENTS PROMISE EXACTLY THIS COST, read from the bytes an operator opens so
     // the promise and the binary cannot drift apart with the renderer green.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         assert!(
             shipped.contains("leaves the file exactly as it found it"),
             "the committed {rel} must promise that a prune with nothing to shed does not rewrite \
@@ -3972,10 +3962,8 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
     // command explains the prune in front of the operator; the document explains it before they
     // run anything - and if only one of the two carries the rule, the other teaches the misread
     // this clause exists to prevent.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         for needle in [
             "WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED",
             "RETURNED to a generation the log had already recorded",

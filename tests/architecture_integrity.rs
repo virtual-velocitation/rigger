@@ -38,18 +38,14 @@
 //! and touches no backend symbol. It is deliberately NOT feature-gated: it runs
 //! identically in both feature lanes.
 
+mod common;
+use common::repo::{repo_root, repo_text};
 use std::path::PathBuf;
 
 /// The `docs/` directory, resolved from the manifest dir so the test does not depend on
 /// the process CWD (integration tests may run from anywhere).
 fn docs_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs")
-}
-
-/// The committed architecture document.
-fn architecture_text() -> String {
-    let path = docs_dir().join("architecture.md");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    repo_root().join("docs")
 }
 
 /// The unicode dash characters the document must never carry - only the ASCII
@@ -121,7 +117,7 @@ fn is_intra_repo_link(dest: &str) -> bool {
 fn resolve_intra_repo(dest: &str) -> PathBuf {
     let path_part = dest.split('#').next().unwrap_or(dest);
     match path_part.strip_prefix('/') {
-        Some(rest) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rest),
+        Some(rest) => repo_root().join(rest),
         None => docs_dir().join(path_part),
     }
 }
@@ -146,7 +142,7 @@ fn addendum_files() -> Vec<PathBuf> {
 
 #[test]
 fn architecture_uses_only_ascii_hyphens() {
-    let text = architecture_text();
+    let text = repo_text("docs/architecture.md");
 
     let offenders: Vec<String> = text
         .lines()
@@ -180,7 +176,7 @@ fn architecture_uses_only_ascii_hyphens() {
 
 #[test]
 fn architecture_intra_repo_links_all_resolve() {
-    let broken: Vec<String> = link_destinations(&architecture_text())
+    let broken: Vec<String> = link_destinations(&repo_text("docs/architecture.md"))
         .into_iter()
         .filter(|dest| is_intra_repo_link(dest))
         .filter_map(|dest| {
@@ -199,7 +195,7 @@ fn architecture_intra_repo_links_all_resolve() {
 
 #[test]
 fn architecture_links_each_addendum_exactly_once() {
-    let text = architecture_text();
+    let text = repo_text("docs/architecture.md");
 
     // The canonical on-disk paths every intra-repo link that resolves points at. The
     // addenda paths are also canonicalized before comparison, so a link and its target
