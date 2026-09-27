@@ -26,6 +26,7 @@
 //! CLI tests, which never seed a real run, so `current_run_id` always resolves empty there.
 
 mod common;
+use common::cli::run_stream_identity;
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -35,36 +36,6 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::progress::{self, StopFailure};
 use rigger::run::META_RUN_ID;
-
-/// The project identity the binary resolves for `root` - mirrors
-/// `tests/console_status_periphery.rs`'s `run_stream_identity` (itself mirroring
-/// `tests/cause_wire_periphery.rs`'s), the established derivation every periphery suite
-/// that reads back a courier's namespaced write uses: the store is namespaced by project
-/// identity ([`Namespaced`]), so a direct `Store::open` read against the RAW stream name
-/// sees nothing until wrapped the same way.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
 
 /// A throwaway project the compiled binary accepts as a courier target: its own git repo
 /// (so the store's project identity resolves normally) and an INITIALIZED event log - a

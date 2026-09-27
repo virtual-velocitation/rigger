@@ -63,8 +63,6 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Projection, KIND_CODE_ENTITY, KIND_FILE};
 #[cfg(feature = "symbols")]
 use std::path::Path;
-#[cfg(feature = "symbols")]
-use std::process::Command;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves, and
@@ -74,41 +72,11 @@ mod common;
 #[cfg(feature = "symbols")]
 use common::cli::ingested_count;
 #[cfg(feature = "symbols")]
+use common::cli::run_rigger;
+#[cfg(feature = "symbols")]
 use common::cli::run_stream_identity;
-
-/// A throwaway project dir that is its own git repo, so `cmd_graph_build`'s root resolution (the
-/// git top-level) and `project_identity()` (which scopes the graph read `--show`/`--around` use)
-/// are both stable and match between the seed and the binary's own reads.
 #[cfg(feature = "symbols")]
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr,
-/// success). Opts out of the auto-started dashboard and points the instance registry at a
-/// throwaway state dir, exactly as the other CLI integration tests do, so a short-lived
-/// invocation spawns nothing that outlives the test.
-#[cfg(feature = "symbols")]
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME for the rigger invocation");
-    let out = Command::new(common::rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
+use common::cli::temp_project;
 
 /// Write a `.rigger/workflow.yml` mirroring the Design text's own example (`stage:implement`,
 /// `gate:mutation`, `agent:rust-engineer`) closely enough to exercise every relation source this

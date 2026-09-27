@@ -65,73 +65,13 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::process::Command;
 
 use common::cli::read_run_events;
 use common::cli::run_rigger;
+use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::cli::temp_project;
 use rigger::contextgraph::Graph;
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-/// A throwaway project: its own git repo (so `project_identity()` resolves
-/// deterministically), with no `.rigger` dir yet. Mirrors `tests/cli.rs`'s `temp_project`
-/// and `tests/cause_wire_periphery.rs`'s identically-named helper.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// The project identity the binary resolves for `root` - mirrors
-/// `tests/cause_wire_periphery.rs`'s identically-named helper, itself mirroring
-/// `StoreLocation::identity`'s precedence.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Append `events` directly to `root`'s namespaced run stream through a REAL `Store::open`
-/// / SQLite round trip - standing in for the conductor (or `cmd_resume_unit`) minting them,
-/// or for a run that predates this criterion. Mirrors `tests/cause_wire_periphery.rs`.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
 
 // ---------------------------------------------------------------------------------------
 // Gap 1: the event's wire contract, independent of `cmd_resume_unit`.

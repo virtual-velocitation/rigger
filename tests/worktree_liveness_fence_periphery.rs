@@ -87,64 +87,13 @@
 mod common;
 
 use common::cli::run_rigger;
+use common::cli::run_stream_identity;
 use common::git::git_answer;
 use common::git::git_ok;
 use common::git::init_repo;
+use common::git::temp_git_project_with_commit;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
-use std::process::Command;
-
-/// A throwaway git project with a real commit, so `rigger step`'s run-branch anchoring (a base
-/// ref like `HEAD` must resolve) works. Mirrors `tests/cli.rs`'s identical helper.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
-
-/// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s identical
-/// `run_stream_identity` helper (a repo with no `.rigger/project.id` falls through to the git
-/// toplevel's own basename).
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
 
 /// Append raw events built through the crate's PUBLIC `rigger::spawn`/`rigger::eventstore` API
 /// (never a hand-typed JSON guess at the wire shape) directly into the same real on-disk store

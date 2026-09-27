@@ -23,45 +23,12 @@ use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::cli::temp_project;
+use common::cli::temp_repoless_project;
 use common::fixtures::pgid_of;
 use common::git::git_answer;
+use common::git::temp_git_project_with_commit;
 use common::rigger_bin;
-
-/// A throwaway project dir that is its own git repo, so `project_identity()` (which
-/// scopes the namespaced streams) is stable across the emit and the peers reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    // `git init` makes project_identity() resolve to the dir's basename
-    // deterministically; a non-repo dir would fall back to the current-dir name,
-    // which is also fine, but a real repo mirrors how rigger is actually used.
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// A throwaway git project with a real commit, so a base ref like `HEAD` resolves.
-/// `temp_project` only `git init`s (unborn HEAD), which is enough for the offline
-/// step tests but not for the run-branch-anchoring path that needs a base commit.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = temp_project();
-    let root = dir.path();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
 
 /// Extract a JSON string field's value from a one-line JSON object `line` - a tiny reader
 /// for asserting on `rigger step`'s printed wave without a JSON dependency in the test crate.
@@ -11919,20 +11886,6 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
         err.contains("already exists and was reused") && err.contains("NOT applied"),
         "an ignored explicit --base must be announced on stderr; got: {err:?}"
     );
-}
-
-/// A throwaway project dir that is deliberately NOT a git repo (no `git init`), so
-/// `git_repo()` resolves to empty and the conductor drives a REPO-LESS run. That is the
-/// offline shape the stepwise driver's own unit tests use (`repo: String::new()`): with
-/// no repo configured, `assert_isolated_cwd` is a no-op, so a reviewer spawn (the
-/// adjudicator) parks with an empty working dir instead of being refused for "would run
-/// in the main repo checkout". A repo-ful run would instead need real worktrees, and a
-/// fabricated `SpawnResult` (no actual diff) would then fail the pre-gate commit with
-/// "nothing to commit" - so repo-less is the faithful offline driver for this test.
-/// `project_identity()` falls back to the dir basename, which is stable across the
-/// step / emit / stats calls this test makes in the same dir.
-fn temp_repoless_project() -> tempfile::TempDir {
-    tempfile::tempdir().unwrap()
 }
 
 /// Scaffold a single-unit workflow whose unit runs a REAL inline gate and reviews itself

@@ -21,7 +21,7 @@
 //!      itself, the OTHER half of the same documented OR, has no test forcing it to actually run.
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Command;
 
 use rigger::registry::{self, Instance};
 
@@ -29,6 +29,7 @@ use rigger::registry::{self, Instance};
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::run_rigger_in_state_home;
 use common::RestoreEnvVars;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
@@ -64,19 +65,6 @@ fn courier_project_with_commit() -> tempfile::TempDir {
     std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
     std::fs::File::create(rigger_dir.join("events.db")).expect("seed an initialized event log");
     dir
-}
-
-/// Run `rigger <args...>` in `cwd`, with the machine-global registry redirected into the
-/// CALLER-OWNED `state_home`.
-fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
-    common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        // Never let a short-lived courier spawn a real dashboard under test.
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state_home)
-        .output()
-        .expect("the rigger binary runs")
 }
 
 /// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
@@ -118,7 +106,7 @@ fn a_courier_in_a_nested_worktree_refreshes_the_owning_roots_registry_entry() {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
 
     // Seed the entry from the OWNING ROOT, exactly as a driver or a root-run courier would.
-    let seed = run_rigger(
+    let seed = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "u1/impl#0", "seeded from root"],
@@ -154,7 +142,7 @@ fn a_courier_in_a_nested_worktree_refreshes_the_owning_roots_registry_entry() {
     );
 
     // The exact courier traffic a worker self-reports with, run FROM the nested worktree.
-    let out = run_rigger(
+    let out = run_rigger_in_state_home(
         &wt,
         state.path(),
         &["progress", "u1/impl#0", "second, from the worktree"],
@@ -216,7 +204,7 @@ fn a_registry_write_error_never_fails_a_couriers_real_work() {
     std::fs::write(state.path().join("rigger"), b"not a directory")
         .expect("block the registry's own directory with a same-named file");
 
-    let out = run_rigger(
+    let out = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "u1/impl#0", "did a thing"],
@@ -262,7 +250,7 @@ fn an_ambient_kurrentdb_conn_never_leaks_into_a_boundary_courier() {
     let _restore = RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
     std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
 
-    let out = run_rigger(
+    let out = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "u1/impl#0", "did a thing"],

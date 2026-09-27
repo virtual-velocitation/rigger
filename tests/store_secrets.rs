@@ -25,15 +25,15 @@
 //! externally visible via the fail-fast connect, so every case runs unconditionally and the secret
 //! channel is regression-locked on every machine.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-use tempfile::TempDir;
+use std::path::Path;
+use std::process::Output;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::event_log;
+use common::cli::temp_project_with_rigger_dir;
 #[path = "common/store_courier.rs"]
 mod store_courier;
 use store_courier::run_bare_result;
@@ -46,25 +46,6 @@ const CREDENTIALED_UNREACHABLE: &str = "kurrentdb://spy:hunter2@127.0.0.1:65533?
 const SECRET_USER: &str = "spy";
 /// The password half of the credential in [`CREDENTIALED_UNREACHABLE`].
 const SECRET_PASSWORD: &str = "hunter2";
-
-/// A throwaway project: its own git repo (so identity - and the owning-root anchor the store
-/// resolver uses for the secret file - resolve exactly as a real project's do), with an empty
-/// `.rigger/` and no event log yet.
-fn empty_project() -> TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-/// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. A
-/// server selection - from any secret channel - must never fabricate this file.
-fn local_event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
 
 /// Write `<root>/.rigger/store.conn` (rung 3, the per-machine secret file), one line: the full
 /// connection string, credentials included. Locked to owner-only (`0o600`) on Unix so the
@@ -120,14 +101,14 @@ fn assert_server_reached_and_credentials_redacted(out: &Output, root: &Path, why
     );
     // A server selection never fabricates the local sqlite event log.
     assert!(
-        !local_event_log(root).exists(),
+        !event_log(root).exists(),
         "{why}: a server-configured courier must NOT create a local .rigger/events.db: {stderr}"
     );
 }
 
 #[test]
 fn a_credentialed_conn_in_the_environment_is_redacted_in_the_error() {
-    let project = empty_project();
+    let project = temp_project_with_rigger_dir();
     let root = project.path();
     let out = run_bare_result(root, Some(CREDENTIALED_UNREACHABLE));
     assert_server_reached_and_credentials_redacted(&out, root, "KURRENTDB_CONN env channel");
@@ -135,7 +116,7 @@ fn a_credentialed_conn_in_the_environment_is_redacted_in_the_error() {
 
 #[test]
 fn the_secret_file_resolves_the_connection_string_when_env_and_flags_are_absent() {
-    let project = empty_project();
+    let project = temp_project_with_rigger_dir();
     let root = project.path();
     // No --conn flag and no KURRENTDB_CONN: the ONLY configured source is the secret file. The
     // resolver must read it (rung 3) and select the server it addresses, and the credential it
@@ -168,7 +149,7 @@ fn an_exposed_secret_file_warns_and_an_owner_only_one_is_silent() {
     };
 
     // Group/world-readable (0o644): the credential is exposed, so the resolver warns.
-    let exposed = empty_project();
+    let exposed = temp_project_with_rigger_dir();
     write_conn_mode(exposed.path(), 0o644);
     let out = run_bare_result(exposed.path(), None);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -183,7 +164,7 @@ fn an_exposed_secret_file_warns_and_an_owner_only_one_is_silent() {
     );
 
     // Owner-only (0o600): nothing is exposed, so no nudge appears.
-    let locked = empty_project();
+    let locked = temp_project_with_rigger_dir();
     write_conn_mode(locked.path(), 0o600);
     let out = run_bare_result(locked.path(), None);
     let stderr = String::from_utf8_lossy(&out.stderr);

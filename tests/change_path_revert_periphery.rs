@@ -52,26 +52,8 @@ const STABLE: &str = "pub fn stable_symbol() {}\npub fn stable_caller() { stable
 mod common;
 
 use common::cli::ingested_count;
-
-/// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr,
-/// success). Each invocation gets its own throwaway state home so a short-lived integration run
-/// never registers a phantom instance in the operator's machine-global registry, and never spawns
-/// a real dashboard.
-fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME for the rigger invocation");
-    let out = std::process::Command::new(common::rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
+use common::cli::read_run_events;
+use common::cli::run_rigger;
 
 /// Drive `graph build` in `root` and return what it reported ingesting, failing loudly rather than
 /// letting a non-zero exit read as a zero-ingest.
@@ -115,60 +97,10 @@ fn temp_churn_project() -> tempfile::TempDir {
     dir
 }
 
-/// The project identity the binary resolves for `root`, mirrored here so this test reads back the
-/// exact namespaced run stream the compiled binary wrote: the tracked `.rigger/project.id` at the
-/// git top-level when present, else the git top-level basename, else `root`'s own basename.
-fn run_stream_identity(root: &std::path::Path) -> String {
-    let toplevel = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel
-        .as_deref()
-        .map(std::path::Path::new)
-        .unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// The whole namespaced run stream the binary wrote under `root`, read back the way the binary
-/// reads it: through the crate's PUBLIC store surface, from outside the crate.
-fn read_run_stream(root: &std::path::Path) -> Vec<rigger::eventstore::Event> {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let backend = Store::open(
-        root.join(".rigger")
-            .join("events.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap()
-}
-
 /// The LIVE suppression set the shipped predicate returns over the log the binary wrote: each
 /// file's latest recorded generation only, which is exactly what the next build will skip.
 fn live_suppression_set(root: &std::path::Path) -> BTreeSet<String> {
-    rigger::ingest::project_scoped_replay_keys(&read_run_stream(root))
+    rigger::ingest::project_scoped_replay_keys(&read_run_events(root))
         .into_iter()
         .collect()
 }
@@ -291,7 +223,7 @@ fn a_revert_through_the_shipped_build_re_emits_the_earlier_generations_recorded_
         build(root, "first") > 0,
         "sanity: the first build over a fresh tree must ingest the derived index"
     );
-    let after_one = read_run_stream(root);
+    let after_one = read_run_events(root);
     let gen_a_keys = keys_for(&after_one, "src/churn.rs");
     let stable_gen_a = keys_for(&after_one, "src/stable.rs");
     let doc_gen_a = keys_for(&after_one, "specs/sample.md");
@@ -308,7 +240,7 @@ fn a_revert_through_the_shipped_build_re_emits_the_earlier_generations_recorded_
         build(root, "generation-B") > 0,
         "sanity: a changed file's new generation must reach the log"
     );
-    let after_two = read_run_stream(root);
+    let after_two = read_run_events(root);
     let churn_after_two = keys_for(&after_two, "src/churn.rs");
     let gen_b_keys = &churn_after_two[gen_a_keys.len()..];
     assert!(
@@ -338,7 +270,7 @@ fn a_revert_through_the_shipped_build_re_emits_the_earlier_generations_recorded_
          later build will ever recover it"
     );
 
-    let after_three = read_run_stream(root);
+    let after_three = read_run_events(root);
     let churn_after_three = keys_for(&after_three, "src/churn.rs");
     let re_emitted = &churn_after_three[churn_after_two.len()..];
     assert_eq!(

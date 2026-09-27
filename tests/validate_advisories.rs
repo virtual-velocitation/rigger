@@ -29,59 +29,20 @@
 
 mod common;
 
+use common::cli::event_log;
 use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::temp_project_with_rigger_dir;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymbolIndex};
 use rigger::grounder::symbols::store as symstore;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/reset_derived_compaction.rs's conventions)
 // ---------------------------------------------------------------------------------------
-
-/// A throwaway project: its own git repo, so `project_identity()` resolves to the directory's
-/// basename exactly as it does for a real project, and a seed appended under that identity lands
-/// in the stream the compiled binary reads back.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
 
 /// Persist a `symbols` index directly (no tree-sitter needed - the staleness check is ungated),
 /// one entry per `(rel_path, content)`, its hash recorded from the CONTENT GIVEN (so a caller can
@@ -161,7 +122,7 @@ fn seed_key_under_two_covered_types(root: &Path, key: &str) {
 
 #[test]
 fn validate_warns_of_index_staleness_and_names_reindex() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -189,7 +150,7 @@ fn validate_warns_of_index_staleness_and_names_reindex() {
 
 #[test]
 fn validate_is_silent_on_index_staleness_when_the_index_matches_the_tree() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -214,7 +175,7 @@ fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
     // operator's pre-upgrade index still loads without crashing and never manufactures a
     // false staleness warning from the field's mere absence - `#[serde(default)]` must let it
     // load, and every path's hash reads as "unknown", which is nothing to compare against.
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -254,7 +215,7 @@ fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
 
 #[test]
 fn validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -283,7 +244,7 @@ fn validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived(
 /// `rigger validate` over an initialized project whose log `seed` shaped succeeds (`ok_why`
 /// when it does not) and draws no bloat warning (`why` when it does).
 fn assert_validate_draws_no_bloat_warning(seed: impl FnOnce(&Path), ok_why: &str, why: &str) {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -330,7 +291,7 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
     // happens to sit beside it - this proves the guard gates on the resolved `StoreSelection`
     // itself, not merely on whether a local file with duplication happens to exist (the sibling
     // tests above already cover THAT half with no `KURRENTDB_CONN` set at all).
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -405,7 +366,7 @@ fn seed_graph_generation(root: &Path, file: &str) {
 #[cfg(feature = "symbols")]
 #[test]
 fn validate_warns_of_graph_index_lag_and_names_reindex() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -441,7 +402,7 @@ fn validate_warns_of_graph_index_lag_and_names_reindex() {
 
 #[test]
 fn validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -463,7 +424,7 @@ fn validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree() {
 fn validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing() {
     // No `gc/`-keyed event was ever recorded (no integration has run yet) - there is nothing to
     // compare, so this must never manufacture a warning from the mere absence of a graph.
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -502,7 +463,7 @@ fn strip_implement_gates(root: &Path) {
 
 #[test]
 fn validate_warns_of_an_ungated_fanout_template_and_names_it() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -541,7 +502,7 @@ fn validate_warns_of_an_ungated_fanout_template_and_names_it() {
 
 #[test]
 fn validate_is_silent_on_the_scaffolded_gated_fanout_template() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -561,7 +522,7 @@ fn validate_is_silent_on_the_scaffolded_gated_fanout_template() {
 
 #[test]
 fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     // No persisted symbols index at all, and no seeded event log - the state `rigger init`
     // itself leaves a fresh project in.

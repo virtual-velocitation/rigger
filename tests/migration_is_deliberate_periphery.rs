@@ -57,8 +57,9 @@
 mod common;
 
 use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::temp_project_with_rigger_dir;
 use std::path::Path;
-use std::process::Command;
 
 // =========================================================================================
 // Part 1: the emit+fold seam through the PUBLIC API (symbols lane only)
@@ -421,47 +422,6 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_proj
 // Part 2: `rigger validate`'s RETIRED CODE-ENTITY advisory, through the COMPILED binary
 // =========================================================================================
 
-/// A throwaway project: its own git repo, so `project_identity()` resolves as it does for a
-/// real project (mirrors `tests/validate_advisories.rs`'s own `temp_project` convention).
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-/// The project identity `rigger validate`'s own `project_identity()` resolves for `root`: the
-/// tracked `.rigger/project.id` when present (as `rigger init` mints), else the git top-level's
-/// basename, else `root`'s own basename. Mirrors `tests/validate_advisories.rs`'s own
-/// `run_stream_identity`, needed here so a directly-seeded `graph.db` lands under the SAME
-/// project scope the compiled binary will read it back under.
-fn project_identity_of(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
 /// Seed `root`'s `.rigger/graph.db` directly (bypassing the extraction pass entirely, exactly
 /// like `tests/validate_advisories.rs`'s own `seed_duplicated_key`/`seed_key_under_two_covered_
 /// types` bypass the extraction pass to seed `events.db`): one legacy `CodeEntityExtracted` node
@@ -474,7 +434,7 @@ fn seed_a_retired_entity(root: &Path) {
     use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
     use rigger::eventstore::Event;
 
-    let project = project_identity_of(root);
+    let project = run_stream_identity(root);
     let graph_path = root.join(".rigger").join("graph.db");
     std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
     let p = Projector::open(graph_path.to_str().unwrap(), &project).unwrap();
@@ -505,7 +465,7 @@ fn seed_a_live_entity(root: &Path) {
     use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
     use rigger::eventstore::Event;
 
-    let project = project_identity_of(root);
+    let project = run_stream_identity(root);
     let graph_path = root.join(".rigger").join("graph.db");
     std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
     let p = Projector::open(graph_path.to_str().unwrap(), &project).unwrap();
@@ -524,7 +484,7 @@ fn seed_a_live_entity(root: &Path) {
 
 #[test]
 fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -552,7 +512,7 @@ fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fai
 
 #[test]
 fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -569,7 +529,7 @@ fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
 
 #[test]
 fn validate_never_fabricates_a_graph_db_and_draws_no_retired_advisory_on_a_fresh_project() {
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");

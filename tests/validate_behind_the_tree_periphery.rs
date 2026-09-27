@@ -55,6 +55,7 @@
 mod common;
 
 use common::cli::run_rigger;
+use common::cli::temp_project_with_rigger_dir;
 use common::fixtures::tool_available;
 use common::git::git_ok_with_identity;
 use common::git::git_out_with_identity;
@@ -64,18 +65,6 @@ use std::process::Command;
 // ---------------------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------------------
-
-/// A throwaway project: its own git repo with a `.rigger` dir - mirrors
-/// `tests/validate_advisories.rs`'s identical fixture.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
 
 /// The `objects` dir of the git repository THIS test binary was compiled from - the same
 /// object store `RIGGER_BUILD_PROVENANCE`'s commit lives in, whether this checkout is a
@@ -247,7 +236,7 @@ fn validate_stays_silent_on_the_version_advisories_and_leaks_no_raw_git_error_fo
         "this test's installed-version premise does not hold in this build environment"
     );
 
-    let dir = temp_project();
+    let dir = temp_project_with_rigger_dir();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");

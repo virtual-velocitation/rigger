@@ -28,7 +28,7 @@
 //! Each case runs unconditionally, so the reshaped rung-1 flag and its place at the top of the
 //! order are regression-locked on every machine and on both feature lanes.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
@@ -38,6 +38,7 @@ use tempfile::TempDir;
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
+use common::cli::event_log;
 use common::cli::write_workflow;
 use common::rigger_bin;
 
@@ -68,12 +69,6 @@ fn committed_project() -> TempDir {
         assert!(ok, "git {args:?} must succeed while seeding the repo");
     }
     dir
-}
-
-/// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. The flag
-/// rung must never fabricate this when a server is selected.
-fn local_event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
 }
 
 /// Drive `rigger run --base HEAD <extra flags>` in `root`, with `KURRENTDB_CONN` REMOVED from the
@@ -120,7 +115,7 @@ fn assert_selected_server(out: &Output, root: &Path, why: &str) {
         "{why}: the flag-selected server must not drop to the local sqlite walk-up; stderr:\n{stderr}"
     );
     assert!(
-        !local_event_log(root).exists(),
+        !event_log(root).exists(),
         "{why}: a server selection must NOT fabricate a local .rigger/events.db"
     );
 }

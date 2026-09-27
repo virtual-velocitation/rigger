@@ -1,14 +1,48 @@
 //! Fixtures for suites that drive the compiled `rigger` binary against a throwaway project:
 //! running it, seeding the stores it reads, and reading back what it wrote.
 
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+
+/// A throwaway project directory that is its own (commit-less) git repo, so the project
+/// identity the binary resolves for it is its basename, stable across every call a test makes.
+pub fn temp_project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("create temp project");
+    let _ = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status();
+    dir
+}
+
+/// A [`temp_project`] that already carries an empty `.rigger/` and no event log yet.
+pub fn temp_project_with_rigger_dir() -> tempfile::TempDir {
+    let dir = temp_project();
+    seed_rigger_dir(dir.path());
+    dir
+}
+
+/// A throwaway project directory that is deliberately NOT a git repo, so the conductor drives
+/// a repo-less run (no worktrees, no run branch).
+pub fn temp_repoless_project() -> tempfile::TempDir {
+    tempfile::tempdir().expect("create temp project")
+}
+
+/// Where the embedded sqlite event log lives for a project rooted at `root`.
+pub fn event_log(root: &Path) -> PathBuf {
+    root.join(".rigger").join("events.db")
+}
+
+/// Where the graph projection lives for a project rooted at `root`.
+pub fn graph_db(root: &Path) -> PathBuf {
+    root.join(".rigger").join("graph.db")
+}
 
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
 pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
@@ -43,6 +77,20 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
+}
+
+/// Run `rigger <args...>` in `cwd` with the machine-global instance registry redirected into
+/// the CALLER-OWNED `state_home`, so a sequence of calls reads back and re-writes the same
+/// registry directory.
+pub fn run_rigger_in_state_home(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
+    super::rigger_courier()
+        .args(args)
+        .current_dir(cwd)
+        // Never let a short-lived courier or driver step spawn a real dashboard under test.
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state_home)
+        .output()
+        .expect("the rigger binary runs")
 }
 
 /// `rigger emit <typ> <json>` in `root`, asserting it succeeds.
@@ -104,7 +152,7 @@ pub fn run_stream_identity(root: &Path) -> String {
 pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     for &(ty, body) in events {
         store
@@ -119,8 +167,7 @@ pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
 
 /// Every event in `root`'s namespaced run stream, oldest first.
 pub fn read_run_events(root: &Path) -> Vec<Event> {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
@@ -130,7 +177,7 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
 /// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);
-    Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap()
+    Projector::open(graph_db(root).to_str().unwrap(), &id).unwrap()
 }
 
 /// The number of numbered source lines (`<n> | <text>`) in a `rigger graph --show` body.
@@ -203,8 +250,7 @@ pub const DUP_KEY: &str = "gc/src/a.rs@h1#0";
 /// Append [`DUP_ROUNDS`] re-extractions of the same [`code_entity`] under [`DUP_KEY`] to
 /// `root`'s run stream - derived duplicates a reset is expected to compact.
 pub fn seed_derived_duplicates(root: &Path) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events = Vec::with_capacity(DUP_ROUNDS);
     for r in 0..DUP_ROUNDS {

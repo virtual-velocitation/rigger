@@ -22,78 +22,21 @@
 mod common;
 
 use common::cli::emit;
+use common::cli::event_log;
+use common::cli::graph_db;
 use common::cli::run_rigger;
 use common::cli::seed_derived_duplicates;
+use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::cli::temp_project;
 use common::cli::DUP_ROUNDS;
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/cli.rs and tests/reset_derived_compaction.rs; each integration
 // suite is its own binary, so a small harness is duplicated per file by this codebase's
 // existing convention rather than shared).
 // ---------------------------------------------------------------------------------------
-
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
-fn graph_db(root: &Path) -> PathBuf {
-    root.join(".rigger").join("graph.db")
-}
-
-/// Seed lifecycle events directly into the namespaced run stream, standing in for the conductor
-/// minting them (`rigger emit` refuses these conductor-owned boundary types).
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
 
 /// A single dead-run, prunable-by-`--runs` context-graph node: a superseded run `r1` records one
 /// `DecisionMade`, then the active run `r2` starts and records its own. `reset --runs` drops

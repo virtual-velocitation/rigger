@@ -85,22 +85,12 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::run_stream_identity;
 use common::git::git_ok;
 use common::git::git_out;
+use common::git::temp_git_project_with_commit;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git project with a real commit, so `HEAD` resolves for `git worktree add`
-/// and the run's base ref is real. Mirrors `tests/cli.rs`'s `temp_git_project_with_commit`.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let root = dir.path();
-    git_ok(root, &["init", "-q"]);
-    git_ok(root, &["config", "user.email", "t@example.com"]);
-    git_ok(root, &["config", "user.name", "t"]);
-    git_ok(root, &["commit", "--allow-empty", "-q", "-m", "init"]);
-    dir
-}
 
 /// Scaffold a single, real-worktree implementer unit named "solo": one gate (`ok`, always
 /// green), no review tier, `on_pass: none` (verified but never merged - the minimal shape
@@ -597,34 +587,6 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_r
         committed_extra, "temporary red repro",
         "the post-result dirt must still land in the committed tree, never silently discarded"
     );
-}
-
-/// The `project_identity` a fresh, real `rigger` process resolves for `root` - mirrors
-/// `tests/cli.rs`'s identically-named helper (the tracked `.rigger/project.id` at the git
-/// top-level when present, else the git top-level basename, else `root`'s own basename), so a
-/// seed appended under this identity lands in the exact stream a later `rigger step` reads.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
 }
 
 /// Seed run-lifecycle events directly into the namespaced run stream, standing in for the

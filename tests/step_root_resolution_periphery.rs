@@ -134,33 +134,9 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::git::temp_git_project_with_commit;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git project with a real commit, so a base ref resolves and `ensure_run_
-/// branch` can anchor - mirrors `tests/cli.rs`'s identical `temp_git_project_with_commit`.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let ok = |args: &[&str]| {
-        Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .status()
-            .expect("git must be runnable")
-            .success()
-    };
-    assert!(ok(&["init", "-q"]), "git init must succeed");
-    assert!(
-        ok(&["config", "user.email", "t@example.com"]),
-        "git config must succeed"
-    );
-    assert!(ok(&["config", "user.name", "t"]), "git config must succeed");
-    assert!(
-        ok(&["commit", "--allow-empty", "-q", "-m", "init"]),
-        "git commit must succeed"
-    );
-    dir
-}
 
 /// The minimal reviewless, git-isolated single-unit workflow - mirrors `tests/cli.rs`'s
 /// identical `write_reviewless_git_unit_workflow`: an always-passing gate and `on_pass:

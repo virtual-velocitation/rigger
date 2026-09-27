@@ -22,10 +22,8 @@
 mod common;
 
 use common::cli::run_rigger_envs;
+use common::cli::seed_run_events;
 use common::git::git_out;
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::registry::{self, Instance, StoreIdentity};
 use std::path::Path;
 use std::process::Command;
@@ -50,41 +48,6 @@ fn temp_project() -> tempfile::TempDir {
     std::fs::create_dir_all(&rigger).expect("create .rigger");
     std::fs::File::create(rigger.join("events.db")).expect("seed an empty events.db");
     dir
-}
-
-/// The project identity the binary resolves for `root` (the tracked `.rigger/project.id` at the
-/// git top-level when present, else that top-level's basename) - mirrors `project_identity_at`'s
-/// precedence so a seed appended under this identity lands in the exact stream the binary reads.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let base = Path::new(&toplevel);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Seed run-lifecycle events directly into the namespaced run stream, standing in for the
-/// conductor minting them - mirrors `tests/cli.rs`'s `seed_run_events`.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
 }
 
 /// The row count of the seeded event log, so a refused compaction can be proven to have pruned

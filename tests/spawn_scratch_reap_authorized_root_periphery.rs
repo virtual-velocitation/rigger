@@ -37,50 +37,13 @@ use std::process::{Child, Command};
 mod common;
 
 use common::cli::run_rigger_envs;
+use common::cli::run_stream_identity;
 use common::cli::seed_store;
+use common::cli::temp_project;
 use common::fixtures::cleanup;
 
 use rigger::driver::replay::{mutation_scratch_path, spawn_scratch_path};
 use rigger::reap::processes_rooted_under;
-
-/// A throwaway project dir that is its own git repo, mirroring `tests/cli.rs::temp_project` -
-/// `project_identity()` (which scopes the namespaced streams `rigger result` reads/writes)
-/// resolves deterministically off a real repo.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// The project identity the binary resolves for `root`, mirroring
-/// `tests/cli.rs::run_stream_identity` exactly: the tracked `.rigger/project.id` at the git
-/// top-level when present, else the git top-level basename, else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
 
 /// Seed a `RunStarted` event into the namespaced run stream, mirroring
 /// `tests/cli.rs::seed_run_events` - `reclaim_spawn_scratch` reads the run id back out of it

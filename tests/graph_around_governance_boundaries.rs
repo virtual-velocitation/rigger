@@ -24,9 +24,6 @@
 //!   Dating a node off ANY edge touching it as either endpoint (rather than only its own
 //!   `GOVERNS`/`ABOUT` edge) lets that inherited freshness rank the stale decision as if newest.
 
-use std::path::Path;
-use std::process::Command;
-
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::Event;
@@ -35,44 +32,10 @@ use rigger::eventstore::Event;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
+use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_store;
-
-/// A throwaway project dir that is its own git repo, so `project_identity()` is stable across
-/// the seed and the binary's reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// Run `rigger <args...>` in `cwd`, opting out of the auto-started dashboard and pointing the
-/// instance registry at a throwaway state dir, exactly as the other CLI integration tests do.
-///
-/// Spawned through [`common::rigger_courier`] (checkin-round fix), never a bare
-/// `Command::new(rigger_bin())`: that shared authority scrubs an inherited
-/// `RIGGER_STORE_FENCE_DIR` (spec 70 criterion 3's gate store fence, which
-/// `gate::ExecRunner::run` pins on the WHOLE subprocess tree of a unit-worktree gate's `test`
-/// gate - THIS test binary itself, when it runs as one) - see
-/// [`run_rigger_ignores_an_inherited_ambient_store_fence`] for the regression this closes.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
+use common::cli::temp_project;
 
 /// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
 /// `CodeEntityExtracted` event directly (the ALWAYS-compiled fold), exactly as

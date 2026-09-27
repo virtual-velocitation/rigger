@@ -139,17 +139,12 @@ mod common;
 use common::cli::plant_stale_marker;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
+use common::cli::temp_repoless_project;
 use common::fixtures::js_declaration;
+use common::git::temp_git_project_with_commit;
 
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway project dir that is deliberately NOT a git repo - mirrors `tests/cli.rs`'s
-/// identical `temp_repoless_project` helper. `isolation: none` below means the run never
-/// touches git, so a repo-less offline project is the faithful, minimal fixture.
-fn temp_repoless_project() -> tempfile::TempDir {
-    tempfile::tempdir().unwrap()
-}
 
 /// A single-unit workflow whose gate always PASSES and whose remediation bound
 /// (`max_retries: 5`) is generous enough that the unit is STILL retrying - never escalated -
@@ -376,34 +371,6 @@ fn marker_path_for_wave_item(line: &str, id: &str) -> String {
         .find('"')
         .unwrap_or_else(|| panic!("marker_path must be terminated; got: {mrest:?}"));
     mrest[..mend].to_string()
-}
-
-/// A real, minimally-committed git repo - mirrors `tests/cli.rs`'s identical
-/// `temp_git_project_with_commit` helper. Unlike [`temp_repoless_project`] above, this file's
-/// own ordering scenario NEEDS one: `rigger step`'s `scratch_root` (main.rs) resolves to
-/// `None` - disabling the liveness sweep and the wave's `marker_path` stamp entirely -
-/// whenever `repo` is empty, which only a git-less project produces. A marker-driven hung
-/// spawn is therefore structurally impossible to test against a repo-less project.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
 }
 
 /// Two independent stages that never answer normally: `u` keeps failing (the exact

@@ -23,7 +23,6 @@
 //! channel, and verbatim pass-through are pinned by their own criteria; here we only prove that
 //! the store choice governs the event LOG and never redirects a local projection.
 
-use std::path::Path;
 use std::process::Command;
 
 // =======================================================================================
@@ -127,33 +126,7 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-
-/// The project identity the binary resolves for `root` (the git top-level basename, or the
-/// tracked `.rigger/project.id`) - the identity that namespaces the LOCAL progress projection,
-/// so a read-back binds the exact stream the courier's write landed in.
-fn store_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
+use common::cli::run_stream_identity;
 
 /// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
 /// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as the
@@ -318,7 +291,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
         // server), proving the write stayed local.
         let backend = Store::open(progress_db.to_str().unwrap())
             .expect("the local progress.db must be a valid sqlite store");
-        let store = Namespaced::new(&backend, &store_identity(root));
+        let store = Namespaced::new(&backend, &run_stream_identity(root));
         let events = store
             .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
             .expect("read the local progress stream");

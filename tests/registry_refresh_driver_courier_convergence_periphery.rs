@@ -20,7 +20,7 @@
 //! created and carrying forward the SAME `project`/`root`/`store` identity.
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Command;
 
 use rigger::registry::{self, Instance};
 
@@ -28,6 +28,7 @@ use rigger::registry::{self, Instance};
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::run_rigger_in_state_home;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
 use courier_registry::assert_ok;
@@ -84,31 +85,6 @@ stages:
     dir
 }
 
-/// Run `rigger <args...>` in `cwd`, with the machine-global registry redirected into the
-/// CALLER-OWNED `state_home` - shared across both calls in this test, so the SAME registry
-/// directory is read back and re-written across the driver-then-courier sequence.
-///
-/// `KURRENTDB_CONN` is REMOVED from the child so this fixture's project (a throwaway git repo
-/// with no committed store config) resolves the LOCAL sqlite log regardless of what the calling
-/// process's own ambient environment happens to carry - mirroring every sibling courier-spawning
-/// periphery test in this family (`store_precedence.rs`, `store_resolution_cli.rs`,
-/// `store_secrets.rs`). Without this, a real, reachable, credentialed `KURRENTDB_CONN` in the
-/// operator's shell - a documented, supported rigger configuration - would silently route this
-/// test's real `rigger step`/`progress` writes into the operator's actual shared event store
-/// under this fixture's fake identity: genuine test-data pollution of production
-/// infrastructure, not merely a spurious local failure.
-fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
-    common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        // Never let a real driver step or courier spawn a real dashboard under test.
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state_home)
-        .env_remove("KURRENTDB_CONN")
-        .output()
-        .expect("the rigger binary runs")
-}
-
 /// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
 /// mirrors the identically purposed helper in every sibling registry-refresh suite (each
 /// periphery suite owns its own small fixture helpers rather than sharing test-only code
@@ -146,7 +122,7 @@ fn a_driver_step_and_a_courier_progress_refresh_the_identical_registry_entry() {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
 
     // The DRIVER path: a real `rigger step` registers the instance via `register_run_instance`.
-    let step = run_rigger(root, state.path(), &["step"]);
+    let step = run_rigger_in_state_home(root, state.path(), &["step"]);
     assert_ok(&step, &["step"]);
 
     let after_step = registry_entries(state.path());
@@ -165,7 +141,7 @@ fn a_driver_step_and_a_courier_progress_refresh_the_identical_registry_entry() {
     // The COURIER path: a real `rigger progress`, from the same root, refreshes via
     // `refresh_registry_entry`. The spawn id need not be a real, live one - `progress` records
     // unconditionally against the progress store, and the registry refresh runs regardless.
-    let progress = run_rigger(
+    let progress = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "a/implementer#0", "working"],
@@ -241,10 +217,10 @@ fn an_ambient_kurrentdb_conn_never_leaks_into_the_driver_courier_calls() {
     let _restore = common::RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
     std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
 
-    let step = run_rigger(root, state.path(), &["step"]);
+    let step = run_rigger_in_state_home(root, state.path(), &["step"]);
     assert_ok(&step, &["step"]);
 
-    let progress = run_rigger(
+    let progress = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "a/implementer#0", "working"],

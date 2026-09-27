@@ -22,9 +22,6 @@
 //! "never wrong text" invariant it existed to prove is now the narrower, permanent one: a NEIGHBOUR
 //! at the recorded line is never shown under another entity's header, in EITHER lane).
 
-use std::path::Path;
-use std::process::Command;
-
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::Event;
@@ -36,19 +33,9 @@ mod common;
 
 use common::cli::body_line_count;
 use common::cli::open_graph;
+use common::cli::run_rigger;
 use common::cli::seed_rigger_dir;
-use common::rigger_bin;
-
-/// A throwaway project dir that is its own git repo, so `project_identity()` (which scopes the
-/// namespaced streams and the graph project) is stable across the seed and the binary's reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use common::cli::temp_project;
 
 /// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
 /// `CodeEntityExtracted` event (the ALWAYS-compiled fold), exactly as a real extraction pass would -
@@ -62,26 +49,6 @@ fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u
     let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
     e.position = pos;
     p.apply(&e).unwrap();
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Opts out of the
-/// auto-started dashboard and points the instance registry at a throwaway state dir, exactly as the
-/// other CLI integration tests do, so a short-lived inspector invocation spawns nothing that
-/// outlives the test.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = Command::new(rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// DRIFT SHAPE (a): the recorded FILE is missing from the working tree. The show surface still

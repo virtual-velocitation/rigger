@@ -42,11 +42,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use common::cli::now_nanos;
+use common::cli::run_stream_identity;
+use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::git::git_stdout;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 
 const RUN_ID: &str = "r-heartbeat-seam";
 const SPAWN_ID: &str = "seam-unit/implementer#0";
@@ -96,48 +97,6 @@ fn nested_worktree(root: &Path, name: &str) -> PathBuf {
     std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
     git(root, &["worktree", "add", "-q", nested.to_str().unwrap()]);
     nested
-}
-
-/// The project identity the binary resolves for `root` - mirrors
-/// `tests/cause_wire_periphery.rs`'s `run_stream_identity`, itself mirroring
-/// `StoreLocation::identity`'s precedence: the tracked `.rigger/project.id` at the git
-/// top-level when present, else the git top-level basename, else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = git_stdout(root, &["rev-parse", "--show-toplevel"]);
-    let base = if toplevel.is_empty() {
-        root
-    } else {
-        Path::new(&toplevel)
-    };
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Append `events` directly to `root`'s namespaced run stream through a REAL `Store::open` /
-/// SQLite round trip - standing in for the conductor minting them. Mirrors
-/// `tests/cause_wire_periphery.rs`'s `seed_run_events`.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
 }
 
 /// Seed a run with exactly one in-flight spawn (`SPAWN_ID`, no recorded result) at `root`.
