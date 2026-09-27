@@ -55,8 +55,11 @@
 //!    `sqlite.rs::migration_c3` already reads the raw superseded edge directly.
 
 mod common;
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
 
 use common::cli::run_rigger;
+use graph_fold::apply_json;
 use std::path::Path;
 use std::process::Command;
 
@@ -470,56 +473,53 @@ fn project_identity_of(root: &Path) -> String {
 /// correct. `contextgraph` is not feature-gated (unlike `grounder::symbols`), so this seeding
 /// runs in BOTH feature lanes, and Part 2's tests below carry no `#[cfg(feature = "symbols")]`.
 fn seed_a_retired_entity(root: &Path) {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
-    use rigger::eventstore::Event;
+    use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
 
-    let project = project_identity_of(root);
-    let graph_path = root.join(".rigger").join("graph.db");
-    std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
-    let p = Projector::open(graph_path.to_str().unwrap(), &project).unwrap();
-
-    let legacy = serde_json::json!({
-        "file": "tests/legacy.rs", "name": "old_test_helper", "kind": "function",
-        "line": 1, "lang": "rust", "fresh": true,
-    });
-    let mut e1 = Event::new(
+    let p = project_graph(root);
+    apply_json(
+        &p,
+        1,
         TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&legacy).unwrap(),
+        serde_json::json!({
+            "file": "tests/legacy.rs", "name": "old_test_helper", "kind": "function",
+            "line": 1, "lang": "rust", "fresh": true,
+        }),
     );
-    e1.position = 1;
-    p.apply(&e1).unwrap();
-
-    let boundary = serde_json::json!({
-        "file": "tests/legacy.rs", "name": "", "lang": "rust", "fresh": true,
-    });
-    let mut e2 = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&boundary).unwrap());
-    e2.position = 2;
-    p.apply(&e2).unwrap();
+    apply_json(
+        &p,
+        2,
+        TYPE_EDGE_INFERRED,
+        serde_json::json!({
+            "file": "tests/legacy.rs", "name": "", "lang": "rust", "fresh": true,
+        }),
+    );
 }
 
 /// Seed `root`'s `.rigger/graph.db` with ONE live, never-retired code entity - the "graph.db
 /// exists but nothing has been retired" case, distinct from no `graph.db` at all.
 fn seed_a_live_entity(root: &Path) {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-    use rigger::eventstore::Event;
+    let p = project_graph(root);
+    apply_json(
+        &p,
+        1,
+        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+        serde_json::json!({
+            "file": "product.rs", "name": "product_fn", "kind": "function",
+            "line": 1, "lang": "rust", "fresh": true,
+        }),
+    );
+}
 
-    let project = project_identity_of(root);
+/// The projector over `root`'s own `.rigger/graph.db`, scoped to the SAME project identity the
+/// compiled binary will read it back under.
+fn project_graph(root: &Path) -> rigger::contextgraph::sqlite::Projector {
     let graph_path = root.join(".rigger").join("graph.db");
     std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
-    let p = Projector::open(graph_path.to_str().unwrap(), &project).unwrap();
-
-    let def = serde_json::json!({
-        "file": "product.rs", "name": "product_fn", "kind": "function",
-        "line": 1, "lang": "rust", "fresh": true,
-    });
-    let mut e = Event::new(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&def).unwrap(),
-    );
-    e.position = 1;
-    p.apply(&e).unwrap();
+    rigger::contextgraph::sqlite::Projector::open(
+        graph_path.to_str().unwrap(),
+        &project_identity_of(root),
+    )
+    .unwrap()
 }
 
 #[test]
