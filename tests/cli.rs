@@ -13763,81 +13763,40 @@ fn setup_output_names_the_blessed_path_dashboard_url_and_headless_twins() {
     );
 }
 
-/// Spec 44, criterion 1 - PERIPHERY (setup -> disk seam): the step-courier guarantee must
-/// survive to the artifact Claude Code actually loads. The implementer's unit test asserts
-/// the foreground/honest prompt over the IN-MEMORY `RIGGER_WORKFLOW` constant, and a separate
-/// unit test asserts the installed file is BYTE-IDENTICAL to that constant - but byte-identity
-/// says nothing about the constant's CONTENT (a regressed prompt would still install
-/// byte-for-byte), and neither drives the real `rigger setup` subcommand end-to-end. This test
-/// closes that boundary: it runs the built binary's `setup` (arg dispatch -> cmd_setup ->
-/// install_workflow -> file write), then reads the on-disk `.claude/workflows/rigger.js` - the
-/// exact file the harness auto-discovers and runs - and pins that its COURIER prompt still
-/// runs `rigger step` as one foreground, blocking call (never backgrounded, never Monitor-
-/// watched) and reports only an honest error, never a fabricated placeholder token.
-#[test]
-fn installed_workflow_courier_prompt_is_foreground_and_honest() {
+/// The native `/rigger` driver workflow the REAL `rigger setup` subcommand installs at
+/// `.claude/workflows/rigger.js` in a fresh project (`RIGGER_NPM` stubs npm so the shim step
+/// needs no network) - the user-facing file the harness auto-discovers and runs.
+fn installed_rigger_workflow() -> String {
     let dir = temp_project();
     let root = dir.path();
-
-    // Drive the REAL `rigger setup` subcommand (RIGGER_NPM stubs npm so the shim step needs
-    // no network); it writes the native /rigger workflow to disk.
     let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "rigger setup must succeed; stderr:\n{err}");
-
-    // The user-facing artifact: the file Claude Code auto-discovers and runs.
     let installed = root.join(".claude").join("workflows").join("rigger.js");
-    let workflow = std::fs::read_to_string(&installed).unwrap_or_else(|e| {
+    std::fs::read_to_string(&installed).unwrap_or_else(|e| {
         panic!(
             "rigger setup must install the workflow at {}; read failed: {e}",
             installed.display()
         )
-    });
+    })
+}
 
-    // We are asserting on the COURIER agent's prompt specifically - anchor on it so the guard
-    // pins the right agent's instructions, not some other prompt that happens to share a word.
+/// The installed `/rigger` workflow defines the step-courier agent prompt (anchored on it so
+/// the guard pins the COURIER's instructions, not some other prompt sharing a word), and that
+/// prompt carries every phrase group in `requires` (each `(phrases, what the prompt must do)`)
+/// while the fabricated placeholder token the original defect returned - a courier returning it
+/// lies that the step failed after zero waves - never reaches the artifact anywhere.
+fn assert_the_installed_courier_prompt(requires: &[(&[&str], &str)]) {
+    let workflow = installed_rigger_workflow();
     assert!(
         workflow.contains("You are a rigger COURIER"),
         "the installed workflow must define the step-courier agent prompt"
     );
-
-    // 1. FOREGROUND, BLOCKING: the courier runs the step as one blocking Bash call - a
-    //    foreground call blocks until the step prints its single JSON line, the exact line the
-    //    courier relays back to the driver.
-    assert!(
-        workflow.contains("FOREGROUND, BLOCKING Bash"),
-        "the installed courier prompt must instruct running `rigger step` as one FOREGROUND, \
-         BLOCKING Bash call; got:\n{workflow}"
-    );
-
-    // 2. NOT backgrounded, NOT polled: the exact shape the defect ran the step in - a
-    //    `run_in_background` step watched by a Monitor, returning a fabricated error before the
-    //    step produced anything - is explicitly forbidden in the on-disk prompt.
-    assert!(
-        workflow.contains("NOT run_in_background"),
-        "the installed courier prompt must explicitly forbid `run_in_background`; got:\n{workflow}"
-    );
-    assert!(
-        workflow.contains("NOT via a Monitor"),
-        "the installed courier prompt must explicitly forbid watching the step via a Monitor / \
-         poll loop; got:\n{workflow}"
-    );
-
-    // 3. HONEST error: when the courier must report a failure, `error` is the ACTUAL stderr or
-    //    the one fixed no-completion phrase - never an invented placeholder token.
-    assert!(
-        workflow.contains("step did not complete within my attempts"),
-        "the installed courier prompt must allow the fixed no-completion phrase in `error`; \
-         got:\n{workflow}"
-    );
-    assert!(
-        workflow.contains("NEVER an invented placeholder"),
-        "the installed courier prompt must forbid a fabricated placeholder token in `error`; \
-         got:\n{workflow}"
-    );
-
-    // 4. Regression guard at the artifact: the exact fabricated token the defect returned must
-    //    not appear ANYWHERE in the installed workflow - a courier that returns it lies that
-    //    the step failed after zero waves.
+    for (phrases, must) in requires {
+        assert!(
+            phrases.iter().all(|p| workflow.contains(p)),
+            "the installed courier prompt must {must}; got:\n{workflow}"
+        );
+    }
     assert!(
         !workflow.contains("PLACEHOLDER_DO_NOT_USE"),
         "the fabricated placeholder token `PLACEHOLDER_DO_NOT_USE` must never reach the \
@@ -13845,102 +13804,95 @@ fn installed_workflow_courier_prompt_is_foreground_and_honest() {
     );
 }
 
-/// Spec 51, criterion 3 - PERIPHERY (setup -> disk seam for THIS unit's amendment): the
-/// courier's auto-background WAIT rule must survive to the artifact Claude Code actually loads.
-/// The implementer's unit test asserts the amendment over the IN-MEMORY `RIGGER_WORKFLOW`
-/// constant (comment-stripped), and a sibling unit test asserts the installed file is
-/// BYTE-IDENTICAL to that constant - but byte-identity says nothing about the constant's CONTENT
-/// (a regressed prompt would still install byte-for-byte), and neither drives the real `rigger
-/// setup` subcommand end-to-end. This test closes THAT boundary for the new rule: it runs the
-/// built binary's `setup` (arg dispatch -> cmd_setup -> install_workflow -> file write), then
-/// reads the on-disk `.claude/workflows/rigger.js` - the exact file the harness auto-discovers -
-/// and pins that the courier prompt carries the ONE sanctioned exception spec 51 grants: when the
-/// DRIVING HARNESS (not the courier) auto-backgrounds the foreground step because it outran the
-/// foreground cap, the courier WAITS on that background task's output file for the step's JSON
-/// line and returns it verbatim, falls back to the re-run rule if it cannot, and NEVER returns a
-/// placeholder. It is scoped to this unit: it asserts nothing about the reviewer-error re-park or
-/// the worktree self-heal / sweep-ordering. Complements
-/// `installed_workflow_courier_prompt_is_foreground_and_honest`, which pins the unchanged
-/// foreground/honest half of the SAME on-disk courier prompt.
-#[test]
-fn installed_workflow_courier_waits_on_an_auto_backgrounded_step() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    // Drive the REAL `rigger setup` subcommand (RIGGER_NPM stubs npm so the shim step needs no
-    // network); it writes the native /rigger workflow to disk.
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
-
-    // The user-facing artifact: the file Claude Code auto-discovers and runs.
-    let installed = root.join(".claude").join("workflows").join("rigger.js");
-    let workflow = std::fs::read_to_string(&installed).unwrap_or_else(|e| {
-        panic!(
-            "rigger setup must install the workflow at {}; read failed: {e}",
-            installed.display()
-        )
-    });
-
-    // Anchor on the COURIER agent's prompt so the guard pins the right agent's instructions.
-    assert!(
-        workflow.contains("You are a rigger COURIER"),
-        "the installed workflow must define the step-courier agent prompt"
-    );
-
-    // 1. The exception is scoped to a HARNESS-initiated conversion, not a courier choice: the
-    //    on-disk prompt names it a sanctioned exception where the harness turns the foreground
-    //    call into a background task the courier did not choose - so a courier reading the
-    //    artifact cannot use it to justify backgrounding the step itself.
-    assert!(
-        workflow.contains("sanctioned")
-            && workflow.contains("background task")
-            && workflow.contains("did not choose"),
-        "the installed courier prompt must scope the wait to a HARNESS-initiated conversion of \
-         the foreground call into a background task the courier did not choose; got:\n{workflow}"
-    );
-
-    // 2. The SANCTIONED WAIT reached the artifact: on that path the courier polls the background
-    //    task's OUTPUT FILE for the step's single JSON line and returns it verbatim - the exact
-    //    wait spec 51 grants a courier otherwise forbidden from monitors and unable to wait.
-    assert!(
-        workflow.contains("output file")
-            && workflow.contains("polling")
-            && workflow.contains("verbatim"),
-        "the installed courier prompt must instruct WAITING by polling the auto-backgrounded \
-         step's OUTPUT FILE for the JSON line and returning it verbatim; got:\n{workflow}"
-    );
-
-    // 3. FALL BACK to the existing re-run rule when the JSON still cannot be obtained: the step's
-    //    gate results are recorded durably, so a re-run resumes past finished work - the on-disk
-    //    prompt must route to that rule, never to a fabricated result.
-    assert!(
-        workflow.contains("re-run") && workflow.contains("resumes past"),
-        "the installed courier prompt must fall back to re-running the FOREGROUND step (a re-run \
-         resumes past durably recorded work) when the JSON cannot be obtained; got:\n{workflow}"
-    );
-
-    // 4. The PLACEHOLDER PROHIBITION still holds on THIS path in the artifact - returning a
-    //    sentinel / placeholder for an auto-backgrounded step is exactly the defect spec 51
-    //    closes - and the fabricated token from the original defect never reaches the file.
-    assert!(
-        workflow.contains("return a placeholder"),
-        "the installed courier prompt must keep forbidding a placeholder on the auto-background \
-         path; got:\n{workflow}"
-    );
-    assert!(
-        !workflow.contains("PLACEHOLDER_DO_NOT_USE"),
-        "the fabricated placeholder token must never reach the installed workflow; got:\n{workflow}"
-    );
-
-    // 5. The amendment ADDS an exception; it does not relax the default. The unchanged
-    //    foreground/honest rule (owned by the sibling test) still stands in the SAME artifact,
-    //    so the auto-background wait cannot be read as a general license to background the step.
-    assert!(
-        workflow.contains("FOREGROUND, BLOCKING Bash")
-            && workflow.contains("NOT run_in_background"),
-        "the installed courier prompt must keep the normal FOREGROUND, BLOCKING rule that forbids \
-         the courier from backgrounding the step itself; got:\n{workflow}"
-    );
+rigger::test_cases! {
+    /// Spec 44, criterion 1 - PERIPHERY (setup -> disk seam): the step-courier guarantee must
+    /// survive to the artifact Claude Code actually loads. The implementer's unit test asserts
+    /// the foreground/honest prompt over the IN-MEMORY `RIGGER_WORKFLOW` constant, and a separate
+    /// unit test asserts the installed file is BYTE-IDENTICAL to that constant - but byte-identity
+    /// says nothing about the constant's CONTENT (a regressed prompt would still install
+    /// byte-for-byte), and neither drives the real `rigger setup` subcommand end-to-end. This test
+    /// closes that boundary: it runs the built binary's `setup` (arg dispatch -> cmd_setup ->
+    /// install_workflow -> file write), then reads the on-disk `.claude/workflows/rigger.js` - the
+    /// exact file the harness auto-discovers and runs - and pins that its COURIER prompt still
+    /// runs `rigger step` as one foreground, blocking call (never backgrounded, never Monitor-
+    /// watched) and reports only an honest error, never a fabricated placeholder token.
+    installed_workflow_courier_prompt_is_foreground_and_honest: assert_the_installed_courier_prompt(&[
+        // FOREGROUND, BLOCKING: a foreground call blocks until the step prints its single JSON
+        // line, the exact line the courier relays back to the driver.
+        (
+            &["FOREGROUND, BLOCKING Bash"],
+            "instruct running `rigger step` as one FOREGROUND, BLOCKING Bash call",
+        ),
+        // NOT backgrounded, NOT polled: the exact shape the defect ran the step in - a
+        // `run_in_background` step watched by a Monitor, returning a fabricated error before
+        // the step produced anything.
+        (&["NOT run_in_background"], "explicitly forbid `run_in_background`"),
+        (
+            &["NOT via a Monitor"],
+            "explicitly forbid watching the step via a Monitor / poll loop",
+        ),
+        // HONEST error: the ACTUAL stderr or the one fixed no-completion phrase.
+        (
+            &["step did not complete within my attempts"],
+            "allow the fixed no-completion phrase in `error`",
+        ),
+        (
+            &["NEVER an invented placeholder"],
+            "forbid a fabricated placeholder token in `error`",
+        ),
+    ]);
+    /// Spec 51, criterion 3 - PERIPHERY (setup -> disk seam for THIS unit's amendment): the
+    /// courier's auto-background WAIT rule must survive to the artifact Claude Code actually loads.
+    /// The implementer's unit test asserts the amendment over the IN-MEMORY `RIGGER_WORKFLOW`
+    /// constant (comment-stripped), and a sibling unit test asserts the installed file is
+    /// BYTE-IDENTICAL to that constant - but byte-identity says nothing about the constant's CONTENT
+    /// (a regressed prompt would still install byte-for-byte), and neither drives the real `rigger
+    /// setup` subcommand end-to-end. This test closes THAT boundary for the new rule: it runs the
+    /// built binary's `setup` (arg dispatch -> cmd_setup -> install_workflow -> file write), then
+    /// reads the on-disk `.claude/workflows/rigger.js` - the exact file the harness auto-discovers -
+    /// and pins that the courier prompt carries the ONE sanctioned exception spec 51 grants: when the
+    /// DRIVING HARNESS (not the courier) auto-backgrounds the foreground step because it outran the
+    /// foreground cap, the courier WAITS on that background task's output file for the step's JSON
+    /// line and returns it verbatim, falls back to the re-run rule if it cannot, and NEVER returns a
+    /// placeholder. It is scoped to this unit: it asserts nothing about the reviewer-error re-park or
+    /// the worktree self-heal / sweep-ordering. Complements
+    /// `installed_workflow_courier_prompt_is_foreground_and_honest`, which pins the unchanged
+    /// foreground/honest half of the SAME on-disk courier prompt.
+    installed_workflow_courier_waits_on_an_auto_backgrounded_step: assert_the_installed_courier_prompt(&[
+        // The exception is scoped to a HARNESS-initiated conversion, never a courier choice, so a
+        // courier reading the artifact cannot use it to justify backgrounding the step itself.
+        (
+            &["sanctioned", "background task", "did not choose"],
+            "scope the wait to a HARNESS-initiated conversion of the foreground call into a \
+             background task the courier did not choose",
+        ),
+        // The SANCTIONED WAIT: poll the background task's OUTPUT FILE for the step's single JSON
+        // line and return it verbatim.
+        (
+            &["output file", "polling", "verbatim"],
+            "instruct WAITING by polling the auto-backgrounded step's OUTPUT FILE for the JSON \
+             line and returning it verbatim",
+        ),
+        // FALL BACK to the re-run rule: gate results are durable, so a re-run resumes past
+        // finished work - never a fabricated result.
+        (
+            &["re-run", "resumes past"],
+            "fall back to re-running the FOREGROUND step (a re-run resumes past durably \
+             recorded work) when the JSON cannot be obtained",
+        ),
+        // The PLACEHOLDER PROHIBITION still holds on THIS path.
+        (
+            &["return a placeholder"],
+            "keep forbidding a placeholder on the auto-background path",
+        ),
+        // The amendment ADDS an exception; the unchanged foreground rule still stands in the
+        // SAME artifact, so the wait is no general license to background the step.
+        (
+            &["FOREGROUND, BLOCKING Bash", "NOT run_in_background"],
+            "keep the normal FOREGROUND, BLOCKING rule that forbids the courier from \
+             backgrounding the step itself",
+        ),
+    ]);
 }
 
 /// Spec 46, criterion 1 - PERIPHERY (setup -> gitignore-on-disk seam): the always-on dash
@@ -14119,22 +14071,9 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
 /// file, or the fix never protects a real run.
 #[test]
 fn installed_workflow_driver_guards_a_null_step() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    // Drive the REAL `rigger setup` subcommand (RIGGER_NPM stubs npm so the shim step needs
-    // no network); it writes the native driver workflow to disk.
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
-
-    // The user-facing artifact: the driver file the harness auto-discovers and runs.
-    let installed = root.join(".claude").join("workflows").join("rigger.js");
-    let workflow = std::fs::read_to_string(&installed).unwrap_or_else(|e| {
-        panic!(
-            "rigger setup must install the workflow at {}; read failed: {e}",
-            installed.display()
-        )
-    });
+    // The user-facing artifact: the native /rigger workflow the REAL `rigger setup` installs,
+    // the file the harness auto-discovers and runs.
+    let workflow = installed_rigger_workflow();
 
     // 1. The guard EXISTS in the installed driver: it tests `!step` (agent() resolved to null)
     //    before touching the step's fields.
@@ -14467,25 +14406,31 @@ fn edit_worker_prompt(root: &Path, new_body: &str) {
     .unwrap();
 }
 
+/// A two-stage run whose first step pinned its definition (parking the first wave), after
+/// which a mid-campaign prompt edit to `new_prompt` drifted the on-disk definition from the pin.
+fn a_pinned_run_whose_definition_drifted(new_prompt: &str) -> tempfile::TempDir {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the first step must succeed and pin the definition; stderr: {err}"
+    );
+    edit_worker_prompt(root, new_prompt);
+    dir
+}
+
 /// Definition pinning (spec 13, unit 1): a run pins its definition at start, and a LIVE-run
 /// step under a definition drifted mid-campaign HALTS loudly naming the drift; the operator's
 /// explicit `--rebase-definition` records the supersession and continues, after which plain
 /// steps no longer halt.
 #[test]
 fn step_halts_on_definition_drift_and_rebase_definition_continues() {
-    let dir = temp_git_project_with_commit();
+    // Step 1 pins the run's definition (and parks the first wave); a mid-campaign prompt
+    // edit then drifts the on-disk definition from the pinned hash.
+    let dir = a_pinned_run_whose_definition_drifted("Do the unit, but differently now.");
     let root = dir.path();
-    write_two_stage_workflow(root);
-
-    // Step 1 pins the run's definition (and parks the first wave). This is the pin-at-start.
-    let (_out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok,
-        "the first step must succeed and pin the definition; stderr: {err}"
-    );
-
-    // A mid-campaign prompt edit drifts the on-disk definition from the pinned hash.
-    edit_worker_prompt(root, "Do the unit, but differently now.");
 
     // Step 2 (no flag) must HALT loudly: a non-zero exit whose stderr names the drift, and
     // it must recommend the --rebase-definition escape. It must NOT print a wave (nothing ran).
@@ -14546,16 +14491,10 @@ fn step_halts_on_definition_drift_and_rebase_definition_continues() {
 /// earlier run pinned - only a LIVE run pins, so a run boundary is always free to reconfigure.
 #[test]
 fn a_fresh_run_repins_the_current_definition_and_never_halts() {
-    let dir = temp_git_project_with_commit();
+    // A first run pins definition A, then the definition drifts to B on disk. A plain step
+    // would halt (proven above)...
+    let dir = a_pinned_run_whose_definition_drifted("A brand new prompt body.");
     let root = dir.path();
-    write_two_stage_workflow(root);
-
-    // A first run pins definition A.
-    let (_out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must pin definition A; stderr: {err}");
-
-    // The definition drifts to B on disk. A plain step would halt (proven above)...
-    edit_worker_prompt(root, "A brand new prompt body.");
 
     // ...but a FRESH run begins a new boundary pinning the CURRENT (B) definition and is free.
     let (_out, err, ok) = run_rigger(root, &["step", "--fresh"]);
@@ -14596,24 +14535,7 @@ fn a_fresh_run_repins_the_current_definition_and_never_halts() {
 /// rate, adjudicator correctness, and finding-order stability the reporter folds.
 #[test]
 fn stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    // A plain (non-git) project with a pinned identity, so the binary's namespace and the
-    // one we seed under agree exactly (no git-toplevel canonicalization in the way).
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), "canary-proj\n").unwrap();
-
     // Seed one canary run: a batch marker + four scored outcomes (3 planted, 1 control).
-    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, "canary-proj");
-    let ty = rigger::ledger::TYPE_UNIT_STATUS;
-    let ev = |json: String| Event::new(ty, json.into_bytes());
-    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
     let outcome = |id: &str,
                    class: &str,
                    planted: bool,
@@ -14626,12 +14548,11 @@ fn stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream() {
         } else {
             expect_reject
         };
-        ev(format!(
+        format!(
             r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expect_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{approved},"verdict_correct":{correct},"stable":{stable}}}"#
-        ))
+        )
     };
     let events = [
-        marker,
         outcome(
             "a",
             "off-by-one",
@@ -14661,12 +14582,12 @@ fn stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream() {
         ),
         outcome("d", "none", false, false, "", true, true),
     ];
-    store
-        .append("canary", ExpectedRevision::Any, &events)
-        .unwrap();
+    // A plain (non-git) project with a pinned identity, so the binary's namespace and the
+    // one we seed under agree exactly (no git-toplevel canonicalization in the way).
+    let items: Vec<&str> = events.iter().map(String::as_str).collect();
+    let (dir, out) = stats_canary_over("canary-proj", &items);
+    let root = dir.path();
 
-    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
-    assert!(ok, "stats --canary must succeed; stderr: {err}");
     assert!(
         out.contains("items scored       4 (3 planted, 3 defect class(es) cataloged)"),
         "reports the corpus size and cataloged classes; got:\n{out}"
@@ -14698,6 +14619,33 @@ fn stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream() {
     );
 }
 
+/// `rigger stats --canary` over a fresh project (identity `project`) whose canary stream holds a
+/// `canary-run` batch marker followed by one `UnitStatus` event per JSON body in `items`;
+/// asserts it succeeds and returns the project and its stdout.
+fn stats_canary_over(project: &str, items: &[&str]) -> (tempfile::TempDir, String) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let dir = tempfile::tempdir().unwrap();
+    let rigger = dir.path().join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, project);
+    let events: Vec<Event> = std::iter::once(r#"{"id":"batch-1","status":"canary-run"}"#)
+        .chain(items.iter().copied())
+        .map(|json| Event::new(rigger::ledger::TYPE_UNIT_STATUS, json.as_bytes().to_vec()))
+        .collect();
+    store
+        .append("canary", ExpectedRevision::Any, &events)
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(dir.path(), &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+    (dir, out)
+}
+
 /// FINDINGS VOLUME criterion (spec 61, unit u61c8): `CanaryOutcome` carries a per-tier
 /// findings-raised count distinct from `caught_by`, and `format_canary_stats` - the render
 /// function shared by `rigger stats --canary` and `rigger canary`'s own post-run summary -
@@ -14717,42 +14665,17 @@ fn stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream() {
 /// contribution when they are folded together through the real binary.
 #[test]
 fn stats_canary_reports_the_findings_raised_total_summed_across_items() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), "findings-volume-proj\n").unwrap();
-
-    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, "findings-volume-proj");
-    let ty = rigger::ledger::TYPE_UNIT_STATUS;
-    let ev = |json: String| Event::new(ty, json.into_bytes());
-    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
-    // Two items carrying the current wire shape (with `findings_raised`)...
-    let a = ev(
-        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true,"findings_raised":{"lens":2,"adversary":1}}"#
-            .to_string(),
+    let (_dir, out) = stats_canary_over(
+        "findings-volume-proj",
+        &[
+            // Two items carrying the current wire shape (with `findings_raised`)...
+            r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true,"findings_raised":{"lens":2,"adversary":1}}"#,
+            r#"{"id":"b","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":true,"verdict_correct":true,"stable":true,"findings_raised":{"lens":3,"adversary":0}}"#,
+            // ...and one item carrying the PRE-u61c8 shape (no findings_raised key at all), proving
+            // a legacy record folds in harmlessly rather than breaking the aggregate.
+            r#"{"id":"c","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#,
+        ],
     );
-    let b = ev(
-        r#"{"id":"b","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":true,"verdict_correct":true,"stable":true,"findings_raised":{"lens":3,"adversary":0}}"#
-            .to_string(),
-    );
-    // ...and one item carrying the PRE-u61c8 shape (no findings_raised key at all), proving
-    // a legacy record folds in harmlessly rather than breaking the aggregate.
-    let c = ev(
-        r#"{"id":"c","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
-            .to_string(),
-    );
-    store
-        .append("canary", ExpectedRevision::Any, &[marker, a, b, c])
-        .unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
-    assert!(ok, "stats --canary must succeed; stderr: {err}");
     assert!(
         out.contains("findings raised by tier (volume, informational):"),
         "the findings-volume section must appear; got:\n{out}"
@@ -14790,138 +14713,105 @@ fn stats_canary_on_a_project_with_no_canary_run_says_so() {
     );
 }
 
-/// NO FAKE ZEROS criterion (spec 61, unit u61c2b): `format_canary_stats` - the render
-/// function shared by `rigger stats --canary` and `rigger canary`'s own post-run summary -
-/// prints `n/a` with a reason instead of a fake `0/N (0.0%)` for a tier whose catch count
-/// is zero AND the run recorded a correctly-rejected planted item with no measured
-/// attribution. `format_canary_stats` is private to the binary crate, so it is reachable
-/// ONLY by driving the compiled binary (the implementer's own render tests, in
-/// `src/main.rs`, call it directly against a hand-built `CanaryMetrics` that was never
-/// produced by `metrics::project_canary` itself). This test seeds the namespaced canary
-/// stream with a correctly-rejected item whose `caught_by` is empty (the "lens" tier's
-/// zero is now suspect) alongside a sibling item a DIFFERENT tier genuinely caught (its
-/// real rate must still render), and drives `rigger stats --canary`, proving the n/a
-/// substitution actually reaches stdout through the full decode -> fold -> render chain.
-///
-/// Assertions match on the EXACT rendered line, not a bare substring: a prior finding on
-/// this same render surface (the findings-raised line) showed that two lines sharing the
-/// same `{tier:<16}` padding prefix can make a short `contains()` check pass even when the
-/// line it was meant to pin is wrong.
-#[test]
-fn stats_canary_renders_na_for_a_tier_with_an_unattributed_correct_reject() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), "unattributed-proj\n").unwrap();
-
-    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, "unattributed-proj");
-    let ty = rigger::ledger::TYPE_UNIT_STATUS;
-    let ev = |json: String| Event::new(ty, json.into_bytes());
-    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
-    // "a": correctly rejected by the lens tier's own account, but caught_by is EMPTY -
-    // the exact unmeasured-attribution shape the criterion exists to catch.
-    let a = ev(
-        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":[],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
-            .to_string(),
-    );
-    // "b": correctly rejected, attributed to the adversary tier - a REAL measured catch,
-    // so the adversary tier's rate must still render honestly even in the same run.
-    let b = ev(
-        r#"{"id":"b","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
-            .to_string(),
-    );
-    store
-        .append("canary", ExpectedRevision::Any, &[marker, a, b])
-        .unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
-    assert!(ok, "stats --canary must succeed; stderr: {err}");
-
-    let na_line = format!(
-        "    {:<16} n/a (1 correctly-rejected item(s) with no measured tier attribution)",
-        "lens",
-    );
-    assert!(
-        out.lines().any(|l| l == na_line),
-        "the lens tier's suspect zero must render as this exact n/a line; got:\n{out}"
-    );
-    let fake_zero_line = format!("    {:<16} 0/2 (0.0%)", "lens");
-    assert!(
-        !out.lines().any(|l| l == fake_zero_line),
-        "the fake-zero percentage line must never appear for the unmeasured tier; got:\n{out}"
-    );
-    let adversary_line = format!("    {:<16} 1/2 (50.0%)", "adversary");
-    assert!(
-        out.lines().any(|l| l == adversary_line),
-        "a tier with a real measured catch still renders its true rate in the same run; \
-         got:\n{out}"
-    );
+/// `rigger stats --canary` over `items` (see [`stats_canary_over`]) renders, as an EXACT line,
+/// each `(tier, rendering)` in `renders` (`    {tier:<16} {rendering}`), never renders any in
+/// `never`, and - when given - never prints `absent` anywhere. Exact-line matching, not a bare
+/// substring: two lines sharing the same `{tier:<16}` padding prefix can make a short
+/// `contains()` check pass even when the line it was meant to pin is wrong.
+fn assert_the_canary_tier_render(
+    project: &str,
+    items: &[&str],
+    renders: &[(&str, &str)],
+    never: &[(&str, &str)],
+    absent: Option<&str>,
+) {
+    let (_dir, out) = stats_canary_over(project, items);
+    let tier_line = |tier: &str, rendering: &str| format!("    {tier:<16} {rendering}");
+    for (tier, rendering) in renders {
+        let line = tier_line(tier, rendering);
+        assert!(
+            out.lines().any(|l| l == line),
+            "the {tier} tier must render as exactly {line:?}; got:\n{out}"
+        );
+    }
+    for (tier, rendering) in never {
+        let line = tier_line(tier, rendering);
+        assert!(
+            !out.lines().any(|l| l == line),
+            "the {tier} tier must never render as {line:?}; got:\n{out}"
+        );
+    }
+    if let Some(absent) = absent {
+        assert!(
+            !out.to_lowercase().contains(absent),
+            "{absent:?} must not appear anywhere; got:\n{out}"
+        );
+    }
 }
 
-/// The companion regression guard to the previous test, driven through the same compiled-
-/// binary seam: when EVERY correctly-rejected planted item in the run carries real
-/// attribution (no item has an empty `caught_by`), a tier that genuinely caught nothing
-/// must keep rendering the honest `0/N (0.0%)` - `unattributed_correct_rejects` must not
-/// swallow every zero into `n/a`. The implementer's own regression test for this only
-/// calls `format_canary_stats` directly against a hand-built `CanaryMetrics`; this proves
-/// the same guarantee survives the real decode -> fold -> render chain `rigger stats
-/// --canary` actually runs.
-#[test]
-fn stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), "genuine-zero-proj\n").unwrap();
-
-    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, "genuine-zero-proj");
-    let ty = rigger::ledger::TYPE_UNIT_STATUS;
-    let ev = |json: String| Event::new(ty, json.into_bytes());
-    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
-    // Both planted items are correctly rejected and attributed to the adversary tier only
-    // - the lens tier genuinely caught nothing, but every correct reject IS attributed
-    // (just never to lens), so unattributed_correct_rejects stays 0.
-    let x = ev(
-        r#"{"id":"x","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
-            .to_string(),
-    );
-    let y = ev(
-        r#"{"id":"y","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
-            .to_string(),
-    );
-    store
-        .append("canary", ExpectedRevision::Any, &[marker, x, y])
-        .unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
-    assert!(ok, "stats --canary must succeed; stderr: {err}");
-
-    let real_zero_line = format!("    {:<16} 0/2 (0.0%)", "lens");
-    assert!(
-        out.lines().any(|l| l == real_zero_line),
-        "a genuinely-measured zero catch rate must still print 0/N (0.0%); got:\n{out}"
-    );
-    let adversary_line = format!("    {:<16} 2/2 (100.0%)", "adversary");
-    assert!(
-        out.lines().any(|l| l == adversary_line),
-        "the adversary tier's real rate renders too; got:\n{out}"
-    );
-    assert!(
-        !out.to_lowercase().contains("n/a"),
-        "n/a must not appear anywhere when every correct reject carries attribution; \
-         got:\n{out}"
-    );
+rigger::test_cases! {
+    /// NO FAKE ZEROS criterion (spec 61, unit u61c2b): `format_canary_stats` - the render
+    /// function shared by `rigger stats --canary` and `rigger canary`'s own post-run summary -
+    /// prints `n/a` with a reason instead of a fake `0/N (0.0%)` for a tier whose catch count
+    /// is zero AND the run recorded a correctly-rejected planted item with no measured
+    /// attribution. `format_canary_stats` is private to the binary crate, so it is reachable
+    /// ONLY by driving the compiled binary (the implementer's own render tests, in
+    /// `src/main.rs`, call it directly against a hand-built `CanaryMetrics` that was never
+    /// produced by `metrics::project_canary` itself). This test seeds the namespaced canary
+    /// stream with a correctly-rejected item whose `caught_by` is empty (the "lens" tier's
+    /// zero is now suspect) alongside a sibling item a DIFFERENT tier genuinely caught (its
+    /// real rate must still render), and drives `rigger stats --canary`, proving the n/a
+    /// substitution actually reaches stdout through the full decode -> fold -> render chain.
+    ///
+    /// Assertions match on the EXACT rendered line, not a bare substring: a prior finding on
+    /// this same render surface (the findings-raised line) showed that two lines sharing the
+    /// same `{tier:<16}` padding prefix can make a short `contains()` check pass even when the
+    /// line it was meant to pin is wrong.
+    stats_canary_renders_na_for_a_tier_with_an_unattributed_correct_reject:
+        assert_the_canary_tier_render(
+            "unattributed-proj",
+            &[
+                // "a": correctly rejected by the lens tier's own account, but caught_by is
+                // EMPTY - the exact unmeasured-attribution shape the criterion exists to catch.
+                r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":[],"verdict_approved":false,"verdict_correct":true,"stable":true}"#,
+                // "b": correctly rejected, attributed to the adversary tier - a REAL measured
+                // catch, so the adversary tier's rate must still render honestly in the same run.
+                r#"{"id":"b","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#,
+            ],
+            &[
+                (
+                    "lens",
+                    "n/a (1 correctly-rejected item(s) with no measured tier attribution)",
+                ),
+                ("adversary", "1/2 (50.0%)"),
+            ],
+            // The fake-zero percentage line never appears for the unmeasured tier.
+            &[("lens", "0/2 (0.0%)")],
+            None,
+        );
+    /// The companion regression guard to the previous test, driven through the same compiled-
+    /// binary seam: when EVERY correctly-rejected planted item in the run carries real
+    /// attribution (no item has an empty `caught_by`), a tier that genuinely caught nothing
+    /// must keep rendering the honest `0/N (0.0%)` - `unattributed_correct_rejects` must not
+    /// swallow every zero into `n/a`. The implementer's own regression test for this only
+    /// calls `format_canary_stats` directly against a hand-built `CanaryMetrics`; this proves
+    /// the same guarantee survives the real decode -> fold -> render chain `rigger stats
+    /// --canary` actually runs.
+    stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution:
+        assert_the_canary_tier_render(
+            "genuine-zero-proj",
+            &[
+                // Both planted items are correctly rejected and attributed to the adversary tier
+                // only - the lens tier genuinely caught nothing, but every correct reject IS
+                // attributed (just never to lens), so unattributed_correct_rejects stays 0.
+                r#"{"id":"x","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#,
+                r#"{"id":"y","status":"canary","defect_class":"resource-leak","planted":true,"expected_reject":true,"expected_tier":"adversary","caught_by":["adversary"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#,
+            ],
+            &[("lens", "0/2 (0.0%)"), ("adversary", "2/2 (100.0%)")],
+            &[],
+            // n/a must not appear anywhere when every correct reject carries attribution.
+            Some("n/a"),
+        );
 }
 
 /// FALSE POSITIVES ARE FIRST-CLASS criterion (spec 61, unit u61c3): `CanaryMetrics` carries
@@ -14944,47 +14834,19 @@ fn stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution()
 /// is wrong.
 #[test]
 fn stats_canary_reports_the_control_false_positive_line() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), "false-positive-proj\n").unwrap();
-
-    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, "false-positive-proj");
-    let ty = rigger::ledger::TYPE_UNIT_STATUS;
-    let ev = |json: String| Event::new(ty, json.into_bytes());
-    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
-    // "p1": a planted defect, correctly rejected - not a control at all.
-    let p1 = ev(
-        r#"{"id":"p1","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
-            .to_string(),
+    let (_dir, out) = stats_canary_over(
+        "false-positive-proj",
+        &[
+            // "p1": a planted defect, correctly rejected - not a control at all.
+            r#"{"id":"p1","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#,
+            // "c1": a known-good control the panel gets right - approved, not a false positive.
+            r#"{"id":"c1","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":true,"verdict_correct":true,"stable":true}"#,
+            // "c2" and "c3": known-good controls the panel WRONGLY rejects - two independent false
+            // positives, proving the render sums them rather than saturating at one.
+            r#"{"id":"c2","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":false,"verdict_correct":false,"stable":true}"#,
+            r#"{"id":"c3","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":false,"verdict_correct":false,"stable":true}"#,
+        ],
     );
-    // "c1": a known-good control the panel gets right - approved, not a false positive.
-    let c1 = ev(
-        r#"{"id":"c1","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":true,"verdict_correct":true,"stable":true}"#
-            .to_string(),
-    );
-    // "c2" and "c3": known-good controls the panel WRONGLY rejects - two independent false
-    // positives, proving the render sums them rather than saturating at one.
-    let c2 = ev(
-        r#"{"id":"c2","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":false,"verdict_correct":false,"stable":true}"#
-            .to_string(),
-    );
-    let c3 = ev(
-        r#"{"id":"c3","status":"canary","defect_class":"none","planted":false,"expected_reject":false,"expected_tier":"","caught_by":[],"verdict_approved":false,"verdict_correct":false,"stable":true}"#
-            .to_string(),
-    );
-    store
-        .append("canary", ExpectedRevision::Any, &[marker, p1, c1, c2, c3])
-        .unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
-    assert!(ok, "stats --canary must succeed; stderr: {err}");
 
     let control_line =
         "  control items      1/3 approved (2 false positive(s): known-good rejected)";
@@ -15079,6 +14941,35 @@ fn canary_accepts_a_jobs_flag_alongside_other_flags() {
     );
 }
 
+/// The usage text `rigger help` prints (to stderr), asserting the help succeeds.
+fn rigger_help() -> String {
+    let dir = temp_project();
+    let (_o, err, ok) = run_rigger(dir.path(), &["help"]);
+    assert!(ok, "rigger help must succeed; stderr: {err}");
+    err
+}
+
+/// In the printed `help`, the flag `tag` introduces its OWN description - the text right after
+/// it starts with `description` - not text describing something else. Returns the tag's
+/// position.
+fn assert_a_flag_tag_introduces_its_own_description(
+    help: &str,
+    tag: &str,
+    description: &str,
+) -> usize {
+    let tag_pos = help
+        .find(tag)
+        .unwrap_or_else(|| panic!("printed help names the {tag} flag; stderr: {help}"));
+    let after_tag = help[tag_pos + tag.len()..].trim_start_matches(' ');
+    assert!(
+        after_tag.starts_with(description),
+        "the {tag} tag in the real binary's help output must introduce its OWN description, \
+         not text describing something else: found {:?}",
+        &after_tag[..after_tag.len().min(80)]
+    );
+    tag_pos
+}
+
 /// The `--jobs` usage-text shape is pinned as a white-box check against the private
 /// `USAGE_TEXT` string constant inside `src/main.rs`'s own unit tests
 /// (`usage_text_gives_the_jobs_flag_its_own_description_line`). That leaves an outside-in
@@ -15091,23 +14982,14 @@ fn canary_accepts_a_jobs_flag_alongside_other_flags() {
 /// pins, but read off the actual process output.
 #[test]
 fn rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_binary() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_o, err, ok) = run_rigger(root, &["help"]);
-    assert!(ok, "rigger help must succeed; stderr: {err}");
+    let err = rigger_help();
 
     // The --jobs tag introduces its OWN description, not text describing something else.
     let tag = "[--jobs <n>]";
-    let tag_pos = err
-        .find(tag)
-        .unwrap_or_else(|| panic!("printed help names the --jobs flag; stderr: {err}"));
-    let after_tag = err[tag_pos + tag.len()..].trim_start_matches(' ');
-    assert!(
-        after_tag.starts_with("caps the total concurrent review-panel spawns"),
-        "the --jobs tag in the real binary's help output must introduce its OWN \
-         description, not text describing something else: found {:?}",
-        &after_tag[..after_tag.len().min(80)]
+    assert_a_flag_tag_introduces_its_own_description(
+        &err,
+        tag,
+        "caps the total concurrent review-panel spawns",
     );
 
     // The pre-existing --corpus sentence is not split by a flag tag spliced into its middle.
@@ -15139,24 +15021,15 @@ fn rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_bin
 /// `tests/model_pinning_periphery.rs`); this test is solely about the printed help TEXT.
 #[test]
 fn rigger_help_gives_the_model_flag_its_own_description_line_through_the_real_binary() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_o, err, ok) = run_rigger(root, &["help"]);
-    assert!(ok, "rigger help must succeed; stderr: {err}");
+    let err = rigger_help();
 
     // The --model tag introduces its OWN description, not text describing something else
     // (in particular, not the --jobs description it is spliced directly after).
     let tag = "[--model <tier>=<id>]";
-    let tag_pos = err
-        .find(tag)
-        .unwrap_or_else(|| panic!("printed help names the --model flag; stderr: {err}"));
-    let after_tag = err[tag_pos + tag.len()..].trim_start_matches(' ');
-    assert!(
-        after_tag.starts_with("pins a tier's (lens/adversary/adjudicator)"),
-        "the --model tag in the real binary's help output must introduce its OWN \
-         description, not text describing something else: found {:?}",
-        &after_tag[..after_tag.len().min(80)]
+    let tag_pos = assert_a_flag_tag_introduces_its_own_description(
+        &err,
+        tag,
+        "pins a tier's (lens/adversary/adjudicator)",
     );
 
     // The --model sentence itself reaches stdout/stderr whole, in order, with no other flag
@@ -15308,38 +15181,15 @@ fn canary_accepts_a_well_formed_model_pin_and_continues_parsing() {
 /// event too, not just the implementer's hand-built fixture.
 #[test]
 fn stats_canary_reports_the_model_pinning_header_through_a_real_wire_event() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let dir = tempfile::tempdir().unwrap();
+    let (dir, out) = stats_canary_over(
+        "canary-pin-proj",
+        &[
+            r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#,
+            // The exact wire shape `CanaryHeader::to_event` produces.
+            r#"{"id":"batch-1","status":"canary-header","binary_build":"rigger 7.7.7 (build pin-test)","corpus_hash":"cafef00d","resolved_models":{"lens":"resolved-lens-x","adjudicator":"resolved-adj-y"}}"#,
+        ],
+    );
     let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), "canary-pin-proj\n").unwrap();
-
-    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, "canary-pin-proj");
-    let ty = rigger::ledger::TYPE_UNIT_STATUS;
-    let ev = |json: String| Event::new(ty, json.into_bytes());
-
-    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
-    let outcome = ev(
-        r#"{"id":"a","status":"canary","defect_class":"off-by-one","planted":true,"expected_reject":true,"expected_tier":"lens","caught_by":["lens"],"verdict_approved":false,"verdict_correct":true,"stable":true}"#
-            .to_string(),
-    );
-    // The exact wire shape `CanaryHeader::to_event` produces.
-    let header = ev(
-        r#"{"id":"batch-1","status":"canary-header","binary_build":"rigger 7.7.7 (build pin-test)","corpus_hash":"cafef00d","resolved_models":{"lens":"resolved-lens-x","adjudicator":"resolved-adj-y"}}"#
-            .to_string(),
-    );
-
-    store
-        .append("canary", ExpectedRevision::Any, &[marker, outcome, header])
-        .unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
-    assert!(ok, "stats --canary must succeed; stderr: {err}");
     assert!(
         out.contains("binary build       rigger 7.7.7 (build pin-test)"),
         "the real header event's binary build reaches stdout; got:\n{out}"
@@ -15608,30 +15458,80 @@ fn validate_detects_a_stream_whose_position_order_and_revision_order_disagree() 
     );
 }
 
-/// Spec 13b, unit 1 (`rigger canary --if-model-changed` clause), the no-change control: an
-/// unchanged resolved model runs NO canary. The gate precedes the corpus load, so the missing
-/// `--corpus` is never even consulted - the command exits 0 having deliberately done nothing.
-#[test]
-fn canary_if_model_changed_skips_when_the_model_is_unchanged() {
+/// `rigger canary --if-model-changed` (with a `--corpus` that does not exist, so a run that
+/// gets past the gate fails at corpus loading) over a fresh project `project` seeded with two
+/// runs whose resolved model went from `prior` to `current`; returns (stdout, stderr, success).
+fn canary_if_model_changed_between(
+    project: &str,
+    prior: &str,
+    current: &str,
+) -> (String, String, bool) {
     let dir = temp_project();
     let root = dir.path();
-    seed_two_runs_with_models(root, "canary-steady", "claude-opus-4-1", "claude-opus-4-1");
-    let (out, err, ok) = run_rigger(
+    seed_two_runs_with_models(root, project, prior, current);
+    run_rigger(
         root,
         &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
-    );
+    )
+}
+
+/// `rigger canary --if-model-changed` over a resolved-model move from `prior` to `current` the
+/// gate treats as no real change: it exits 0 announcing every phrase in `announces`, never runs
+/// the panel, and short-circuits before corpus loading - the missing `--corpus` dir is never
+/// even consulted.
+fn assert_the_canary_model_gate_skips(
+    project: &str,
+    prior: &str,
+    current: &str,
+    announces: &[&str],
+) {
+    let (out, err, ok) = canary_if_model_changed_between(project, prior, current);
     assert!(
         ok,
-        "an unchanged model must exit 0 without running the panel; stderr:\n{err}"
+        "a {prior} -> {current} move must exit 0 without running the panel; stderr:\n{err}"
     );
     assert!(
-        out.contains("no resolved-model change") && out.contains("skipping"),
-        "the skip is announced; stdout:\n{out}"
+        announces.iter().all(|a| out.contains(a)),
+        "the skip is announced naming {announces:?}; stdout:\n{out}"
     );
     assert!(
         !out.contains("running the panel"),
-        "no canary runs on an unchanged model; stdout:\n{out}"
+        "no canary runs on a {prior} -> {current} move; stdout:\n{out}"
     );
+    assert!(
+        !err.contains("canary"),
+        "a skip must short-circuit before corpus loading; stderr:\n{err}"
+    );
+}
+
+rigger::test_cases! {
+    /// Spec 13b, unit 1 (`rigger canary --if-model-changed` clause), the no-change control: an
+    /// unchanged resolved model runs NO canary. The gate precedes the corpus load, so the missing
+    /// `--corpus` is never even consulted - the command exits 0 having deliberately done nothing.
+    canary_if_model_changed_skips_when_the_model_is_unchanged: assert_the_canary_model_gate_skips(
+        "canary-steady",
+        "claude-opus-4-1",
+        "claude-opus-4-1",
+        &["no resolved-model change", "skipping"],
+    );
+    /// Spec 61, DRIFT SEVERITY (c11): a resolved-id change that differs ONLY in its trailing
+    /// `-YYYYMMDD` date suffix - same model, a fresher snapshot - is classified as SNAPSHOT
+    /// drift: `--if-model-changed` reports it on stdout and exits 0 WITHOUT running the panel,
+    /// never reaching corpus loading (unlike a real re-point, which the sibling test
+    /// `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed` above proves still
+    /// runs the panel even though its "claude-opus-4-1" -> "claude-opus-4-8" pair also differs).
+    canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel:
+        assert_the_canary_model_gate_skips(
+            "canary-snapshot-bump",
+            "claude-sonnet-4-5-20250929",
+            "claude-sonnet-4-5-20260210",
+            // The skip names the tier's snapshot drift and both resolved ids.
+            &[
+                "newer snapshot",
+                "claude-sonnet-4-5-20250929",
+                "claude-sonnet-4-5-20260210",
+            ],
+        );
 }
 
 /// Spec 13b, unit 1 (`rigger canary --if-model-changed` clause), the seeded model change: a
@@ -15640,13 +15540,8 @@ fn canary_if_model_changed_skips_when_the_model_is_unchanged() {
 /// gate-open line on stdout proves the run was NOT skipped and reached corpus loading.
 #[test]
 fn canary_if_model_changed_runs_when_a_tier_resolved_model_repointed() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_two_runs_with_models(root, "canary-repoint", "claude-opus-4-1", "claude-opus-4-8");
-    let (out, err, ok) = run_rigger(
-        root,
-        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
-    );
+    let (out, err, ok) =
+        canary_if_model_changed_between("canary-repoint", "claude-opus-4-1", "claude-opus-4-8");
     assert!(
         out.contains("resolved model changed for opus") && out.contains("running the panel"),
         "a re-pointed model opens the gate; stdout:\n{out}"
@@ -15660,49 +15555,6 @@ fn canary_if_model_changed_runs_when_a_tier_resolved_model_repointed() {
     assert!(
         !ok && err.contains("canary"),
         "the gate opened and the run reached corpus loading; stderr:\n{err}"
-    );
-}
-
-/// Spec 61, DRIFT SEVERITY (c11): a resolved-id change that differs ONLY in its trailing
-/// `-YYYYMMDD` date suffix - same model, a fresher snapshot - is classified as SNAPSHOT
-/// drift: `--if-model-changed` reports it on stdout and exits 0 WITHOUT running the panel,
-/// never reaching corpus loading (unlike a real re-point, which the sibling test
-/// `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed` above proves still
-/// runs the panel even though its "claude-opus-4-1" -> "claude-opus-4-8" pair also differs).
-#[test]
-fn canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_two_runs_with_models(
-        root,
-        "canary-snapshot-bump",
-        "claude-sonnet-4-5-20250929",
-        "claude-sonnet-4-5-20260210",
-    );
-    let (out, err, ok) = run_rigger(
-        root,
-        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
-    );
-    assert!(
-        ok,
-        "a same-model snapshot bump must exit 0 without running the panel; stderr:\n{err}"
-    );
-    assert!(
-        out.contains("newer snapshot")
-            && out.contains("claude-sonnet-4-5-20250929")
-            && out.contains("claude-sonnet-4-5-20260210"),
-        "the skip names the tier and both resolved ids; stdout:\n{out}"
-    );
-    assert!(
-        !out.contains("running the panel"),
-        "no canary runs on a snapshot-only drift; stdout:\n{out}"
-    );
-    // Never reached corpus loading - the missing `--corpus` dir is never even consulted, the
-    // same short-circuit proof `canary_if_model_changed_skips_when_the_model_is_unchanged`
-    // uses for the no-change case.
-    assert!(
-        !err.contains("canary"),
-        "a snapshot-only drift must short-circuit before corpus loading; stderr:\n{err}"
     );
 }
 
