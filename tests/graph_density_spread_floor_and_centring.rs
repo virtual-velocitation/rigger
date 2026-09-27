@@ -31,8 +31,7 @@
 
 mod common;
 
-use common::fixtures::tool_available;
-use common::served::run_page_harness;
+use common::served::node_harness_claims;
 use rigger::dash;
 
 /// The head of the node-vm harness: a minimal DOM shim so the page's top-level wiring
@@ -133,31 +132,11 @@ const DRIVER_SPREAD_FLOOR: &str = r##";(function(){
 })();
 "##;
 
-/// `driver` runs against the live dash page and prints `marker`; `claim` is what a failure
-/// reports. Skipped (named `test` in the skip line) when there is no `node` runtime.
-fn assert_live_page_driver_passes(test: &str, driver: &str, marker: &str, claim: &str) {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP {test}: no `node` runtime on PATH. This runtime guard needs node (present on \
-             dev machines and on ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    let page = dash::live_page();
-    let (ok, stdout, stderr) =
-        run_page_harness(&page, &format!("{HARNESS_HEAD}{driver}{HARNESS_TAIL}"));
-    assert!(
-        ok && stdout.contains(marker),
-        "{claim}:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-}
-
 rigger::test_cases! {
     /// Proof of the floor + degenerate branches (see `DRIVER_SPREAD_FLOOR`): `kgSpread` is exactly 1 off
     /// the dense-with-accessors path, so a sparse or accessor-less caller keeps the panel unchanged.
-    the_spread_factor_floors_at_one_off_the_dense_path: assert_live_page_driver_passes(
-        "the_spread_factor_floors_at_one_off_the_dense_path",
-        DRIVER_SPREAD_FLOOR,
+    the_spread_factor_floors_at_one_off_the_dense_path: node_harness_claims(
+        &format!("{HARNESS_HEAD}{DRIVER_SPREAD_FLOOR}{HARNESS_TAIL}"),
         "OK spread-floor",
         "kgSpread must floor at 1 off the dense path",
     );
@@ -221,9 +200,8 @@ const DRIVER_BACKCOMPAT_PANEL: &str = r##";(function(){
 rigger::test_cases! {
     /// Proof that the bare 4-arg `forceLayout` preserves the pre-c2 panel-sized layout while the 6-arg
     /// accessor path scales past it (see `DRIVER_BACKCOMPAT_PANEL`).
-    the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it: assert_live_page_driver_passes(
-        "the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it",
-        DRIVER_BACKCOMPAT_PANEL,
+    the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it: node_harness_claims(
+        &format!("{HARNESS_HEAD}{DRIVER_BACKCOMPAT_PANEL}{HARNESS_TAIL}"),
         "OK backcompat-panel",
         "the bare 4-arg layout must stay panel-sized while the accessor path grows past it",
     );
@@ -275,9 +253,8 @@ const DRIVER_CENTRED_CANVAS: &str = r##";(function(){
 rigger::test_cases! {
     /// Proof that the enlarged canvas is centred on the panel middle (see `DRIVER_CENTRED_CANVAS`) - the
     /// reset view opens on the drawing's centre, a claim the extent-only done-when proof is blind to.
-    the_enlarged_canvas_is_centred_on_the_panel_middle: assert_live_page_driver_passes(
-        "the_enlarged_canvas_is_centred_on_the_panel_middle",
-        DRIVER_CENTRED_CANVAS,
+    the_enlarged_canvas_is_centred_on_the_panel_middle: node_harness_claims(
+        &format!("{HARNESS_HEAD}{DRIVER_CENTRED_CANVAS}{HARNESS_TAIL}"),
         "OK centred-canvas",
         "the enlarged canvas must be centred on the panel middle",
     );

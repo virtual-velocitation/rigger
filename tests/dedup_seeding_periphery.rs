@@ -388,13 +388,10 @@ fn temp_project_with_at_signs_in_its_paths() -> tempfile::TempDir {
 /// the real keys the log will carry - never a spelling this test invented.
 #[cfg(feature = "symbols")]
 fn minted(root: &std::path::Path) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
-        for (key, ev) in batch {
-            out.push((key.clone(), ev.type_.clone()));
-        }
-    });
-    out
+    minted_events(root)
+        .into_iter()
+        .map(|(key, event)| (key, event.type_))
+        .collect()
 }
 
 /// The minted keys as a set, for comparison against what the predicate hands a sink back.
@@ -607,6 +604,8 @@ use common::cli::read_run_events;
 use common::cli::run_rigger;
 #[cfg(feature = "symbols")]
 use common::cli::run_stream_identity;
+#[cfg(feature = "symbols")]
+use common::fixtures::minted_events;
 
 /// INTEGRATION, at the crate boundary the binary crosses: the cold `graph build` sink and the run's
 /// seeding are two processes that must agree, and this criterion makes them agree by sharing ONE

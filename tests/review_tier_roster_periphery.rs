@@ -9,9 +9,7 @@
 
 mod common;
 
-use common::fixtures::js_declaration;
-use common::repo::repo_text;
-use std::process::Command;
+use common::repo::worker_label;
 
 /// Run the REAL `workerLabel(req)` - extracted verbatim along with `PERSONA_VERB`,
 /// `ROSTER_VERB`, and the `personaOf`/`firstSentence`/`roleAttempt` helpers it calls - under a
@@ -24,73 +22,7 @@ fn run_worker_label_with_reviews(
     title: &str,
     reviews: Option<&[&str]>,
 ) -> Option<String> {
-    run_worker_label_for_unit_and_reviews(id, None, title, reviews)
-}
-
-/// Like [`run_worker_label_with_reviews`], but ALSO stamps `req.unit` - the field `workerLabel`
-/// reads to derive the structural `Plan`/`Plan-Critique` persona for the two run-wide meta-stage
-/// spawns (mirrors `tests/worker_persona_label_periphery.rs::run_worker_label_for_unit`, the
-/// established per-file convention of a base helper plus a `_for_unit` variant that also sets
-/// `req.unit`). Needed for the ONE seam neither file exercises alone: criterion 2's persona
-/// override COMPOSED with criterion 4's roster injection - the exact shape the plan-critique
-/// gate's real adjudicator spawn produces (`req.unit === "plan-critique"` alongside a non-empty
-/// `req.reviews`), which `workerLabel` derives from the SAME `req` object in one function body.
-/// `None` omits the field entirely, matching an ordinary build unit's wave item -
-/// [`run_worker_label_with_reviews`] above is exactly that case.
-fn run_worker_label_for_unit_and_reviews(
-    id: &str,
-    unit: Option<&str>,
-    title: &str,
-    reviews: Option<&[&str]>,
-) -> Option<String> {
-    let src = repo_text("workflows/rigger.js");
-    let verb_table = js_declaration(&src, "const PERSONA_VERB = {");
-    let roster_table = js_declaration(&src, "const ROSTER_VERB = {");
-    let persona_of = js_declaration(&src, "function personaOf(role) {");
-    let first_sentence = js_declaration(&src, "function firstSentence(s) {");
-    let role_attempt = js_declaration(&src, "function roleAttempt(id) {");
-    let worker_label = js_declaration(&src, "function workerLabel(req) {");
-
-    let mut req = serde_json::json!({ "id": id, "title": title });
-    if let Some(unit) = unit {
-        req["unit"] = serde_json::Value::String(unit.to_string());
-    }
-    if let Some(reviews) = reviews {
-        req["reviews"] = serde_json::Value::Array(
-            reviews
-                .iter()
-                .map(|s| serde_json::Value::String(s.to_string()))
-                .collect(),
-        );
-    }
-    let req = req.to_string();
-    let script = format!(
-        "{verb_table}\n{roster_table}\n{persona_of}\n{first_sentence}\n{role_attempt}\n\
-         {worker_label}\nprocess.stdout.write(workerLabel(JSON.parse(process.argv[2])) + '\\n')\n"
-    );
-
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut f = tempfile::NamedTempFile::new().unwrap();
-    std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
-
-    match Command::new(&node).arg(f.path()).arg(&req).output() {
-        Ok(out) => {
-            assert!(
-                out.status.success(),
-                "the real workerLabel must run without throwing on {req}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let text = String::from_utf8_lossy(&out.stdout).into_owned();
-            Some(text.trim_end_matches('\n').to_string())
-        }
-        Err(e) => {
-            assert!(
-                e.kind() == std::io::ErrorKind::NotFound,
-                "node failed for a reason other than being absent: {e}"
-            );
-            None
-        }
-    }
+    worker_label(id, title, None, reviews)
 }
 
 /// The worker label rendered for spawn `id` titled `title` with review roster `reviews` is
@@ -204,10 +136,10 @@ rigger::test_cases! {
 /// cannot silently regress it while every roster-only or persona-only test above keeps passing.
 #[test]
 fn the_plan_critiques_adjudicator_composes_its_persona_override_with_its_roster() {
-    let Some(label) = run_worker_label_for_unit_and_reviews(
+    let Some(label) = worker_label(
         "plan-critique/adjudicator#0",
-        Some("plan-critique"),
         "review the proposed unit DAG.",
+        Some("plan-critique"),
         Some(&["adversary"]),
     ) else {
         return; // node unavailable; graceful absence.

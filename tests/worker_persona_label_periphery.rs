@@ -13,9 +13,8 @@
 
 mod common;
 
-use common::fixtures::js_declaration;
 use common::repo::repo_text;
-use std::process::Command;
+use common::repo::worker_label;
 
 /// Run the REAL `workerLabel(req)` - extracted verbatim from the shipped `workflows/rigger.js`
 /// along with the `PERSONA_VERB` table and the `personaOf`/`firstSentence` helpers it calls -
@@ -25,55 +24,7 @@ use std::process::Command;
 /// run_relay_attention` and `src/main.rs`'s own `node --check` test already establish for this
 /// crate (missing node is an environment fact, never a test failure).
 fn run_worker_label(id: &str, title: &str) -> Option<String> {
-    run_worker_label_for_unit(id, title, None)
-}
-
-/// Like [`run_worker_label`], but also stamps `req.unit` - the field `workerLabel` reads to
-/// derive the `Plan`/`Plan-Critique` structural persona for the two run-wide meta-stage spawns
-/// (their role half is always an ordinary role - `implementer`/`replan`, `adversary`/
-/// `adjudicator` - so it can never itself carry that persona; see `workerLabel`'s own doc
-/// comment in `workflows/rigger.js`). `None` omits the field entirely, matching an ordinary
-/// build unit's wave item.
-fn run_worker_label_for_unit(id: &str, title: &str, unit: Option<&str>) -> Option<String> {
-    let src = repo_text("workflows/rigger.js");
-    let verb_table = js_declaration(&src, "const PERSONA_VERB = {");
-    let persona_of = js_declaration(&src, "function personaOf(role) {");
-    let first_sentence = js_declaration(&src, "function firstSentence(s) {");
-    let role_attempt = js_declaration(&src, "function roleAttempt(id) {");
-    let worker_label = js_declaration(&src, "function workerLabel(req) {");
-
-    let mut req = serde_json::json!({ "id": id, "title": title });
-    if let Some(unit) = unit {
-        req["unit"] = serde_json::Value::String(unit.to_string());
-    }
-    let req = req.to_string();
-    let script = format!(
-        "{verb_table}\n{persona_of}\n{first_sentence}\n{role_attempt}\n{worker_label}\n\
-         process.stdout.write(workerLabel(JSON.parse(process.argv[2])) + '\\n')\n"
-    );
-
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut f = tempfile::NamedTempFile::new().unwrap();
-    std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
-
-    match Command::new(&node).arg(f.path()).arg(&req).output() {
-        Ok(out) => {
-            assert!(
-                out.status.success(),
-                "the real workerLabel must run without throwing on {req}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let text = String::from_utf8_lossy(&out.stdout).into_owned();
-            Some(text.trim_end_matches('\n').to_string())
-        }
-        Err(e) => {
-            assert!(
-                e.kind() == std::io::ErrorKind::NotFound,
-                "node failed for a reason other than being absent: {e}"
-            );
-            None
-        }
-    }
+    worker_label(id, title, None, None)
 }
 
 /// Two different tiers of the SAME unit render DISTINCT persona tokens AND distinct action
@@ -181,7 +132,7 @@ fn every_documented_role_maps_to_its_own_persona_and_action_phrase() {
         ),
     ];
     for (id, unit, want_prefix) in cases {
-        let Some(label) = run_worker_label_for_unit(id, "some criterion sentence.", unit) else {
+        let Some(label) = worker_label(id, "some criterion sentence.", unit, None) else {
             return;
         };
         assert!(
@@ -198,7 +149,7 @@ fn every_documented_role_maps_to_its_own_persona_and_action_phrase() {
 /// `workerLabel` renders the wave item `id` titled `title` (of `unit`, when the item carries
 /// one) as exactly `want` - skipped, like every label test here, when node is unavailable.
 fn assert_worker_label(id: &str, title: &str, unit: Option<&str>, want: &str) {
-    let Some(label) = run_worker_label_for_unit(id, title, unit) else {
+    let Some(label) = worker_label(id, title, unit, None) else {
         return;
     };
     assert_eq!(
@@ -327,7 +278,7 @@ fn a_non_conforming_id_falls_back_to_the_pre_criterion_shape_with_the_subject() 
 /// A REAL production wave item ALWAYS carries `unit` - `src/spawn.rs::WaveItem.unit` has no
 /// `skip_serializing_if` and `WaveItem::from` copies the request's own unit id into it verbatim,
 /// so the field is NEVER omitted on the wire, unlike this file's `run_worker_label` convenience
-/// wrapper (used by most tests above), which omits it entirely via `run_worker_label_for_unit`'s
+/// wrapper (used by most tests above), which omits it entirely via `worker_label`'s
 /// `None`. This proves the structural plan/plan-critique override is keyed on the unit's VALUE
 /// (`req.unit === 'plan'` / `=== 'plan-critique'`), not merely on the field being ABSENT: a
 /// genuinely present, ordinary unit id ("u2", matching this wave item's own id) must still
@@ -335,8 +286,7 @@ fn a_non_conforming_id_falls_back_to_the_pre_criterion_shape_with_the_subject() 
 /// never actually exercise against a real `unit` value.
 #[test]
 fn an_ordinary_build_units_real_unit_field_still_uses_the_role_based_persona() {
-    let Some(label) =
-        run_worker_label_for_unit("u2/implementer#0", "implement the thing.", Some("u2"))
+    let Some(label) = worker_label("u2/implementer#0", "implement the thing.", Some("u2"), None)
     else {
         return;
     };

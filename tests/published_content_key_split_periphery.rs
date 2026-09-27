@@ -23,6 +23,10 @@
 //! Everything but the real-tree walk is compiled unconditionally, so this suite runs in BOTH
 //! feature lanes; the two tests that need a tree to walk are `symbols`-gated exactly as the walk is.
 
+mod common;
+
+#[cfg(feature = "symbols")]
+use common::fixtures::minted_events as minted;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
@@ -270,19 +274,6 @@ fn temp_project() -> tempfile::TempDir {
     )
     .unwrap();
     dir
-}
-
-/// Every `<prefix>/<file>@<hash>#<i>` key the SHIPPED walk mints for the tree at `root`, paired
-/// with the event type it was minted for.
-#[cfg(feature = "symbols")]
-fn minted(root: &std::path::Path) -> Vec<(String, Event)> {
-    let mut out: Vec<(String, Event)> = Vec::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
-        for (key, event) in batch {
-            out.push((key.clone(), (*event).clone()));
-        }
-    });
-    out
 }
 
 /// THE ROUND TRIP the published split exists to survive, over keys the WRITER really mints.

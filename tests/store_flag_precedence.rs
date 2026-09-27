@@ -38,7 +38,7 @@ use tempfile::TempDir;
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
-use common::cli::event_log;
+use common::cli::assert_selected_server;
 use common::cli::write_workflow;
 use common::rigger_bin;
 
@@ -92,32 +92,6 @@ fn run_with_flags(root: &Path, extra: &[&str]) -> Output {
         .env_remove("KURRENTDB_CONN")
         .output()
         .expect("spawn rigger run")
-}
-
-/// Assert the flag selected the SERVER backend: the run failed inside the kurrentdb adapter (the
-/// eager connect to the unreachable address) and fabricated no local sqlite event log. The ABSENCE
-/// of the sqlite walk-up's `no rigger store found` is what distinguishes a genuine server selection
-/// from the pre-fix drop.
-fn assert_selected_server(out: &Output, root: &Path, why: &str) {
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "{why}: an unreachable server must fail, never silently succeed against a local fallback; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("kurrentdb"),
-        "{why}: the run must fail INSIDE the server backend, proving the flag selected the server; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("no rigger store found"),
-        "{why}: the flag-selected server must not drop to the local sqlite walk-up; stderr:\n{stderr}"
-    );
-    assert!(
-        !event_log(root).exists(),
-        "{why}: a server selection must NOT fabricate a local .rigger/events.db"
-    );
 }
 
 /// A bare `--conn <url>` (no `--eventstore`) over a committed project whose workflow carries

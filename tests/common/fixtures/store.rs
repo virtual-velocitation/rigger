@@ -103,3 +103,17 @@ pub fn repo_with_refusing_hook() -> (tempfile::TempDir, String) {
     let _ = std::fs::remove_dir_all(&wt_path);
     (repo, repo_path)
 }
+
+/// Every `<prefix>/<file>@<hash>#<i>` key the SHIPPED walk-and-key authority mints for the tree at
+/// `root`, paired with the event it was minted for - the same public entry `rigger graph build`
+/// and the run's ingest both drive, so these are the real keys the log will carry.
+#[cfg(feature = "symbols")]
+pub fn minted_events(root: &std::path::Path) -> Vec<(String, Event)> {
+    let mut out: Vec<(String, Event)> = Vec::new();
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
+        for (key, event) in batch {
+            out.push((key.clone(), (*event).clone()));
+        }
+    });
+    out
+}

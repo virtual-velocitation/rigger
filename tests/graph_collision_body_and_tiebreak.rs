@@ -25,9 +25,7 @@
 
 mod common;
 
-use common::fixtures::tool_available;
-use common::served::run_page_harness;
-use rigger::dash;
+use common::served::node_harness_claims;
 
 /// The head of the node-vm harness: a minimal DOM shim so the page's top-level wiring
 /// (`el(...).addEventListener`, `loadKgOverview()`) does not throw, then the opening of the driver's
@@ -162,42 +160,15 @@ const DRIVER_TIEBREAK: &str = r##";(function(){
   console.log("OK coincident-separation-deterministic");
 })();"##;
 
-/// The shared case body: run `driver` against the served page (skipping, loudly, when no `node`
-/// runtime is on PATH) and assert the harness both succeeded - else `contract` "..., but the
-/// runtime harness failed" - and printed `marker` - else "the harness must confirm `confirms`".
-fn assert_driver_confirms(test: &str, driver: &str, marker: &str, contract: &str, confirms: &str) {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP {test}: no `node` runtime on PATH. This runtime guard needs node (present on dev \
-             machines and on ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let (ok, stdout, stderr) =
-        run_page_harness(&page, &format!("{HARNESS_HEAD}{driver}{HARNESS_TAIL}"));
-    assert!(
-        ok,
-        "{contract}, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains(marker),
-        "the harness must confirm {confirms}:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-}
-
 rigger::test_cases! {
     /// CONTRACT: the served page's collision body encloses the circle plus the label box - a long label
     /// widens it horizontally, the label box hangs below the circle, and an empty label collapses back to
     /// the padded circle. Guards `kgNodeBody` / `kgLabelDims` directly (the density proof exercises them
     /// only indirectly).
-    the_collision_body_encloses_the_circle_and_its_label: assert_driver_confirms(
-        "the_collision_body_encloses_the_circle_and_its_label",
-        DRIVER_COLLISION_BODY,
+    the_collision_body_encloses_the_circle_and_its_label: node_harness_claims(
+        &format!("{HARNESS_HEAD}{DRIVER_COLLISION_BODY}{HARNESS_TAIL}"),
         "OK collision-body-encloses-circle-and-label",
         "the collision body must enclose the circle plus its label box",
-        "the collision-body contract",
     );
 }
 
@@ -205,12 +176,10 @@ rigger::test_cases! {
     /// BOUNDARY: the separation pass is a safe no-op below two positioned nodes, and it resolves an
     /// exactly-coincident pair to disjoint bodies deterministically (the id tie-break fixes the direction).
     /// Guards the degenerate branches the clustered-density proof never places.
-    the_separation_pass_resolves_coincident_nodes_deterministically: assert_driver_confirms(
-        "the_separation_pass_resolves_coincident_nodes_deterministically",
-        DRIVER_TIEBREAK,
+    the_separation_pass_resolves_coincident_nodes_deterministically: node_harness_claims(
+        &format!("{HARNESS_HEAD}{DRIVER_TIEBREAK}{HARNESS_TAIL}"),
         "OK coincident-separation-deterministic",
         "the separation pass must resolve coincident nodes deterministically and no-op below two \
          nodes",
-        "the coincident-separation tie-break",
     );
 }

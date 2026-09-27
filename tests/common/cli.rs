@@ -357,3 +357,49 @@ pub fn progress_under_an_ambient_kurrentdb_conn(root: &Path) -> Output {
     );
     out
 }
+
+/// Assert the courier (or run) resolved the SERVER backend: it failed inside the kurrentdb
+/// adapter (the eager connect to the unreachable address) and fabricated no local sqlite event
+/// log. The ABSENCE of the sqlite walk-up's `no rigger store found` is what distinguishes a
+/// genuine server selection from a silent drop to the local default.
+pub fn assert_selected_server(out: &Output, root: &Path, why: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "{why}: an unreachable server must fail, never silently succeed against a local fallback; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("kurrentdb"),
+        "{why}: the courier must fail INSIDE the server backend, proving it resolved the server; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("no rigger store found"),
+        "{why}: a server selection must not fall back to the local sqlite walk-up; stderr:\n{stderr}"
+    );
+    assert!(
+        !event_log(root).exists(),
+        "{why}: a server selection must NOT fabricate a local .rigger/events.db"
+    );
+}
+
+/// Assert the courier resolved the SQLITE backend: it took the local walk-up, which on a
+/// never-initialized project refuses without reaching for any server.
+pub fn assert_selected_sqlite(out: &Output, root: &Path, why: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "{why}: a courier with no initialized local store must fail, not fabricate one; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no rigger store found") && !stderr.contains("kurrentdb"),
+        "{why}: a sqlite selection must resolve the LOCAL log (surfacing as a local-store error), \
+         never a server connect; stderr:\n{stderr}"
+    );
+    assert!(
+        !event_log(root).exists(),
+        "{why}: the refuse-to-fabricate guard must leave no local events.db behind"
+    );
+}
