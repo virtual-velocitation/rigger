@@ -574,7 +574,7 @@ fn gate_key_attempt(key: &str) -> Option<u32> {
 
 /// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
 /// `command` and the git `tree_sha` of its inputs (the whole committed tree by default -
-/// [`worktree::tree_sha_of`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
+/// [`worktree::HEAD_TREE`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
 /// trees are always distinct addresses - the tree is what determines the gate outcome, so
 /// it must never collide - while the command is folded to a compact FNV-1a hash (the same
 /// fixed-seed stable hash the rest of the crate uses for content oracles: identical bytes ->
@@ -8121,11 +8121,11 @@ impl RunCtx<'_> {
         // worktree-less run), mirroring `target`'s own empty case; harmless for every OTHER
         // gate, whose command never reads `$MUTANTS`. Shares `postmerge_unit_dir`'s fallback
         // with `target` immediately above for the post-merge re-gate.
-        let mutants = crate::worktree::unit_mutants_sibling(dir)
+        let mutants = crate::worktree::unit_sibling(dir, crate::worktree::UNIT_MUTANTS_PREFIX)
             .or_else(|| {
-                postmerge_unit_dir
-                    .as_deref()
-                    .and_then(crate::worktree::unit_mutants_sibling)
+                postmerge_unit_dir.as_deref().and_then(|d| {
+                    crate::worktree::unit_sibling(d, crate::worktree::UNIT_MUTANTS_PREFIX)
+                })
             })
             .unwrap_or_default();
         // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
@@ -8182,7 +8182,7 @@ impl RunCtx<'_> {
         // committed tree, and each gate folds its own command over it in `input_digest`.
         // Empty when there is no worktree tree (a repo-less / `isolation: none` run), which
         // simply disables content-addressing for this attempt's gates.
-        let tree_sha = crate::worktree::tree_sha_of(dir);
+        let tree_sha = crate::worktree::rev_sha_of(dir, crate::worktree::HEAD_TREE);
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -9871,7 +9871,8 @@ impl RunCtx<'_> {
     /// event store.
     fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
-        let mutants = crate::worktree::unit_mutants_sibling(dir).unwrap_or_default();
+        let mutants = crate::worktree::unit_sibling(dir, crate::worktree::UNIT_MUTANTS_PREFIX)
+            .unwrap_or_default();
         let (build_cache_dir, build_cache_guard) = if target.is_empty() {
             self.shared_build_cache_paths()
         } else {
@@ -14068,6 +14069,7 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
+    use crate::spawn::SpawnEvent;
     use std::path::Path;
 
     // ---- FAILURE CLASS (spec 104 criterion 5): pure functions, moved here with the code
@@ -32096,8 +32098,11 @@ mod tests {
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
         for name in ["alpha", "beta"] {
-            let want =
-                crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, name)).unwrap();
+            let want = crate::worktree::unit_sibling(
+                &unit_worktree_dir(&scratch, name),
+                crate::worktree::UNIT_MUTANTS_PREFIX,
+            )
+            .unwrap();
             assert!(
                 mutants_dirs.contains(&want),
                 "unit {name} must get mutants root {want}, got {mutants_dirs:?}"
@@ -32111,7 +32116,7 @@ mod tests {
         // list never includes `mutation` - only the `checkin` stage (spec 91 criterion 2)
         // does - so its real gate commands never run `rm -rf "$MUTANTS" && mkdir -p
         // "$MUTANTS"` (the `mutation` gate's OWN command, the only place that ever
-        // materializes it - see `worktree::unit_mutants_sibling`'s own doc comment: "this
+        // materializes it - see `worktree::unit_sibling`'s own doc comment: "this
         // crate never creates it"). Proven with a REAL `ExecRunner` (never `RecordingRunner`,
         // which only records the env VALUE `two_units_gate_environments_never_share_a_
         // mutants_root` above proves is non-empty, and could never distinguish "set" from
@@ -41208,7 +41213,11 @@ mod tests {
         let mutants_roots: HashSet<String> = ["unit-a", "unit-b"]
             .iter()
             .map(|u| {
-                crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, u)).unwrap()
+                crate::worktree::unit_sibling(
+                    &unit_worktree_dir(&scratch, u),
+                    crate::worktree::UNIT_MUTANTS_PREFIX,
+                )
+                .unwrap()
             })
             .collect();
         let cache_roots: HashSet<String> = ["unit-a", "unit-b"]

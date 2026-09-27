@@ -26,6 +26,7 @@
 
 mod common;
 
+use rigger::spawn::SpawnEvent;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 

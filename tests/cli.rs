@@ -5,6 +5,7 @@
 //! same composition path (`Store::open(.rigger/events.db)` namespaced, the
 //! `graph.db` projector, `conductor::STREAM`) the `serve` path uses.
 
+use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
 

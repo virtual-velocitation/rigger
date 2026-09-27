@@ -50,6 +50,7 @@
 
 mod common;
 
+use rigger::spawn::SpawnEvent;
 use std::io::Cursor;
 use std::path::Path;
 use std::time::{Duration, SystemTime};

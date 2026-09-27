@@ -343,6 +343,7 @@ fn event_unit_id(e: &Event) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spawn::SpawnEvent;
 
     #[test]
     fn consolidate_joins_frontier_progress_liveness_and_milestone() {

@@ -1085,7 +1085,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "ed0fb6659e8eb90e"
+    "content_hash": "b7db4d6589691bb3"
   },
   {
     "file": "src/conductor.rs",
@@ -1197,7 +1197,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "0531d7e25e07d900"
+    "content_hash": "a590d987cff5db1f"
   },
   {
     "file": "src/conductor.rs",
@@ -4701,7 +4701,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "df3eb1221351d23b"
+    "content_hash": "376defcf4c266f52"
   },
   {
     "file": "src/conductor.rs",
@@ -4709,7 +4709,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cc1c96c5a65c6ddc"
+    "content_hash": "e929845eb81a6783"
   },
   {
     "file": "src/conductor.rs",
@@ -5805,7 +5805,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4b990153d7b1db3f"
+    "content_hash": "6444f593403b47a2"
   },
   {
     "file": "src/conductor.rs",

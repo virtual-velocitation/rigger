@@ -86,6 +86,7 @@
 
 mod common;
 
+use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
 

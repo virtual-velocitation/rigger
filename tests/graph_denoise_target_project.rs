@@ -28,6 +28,7 @@ use rigger::contextgraph::{
     TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use rigger::eventstore::Event;
+use rigger::spawn::SpawnEvent;
 
 /// Fold one event from its raw on-log JSON at `pos`, optionally stamping the acting persona in
 /// `META_ACTOR` (the metadata the conductor puts on every real emit). Bypassing the in-crate

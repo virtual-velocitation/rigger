@@ -12,6 +12,7 @@
 
 use crate::conductor::STREAM;
 use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Position};
+use crate::spawn::SpawnEvent;
 use crate::spawn::{SpawnRequest, SpawnResult};
 
 /// Park `req` as a [`crate::spawn::TYPE_SPAWN_REQUESTED`] event stamped with the run it

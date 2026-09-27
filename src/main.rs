@@ -44,6 +44,7 @@ use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
 use rigger::run_store as runscope_store;
 use rigger::sidecar::{PeerDecision, Sidecar};
+use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, watch};
 

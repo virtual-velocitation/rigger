@@ -22,6 +22,7 @@ use super::{
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
+use crate::spawn::SpawnEvent;
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
 
 const SCHEMA: &str = "

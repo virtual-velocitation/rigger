@@ -6,6 +6,7 @@
 use std::process::Command;
 
 use crate::eventstore::Event;
+use crate::spawn::SpawnEvent;
 
 #[derive(Debug, thiserror::Error)]
 #[error("worktree: {0}")]
@@ -1444,16 +1445,7 @@ fn parse_status_z(out: &str) -> Vec<String> {
 /// refuses on when an escalated unit's recorded branch is gone - "refused with the
 /// branch name and the reflog hint."
 pub fn branch_exists(repo: &str, branch: &str) -> bool {
-    run_git(
-        repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ],
-    )
-    .is_ok()
+    ref_resolves(repo, &format!("refs/heads/{branch}"))
 }
 
 /// The CURRENT tip commit sha of local branch `branch` in `repo`, or an error when the
@@ -1773,14 +1765,13 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
 }
 
 // UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_MUTANTS_PREFIX and
-// unit_mutants_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
+// unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
 // here: `spawn::WaveItem::from` (a PURE fold, part of the `core` lane) needs
 // `unit_cache_sibling`, and this module is `store`-gated (real git/filesystem
 // operations) and excluded from `core`. Re-exported so this module's own ~30 call
 // sites are unaffected.
 pub use crate::spawn::{
-    unit_cache_sibling, unit_mutants_sibling, UNIT_CACHE_PREFIX, UNIT_MUTANTS_PREFIX,
-    UNIT_WORKTREE_PREFIX,
+    unit_cache_sibling, unit_sibling, UNIT_CACHE_PREFIX, UNIT_MUTANTS_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// The shared gate build cache's directory NAME directly under the scratch root (spec 77
@@ -1925,7 +1916,7 @@ fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
     // rather than each needing its own copy. A no-op for anything that owns no such root
     // (mirrors `unit_cache_sibling`'s own `None` cases exactly, since both derive from the
     // same worktree-dir shape).
-    if let Some(mutants) = unit_mutants_sibling(worktree_dir) {
+    if let Some(mutants) = unit_sibling(worktree_dir, UNIT_MUTANTS_PREFIX) {
         reap_dir_before_removal(&mutants, authorized_root);
         let _ = std::fs::remove_dir_all(&mutants);
     }
@@ -2554,10 +2545,17 @@ pub fn reclaim_worktree_on_branch(
 /// tiers actually judged. It is deliberately non-failing - an unresolvable HEAD yields
 /// an empty stamp that the emit path then omits, never an error that fails the run.
 pub fn head_sha_of(dir: &str) -> String {
+    rev_sha_of(dir, "HEAD")
+}
+
+/// The sha `rev` resolves to in `dir`, deliberately non-failing: an empty `dir` (a repo-less /
+/// worktree-less run) or an unresolvable `rev` yields an empty string, never an error. The one
+/// resolver behind [`head_sha_of`] (the COMMIT sha) and the [`HEAD_TREE`] tree address.
+pub fn rev_sha_of(dir: &str, rev: &str) -> String {
     if dir.is_empty() {
         return String::new();
     }
-    run_git(dir, &["rev-parse", "HEAD"])
+    run_git(dir, &["rev-parse", rev])
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
 }
@@ -2571,18 +2569,11 @@ pub fn head_sha_of(dir: &str) -> String {
 /// changed tree misses). It is the whole-tree default; unit 3 narrows the addressed
 /// inputs to a gate's `inputs:` paths.
 ///
-/// Deliberately non-failing, mirroring [`head_sha_of`]: an empty `dir` (a repo-less /
+/// Deliberately non-failing, mirroring [`head_sha_of`] via [`rev_sha_of`]: an empty `dir` (a repo-less /
 /// worktree-less gate run) or an unresolvable HEAD yields an empty string, which the
 /// caller reads as "no tree to address" and simply skips content-addressing - never an
 /// error that fails the run.
-pub fn tree_sha_of(dir: &str) -> String {
-    if dir.is_empty() {
-        return String::new();
-    }
-    run_git(dir, &["rev-parse", "HEAD^{tree}"])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
-}
+pub const HEAD_TREE: &str = "HEAD^{tree}";
 
 fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
@@ -4745,7 +4736,7 @@ mod tests {
 
     #[test]
     fn tree_sha_of_addresses_tree_content_not_the_commit() {
-        // spec 12, unit 1: tree_sha_of is the content address of the committed tree. Two
+        // spec 12, unit 1: the HEAD_TREE sha is the content address of the committed tree. Two
         // DISTINCT commits (different message / parent / time, so a different COMMIT sha)
         // that carry byte-identical trees must yield the SAME tree sha - so a gate re-run
         // over an unchanged input is a cache hit - while a real content change must yield a
@@ -4756,7 +4747,7 @@ mod tests {
         std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
         run_git(&p, &["add", "-A"]).unwrap();
         run_git(&p, &["commit", "-q", "-m", "first"]).unwrap();
-        let t1 = tree_sha_of(&p);
+        let t1 = rev_sha_of(&p, HEAD_TREE);
         assert_eq!(t1.len(), 40, "a git tree sha is 40 hex chars: {t1:?}");
         assert!(t1.chars().all(|c| c.is_ascii_hexdigit()));
 
@@ -4766,7 +4757,7 @@ mod tests {
         run_git(&p, &["commit", "--allow-empty", "-q", "-m", "empty"]).unwrap();
         assert_ne!(head_sha_of(&p), head1, "the commit sha advances");
         assert_eq!(
-            tree_sha_of(&p),
+            rev_sha_of(&p, HEAD_TREE),
             t1,
             "an empty commit leaves the tree bytes unchanged, so the tree sha is stable"
         );
@@ -4776,13 +4767,13 @@ mod tests {
         run_git(&p, &["add", "-A"]).unwrap();
         run_git(&p, &["commit", "-q", "-m", "second"]).unwrap();
         assert_ne!(
-            tree_sha_of(&p),
+            rev_sha_of(&p, HEAD_TREE),
             t1,
             "changed content must change the tree sha"
         );
 
         // A worktree-less (empty) dir yields no address, so the caller skips addressing.
-        assert!(tree_sha_of("").is_empty());
+        assert!(rev_sha_of("", HEAD_TREE).is_empty());
     }
 
     #[test]
@@ -6303,12 +6294,18 @@ mod tests {
         // unit worktree maps to its `cargo-mutants-<slug>` sibling under the SAME parent;
         // anything that is not a unit worktree owns no such root and maps to None.
         assert_eq!(
-            unit_mutants_sibling("/scratch/rigger-wt-unit-7"),
+            unit_sibling("/scratch/rigger-wt-unit-7", UNIT_MUTANTS_PREFIX),
             Some("/scratch/cargo-mutants-unit-7".to_string())
         );
-        assert_eq!(unit_mutants_sibling("/scratch/rigger-review-panel-0"), None);
-        assert_eq!(unit_mutants_sibling("/scratch/cargo-mutants"), None);
-        assert_eq!(unit_mutants_sibling(""), None);
+        assert_eq!(
+            unit_sibling("/scratch/rigger-review-panel-0", UNIT_MUTANTS_PREFIX),
+            None
+        );
+        assert_eq!(
+            unit_sibling("/scratch/cargo-mutants", UNIT_MUTANTS_PREFIX),
+            None
+        );
+        assert_eq!(unit_sibling("", UNIT_MUTANTS_PREFIX), None);
     }
 
     #[test]

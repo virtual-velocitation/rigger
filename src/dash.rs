@@ -3924,6 +3924,7 @@ mod tests {
         TIER_INFERRED,
     };
     use crate::eventstore::Event;
+    use crate::spawn::SpawnEvent;
 
     fn ev(type_: &str, json: &str) -> Event {
         Event::new(type_, json.as_bytes().to_vec())

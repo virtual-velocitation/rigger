@@ -29,6 +29,7 @@ use std::time::{Duration, SystemTime};
 use serde::Deserialize;
 
 use crate::eventstore::{Event, Position, Revision, NO_STREAM};
+use crate::spawn::SpawnEvent;
 use crate::{ledger, spawn};
 
 /// The doc location a STORE INTEGRITY anomaly names for the documented repair

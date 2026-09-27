@@ -56,6 +56,7 @@
 
 mod common;
 
+use rigger::spawn::SpawnEvent;
 use std::time::Duration;
 
 use rigger::eventstore::sqlite::Store;
