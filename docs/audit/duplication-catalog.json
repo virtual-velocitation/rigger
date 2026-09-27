@@ -6239,7 +6239,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-81eaedeb0807",
+    "id": "dup-d818ca2d4c56",
     "classification": "semantic",
     "sites": [
       {
@@ -6269,8 +6269,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "render_recall_gap_history",
-        "content_hash": "a6d99120f29d1d4d"
+        "name": "render_adversarial_sample",
+        "content_hash": "4bacd30be7f09bc4"
       },
       {
         "file": "tests/simplification_audit.rs",
