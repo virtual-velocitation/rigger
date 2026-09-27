@@ -114,3 +114,20 @@ pub fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
         }
     }
 }
+
+/// Every `.rs` file strictly under `dir`, recursively, appended to `out` in deterministic
+/// (sorted) finding order regardless of readdir order; an unreadable directory is skipped.
+pub fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
