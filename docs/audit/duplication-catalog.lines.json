@@ -1194,8 +1194,8 @@
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 578,
-        "end_line": 578
+        "start_line": 610,
+        "end_line": 610
       },
       {
         "file": "tests/validate_advisories.rs",
@@ -6044,13 +6044,13 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 229,
-        "end_line": 229
+        "start_line": 284,
+        "end_line": 284
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 491,
-        "end_line": 491
+        "start_line": 494,
+        "end_line": 494
       },
       {
         "file": "tests/validate_behind_the_tree_periphery.rs",
@@ -7054,8 +7054,8 @@
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 569,
-        "end_line": 586
+        "start_line": 601,
+        "end_line": 618
       },
       {
         "file": "tests/worktree_create_heal_lock_boundary_periphery.rs",
@@ -13209,8 +13209,8 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 256,
-        "end_line": 281
+        "start_line": 311,
+        "end_line": 336
       }
     ]
   },
@@ -14400,36 +14400,6 @@
     ]
   },
   {
-    "id": "dup-d44aa5b306eb",
-    "sites": [
-      {
-        "file": "tests/concepts_labels_membership.rs",
-        "start_line": 129,
-        "end_line": 171
-      },
-      {
-        "file": "tests/concepts_labels_membership.rs",
-        "start_line": 174,
-        "end_line": 205
-      }
-    ]
-  },
-  {
-    "id": "dup-4b1ad528add9",
-    "sites": [
-      {
-        "file": "tests/concepts_labels_membership.rs",
-        "start_line": 255,
-        "end_line": 282
-      },
-      {
-        "file": "tests/concepts_labels_membership.rs",
-        "start_line": 285,
-        "end_line": 310
-      }
-    ]
-  },
-  {
     "id": "dup-4038f4271294",
     "sites": [
       {
@@ -15015,52 +14985,12 @@
     ]
   },
   {
-    "id": "dup-10a4225b14d4",
-    "sites": [
-      {
-        "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 439,
-        "end_line": 448
-      },
-      {
-        "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 611,
-        "end_line": 623
-      }
-    ]
-  },
-  {
-    "id": "dup-9e4bfd54d15a",
-    "sites": [
-      {
-        "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 472,
-        "end_line": 490
-      },
-      {
-        "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 509,
-        "end_line": 538
-      },
-      {
-        "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 551,
-        "end_line": 565
-      },
-      {
-        "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 581,
-        "end_line": 598
-      }
-    ]
-  },
-  {
     "id": "dup-c06e1c41c352",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "start_line": 645,
-        "end_line": 665
+        "start_line": 619,
+        "end_line": 639
       },
       {
         "file": "tests/responsibility_map_contract_periphery.rs",
@@ -17521,106 +17451,6 @@
         "file": "tests/subject_lens_reprojection_contract.rs",
         "start_line": 537,
         "end_line": 568
-      }
-    ]
-  },
-  {
-    "id": "dup-43938b7413a3",
-    "sites": [
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 300,
-        "end_line": 335
-      },
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 353,
-        "end_line": 457
-      },
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 471,
-        "end_line": 511
-      },
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 682,
-        "end_line": 786
-      },
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1225,
-        "end_line": 1355
-      },
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1444,
-        "end_line": 1501
-      },
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1578,
-        "end_line": 1611
-      }
-    ]
-  },
-  {
-    "id": "dup-a854599a6683",
-    "sites": [
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1016,
-        "end_line": 1059
-      },
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1078,
-        "end_line": 1119
-      }
-    ]
-  },
-  {
-    "id": "dup-10ee2edd03ee",
-    "sites": [
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1377,
-        "end_line": 1424
-      },
-      {
-        "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1515,
-        "end_line": 1559
-      }
-    ]
-  },
-  {
-    "id": "dup-15e10e5cf0cb",
-    "sites": [
-      {
-        "file": "tests/validate_advisories.rs",
-        "start_line": 163,
-        "end_line": 188
-      },
-      {
-        "file": "tests/validate_advisories.rs",
-        "start_line": 407,
-        "end_line": 440
-      }
-    ]
-  },
-  {
-    "id": "dup-8605d00c9c2c",
-    "sites": [
-      {
-        "file": "tests/validate_advisories.rs",
-        "start_line": 443,
-        "end_line": 460
-      },
-      {
-        "file": "tests/validate_advisories.rs",
-        "start_line": 463,
-        "end_line": 478
       }
     ]
   },

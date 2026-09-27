@@ -431,20 +431,152 @@ fn no_committed_candidate_comes_from_a_known_out_of_line_test_file() {
     }
 }
 
-/// Round 1 class 2 (attribute token trees are references): `default_build_config` is genuinely
-/// live via `#[serde(default = "default_build_config")]` in `src/config.rs` - round 0 shipped a
-/// false positive (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) that would
-/// have scheduled a real, live function for deletion in the wave.
-#[test]
-fn default_build_config_referenced_only_via_a_serde_default_attribute_is_absent() {
+/// No `(name, file)` of `live` - a `None` file matching the name in any file - is a candidate in
+/// the committed dead-code file; `why` names the fix a listed entry would regress.
+fn assert_absent_from_dead_code(live: &[(&str, Option<&str>)], why: &str) {
     let candidates =
         committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
-    assert!(
-        !candidates.iter().any(|c| c.name == "default_build_config"),
-        "default_build_config appears in {DEAD_CODE_PATH} - a regression of the \
-         attribute-token-tree-reference fix: it is genuinely live via \
-         #[serde(default = \"default_build_config\")] in src/config.rs"
-    );
+    for (name, file) in live {
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.name == *name && file.is_none_or(|f| c.file == f)),
+            "{name} ({file:?}) appears in {DEAD_CODE_PATH} - {why}"
+        );
+    }
+}
+
+rigger::test_cases! {
+    /// Round 1 class 2 (attribute token trees are references): `default_build_config` is genuinely
+    /// live via `#[serde(default = "default_build_config")]` in `src/config.rs` - round 0 shipped a
+    /// false positive (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) that would
+    /// have scheduled a real, live function for deletion in the wave.
+    default_build_config_referenced_only_via_a_serde_default_attribute_is_absent:
+        assert_absent_from_dead_code(
+            &[("default_build_config", None)],
+            "a regression of the attribute-token-tree-reference fix: it is genuinely live via \
+             #[serde(default = \"default_build_config\")] in src/config.rs",
+        );
+    /// Round 2 (`u87c2-round-2-reuse-impl-self-type`, closing round 1's upheld defect
+    /// `sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-impl-generics-reintroduces-false-positives`,
+    /// `adj-u87c2-r1-verdict-reject`): four live, widely-used constructors, each declared inside an
+    /// `impl` block that carries ITS OWN leading generic/lifetime parameters
+    /// (`impl<'a> Namespaced<'a>`, `impl<'a> ReplayDriver<'a>`, `impl<'g> Buckets<'g>`,
+    /// `impl<'a> Server<'a>`), were false-flagged as zero-production-reference dead-code candidates
+    /// in round 1's committed artifact: `impl_assoc_qualifier`'s naive
+    /// `header.split(|c| c == '<' || c.is_whitespace()).next()` returned an EMPTY qualifier for a
+    /// header that starts with `<` itself (the `impl` keyword is never stored in `enclosing_impl`),
+    /// so it could never match the real `Type::name(`-shaped call sites that keep these
+    /// constructors genuinely alive - the exact false-positive-feeds-a-possible-deletion direction
+    /// spec 87's design says must never happen. Checked here by name+file only (not line): the fix
+    /// is about qualifier RESOLUTION, not about any of these four functions' own definition sites,
+    /// so an unrelated future edit that merely moves one within its file must not spuriously fail
+    /// this test.
+    generic_impl_header_constructors_previously_false_flagged_are_absent_from_the_committed_file:
+        assert_absent_from_dead_code(
+            &[
+                ("new", Some("src/eventstore/namespace.rs")), // Namespaced::new
+                ("new", Some("src/driver/replay.rs")),        // ReplayDriver::new
+                ("new", Some("src/dash.rs")),                 // Buckets::new
+                ("new", Some("src/mcpserver.rs")),            // Server::new
+            ],
+            "a regression of the round-2 impl_assoc_qualifier-reuses-impl_self_type fix: this \
+             constructor's enclosing impl block declares its own leading generic/lifetime \
+             parameters, and the pre-fix naive qualifier split returned empty for that header \
+             shape, silently dropping its real qualified call sites and false-flagging it dead",
+        );
+    /// Round 3 (`op-u87c2-round-3-a-reference-is-any-token-not-a-shape`), the 11 entries the
+    /// operator's ruling explicitly named after `adj-u87c2-r2-verdict-reject` upheld
+    /// `sdet-u87c2-r2-fnptr-struct-field-value-is-an-invisible-reference-shape` (a struct-literal
+    /// field VALUE has no reference shape at all) and
+    /// `sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites` (a UFCS
+    /// value on a `Method`-category fn was discarded by `relevant()`'s shape gate even though
+    /// `ref_shapes()` already saw it). Checked by name+file only (not line): the fix is about
+    /// reference RECOGNITION, not about any of these functions' own definition sites, so an
+    /// unrelated future edit that merely moves one within its file must not spuriously fail this
+    /// test.
+    value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from_the_committed_file:
+        assert_absent_from_dead_code(
+            &[
+                // src/docs.rs skill_registry()'s 10 render_body: render_*_skill struct-literal
+                // field values (src/docs.rs:1207-1243) - the fnptr-struct-field-value class.
+                ("render_using_rigger_skill", Some("src/docs.rs")),
+                ("render_planning_a_spec_skill", Some("src/docs.rs")),
+                ("render_reset_store_skill", Some("src/docs.rs")),
+                ("render_build_graph_skill", Some("src/docs.rs")),
+                ("render_reindex_skill", Some("src/docs.rs")),
+                ("render_resume_a_run_skill", Some("src/docs.rs")),
+                ("render_handle_an_escalation_skill", Some("src/docs.rs")),
+                ("render_watch_a_run_skill", Some("src/docs.rs")),
+                ("render_restore_the_dash_skill", Some("src/docs.rs")),
+                ("render_diagnose_churn_skill", Some("src/docs.rs")),
+                // src/config.rs's .map(FailureRuleDef::to_rule) at src/config.rs:766 - the
+                // Method-category-UFCS-value class.
+                ("to_rule", Some("src/config.rs")),
+            ],
+            "a regression of the round-3 any-token-not-a-shape fix: this fn is genuinely \
+             referenced as a value (a struct-literal field value or a UFCS path), a shape no prior \
+             round's scanner recognized as a reference at all",
+        );
+    /// Round 3, mechanism A's GENERALITY: `is_grep_fallback` and `is_snapshot_drift` are two MORE
+    /// real, previously-UNREPORTED instances of the exact same `DispatchCategory::Method`
+    /// UFCS-value-to-a-combinator class `to_rule` was the one reported instance of
+    /// (`sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites`) -
+    /// `src/metrics.rs:1066`'s `.filter(crate::progress::AgentProgress::is_grep_fallback)` and
+    /// `src/metrics.rs:1333`'s `.all(ModelChange::is_snapshot_drift)`, verified by hand against the
+    /// real tree, neither cited in the operator's round-3 ruling or the round-2 upheld findings.
+    /// Their absence here is independent proof the round-3 fix closes the CLASS ("no code decides
+    /// whether an occurrence looks like a call" - `op-u87c2-round-3-a-reference-is-any-token-not-a-
+    /// shape`), not just the one instance every prior round's periphery layer could name.
+    the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances:
+        assert_absent_from_dead_code(
+            &[
+                ("is_grep_fallback", Some("src/progress.rs")),
+                ("is_snapshot_drift", Some("src/metrics.rs")),
+            ],
+            "this is a real, previously-unreported instance of the same Method-category \
+             UFCS-value class the round-3 fix was supposed to close generally, not merely the one \
+             reported instance (to_rule)",
+        );
+    /// Round 3, mechanism B - THE RULE's own explicitly accepted precision trade ("a local variable
+    /// or struct field sharing a fn's bare name now keeps that fn looking alive too - a false
+    /// negative, never a false positive"): `placements` (kept alive by `Appended`'s own
+    /// `self.placements` field access, e.g. `src/eventstore/mod.rs:173`), `written` (kept alive by
+    /// the `written` binding in a `matches!` pattern at `src/watch.rs:528`), and `rules` (kept alive
+    /// by `Taxonomy`'s own `self.rules` field access, e.g. `src/failure.rs:238`) each have NO
+    /// call-shaped production reference of their own - verified by hand, each is provably dead by
+    /// spec 87's own definition, kept off the committed list only by the accepted trade. This test
+    /// exists so the trade stays VISIBLE in the persisted artifact rather than resting only on the
+    /// fix's own prose: a future edit that renamed the colliding field/local without genuinely
+    /// reviving the method would silently reintroduce these as real dead-code candidates, and this
+    /// test would start failing exactly then - a signal, not a bug, but one worth naming rather than
+    /// leaving mute.
+    getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent:
+        assert_absent_from_dead_code(
+            &[
+                ("placements", Some("src/eventstore/mod.rs")),
+                ("written", Some("src/watch.rs")),
+                ("rules", Some("src/failure.rs")),
+            ],
+            "the accepted same-named-field/local false-negative trade \
+             (op-u87c2-round-3-a-reference-is-any-token-not-a-shape) no longer holds for this \
+             entry; either the colliding token was removed (in which case this fn may now be \
+             genuinely dead and belongs on the list with a real disposition) or the rule regressed",
+        );
+    /// Regression pin for the real bug criterion 3 found and fixed while researching dispositions
+    /// (decision `u87c3-self-colon-colon-qualifier-false-positive`, see the module doc comment):
+    /// `DashMarker::parse` (`src/dash.rs:398`) is referenced only via `Self::parse(...)` from its
+    /// own `DashMarker::read`, itself called in real production code (`main.rs:5731/7313/7629`) -
+    /// it must never again appear as a dead-code candidate, which would recommend deleting live
+    /// code.
+    dash_marker_parse_the_self_colon_colon_false_positive_stays_absent:
+        assert_absent_from_dead_code(
+            &[("parse", Some("src/dash.rs"))],
+            "a regression of the Self:: qualifier-attribution fix \
+             (u87c3-self-colon-colon-qualifier-false-positive); it is called from real production \
+             code via Self::parse inside DashMarker::read and must never be recommended for \
+             deletion",
+        );
 }
 
 // -----------------------------------------------------------------------------------------
@@ -453,174 +585,16 @@ fn default_build_config_referenced_only_via_a_serde_default_attribute_is_absent(
 // closes.
 // -----------------------------------------------------------------------------------------
 
-/// Round 2 (`u87c2-round-2-reuse-impl-self-type`, closing round 1's upheld defect
-/// `sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-impl-generics-reintroduces-false-positives`,
-/// `adj-u87c2-r1-verdict-reject`): four live, widely-used constructors, each declared inside an
-/// `impl` block that carries ITS OWN leading generic/lifetime parameters
-/// (`impl<'a> Namespaced<'a>`, `impl<'a> ReplayDriver<'a>`, `impl<'g> Buckets<'g>`,
-/// `impl<'a> Server<'a>`), were false-flagged as zero-production-reference dead-code candidates
-/// in round 1's committed artifact: `impl_assoc_qualifier`'s naive
-/// `header.split(|c| c == '<' || c.is_whitespace()).next()` returned an EMPTY qualifier for a
-/// header that starts with `<` itself (the `impl` keyword is never stored in `enclosing_impl`),
-/// so it could never match the real `Type::name(`-shaped call sites that keep these constructors
-/// genuinely alive - the exact false-positive-feeds-a-possible-deletion direction spec 87's
-/// design says must never happen. Checked here by name+file only (not line): the fix is about
-/// qualifier RESOLUTION, not about any of these four functions' own definition sites, so an
-/// unrelated future edit that merely moves one within its file must not spuriously fail this
-/// test.
-#[test]
-fn generic_impl_header_constructors_previously_false_flagged_are_absent_from_the_committed_file() {
-    let candidates =
-        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
-    for (name, file) in [
-        ("new", "src/eventstore/namespace.rs"), // Namespaced::new
-        ("new", "src/driver/replay.rs"),        // ReplayDriver::new
-        ("new", "src/dash.rs"),                 // Buckets::new
-        ("new", "src/mcpserver.rs"),            // Server::new
-    ] {
-        assert!(
-            !candidates.iter().any(|c| c.name == name && c.file == file),
-            "{name} ({file}) appears in {DEAD_CODE_PATH} - a regression of the round-2 \
-             impl_assoc_qualifier-reuses-impl_self_type fix: this constructor's enclosing impl \
-             block declares its own leading generic/lifetime parameters, and the pre-fix naive \
-             qualifier split returned empty for that header shape, silently dropping its real \
-             qualified call sites and false-flagging it dead"
-        );
-    }
-}
-
 // -----------------------------------------------------------------------------------------
 // ROUND 3: pinning the round-3 "any token, not a shape" fix against the REAL committed file,
 // from outside. See the module doc comment's "ROUND 3 ACCOUNTING" section for the boundary-probe
 // rerun and the two mechanisms these three tests each close.
 // -----------------------------------------------------------------------------------------
 
-/// Round 3 (`op-u87c2-round-3-a-reference-is-any-token-not-a-shape`), the 11 entries the
-/// operator's ruling explicitly named after `adj-u87c2-r2-verdict-reject` upheld
-/// `sdet-u87c2-r2-fnptr-struct-field-value-is-an-invisible-reference-shape` (a struct-literal
-/// field VALUE has no reference shape at all) and
-/// `sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites` (a UFCS
-/// value on a `Method`-category fn was discarded by `relevant()`'s shape gate even though
-/// `ref_shapes()` already saw it). Checked by name+file only (not line): the fix is about
-/// reference RECOGNITION, not about any of these functions' own definition sites, so an
-/// unrelated future edit that merely moves one within its file must not spuriously fail this
-/// test.
-#[test]
-fn value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from_the_committed_file(
-) {
-    let candidates =
-        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
-    for (name, file) in [
-        // src/docs.rs skill_registry()'s 10 render_body: render_*_skill struct-literal field
-        // values (src/docs.rs:1207-1243) - the fnptr-struct-field-value class.
-        ("render_using_rigger_skill", "src/docs.rs"),
-        ("render_planning_a_spec_skill", "src/docs.rs"),
-        ("render_reset_store_skill", "src/docs.rs"),
-        ("render_build_graph_skill", "src/docs.rs"),
-        ("render_reindex_skill", "src/docs.rs"),
-        ("render_resume_a_run_skill", "src/docs.rs"),
-        ("render_handle_an_escalation_skill", "src/docs.rs"),
-        ("render_watch_a_run_skill", "src/docs.rs"),
-        ("render_restore_the_dash_skill", "src/docs.rs"),
-        ("render_diagnose_churn_skill", "src/docs.rs"),
-        // src/config.rs's .map(FailureRuleDef::to_rule) at src/config.rs:766 - the
-        // Method-category-UFCS-value class.
-        ("to_rule", "src/config.rs"),
-    ] {
-        assert!(
-            !candidates.iter().any(|c| c.name == name && c.file == file),
-            "{name} ({file}) appears in {DEAD_CODE_PATH} - a regression of the round-3 \
-             any-token-not-a-shape fix: this fn is genuinely referenced as a value (a \
-             struct-literal field value or a UFCS path), a shape no prior round's scanner \
-             recognized as a reference at all"
-        );
-    }
-}
-
-/// Round 3, mechanism A's GENERALITY: `is_grep_fallback` and `is_snapshot_drift` are two MORE
-/// real, previously-UNREPORTED instances of the exact same `DispatchCategory::Method`
-/// UFCS-value-to-a-combinator class `to_rule` was the one reported instance of
-/// (`sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites`) -
-/// `src/metrics.rs:1066`'s `.filter(crate::progress::AgentProgress::is_grep_fallback)` and
-/// `src/metrics.rs:1333`'s `.all(ModelChange::is_snapshot_drift)`, verified by hand against the
-/// real tree, neither cited in the operator's round-3 ruling or the round-2 upheld findings.
-/// Their absence here is independent proof the round-3 fix closes the CLASS ("no code decides
-/// whether an occurrence looks like a call" - `op-u87c2-round-3-a-reference-is-any-token-not-a-
-/// shape`), not just the one instance every prior round's periphery layer could name.
-#[test]
-fn the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances() {
-    let candidates =
-        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
-    for (name, file) in [
-        ("is_grep_fallback", "src/progress.rs"),
-        ("is_snapshot_drift", "src/metrics.rs"),
-    ] {
-        assert!(
-            !candidates.iter().any(|c| c.name == name && c.file == file),
-            "{name} ({file}) appears in {DEAD_CODE_PATH} - this is a real, previously-unreported \
-             instance of the same Method-category UFCS-value class the round-3 fix was supposed \
-             to close generally, not merely the one reported instance (to_rule)"
-        );
-    }
-}
-
-/// Round 3, mechanism B - THE RULE's own explicitly accepted precision trade ("a local variable
-/// or struct field sharing a fn's bare name now keeps that fn looking alive too - a false
-/// negative, never a false positive"): `placements` (kept alive by `Appended`'s own
-/// `self.placements` field access, e.g. `src/eventstore/mod.rs:173`), `written` (kept alive by
-/// the `written` binding in a `matches!` pattern at `src/watch.rs:528`), and `rules` (kept alive
-/// by `Taxonomy`'s own `self.rules` field access, e.g. `src/failure.rs:238`) each have NO
-/// call-shaped production reference of their own - verified by hand, each is provably dead by
-/// spec 87's own definition, kept off the committed list only by the accepted trade. This test
-/// exists so the trade stays VISIBLE in the persisted artifact rather than resting only on the
-/// fix's own prose: a future edit that renamed the colliding field/local without genuinely
-/// reviving the method would silently reintroduce these as real dead-code candidates, and this
-/// test would start failing exactly then - a signal, not a bug, but one worth naming rather than
-/// leaving mute.
-#[test]
-fn getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent() {
-    let candidates =
-        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
-    for (name, file) in [
-        ("placements", "src/eventstore/mod.rs"),
-        ("written", "src/watch.rs"),
-        ("rules", "src/failure.rs"),
-    ] {
-        assert!(
-            !candidates.iter().any(|c| c.name == name && c.file == file),
-            "{name} ({file}) appears in {DEAD_CODE_PATH} - the accepted same-named-field/local \
-             false-negative trade (op-u87c2-round-3-a-reference-is-any-token-not-a-shape) no \
-             longer holds for this entry; either the colliding token was removed (in which case \
-             this fn may now be genuinely dead and belongs on the list with a real disposition) \
-             or the rule regressed"
-        );
-    }
-}
-
 // -----------------------------------------------------------------------------------------
 // A scanner false positive found while researching the ledger, pinned against the committed
 // artifact.
 // -----------------------------------------------------------------------------------------
-
-/// Regression pin for the real bug criterion 3 found and fixed while researching dispositions
-/// (decision `u87c3-self-colon-colon-qualifier-false-positive`, see the module doc comment):
-/// `DashMarker::parse` (`src/dash.rs:398`) is referenced only via `Self::parse(...)` from its own
-/// `DashMarker::read`, itself called in real production code (`main.rs:5731/7313/7629`) - it must
-/// never again appear as a dead-code candidate, which would recommend deleting live code.
-#[test]
-fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
-    let candidates =
-        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
-    assert!(
-        !candidates
-            .iter()
-            .any(|c| c.name == "parse" && c.file == "src/dash.rs"),
-        "src/dash.rs's parse (DashMarker::parse) appears in {DEAD_CODE_PATH} - a regression of \
-         the Self:: qualifier-attribution fix (u87c3-self-colon-colon-qualifier-false-positive); \
-         it is called from real production code via Self::parse inside DashMarker::read and must \
-         never be recommended for deletion"
-    );
-}
 
 // -----------------------------------------------------------------------------------------
 // Spec 90 criterion 2, THE DRIFT GUARD IS LINE-FREE: CLAIM 4 ("the report still cites
