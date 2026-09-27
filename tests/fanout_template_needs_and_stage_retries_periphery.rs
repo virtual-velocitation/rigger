@@ -754,14 +754,11 @@ fn land_real_unit(root: &Path, unit: &str) {
     assert!(ok, "recording {unit}'s result must succeed; stderr: {err}");
 }
 
-/// checkin's needs edge must NEVER become satisfied while ANY live real-split sibling has
-/// not integrated - even after its `BTreeMap`-key-first sibling (`split-a-1`, which sorts
-/// before `split-a-2`) has ALREADY integrated through a real git merge. Proves the round-3
-/// fix's early-satisfaction direction (`sdet-u91c1-r2-confirms-split-sibling-orphan`'s exact
-/// repro) through a real multi-step `rigger step` process and real git merges, not a
-/// hand-built map in one call.
-#[test]
-fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet() {
+/// A real 2-way split of `SPLIT_CRITERION`'s baseline (`split-a-2` gated `gate_a2`), stepped to
+/// where the BTreeMap-key-first sibling `split-a-1` (which sorts before `split-a-2`, the exact
+/// one round 2's `.find()` locked onto) has integrated through a real git merge while
+/// `split-a-2` has posted no result - checkin appearing at no point along the way.
+fn a_split_with_only_its_first_sibling_integrated(gate_a2: &str) -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_split_fanout_workflow(root);
@@ -780,8 +777,9 @@ fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_
         "neither split sibling nor checkin exists before the planner proposes; got:\n{out}"
     );
 
-    // A REAL split: both siblings pass "ok", from the SAME plan episode.
-    propose_real_split(root, "ok", "ok");
+    // A REAL split: split-a-1 passes "ok", split-a-2 runs `gate_a2`, both from the SAME
+    // plan episode.
+    propose_real_split(root, "ok", gate_a2);
 
     // Step 2: plan's own real (empty) worktree merges trivially and integrates; BOTH real
     // split siblings are now live (superseding the deterministic baseline) and ready - both
@@ -801,32 +799,17 @@ fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_
          got:\n{out}"
     );
 
-    // Land ONLY split-a-1 for real - the BTreeMap-key-first sibling (alphabetically
-    // first), the exact one round 2's `.find()` locked onto.
-    let wt_a1 = common::default_scratch_root(root).join("rigger-wt-split-a-1");
-    assert!(
-        wt_a1.exists(),
-        "split-a-1 must already have its real worktree on disk: {}",
-        wt_a1.display()
-    );
-    std::fs::write(wt_a1.join("a1.rs"), "pub fn a1() {}\n").unwrap();
-    let (_o, err, ok) = run_rigger(
-        root,
-        &["result", "split-a-1/implementer#0", "landed split a1"],
-    );
-    assert!(
-        ok,
-        "recording split-a-1's result must succeed; stderr: {err}"
-    );
+    // Land ONLY split-a-1 for real.
+    land_real_unit(root, "split-a-1");
 
     // Step 3: split-a-1's real merge lands (Integrated); split-a-2 has posted no result yet
-    // and stays outstanding. THE ASSERTION THAT WAS RED before the round-3 fix: checkin
-    // must NOT appear even though the BTreeMap-key-first sibling has genuinely integrated
-    // through a real git merge - its real-split partner has not.
+    // and stays outstanding, so checkin must NOT appear even though the BTreeMap-key-first
+    // sibling has genuinely integrated through a real git merge - its real-split partner
+    // has not.
     let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
     assert!(ok, "step 3 must succeed; stderr:\n{err}");
     assert!(
-        root.join("a1.rs").exists(),
+        root.join("split_a_1.rs").exists(),
         "split-a-1's real merge must have actually landed its file on the base"
     );
     assert!(
@@ -836,30 +819,29 @@ fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_
          the BTreeMap-key-first sibling, has genuinely integrated through a real git merge; \
          got:\n{out}"
     );
+    dir
+}
+
+/// checkin's needs edge must NEVER become satisfied while ANY live real-split sibling has
+/// not integrated - even after its `BTreeMap`-key-first sibling (`split-a-1`, which sorts
+/// before `split-a-2`) has ALREADY integrated through a real git merge. Proves the round-3
+/// fix's early-satisfaction direction (`sdet-u91c1-r2-confirms-split-sibling-orphan`'s exact
+/// repro) through a real multi-step `rigger step` process and real git merges, not a
+/// hand-built map in one call.
+#[test]
+fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet() {
+    let dir = a_split_with_only_its_first_sibling_integrated("ok");
+    let root = dir.path();
 
     // Land split-a-2 too, the same way.
-    let wt_a2 = common::default_scratch_root(root).join("rigger-wt-split-a-2");
-    assert!(
-        wt_a2.exists(),
-        "split-a-2 must already have its real worktree on disk: {}",
-        wt_a2.display()
-    );
-    std::fs::write(wt_a2.join("a2.rs"), "pub fn a2() {}\n").unwrap();
-    let (_o, err, ok) = run_rigger(
-        root,
-        &["result", "split-a-2/implementer#0", "landed split a2"],
-    );
-    assert!(
-        ok,
-        "recording split-a-2's result must succeed; stderr: {err}"
-    );
+    land_real_unit(root, "split-a-2");
 
     // Step 4: split-a-2's real merge lands too. NOW every live owner of the criterion has
     // integrated, so checkin's needs edge is satisfied and its own implementer parks.
     let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
     assert!(ok, "step 4 must succeed; stderr:\n{err}");
     assert!(
-        root.join("a2.rs").exists(),
+        root.join("split_a_2.rs").exists(),
         "split-a-2's real merge must have actually landed its file on the base"
     );
     assert!(
@@ -877,53 +859,9 @@ fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_
 /// escalation, never a hand-built terminal set in one call.
 #[test]
 fn checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_instead() {
-    let dir = temp_git_project_with_commit();
+    // split-a-2's gate always fails ("bad").
+    let dir = a_split_with_only_its_first_sibling_integrated("bad");
     let root = dir.path();
-    write_split_fanout_workflow(root);
-    write_split_criterion_spec(root);
-
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 1 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"plan/implementer#0""#),
-        "plan must park first; got:\n{out}"
-    );
-
-    // A REAL split: split-a-1 passes "ok"; split-a-2's gate always fails ("bad").
-    propose_real_split(root, "ok", "bad");
-
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 2 must succeed; stderr:\n{err}");
-    for id in ["split-a-1/implementer#0", "split-a-2/implementer#0"] {
-        assert!(
-            out.contains(&format!(r#""id":"{id}""#)),
-            "both real split siblings must park together; got:\n{out}"
-        );
-    }
-
-    let wt_a1 = common::default_scratch_root(root).join("rigger-wt-split-a-1");
-    std::fs::write(wt_a1.join("a1.rs"), "pub fn a1() {}\n").unwrap();
-    let (_o, err, ok) = run_rigger(
-        root,
-        &["result", "split-a-1/implementer#0", "landed split a1"],
-    );
-    assert!(
-        ok,
-        "recording split-a-1's result must succeed; stderr: {err}"
-    );
-
-    // Step 3: split-a-1's real merge lands (Integrated); split-a-2 has posted no result yet.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 3 must succeed; stderr:\n{err}");
-    assert!(
-        root.join("a1.rs").exists(),
-        "split-a-1's real merge must have actually landed its file on the base"
-    );
-    assert!(
-        !out.contains("checkin"),
-        "checkin must not appear while split-a-2 is still outstanding, even though \
-         split-a-1 has genuinely integrated; got:\n{out}"
-    );
 
     let (_o, err, ok) = run_rigger(
         root,
@@ -958,7 +896,7 @@ fn checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_inst
          real git merge; got:\n{out}"
     );
     assert!(
-        !root.join("a2.rs").exists(),
+        !root.join("split_a_2.rs").exists(),
         "split-a-2 escalated without ever merging - its file must never have landed"
     );
 }
@@ -1174,32 +1112,33 @@ fn checkin_integrates_after_a_same_id_refine_is_later_superseded_by_a_distinct_p
 // loop - proven in both directions (lowering and raising the effective bound).
 // -----------------------------------------------------------------------------------------
 
-/// `defaults.max_retries: 5` (generous) but the stage itself sets `max_retries: 1` - the
-/// unit must escalate on its FIRST failed attempt, exactly as if the run-wide default were
-/// 1, never surviving to a second attempt the way a plain (unoverridden) default of 5
-/// would allow. Proves the YAML-parsed stage-level key genuinely LOWERS the effective
-/// bound below a higher run default, through the real remediation loop.
-#[test]
-fn a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default() {
+/// A repoless `solo` stage whose always-failing gate runs under `defaults.max_retries:
+/// {default}` but the stage's own YAML `max_retries: {stage}`: the unit must park and fail
+/// exactly `stage` attempts, retrying (a fresh attempt parks, no escalation) after every
+/// failure but the last, and escalate on that last one - through the real remediation loop's
+/// spawn/gate/retry cycle, never merely the pure `max_retries_for` arithmetic.
+fn a_stages_own_max_retries_bounds_the_attempts(default: u32, stage: u32) {
     let dir = temp_repoless_project();
     let root = dir.path();
     write_worker_agent(root, REPOLESS_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        r#"name: stagemaxretrieslowertest
+        format!(
+            r#"name: stagemaxretriestest
 defaults:
   grounder: nop
   budget: 60
-  max_retries: 5
+  max_retries: {default}
 gates:
-  bad: { run: "false", kind: core }
+  bad: {{ run: "false", kind: core }}
 stages:
   solo:
     agent: worker
     gates: [bad]
     on_pass: none
-    max_retries: 1
-"#,
+    max_retries: {stage}
+"#
+        ),
     )
     .unwrap();
 
@@ -1207,118 +1146,56 @@ stages:
     assert!(ok, "the first step must succeed; stderr:\n{err}");
     assert!(
         out.contains(r#""id":"solo/implementer#0""#) && !out.contains("escalated"),
-        "the first step only parks the implementer; got:\n{out}"
+        "the first step only parks attempt 0; got:\n{out}"
     );
 
-    seed_run_events(
-        root,
-        &[(
-            "SpawnResult",
-            r#"{"id":"solo/implementer#0","output":"attempted"}"#,
-        )],
-    );
-
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok,
-        "a step that reaches an escalated fixpoint still exits 0; stderr:\n{err}"
-    );
-    assert!(
-        out.contains(r#""escalated":["solo"]"#),
-        "the stage's own max_retries: 1, parsed from real workflow.yml text, must \
-         override the run-wide defaults.max_retries: 5 and escalate on the FIRST failed \
-         attempt - a plain default of 5 would instead retry here; got:\n{out}"
-    );
+    for attempt in 0..stage {
+        seed_run_events(
+            root,
+            &[(
+                "SpawnResult",
+                &format!(r#"{{"id":"solo/implementer#{attempt}","output":"attempted"}}"#),
+            )],
+        );
+        let (out, err, ok) = run_rigger(root, &["step"]);
+        assert!(
+            ok,
+            "every step, an escalated fixpoint included, exits 0; stderr:\n{err}"
+        );
+        let next = attempt + 1;
+        if next < stage {
+            assert!(
+                out.contains(&format!(r#""id":"solo/implementer#{next}""#))
+                    && !out.contains("escalated"),
+                "with the stage's own max_retries: {stage} in force, failure {next} must \
+                 RETRY (a fresh attempt {next} parks) rather than escalate - the run-wide \
+                 default of {default} does not govern this stage; got:\n{out}"
+            );
+        } else {
+            assert!(
+                out.contains(r#""escalated":["solo"]"#),
+                "failure {next} must escalate, exactly matching the stage's own \
+                 max_retries: {stage} parsed from real workflow.yml text (never the run-wide \
+                 default of {default}); got:\n{out}"
+            );
+        }
+    }
 }
 
-/// `defaults.max_retries: 1` (which alone would escalate on the first failed attempt, per
-/// `write_failing_gate_escalating_workflow`'s own established shape in `tests/cli.rs`) but
-/// the stage itself sets `max_retries: 3` - the unit must survive TWO failed attempts,
-/// escalating only on the third. Proves the YAML-parsed stage-level key genuinely RAISES
-/// the effective bound above a lower run default, through the real remediation loop's
-/// repeated spawn/gate/retry cycle (never merely the pure `max_retries_for` arithmetic).
-#[test]
-fn a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default() {
-    let dir = temp_repoless_project();
-    let root = dir.path();
-    write_worker_agent(root, REPOLESS_WORKER);
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        r#"name: stagemaxretriesraisetest
-defaults:
-  grounder: nop
-  budget: 60
-  max_retries: 1
-gates:
-  bad: { run: "false", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [bad]
-    on_pass: none
-    max_retries: 3
-"#,
-    )
-    .unwrap();
-
-    // Attempt 0: park, fail, and - because the stage's max_retries: 3 overrides the
-    // run-wide default of 1 - RETRY (attempt 1) rather than escalate.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "step 1 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#),
-        "step 1 parks attempt 0; got:\n{out}"
-    );
-    seed_run_events(
-        root,
-        &[(
-            "SpawnResult",
-            r#"{"id":"solo/implementer#0","output":"attempted"}"#,
-        )],
-    );
-
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "step 2 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#1""#) && !out.contains("escalated"),
-        "with the stage's own max_retries: 3 in force, the first failure must RETRY (a \
-         fresh attempt 1 parks) rather than escalate - a plain default of 1 would have \
-         already escalated here; got:\n{out}"
-    );
-
-    // Attempt 1: fail again, RETRY again (attempts so far: 2 < 3).
-    seed_run_events(
-        root,
-        &[(
-            "SpawnResult",
-            r#"{"id":"solo/implementer#1","output":"attempted"}"#,
-        )],
-    );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "step 3 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#2""#) && !out.contains("escalated"),
-        "the second failure must still retry (attempts so far: 2 < the stage's own bound \
-         of 3) - a fresh attempt 2 parks, still no escalation; got:\n{out}"
-    );
-
-    // Attempt 2: fail a third time - attempts now reach 3, meeting the stage's own bound,
-    // so this failure finally escalates.
-    seed_run_events(
-        root,
-        &[(
-            "SpawnResult",
-            r#"{"id":"solo/implementer#2","output":"attempted"}"#,
-        )],
-    );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok,
-        "a step that reaches an escalated fixpoint still exits 0; stderr:\n{err}"
-    );
-    assert!(
-        out.contains(r#""escalated":["solo"]"#),
-        "the THIRD failed attempt must finally escalate, exactly matching the stage's own \
-         max_retries: 3 (never the run-wide default of 1); got:\n{out}"
-    );
+rigger::test_cases! {
+    /// `defaults.max_retries: 5` (generous) but the stage itself sets `max_retries: 1` - the
+    /// unit must escalate on its FIRST failed attempt, exactly as if the run-wide default were
+    /// 1, never surviving to a second attempt the way a plain (unoverridden) default of 5
+    /// would allow. Proves the YAML-parsed stage-level key genuinely LOWERS the effective
+    /// bound below a higher run default, through the real remediation loop.
+    a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default:
+        a_stages_own_max_retries_bounds_the_attempts(5, 1);
+    /// `defaults.max_retries: 1` (which alone would escalate on the first failed attempt, per
+    /// `write_failing_gate_escalating_workflow`'s own established shape in `tests/cli.rs`) but
+    /// the stage itself sets `max_retries: 3` - the unit must survive TWO failed attempts,
+    /// escalating only on the third. Proves the YAML-parsed stage-level key genuinely RAISES
+    /// the effective bound above a lower run default, through the real remediation loop's
+    /// repeated spawn/gate/retry cycle (never merely the pure `max_retries_for` arithmetic).
+    a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default:
+        a_stages_own_max_retries_bounds_the_attempts(1, 3);
 }
