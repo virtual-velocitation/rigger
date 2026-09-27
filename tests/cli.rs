@@ -25474,10 +25474,9 @@ fn mcp_spawn_scratch_tool_agrees_byte_for_byte_with_rigger_scratch() {
     );
 }
 
-/// Pipe `payload` into `rigger <args>` (a Claude Code hook verb) run from `cwd`: it must
-/// always exit 0 for a well-formed invocation - the decision rides in the JSON body - and
-/// print one JSON object, returned.
-fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value {
+/// Run `rigger <args>` from `cwd` with `stdin` piped in, returning its whole output whatever its
+/// exit status.
+fn pipe_into_rigger(cwd: &Path, args: &[&str], stdin: &[u8]) -> std::process::Output {
     use std::io::Write;
     use std::process::Stdio;
 
@@ -25490,15 +25489,18 @@ fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value 
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("spawn rigger {verb}: {e}"));
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
     child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(payload.as_bytes())
-        .unwrap();
-    let out = child
         .wait_with_output()
-        .unwrap_or_else(|e| panic!("rigger {verb} must exit: {e}"));
+        .unwrap_or_else(|e| panic!("rigger {verb} must exit: {e}"))
+}
+
+/// Pipe `payload` into `rigger <args>` (a Claude Code hook verb) run from `cwd`: it must
+/// always exit 0 for a well-formed invocation - the decision rides in the JSON body - and
+/// print one JSON object, returned.
+fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value {
+    let verb = args[0];
+    let out = pipe_into_rigger(cwd, args, payload.as_bytes());
     assert!(
         out.status.success(),
         "rigger {verb} must always exit 0 for a well-formed invocation (the decision rides in \
@@ -25507,6 +25509,20 @@ fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value 
     );
     serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("{verb} must print one JSON object: {e}"))
+}
+
+/// `rigger <args>` fed `stdin` must exit the Claude-Code-documented BLOCKING code (2) - never a
+/// merely-nonzero exit, which Claude Code treats as NON-blocking and lets the write proceed.
+/// `why` names the failure.
+fn assert_blocks(args: &[&str], stdin: &[u8], why: &str) {
+    let cwd_dir = temp_project();
+    let out = pipe_into_rigger(cwd_dir.path(), args, stdin);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{why} must exit the BLOCKING code (2); stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
@@ -25807,27 +25823,10 @@ fn guard_write_covers_notebook_edit_and_ignores_other_tools() {
 /// name claims to prove, so it must check the actual code, not just its sign.
 #[test]
 fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let cwd_dir = temp_project();
-    let mut cmd = common::rigger_courier();
-    cmd.arg("guard-write")
-        .current_dir(cwd_dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger guard-write");
-    child.stdin.take().unwrap().write_all(b"{}").unwrap();
-    let out = child
-        .wait_with_output()
-        .expect("rigger guard-write must exit");
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "guard-write with no --root must exit the BLOCKING code (2), never silently allow \
-         every write via a non-blocking exit; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+    assert_blocks(
+        &["guard-write"],
+        b"{}",
+        "guard-write with no --root (never silently allowing every write)",
     );
 }
 
@@ -25839,30 +25838,8 @@ fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
 /// an exit-0 deny body, proven by `guard_write_denies_every_malformed_payload_shape_completely`).
 #[test]
 fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let cwd_dir = temp_project();
-
     // A dangling `--root` flag with no directory following it.
-    let mut cmd = common::rigger_courier();
-    cmd.arg("guard-write")
-        .arg("--root")
-        .current_dir(cwd_dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger guard-write");
-    child.stdin.take().unwrap().write_all(b"{}").unwrap();
-    let out = child
-        .wait_with_output()
-        .expect("rigger guard-write must exit");
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "a dangling --root flag must exit the BLOCKING code (2); stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_blocks(&["guard-write", "--root"], b"{}", "a dangling --root flag");
 
     // Invalid-UTF-8 stdin: `read_to_string` itself fails, a transport failure distinct
     // from an unparseable-but-valid-UTF-8 JSON payload.
@@ -25872,30 +25849,10 @@ fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
         .to_str()
         .unwrap()
         .to_string();
-    let mut cmd = common::rigger_courier();
-    cmd.arg("guard-write")
-        .arg("--root")
-        .arg(&root_str)
-        .current_dir(cwd_dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger guard-write");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&[0xFF, 0xFE, 0xFD])
-        .unwrap();
-    let out = child
-        .wait_with_output()
-        .expect("rigger guard-write must exit");
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "invalid-UTF-8 stdin must exit the BLOCKING code (2), never fall through to a \
-         non-blocking exit that lets the write proceed; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+    assert_blocks(
+        &["guard-write", "--root", &root_str],
+        &[0xFF, 0xFE, 0xFD],
+        "invalid-UTF-8 stdin (never falling through to a non-blocking exit)",
     );
 }
 

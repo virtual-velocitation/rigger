@@ -1872,7 +1872,7 @@ mandatory sweep: Command::new call sites - 89 site(s), collected mechanically re
 - `tests/cli.rs:19079-19079` `Command::new`
 - `tests/cli.rs:19154-19154` `Command::new`
 - `tests/cli.rs:19253-19253` `Command::new`
-- `tests/cli.rs:26468-26468` `Command::new`
+- `tests/cli.rs:26425-26425` `Command::new`
 - `tests/common/cli.rs:18-18` `Command::new`
 - `tests/common/cli.rs:54-54` `Command::new`
 - `tests/common/cli.rs:177-177` `Command::new`
@@ -3011,20 +3011,20 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/cli.rs:25228-25228` `".rigger"`
 - `tests/cli.rs:25253-25253` `".rigger"`
 - `tests/cli.rs:25348-25348` `".rigger"`
-- `tests/cli.rs:25569-25569` `".rigger"`
-- `tests/cli.rs:26089-26089` `"the hook must be inert on a project without .rigger/; got:\n{out}"`
-- `tests/cli.rs:26095-26095` `".rigger"`
-- `tests/cli.rs:26114-26114` `".rigger"`
-- `tests/cli.rs:26140-26140` `".rigger"`
-- `tests/cli.rs:26176-26176` `".rigger"`
-- `tests/cli.rs:26215-26215` `".rigger"`
-- `tests/cli.rs:26419-26419` `".rigger"`
-- `tests/cli.rs:26458-26458` `".rigger"`
-- `tests/cli.rs:26610-26610` `".rigger"`
-- `tests/cli.rs:26783-26783` `".rigger"`
-- `tests/cli.rs:26832-26832` `".rigger"`
-- `tests/cli.rs:26863-26863` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:26867-26867` `".rigger/instructions/README.md"`
+- `tests/cli.rs:25585-25585` `".rigger"`
+- `tests/cli.rs:26046-26046` `"the hook must be inert on a project without .rigger/; got:\n{out}"`
+- `tests/cli.rs:26052-26052` `".rigger"`
+- `tests/cli.rs:26071-26071` `".rigger"`
+- `tests/cli.rs:26097-26097` `".rigger"`
+- `tests/cli.rs:26133-26133` `".rigger"`
+- `tests/cli.rs:26172-26172` `".rigger"`
+- `tests/cli.rs:26376-26376` `".rigger"`
+- `tests/cli.rs:26415-26415` `".rigger"`
+- `tests/cli.rs:26567-26567` `".rigger"`
+- `tests/cli.rs:26740-26740` `".rigger"`
+- `tests/cli.rs:26789-26789` `".rigger"`
+- `tests/cli.rs:26820-26820` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:26824-26824` `".rigger/instructions/README.md"`
 - `tests/common/cli.rs:155-155` `".rigger"`
 - `tests/common/cli.rs:166-166` `".rigger"`
 - `tests/common/cli.rs:187-187` `".rigger"`
@@ -4574,7 +4574,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:23658-23680` `prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions`
 - `tests/cli.rs:24046-24055` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
 - `tests/cli.rs:25289-25321` `mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments`
-- `tests/cli.rs:26857-26877` `init_scaffolds_the_instructions_readme_and_names_it`
+- `tests/cli.rs:26814-26834` `init_scaffolds_the_instructions_readme_and_names_it`
 - `tests/reset_build_cache_periphery.rs:103-129` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
 - `tests/reset_build_cache_periphery.rs:167-177` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
 - `tests/reset_derived_live_writer_guard_periphery.rs:566-576` `reset_force_live_alone_is_refused_as_no_mode`
@@ -4639,7 +4639,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:16741-16771` `docs_ships_three_verb_lookup_guidance_to_consumers`
-- `tests/cli.rs:26657-26704` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
+- `tests/cli.rs:26614-26661` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
 
 #### `dup-21b08556e493` (exact, 2 sites)
 
@@ -5059,7 +5059,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 6797 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 6799 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `src/canary.rs:125-161` `from_event` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/canary.rs:206-227` `from_event` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5081,8 +5081,8 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `tests/cli.rs:10348-10372` `workflow_accepts_a_spec_and_a_base_flag` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/cli.rs:11910-11929` `validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/cli.rs:18716-18820` `setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/cli.rs:25677-25697` `guard_write_under_a_root` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/cli.rs:25841-25900` `guard_write_exits_the_blocking_code_on_every_transport_failure` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/cli.rs:25693-25713` `guard_write_under_a_root` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/cli.rs:25840-25857` `guard_write_exits_the_blocking_code_on_every_transport_failure` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/common/audit_record.rs:7-11` `read_audit_record` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/compiler_pass_stage1_audit.rs:50-104` `stage1_record_has_the_shape_every_consumer_relies_on` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/concepts_labels_membership.rs:245-272` `label_of_the_documentless_hub` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
