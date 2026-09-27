@@ -11108,3 +11108,150 @@ mod tests {
         );
     }
 }
+
+// =========================================================================================
+// CONFIG KEYS WITH NO EFFECT: every configurable key has a production reader
+// =========================================================================================
+
+/// A config key is honoured by code or it does not exist: the workflow schema rejects unknown
+/// keys (spec 102), so a key nothing reads is a lie the config tells the operator. This gate
+/// fails when a field of any `Deserialize` struct in [`CONFIG_SCHEMA_FILE`] (the workflow schema
+/// tree and the `AgentDef` frontmatter) has no production `.field` read anywhere in the
+/// workspace's production source, outside every test region.
+///
+/// DISCLOSED LIMIT: the match is by field NAME, not by receiver type, so a field that shares
+/// its name with another type's read field (`name`, `kind`, `run`) reads as honoured. That is
+/// the conservative direction (a dead key can slip through, a live key is never flagged).
+mod config_key_readers {
+    use super::*;
+
+    /// The file that declares the configurable schema.
+    const CONFIG_SCHEMA_FILE: &str = "src/config.rs";
+
+    /// `Struct.field` entries exempt from the reader gate. Must stay EMPTY: a key without a
+    /// reader is wired or deleted, never allowlisted.
+    const UNREAD_KEY_ALLOWLIST: &[&str] = &[];
+
+    /// Every configurable field of every top-level `#[derive(.. Deserialize ..)]` struct in
+    /// `content`, as `(struct, field)`. A `#[serde(skip)]` field is runtime state, never a key,
+    /// and is left out; an indented (test-module) struct is not part of the schema.
+    pub(super) fn schema_fields(content: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut derives_deserialize = false;
+        let mut current: Option<String> = None;
+        let mut skip_next = false;
+        for line in content.lines() {
+            if let Some(name) = current.as_ref() {
+                if line == "}" {
+                    current = None;
+                    continue;
+                }
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("#[serde(") && trimmed.contains("skip)") {
+                    skip_next = true;
+                } else if let Some(rest) = line.strip_prefix("    pub ") {
+                    if let Some((field, _)) = rest.split_once(':') {
+                        if !skip_next {
+                            out.push((name.clone(), field.trim().to_string()));
+                        }
+                    }
+                    skip_next = false;
+                }
+                continue;
+            }
+            if line.starts_with("#[derive(") {
+                derives_deserialize = line.contains("Deserialize");
+            } else if let Some(rest) = line.strip_prefix("pub struct ") {
+                if derives_deserialize && line.ends_with('{') {
+                    let name: String = rest.chars().take_while(|c| is_ident_char(*c)).collect();
+                    current = Some(name);
+                }
+                derives_deserialize = false;
+            } else if !(line.starts_with("#[") || line.starts_with("///")) {
+                derives_deserialize = false;
+            }
+        }
+        out
+    }
+
+    /// Every `Struct.field` among `fields` with no production `.field` read in `files`.
+    pub(super) fn unread_fields(
+        files: &[FileScan],
+        whole_file_test: &BTreeSet<String>,
+        fields: &[(String, String)],
+    ) -> Vec<String> {
+        let idx = all_ident_ref_sites(files, whole_file_test);
+        let tokens: HashMap<&str, &[RawTok]> = files
+            .iter()
+            .map(|f| (f.rel.as_str(), f.tokens.as_slice()))
+            .collect();
+        fields
+            .iter()
+            .filter(|(_, field)| {
+                !idx.get(field).is_some_and(|sites| {
+                    sites.iter().any(|s| {
+                        s.production
+                            && !s.via_attribute
+                            && s.tok_idx > 0
+                            && ref_punct(tokens[s.file.as_str()].get(s.tok_idx - 1), ".")
+                    })
+                })
+            })
+            .map(|(st, field)| format!("{st}.{field}"))
+            .collect()
+    }
+
+    #[test]
+    fn schema_fields_skip_runtime_state_and_test_structs() {
+        let src = "#[derive(Clone, Deserialize)]\n\
+                   #[serde(deny_unknown_fields)]\n\
+                   pub struct Keys {\n    \
+                   #[serde(default)]\n    \
+                   pub budget: u32,\n    \
+                   /// Runtime state.\n    \
+                   #[serde(skip)]\n    \
+                   pub baseline: bool,\n\
+                   }\n\
+                   #[derive(Clone)]\n\
+                   pub struct NotConfig {\n    \
+                   pub other: u32,\n\
+                   }\n\
+                   mod tests {\n    \
+                   #[derive(Deserialize)]\n    \
+                   pub struct Inner {\n        \
+                   pub nested: u32,\n    \
+                   }\n\
+                   }\n";
+        assert_eq!(
+            schema_fields(src),
+            [("Keys".to_string(), "budget".to_string())]
+        );
+    }
+
+    #[test]
+    fn every_config_key_has_a_production_reader() {
+        assert!(
+            UNREAD_KEY_ALLOWLIST.is_empty(),
+            "the unread-key allowlist must be empty - wire or delete each key: {UNREAD_KEY_ALLOWLIST:?}"
+        );
+        let content = fs::read_to_string(repo_root().join(CONFIG_SCHEMA_FILE))
+            .unwrap_or_else(|e| panic!("cannot read {CONFIG_SCHEMA_FILE}: {e}"));
+        let fields = schema_fields(&content);
+        assert!(
+            fields.iter().any(|(s, f)| s == "Defaults" && f == "budget")
+                && fields.iter().any(|(s, f)| s == "AgentDef" && f == "model"),
+            "the schema scan must find the known Defaults and AgentDef keys: {fields:?}"
+        );
+        let unread: Vec<String> =
+            unread_fields(real_workspace_files(), real_whole_file_test_set(), &fields)
+                .into_iter()
+                .filter(|k| !UNREAD_KEY_ALLOWLIST.contains(&k.as_str()))
+                .collect();
+        assert!(
+            unread.is_empty(),
+            "every config key must change behaviour through a production reader - wire each of \
+             these or delete it from the schema, the scaffold, the workflow and the docs:\n{}",
+            unread.join("\n")
+        );
+    }
+}
