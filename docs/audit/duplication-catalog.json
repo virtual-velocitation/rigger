@@ -6085,24 +6085,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-92990cd0f20c",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "the_adversarys_spawn_is_stamped_with_the_units_lens_roster",
-        "content_hash": "d2c111643092aa1b"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary",
-        "content_hash": "d53c6b0b096f8341"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-cd30ba0dffbb",
     "classification": "near",
     "sites": [
@@ -6118,24 +6100,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, tests/postmerge_gate_error_cleanup_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-44ca3a4cb3cf",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park",
-        "content_hash": "1a60347faa587fef"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume",
-        "content_hash": "005ac7c2a81faade"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -6159,24 +6123,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 3 files: src/conductor.rs, tests/review_round_speculation_winner_merge_round_start_sha_periphery.rs, tests/review_round_speculation_winner_no_merge_round_start_sha_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-f0d07a9224f8",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "agent_stage_runs_the_per_unit_lifecycle_not_the_fan_out_path",
-        "content_hash": "2506159f4d78526c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "standalone_review_stage_still_takes_the_fan_out_path",
-        "content_hash": "69db4f0539612aa0"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -6231,24 +6177,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-8d4e1d3b4f02",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "commits_to_compensate_reverts_every_sha_a_multi_commit_landing_recorded",
-        "content_hash": "202f52afa82fa7d6"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "commits_to_compensate_excludes_the_review_only_marker_even_alongside_a_real_sha",
-        "content_hash": "613662e39115c400"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-d2ae28659c98",
     "classification": "near",
     "sites": [
@@ -6264,65 +6192,6 @@
       }
     ],
     "proposed_home": "conductor::merge_break_driver",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-3eb2fad6dca8",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch",
-        "content_hash": "dff5efeb08c185ab"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "postmerge_worktree_create_err_still_reaps_the_just_created_branch",
-        "content_hash": "e3970a39ba808a08"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-534e5739efb1",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "integrate_conflict_re_parks_the_implementer_with_no_attempt_charged_and_both_units_land",
-        "content_hash": "49a76d7b16a1a84c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "integrate_conflict_confined_to_a_regenerable_path_resolves_with_no_spawn",
-        "content_hash": "cc9f14c9bb80b200"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-bdcc59e0aab8",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "a_deferred_gate_runs_once_at_the_phase_boundary_not_inline",
-        "content_hash": "454fb813cdb0a4de"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_failing_deferred_gate_is_surfaced_and_the_run_is_not_done",
-        "content_hash": "bc784c0a4df9c09b"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_default_infra_fault_at_a_deferred_gate_does_not_demote",
-        "content_hash": "89f2751e62f4ff35"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -6416,29 +6285,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 17 files: src/conductor.rs, tests/checkpoint_commit_hook_bypass_periphery.rs, tests/gate_store_fence_periphery.rs, tests/graph_fresh_on_integration_periphery.rs, tests/integrate_conflict_merge_periphery.rs, tests/land_refused_names_its_paths_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/revert_on_base_hook_bypass_periphery.rs, tests/review_round_lenses_only_log_derived_resume_periphery.rs, tests/review_round_no_adjudicator_residue_periphery.rs, tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs, tests/review_round_speculation_winner_merge_round_start_sha_periphery.rs, tests/review_round_speculation_winner_no_merge_round_start_sha_periphery.rs, tests/scratch_workdir_isolation_leak_guard_periphery.rs, tests/spawn_target_dir_periphery.rs, tests/unified_traversal_grounding.rs, tests/worktree_create_heal_lock_boundary_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-6e96925e52f3",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate",
-        "content_hash": "3afbcd4359236bd7"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates",
-        "content_hash": "65d4d67faec6c337"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds",
-        "content_hash": "595923ee2b2c9d45"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

@@ -4625,19 +4625,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "the_adversarys_spawn_is_stamped_with_the_units_lens_roster",
+    "name": "assert_full_panel_roster",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0c0982e7fb1bfced"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c56306b2a322912f"
+    "content_hash": "e0f19e271e466aa6"
   },
   {
     "file": "src/conductor.rs",
@@ -4977,19 +4969,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park",
+    "name": "assert_resumed_round_judges_the_logged_start",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e42f9baee1024128"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e1cf22be76c06d1a"
+    "content_hash": "4b6e24fc6ea91f44"
   },
   {
     "file": "src/conductor.rs",
@@ -5137,11 +5121,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "spawned_parallel",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "fdc7cc2870ebe562"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "agent_stage_runs_the_per_unit_lifecycle_not_the_fan_out_path",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "37fcdd39d667a3e6"
+    "content_hash": "feaba7e1657909f8"
   },
   {
     "file": "src/conductor.rs",
@@ -5149,7 +5141,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "38d628b0a909d02b"
+    "content_hash": "863a9fa3cb329551"
   },
   {
     "file": "src/conductor.rs",
@@ -5833,11 +5825,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "with_integrations_ctx",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "9a9d29f8c89cee53"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "commits_to_compensate_reverts_every_sha_a_multi_commit_landing_recorded",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f1e48a8baa931f4a"
+    "content_hash": "4a87e4acb6863e40"
   },
   {
     "file": "src/conductor.rs",
@@ -5853,7 +5853,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7b72eba19191f61a"
+    "content_hash": "dbb452358977725c"
   },
   {
     "file": "src/conductor.rs",
@@ -5953,11 +5953,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "assert_postmerge_err_reaps_its_branch",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "87f40aa1925c743d"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "de6b8f001b168ad4"
+    "content_hash": "39896477bb53fe7e"
   },
   {
     "file": "src/conductor.rs",
@@ -5965,7 +5973,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ffbc428b5a9f838b"
+    "content_hash": "cb83d8744ac2bae3"
   },
   {
     "file": "src/conductor.rs",
@@ -5985,11 +5993,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "assert_both_conflicting_units_land",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "3fd3d193eeb627cc"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "integrate_conflict_re_parks_the_implementer_with_no_attempt_charged_and_both_units_land",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4a5e7e2b4718731e"
+    "content_hash": "7975617b52d235a2"
   },
   {
     "file": "src/conductor.rs",
@@ -5997,7 +6013,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4463224462bfdc09"
+    "content_hash": "6e4b5e4564baac47"
   },
   {
     "file": "src/conductor.rs",
@@ -6025,11 +6041,27 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "deferred_gate_run",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "258c608dcae90a55"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "names_the_deferred_gate",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "63020607ea8583d2"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "a_deferred_gate_runs_once_at_the_phase_boundary_not_inline",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "78672fd1da6bb110"
+    "content_hash": "abd3365f698201ae"
   },
   {
     "file": "src/conductor.rs",
@@ -6037,7 +6069,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "31c9b4b920a4ebbe"
+    "content_hash": "6eaa2fa071ec2cd6"
   },
   {
     "file": "src/conductor.rs",
@@ -6053,7 +6085,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a45d8f413adc76a7"
+    "content_hash": "4d16d6658e1fd15e"
   },
   {
     "file": "src/conductor.rs",
@@ -6225,27 +6257,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate",
+    "name": "assert_sdet_seam_integrates",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e0ecd26e91743acf"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e1834c0a3da1054c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a0148ef107f1847a"
+    "content_hash": "7ae4e2f1245716dc"
   },
   {
     "file": "src/conductor.rs",

@@ -29092,34 +29092,34 @@ mod tests {
         )
     }
 
-    /// REVIEW TIERS NAME THEIR TARGETS (spec 67, criterion 4): the adversary's spawn is
-    /// stamped with the unit's routed lens roster, rendered as the same `lens:<id>`
-    /// attribution tokens a `ReviewFinding.by` already carries - never a bare agent id,
-    /// never a guess.
-    #[test]
-    fn the_adversarys_spawn_is_stamped_with_the_units_lens_roster() {
+    /// Under a per-unit panel of lenses `lensA`/`lensB` + `adversary` + `judge`, tier `tier`'s
+    /// spawn is stamped with the `expected` roster (`why`).
+    fn assert_full_panel_roster(tier: &str, expected: &[&str], why: &str) {
         let driver = per_unit_roster_run(&["lensA", "lensB"], "adversary");
         assert_eq!(
-            driver.reviews_for("adversary"),
-            Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),
-            "the adversary's SpawnOpts.reviews is the unit's lens roster, as lens:<id> tokens"
+            driver.reviews_for(tier),
+            Some(expected.iter().map(|r| r.to_string()).collect()),
+            "{why}"
         );
     }
 
-    /// The adjudicator's roster is the SAME lens roster PLUS the adversary's role token
-    /// (spec 67, criterion 4: "the adjudicator's with lenses plus adversary") - the
-    /// literal `"adversary"` attribution token, not the agent id or a title-cased form.
-    #[test]
-    fn the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary() {
-        let driver = per_unit_roster_run(&["lensA", "lensB"], "adversary");
-        assert_eq!(
-            driver.reviews_for("judge"),
-            Some(vec![
-                "lens:lensA".to_string(),
-                "lens:lensB".to_string(),
-                "adversary".to_string()
-            ]),
-            "the adjudicator's SpawnOpts.reviews is the lens roster plus the adversary token"
+    crate::test_cases! {
+        /// REVIEW TIERS NAME THEIR TARGETS (spec 67, criterion 4): the adversary's spawn is
+        /// stamped with the unit's routed lens roster, rendered as the same `lens:<id>`
+        /// attribution tokens a `ReviewFinding.by` already carries - never a bare agent id,
+        /// never a guess.
+        the_adversarys_spawn_is_stamped_with_the_units_lens_roster: assert_full_panel_roster(
+            "adversary",
+            &["lens:lensA", "lens:lensB"],
+            "the adversary's SpawnOpts.reviews is the unit's lens roster, as lens:<id> tokens",
+        );
+        /// The adjudicator's roster is the SAME lens roster PLUS the adversary's role token
+        /// (spec 67, criterion 4: "the adjudicator's with lenses plus adversary") - the
+        /// literal `"adversary"` attribution token, not the agent id or a title-cased form.
+        the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary: assert_full_panel_roster(
+            "judge",
+            &["lens:lensA", "lens:lensB", "adversary"],
+            "the adjudicator's SpawnOpts.reviews is the lens roster plus the adversary token",
         );
     }
 
@@ -30888,55 +30888,40 @@ mod tests {
         verified_sha
     }
 
-    #[test]
-    fn a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park()
-    {
-        // Spec 103, criterion 6, round 3 (closing
-        // sdet-u103c6-r3-round-start-sha-live-not-log-derived-across-a-park): the sibling
-        // of the crash test above, with a PARK instead of a genuine crash - the shape the
-        // round-3 review actually caught. A crash propagates loudly and this same file's
-        // round-2 test already proves the branch is restored WITHIN that one process; a
-        // park is swallowed cleanly (the round unwinds with the residue still on the
-        // branch and NOTHING restored yet - `guard_review_round_tree_on_tier_err` skips by
-        // design while the adversary is still in flight) and the SAME `(unit, attempt)` is
-        // entered again from a SECOND, wholly separate process sharing only the durable
-        // store. A live `worktree::head_sha_of` re-read at that second entry would read
-        // the residue-laden tip the first window's parked round left behind and silently
-        // adopt it as the round's own new baseline - exactly the failure this criterion
-        // exists to prevent.
-        //
-        // WINDOW 1: TIER 1 (lens) breaks protocol and COMMITS residue, returning Ok; TIER 2
-        // (adversary) PARKS before the guard on tier 1's own `Ok` ever runs (that guard sits
-        // on the SUCCESS path, strictly after a LATER tier resolves). WINDOW 2: the lens runs
-        // again but commits nothing; the adversary now resolves normally and the adjudicator
-        // approves.
+    /// Window 1 of a review round on `solo` (`cfg`, run by `reviewers`): reviewer `residue_by`
+    /// breaks protocol and COMMITS `residue`, returning Ok, while `parked` parks - so the round
+    /// unwinds with the residue still on the branch, unrestored, and never reaches the
+    /// adjudicator. Window 2, a second process under which `reviewers` commit nothing and the
+    /// judge approves, finishes the round. The resumed round must judge against WINDOW 1's real
+    /// round-start sha - stamped exactly once, on window 1's first entry, and log-derived, never a
+    /// live re-read of the residue-laden tip the parked window left (`shape` names the park) -
+    /// name the residue in a lesson, charge NO remediation attempt, and never merge it.
+    fn assert_resumed_round_judges_the_logged_start(
+        cfg: &Config,
+        residue_by: &str,
+        residue: &str,
+        parked: String,
+        reviewers: &[&str],
+        shape: &str,
+    ) {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let first = residue_then_park_stub(
-            "lens",
-            "lens-residue.rs",
-            spawn_id("solo", ROLE_ADVERSARY, 0),
-        );
-        let second = approving_panel_stub(&["lens", "adv"]);
-        let (_rs, events, residue_tip) = park_then_resume(
-            &judged_unit_cfg("solo", &["lens"], "adv"),
-            &repo_path,
-            "solo",
-            &first,
-            &second,
-        );
-        assert!(
-            first.spawned("lens") && first.spawned("adv"),
-            "premise: both the residue-committing lens and the parking adversary must \
-             actually have run in window 1, or this test proves nothing"
-        );
+        let first = residue_then_park_stub(residue_by, residue, parked);
+        let second = approving_panel_stub(reviewers);
+        let (_rs, events, residue_tip) = park_then_resume(cfg, &repo_path, "solo", &first, &second);
+        for r in reviewers {
+            assert!(
+                first.spawned(r) && second.spawned(r),
+                "premise: reviewer {r} must actually have run in both windows, or this test \
+                 proves nothing"
+            );
+        }
         assert!(
             !first.spawned("judge"),
-            "premise: the adjudicator must never be reached while the adversary is still \
-             parked"
+            "premise: the adjudicator must never be reached while {shape} is still parked"
         );
         assert!(
-            second.spawned("lens") && second.spawned("adv") && second.spawned("judge"),
+            second.spawned("judge"),
             "premise: the resumed window must actually finish the round, or this test \
              proves nothing"
         );
@@ -30951,78 +30936,64 @@ mod tests {
             reviewed_sha, verified_sha,
             "the resumed round must judge against WINDOW 1's real round-start sha, \
              log-derived - never a live re-read of the residue-laden tip the parked \
-             window left on the branch: reviewed={reviewed_sha:?} verified={verified_sha:?} \
-             residue_tip={residue_tip:?}"
+             window left on the branch ({shape}): reviewed={reviewed_sha:?} \
+             verified={verified_sha:?} residue_tip={residue_tip:?}"
         );
         assert!(
             !has_type(&events, ledger::TYPE_UNIT_FAILED),
-            "reviewer residue hygiene across a cross-call resume charges NO remediation \
-             attempt"
+            "reviewer residue hygiene across {shape} charges NO remediation attempt"
         );
-        assert_residue_named_and_never_merged(&events, &repo_path, "feature.rs", "lens-residue.rs");
+        assert_residue_named_and_never_merged(&events, &repo_path, "feature.rs", residue);
     }
 
-    #[test]
-    fn a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume() {
-        // Spec 103, criterion 6, round 3 (closing
-        // adv-u103c6-r3-same-chunk-sibling-park-also-triggers): the shape neither the
-        // crash test nor the cross-tier-park test above drives - a SAME-CHUNK sibling
-        // park. Lenses "a" and "b" run CONCURRENTLY in ONE chunk: "a" breaks protocol and
-        // commits residue, returning Ok; "b" PARKS. `run_review_agents_concurrently`
-        // collects `[Ok, Err(parked)]` - no genuine error to swap to front - so the
-        // trailing `?` propagates "b"'s parked `Err` unchanged, and
-        // `guard_review_round_tree_on_tier_err` skips by design (this fires WITHIN the
-        // SAME `review_unit` call that already correctly captured `round_start_sha` before
-        // either lens ran - the bug is never THIS call, only a LATER re-entry). A second,
-        // separate process resumes: "b" now finishes normally and the adjudicator
-        // approves. A live re-read at that second entry would see "a"'s residue-laden tip
-        // and silently adopt it as the round's own new baseline.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let first =
-            residue_then_park_stub("a", "a-residue.rs", spawn_id("solo", &lens_role("b"), 0));
-        let second = approving_panel_stub(&["a", "b"]);
-        let (_rs, events, residue_tip) = park_then_resume(
-            &judged_unit_cfg("solo", &["a", "b"], ""),
-            &repo_path,
-            "solo",
-            &first,
-            &second,
-        );
-        assert!(
-            first.spawned("a") && first.spawned("b"),
-            "premise: both the residue-committing lens and its parked co-chunked sibling \
-             must actually have run in window 1, or this test proves nothing"
-        );
-        assert!(
-            !first.spawned("judge"),
-            "premise: the adjudicator must never be reached while a same-chunk sibling is \
-             still parked"
-        );
-        assert!(
-            second.spawned("a") && second.spawned("b") && second.spawned("judge"),
-            "premise: the resumed window must actually finish the round, or this test \
-             proves nothing"
-        );
-        let verified_sha = assert_one_log_derived_round_start(
-            &events,
-            &residue_tip,
-            "the round-start mark must be stamped exactly once, on window 1's first entry \
-             (BEFORE either lens ran) - window 2's re-entry must READ it back",
-        );
-        let reviewed_sha = status_sha(&events, "reviewed");
-        assert_eq!(
-            reviewed_sha, verified_sha,
-            "the resumed round must judge against WINDOW 1's real round-start sha - never \
-             a live re-read of the residue \"a\" left on the branch before \"b\" parked: \
-             reviewed={reviewed_sha:?} verified={verified_sha:?} residue_tip={residue_tip:?}"
-        );
-        assert!(
-            !has_type(&events, ledger::TYPE_UNIT_FAILED),
-            "reviewer residue hygiene across a same-chunk sibling park charges NO \
-             remediation attempt"
-        );
-        assert_residue_named_and_never_merged(&events, &repo_path, "feature.rs", "a-residue.rs");
+    crate::test_cases! {
+        /// Spec 103, criterion 6, round 3 (closing
+        /// sdet-u103c6-r3-round-start-sha-live-not-log-derived-across-a-park): the sibling of the
+        /// crash test above, with a PARK instead of a genuine crash - the shape the round-3 review
+        /// actually caught. A crash propagates loudly and this same file's round-2 test already
+        /// proves the branch is restored WITHIN that one process; a park is swallowed cleanly (the
+        /// round unwinds with the residue still on the branch and NOTHING restored yet -
+        /// `guard_review_round_tree_on_tier_err` skips by design while the adversary is still in
+        /// flight) and the SAME `(unit, attempt)` is entered again from a SECOND, wholly separate
+        /// process sharing only the durable store. A live `worktree::head_sha_of` re-read at that
+        /// second entry would read the residue-laden tip the first window's parked round left
+        /// behind and silently adopt it as the round's own new baseline - exactly the failure this
+        /// criterion exists to prevent.
+        ///
+        /// WINDOW 1: TIER 1 (lens) breaks protocol and COMMITS residue, returning Ok; TIER 2
+        /// (adversary) PARKS before the guard on tier 1's own `Ok` ever runs (that guard sits on the
+        /// SUCCESS path, strictly after a LATER tier resolves). WINDOW 2: the lens runs again but
+        /// commits nothing; the adversary now resolves normally and the adjudicator approves.
+        a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park:
+            assert_resumed_round_judges_the_logged_start(
+                &judged_unit_cfg("solo", &["lens"], "adv"),
+                "lens",
+                "lens-residue.rs",
+                spawn_id("solo", ROLE_ADVERSARY, 0),
+                &["lens", "adv"],
+                "a later tier's park",
+            );
+        /// Spec 103, criterion 6, round 3 (closing
+        /// adv-u103c6-r3-same-chunk-sibling-park-also-triggers): the shape neither the crash test
+        /// nor the cross-tier-park test above drives - a SAME-CHUNK sibling park. Lenses "a" and
+        /// "b" run CONCURRENTLY in ONE chunk: "a" breaks protocol and commits residue, returning
+        /// Ok; "b" PARKS. `run_review_agents_concurrently` collects `[Ok, Err(parked)]` - no
+        /// genuine error to swap to front - so the trailing `?` propagates "b"'s parked `Err`
+        /// unchanged, and `guard_review_round_tree_on_tier_err` skips by design (this fires WITHIN
+        /// the SAME `review_unit` call that already correctly captured `round_start_sha` before
+        /// either lens ran - the bug is never THIS call, only a LATER re-entry). A second, separate
+        /// process resumes: "b" now finishes normally and the adjudicator approves. A live re-read
+        /// at that second entry would see "a"'s residue-laden tip and silently adopt it as the
+        /// round's own new baseline.
+        a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume:
+            assert_resumed_round_judges_the_logged_start(
+                &judged_unit_cfg("solo", &["a", "b"], ""),
+                "a",
+                "a-residue.rs",
+                spawn_id("solo", &lens_role("b"), 0),
+                &["a", "b"],
+                "a same-chunk sibling's park",
+            );
     }
 
     #[test]
@@ -32534,6 +32505,21 @@ mod tests {
         );
     }
 
+    /// Run the one stage `stage` (its `runner` agent defined; a passing gate `ok` declared) under
+    /// `driver`; the unit integrates, and the returned flag says whether `runner` was spawned on
+    /// the parallel (fan-out) path.
+    fn spawned_parallel(stage: Stage, runner: &str, driver: &Stub) -> bool {
+        let name = stage.name.clone();
+        let mut cfg = Config::default();
+        cfg.agents.insert(runner.into(), agent(runner));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(name.clone(), stage);
+        let (rs, _events) = run_logged(&cfg, driver);
+        assert_eq!(rs.units[&name].status, ledger::Status::Integrated);
+        let opts = driver.opts_by_agent.lock().unwrap();
+        opts.get(runner).copied().unwrap().1
+    }
+
     #[test]
     fn agent_stage_runs_the_per_unit_lifecycle_not_the_fan_out_path() {
         // An implement stage names an `agent` AND `strategy: fan-out`. Under the
@@ -32554,20 +32540,8 @@ mod tests {
             !is_fan_out(&st),
             "a stage that names an `agent` runs the per-unit lifecycle, not the fan-out path"
         );
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert("impl".into(), st);
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&store, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["impl"].status, ledger::Status::Integrated);
-        let opts = driver.opts_by_agent.lock().unwrap();
-        let (_isolation, parallel) = opts.get("a").copied().unwrap();
         assert!(
-            !parallel,
+            !spawned_parallel(st, "a", &Stub::new()),
             "an `agent` stage runs the per-unit lifecycle (single-worker path), not the parallel lens path"
         );
     }
@@ -32586,24 +32560,14 @@ mod tests {
             is_fan_out(&review),
             "a stage with `agents` and no `agent` is a standalone fan-out review stage"
         );
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.workflow.stages.insert("review".into(), review);
-        let store = Store::open(":memory:").unwrap();
         // A substantive lens result so the standalone review proceeds (an empty result
         // would trip the Gap-18 respawn loop).
         let driver = Stub {
             output: "reviewed the diff".into(),
             ..Stub::new()
         };
-        let deps = stub_deps(&store, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
-        let opts = driver.opts_by_agent.lock().unwrap();
-        let (_isolation, parallel) = opts.get("lens").copied().unwrap();
         assert!(
-            parallel,
+            spawned_parallel(review, "lens", &driver),
             "a standalone review stage spawns its lenses on the parallel fan-out path"
         );
     }
@@ -36359,6 +36323,28 @@ mod tests {
         );
     }
 
+    /// A `RunCtx` over a log holding one `UnitIntegrated` per `integrations` payload, handed to
+    /// `check`.
+    fn with_integrations_ctx(integrations: &[Value], check: impl FnOnce(&RunCtx)) {
+        let store = Store::open(":memory:").unwrap();
+        for data in integrations {
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    &[Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(data).unwrap(),
+                    )],
+                )
+                .unwrap();
+        }
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        check(&RunCtx::for_test(&cfg, &deps));
+    }
+
     #[test]
     fn commits_to_compensate_reverts_every_sha_a_multi_commit_landing_recorded() {
         // arch-u88c4-multicommit-landing-breaks-compensation-single-commit-contract: a
@@ -36368,40 +36354,27 @@ mod tests {
         // contract. Compensating such a unit must revert every commit it actually
         // landed, not just the newest, or a rollback silently leaves the older ones on
         // the run branch.
-        let store = Store::open(":memory:").unwrap();
-        let seed = |data: Value| {
-            store
-                .append(
-                    STREAM,
-                    ExpectedRevision::Any,
-                    std::slice::from_ref(&Event::new(
-                        ledger::TYPE_UNIT_INTEGRATED,
-                        serde_json::to_vec(&data).unwrap(),
-                    )),
-                )
-                .unwrap();
-        };
-        // A plan-stage unit that landed three commits in one attempt: `commit` is only
-        // the newest (c3), `shas` carries the full oldest-first list.
-        seed(json!({"id": "plan", "commit": "c3", "shas": ["c1", "c2", "c3"]}));
-        // An ordinary (non-producer) unit's single-commit UnitIntegrated - no `shas`
-        // field at all - must still work exactly as before (back-compat).
-        seed(json!({"id": "ordinary", "commit": "o1"}));
-
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = stub_deps(&store, &driver, Vec::new());
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        assert_eq!(
-            ctx.commits_to_compensate("plan"),
-            vec!["c3".to_string(), "c2".to_string(), "c1".to_string()],
-            "every landed commit must be queued for revert, newest first"
-        );
-        assert_eq!(
-            ctx.commits_to_compensate("ordinary"),
-            vec!["o1".to_string()],
-            "a shas-less (single-commit) UnitIntegrated still compensates its one commit"
+        with_integrations_ctx(
+            &[
+                // A plan-stage unit that landed three commits in one attempt: `commit` is only
+                // the newest (c3), `shas` carries the full oldest-first list.
+                json!({"id": "plan", "commit": "c3", "shas": ["c1", "c2", "c3"]}),
+                // An ordinary (non-producer) unit's single-commit UnitIntegrated - no `shas`
+                // field at all - must still work exactly as before (back-compat).
+                json!({"id": "ordinary", "commit": "o1"}),
+            ],
+            |ctx| {
+                assert_eq!(
+                    ctx.commits_to_compensate("plan"),
+                    vec!["c3".to_string(), "c2".to_string(), "c1".to_string()],
+                    "every landed commit must be queued for revert, newest first"
+                );
+                assert_eq!(
+                    ctx.commits_to_compensate("ordinary"),
+                    vec!["o1".to_string()],
+                    "a shas-less (single-commit) UnitIntegrated still compensates its one commit"
+                );
+            },
         );
     }
 
@@ -36471,37 +36444,24 @@ mod tests {
         // carries exactly this shape - `commit: REVIEW_ONLY_NO_ARTIFACT`, no `shas` field -
         // and must never be queued for compensation, alongside a SEPARATE unit's genuine
         // landed sha, which must still be queued normally.
-        let store = Store::open(":memory:").unwrap();
-        let seed = |data: Value| {
-            store
-                .append(
-                    STREAM,
-                    ExpectedRevision::Any,
-                    std::slice::from_ref(&Event::new(
-                        ledger::TYPE_UNIT_INTEGRATED,
-                        serde_json::to_vec(&data).unwrap(),
-                    )),
-                )
-                .unwrap();
-        };
-        seed(json!({"id": "review-only", "commit": REVIEW_ONLY_NO_ARTIFACT}));
-        seed(json!({"id": "ordinary", "commit": "o1"}));
-
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = stub_deps(&store, &driver, Vec::new());
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        assert_eq!(
-            ctx.commits_to_compensate("review-only"),
-            Vec::<String>::new(),
-            "a review-only marker commit must never be queued for compensation - there is \
-             nothing on the run branch to revert"
-        );
-        assert_eq!(
-            ctx.commits_to_compensate("ordinary"),
-            vec!["o1".to_string()],
-            "a genuine landed sha from a DIFFERENT unit must still compensate normally"
+        with_integrations_ctx(
+            &[
+                json!({"id": "review-only", "commit": REVIEW_ONLY_NO_ARTIFACT}),
+                json!({"id": "ordinary", "commit": "o1"}),
+            ],
+            |ctx| {
+                assert_eq!(
+                    ctx.commits_to_compensate("review-only"),
+                    Vec::<String>::new(),
+                    "a review-only marker commit must never be queued for compensation - there is \
+                     nothing on the run branch to revert"
+                );
+                assert_eq!(
+                    ctx.commits_to_compensate("ordinary"),
+                    vec!["o1".to_string()],
+                    "a genuine landed sha from a DIFFERENT unit must still compensate normally"
+                );
+            },
         );
     }
 
@@ -37521,6 +37481,52 @@ mod tests {
         crate::delegate_event_store_reads!();
     }
 
+    /// Run the one merging unit `unit-a` (its worker writes `f.txt`, gated by `g`) in `repo`
+    /// over `store`, after `prepare` saw its post-merge re-gate's throwaway worktree dir; the
+    /// post-merge re-gate is forced to error, and that genuine infra Err must propagate out of
+    /// `run()` (`why`), never be swallowed as a passing/failing gate verdict. The re-gate's
+    /// throwaway branch must be deleted even so - never left behind. Returns the throwaway
+    /// worktree dir.
+    fn assert_postmerge_err_reaps_its_branch(
+        repo: &str,
+        store: &dyn EventStore,
+        prepare: impl FnOnce(&str),
+        why: &str,
+    ) -> String {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo.to_string(),
+            ..stub_deps(store, &driver, Vec::new())
+        };
+        let scratch = crate::worktree::scratch_root_from_env(repo, "");
+        let (pm_dir, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
+        prepare(&pm_dir);
+        assert!(run(&cfg, &deps).is_err(), "{why}");
+        let branches = run_git(repo, &["branch", "--list", &pm_branch]);
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
+             even when the re-gate errors, never left behind"
+        );
+        pm_dir
+    }
+
     #[test]
     fn postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch() {
         // adv-u103c7-postmerge-worktree-branch-leak-on-run-gates-err: `integrate_and_emit`
@@ -37537,55 +37543,22 @@ mod tests {
         // proving the leak is specific to the post-merge re-gate's own error path, not
         // merely "the run failed somewhere").
         let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("g".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "unit-a".into(),
-            Stage {
-                name: "unit-a".into(),
-                agent: "worker".into(),
-                gates: vec!["g".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-
         let real_store = Store::open(":memory:").unwrap();
         let store = FailAppendMetaContaining {
             inner: &real_store,
             needle: "postmerge-gate:",
         };
-        let driver = Stub {
-            write_file: Some("f.txt".into()),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (pm_dir, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
-
-        assert!(
-            run(&cfg, &deps).is_err(),
+        let pm_dir = assert_postmerge_err_reaps_its_branch(
+            repo.path().to_str().unwrap(),
+            &store,
+            |_| {},
             "a genuine post-merge gate infra Err must propagate out of run(), never be \
-             swallowed as a passing/failing gate verdict"
+             swallowed as a passing/failing gate verdict",
         );
-
         assert!(
             !Path::new(&pm_dir).exists(),
             "the post-merge re-gate's own throwaway worktree must be reaped even when its \
              gate suite errors, never leaked for a later step to find; {pm_dir} still exists"
-        );
-        let branches = run_git(&repo_path, &["branch", "--list", &pm_branch]);
-        assert!(
-            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
-            "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
-             even when its gate suite errors, never left behind"
         );
     }
 
@@ -37614,49 +37587,17 @@ mod tests {
         // real `crate::worktree::Worktree::create_branch_at`/`create` functions through the
         // conductor's own call site, never a probe copy.
         let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("g".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "unit-a".into(),
-            Stage {
-                name: "unit-a".into(),
-                agent: "worker".into(),
-                gates: vec!["g".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("f.txt".into()),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (pm_dir, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
-        std::os::unix::fs::symlink("/nonexistent-adv-u103c7-r3-target", &pm_dir)
-            .expect("plant the dangling symlink that occupies pm_dir without `exists()`-ing");
-
-        assert!(
-            run(&cfg, &deps).is_err(),
+        assert_postmerge_err_reaps_its_branch(
+            repo.path().to_str().unwrap(),
+            &store,
+            |pm_dir| {
+                std::os::unix::fs::symlink("/nonexistent-adv-u103c7-r3-target", pm_dir).expect(
+                    "plant the dangling symlink that occupies pm_dir without `exists()`-ing",
+                )
+            },
             "a genuine post-merge worktree-create infra Err must propagate out of run(), \
-             never be swallowed as a passing/failing gate verdict"
-        );
-
-        let branches = run_git(&repo_path, &["branch", "--list", &pm_branch]);
-        assert!(
-            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
-            "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
-             even when Worktree::create itself errors right after create_branch_at minted \
-             it, never left behind"
+             never be swallowed as a passing/failing gate verdict",
         );
     }
 
@@ -37812,6 +37753,70 @@ mod tests {
         (repo, repo_path, store, driver)
     }
 
+    /// Two batch-mates `unit-a`/`unit-b` edit the SAME line of `c.rs` off the same base (the
+    /// [`conflict_fixture`], `regenerate` registering regenerable paths): the first to win the
+    /// integrate lock merges cleanly and the second's merge CONFLICTS. BOTH units must integrate -
+    /// the loser's textual conflict is resolved within the SAME integration call, never escalated -
+    /// with no remediation attempt charged to either and no UnitFailed ever recorded (a conflict is
+    /// not a defect). Returns every spawn id the driver was called with and the run branch's
+    /// merged `c.rs`.
+    fn assert_both_conflicting_units_land(
+        regenerate: Vec<crate::config::RegenerateRule>,
+    ) -> (Vec<String>, String) {
+        let (repo, repo_path, store, driver) = conflict_fixture(regenerate.clone(), true);
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.workflow.regenerate = regenerate;
+        for a in ["worker", "lens", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        for name in ["unit-a", "unit-b"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "worker".into(),
+                    gates: vec!["g".into()],
+                    on_pass: "merge".into(),
+                    review: crate::config::ReviewPanel {
+                        lenses: vec!["lens".into()],
+                        adjudicator: "judge".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+        }
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        for unit in ["unit-a", "unit-b"] {
+            assert_eq!(
+                rs.units[unit].status,
+                ledger::Status::Integrated,
+                "{unit} must integrate (a conflict is resolved, not a dead end)"
+            );
+            // No attempt is charged for the conflict round: the folded `attempts` (from the
+            // latest UnitFailed) never advanced past 0.
+            assert_eq!(
+                rs.units[unit].attempts, 0,
+                "no remediation attempt is charged to {unit} (a conflict is not a defect)"
+            );
+        }
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !has_type(&events, ledger::TYPE_UNIT_FAILED),
+            "a conflict that resolves within the same call never records a UnitFailed"
+        );
+        let calls = driver.calls.lock().unwrap().clone();
+        let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+        drop(repo);
+        (calls, merged)
+    }
+
     #[test]
     fn integrate_conflict_re_parks_the_implementer_with_no_attempt_charged_and_both_units_land() {
         // Spec 88, criterion 1, Done-when: "a unit whose integration conflicts is re-parked with
@@ -37820,80 +37825,19 @@ mod tests {
         // to win the integrate lock merges cleanly; the second's merge CONFLICTS, is re-parked
         // (never reset, never charged an attempt), resolves, and lands too - BOTH units
         // integrate, unlike the semantic post-merge-break case where the loser escalates.
-        let (repo, repo_path, store, driver) = conflict_fixture(Vec::new(), true);
-
-        let mut cfg = Config::default();
-        cfg.workflow.defaults.max_retries = 3;
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
-        let panel = crate::config::ReviewPanel {
-            lenses: vec!["lens".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        };
-        let mk = |name: &str| Stage {
-            name: name.into(),
-            agent: "worker".into(),
-            gates: vec!["g".into()],
-            on_pass: "merge".into(),
-            needs: vec![],
-            review: panel.clone(),
-            ..Default::default()
-        };
-        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
-        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
-
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        // BOTH units integrate - the loser's textual conflict is resolved, never escalated.
-        assert_eq!(
-            rs.units["unit-a"].status,
-            ledger::Status::Integrated,
-            "unit-a must integrate"
-        );
-        assert_eq!(
-            rs.units["unit-b"].status,
-            ledger::Status::Integrated,
-            "unit-b must integrate (its conflict is resolved, not a dead end)"
-        );
-        // No attempt is charged for the conflict round: neither unit's folded `attempts`
-        // (from the latest UnitFailed) ever advanced past 0, because no UnitFailed is ever
-        // recorded for a conflict - it resolves within the SAME integration call.
-        assert_eq!(
-            rs.units["unit-a"].attempts, 0,
-            "no remediation attempt is charged to unit-a"
-        );
-        assert_eq!(
-            rs.units["unit-b"].attempts, 0,
-            "no remediation attempt is charged to unit-b (a conflict is not a defect)"
-        );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
-            "a conflict that resolves within the same call never records a UnitFailed"
-        );
+        let (calls, merged) = assert_both_conflicting_units_land(Vec::new());
         // The re-parked implementer ran under a `~retry` id (spec 07's established free-
         // respawn shape), never a fresh `attempts` bump.
-        let calls = driver.calls.lock().unwrap();
         assert!(
             calls.iter().any(|id| id.contains("/implementer#0~retry1")),
             "the conflicting unit's implementer must be re-parked under a ~retry id; got {calls:?}"
         );
         // The run branch carries the RESOLVED content - the re-parked implementer's own
         // commit, proving the merge landed via ITS resolution, not a discarded rebuild.
-        let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
         assert_eq!(
             merged, "RESOLVED\n",
             "the run branch carries the conflict-resolving commit's content"
         );
-        drop(repo);
     }
 
     #[test]
@@ -37903,75 +37847,22 @@ mod tests {
         // conflict as above, but `c.rs` is registered regenerable: the conductor must resolve
         // it ITSELF (running the registered command and committing) - the loser's implementer
         // is never re-parked a second time at all.
-        let (repo, repo_path, store, driver) = conflict_fixture(
-            vec![crate::config::RegenerateRule {
+        let (calls, merged) =
+            assert_both_conflicting_units_land(vec![crate::config::RegenerateRule {
                 paths: vec!["c.rs".into()],
                 run: "printf 'REGENERATED\\n' > c.rs".into(),
-            }],
-            true,
-        );
-
-        let mut cfg = Config::default();
-        cfg.workflow.defaults.max_retries = 3;
-        cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
-            paths: vec!["c.rs".into()],
-            run: "printf 'REGENERATED\\n' > c.rs".into(),
-        }];
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
-        let panel = crate::config::ReviewPanel {
-            lenses: vec!["lens".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        };
-        let mk = |name: &str| Stage {
-            name: name.into(),
-            agent: "worker".into(),
-            gates: vec!["g".into()],
-            on_pass: "merge".into(),
-            needs: vec![],
-            review: panel.clone(),
-            ..Default::default()
-        };
-        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
-        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
-
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
-        assert_eq!(
-            rs.units["unit-b"].status,
-            ledger::Status::Integrated,
-            "the regenerable-confined conflict still lands"
-        );
-        assert_eq!(rs.units["unit-a"].attempts, 0);
-        assert_eq!(rs.units["unit-b"].attempts, 0);
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
-            "a regenerable-confined conflict never records a UnitFailed either"
-        );
+            }]);
         // NO SPAWN AT ALL for the conflict: no `~retry` implementer id anywhere the driver
         // was ever called with.
-        let calls = driver.calls.lock().unwrap();
         assert!(
             !calls.iter().any(|id| id.contains("~retry")),
             "a conflict confined to a registered regenerable path resolves with NO spawn; got {calls:?}"
         );
         // The conductor's OWN regeneration command produced and committed the content.
-        let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
         assert_eq!(
             merged, "REGENERATED\n",
             "the conductor's registered regeneration command resolved the conflict"
         );
-        drop(repo);
     }
 
     #[test]
@@ -38227,19 +38118,18 @@ mod tests {
         drop(repo);
     }
 
-    #[test]
-    fn a_deferred_gate_runs_once_at_the_phase_boundary_not_inline() {
-        // A stage with both an inline (core) gate and a deferred gate. The deferred
-        // gate must NOT run during the unit's inline lifecycle - the unit integrates on
-        // its inline gate alone - and must run EXACTLY ONCE at the run's end-of-run
-        // phase boundary, after the unit has integrated.
+    /// Run one stage `s` (agent `a`) gated by a passing inline gate and a deferred gate running
+    /// `deferred_run`, under `runner`: the unit integrates on its INLINE gate alone (the deferred
+    /// gate plays no part in the unit's own lifecycle decision - a deferred failure is a
+    /// run-level concern). Returns the run state and the log.
+    fn deferred_gate_run(deferred_run: &str, runner: &dyn gate::Runner) -> (RunState, Vec<Event>) {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.gates.insert("inline".into(), gate_def("true"));
         cfg.workflow.gates.insert(
             "deferred".into(),
             config::Gate {
-                run: "true".into(),
+                run: deferred_run.into(),
                 kind: "deferred".into(),
                 inputs: Vec::new(),
             },
@@ -38255,21 +38145,31 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let runner = RecordingRunner::new(&[]);
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &runner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            gates: runner,
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
-
-        // The unit integrated on its INLINE gate (the deferred gate played no part in
-        // the unit's own lifecycle decision).
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        (rs, events)
+    }
+
+    /// Whether `events` hold a `type_` event naming the `deferred` gate.
+    fn names_the_deferred_gate(events: &[Event], type_: &str) -> bool {
+        count_carrying(events, type_, "\"gate\":\"deferred\"") > 0
+    }
+
+    #[test]
+    fn a_deferred_gate_runs_once_at_the_phase_boundary_not_inline() {
+        // A stage with both an inline (core) gate and a deferred gate. The deferred
+        // gate must NOT run during the unit's inline lifecycle - the unit integrates on
+        // its inline gate alone - and must run EXACTLY ONCE at the run's end-of-run
+        // phase boundary, after the unit has integrated.
+        let runner = RecordingRunner::new(&[]);
+        let (rs, events) = deferred_gate_run("true", &runner);
 
         // The deferred gate ran exactly once, and it ran AFTER the inline gate - i.e.
         // at the phase boundary, never inline per unit.
@@ -38288,14 +38188,8 @@ mod tests {
 
         // The deferred gate emitted a GateVerdict at the boundary, and (since it
         // passed) the run is fully done.
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
         assert!(
-            events.iter().any(|e| {
-                e.type_ == contextgraph::TYPE_GATE_VERDICT
-                    && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
-            }),
+            names_the_deferred_gate(&events, contextgraph::TYPE_GATE_VERDICT),
             "the deferred gate must emit a GateVerdict at the phase boundary"
         );
         assert!(
@@ -38310,54 +38204,11 @@ mod tests {
         // event is recorded AND the run is reported not-fully-done, even though the
         // unit itself integrated on its (passing) inline gate. A deferred failure must
         // NOT silently pass as success.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
-        cfg.workflow.gates.insert(
-            "deferred".into(),
-            config::Gate {
-                run: "false".into(),
-                kind: "deferred".into(),
-                inputs: Vec::new(),
-            },
-        );
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["inline".into(), "deferred".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
         // The deferred gate fails; the inline gate passes.
-        let runner = RecordingRunner::new(&["deferred"]);
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &runner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        // The unit still integrated - its INLINE gate passed; the deferred failure is a
-        // run-level concern, not a per-unit one.
-        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
-
+        let (rs, events) = deferred_gate_run("false", &RecordingRunner::new(&["deferred"]));
         // The failure is recorded as an event naming the gate...
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
         assert!(
-            events.iter().any(|e| {
-                e.type_ == TYPE_DEFERRED_GATE_FAILED
-                    && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
-            }),
+            names_the_deferred_gate(&events, TYPE_DEFERRED_GATE_FAILED),
             "a failing deferred gate must emit a DeferredGateFailed event naming the gate"
         );
         // ...and the run is reported NOT done despite every unit integrating.
@@ -38418,28 +38269,7 @@ mod tests {
         // the inline site holds - two demotion policies for one fault by gate SITE, the
         // exact harm this unit exists to prevent. No failure_rules are authored, so the
         // shipped default taxonomy governs and classifies the outage below as infra.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
-        cfg.workflow.gates.insert(
-            "deferred".into(),
-            config::Gate {
-                run: "false".into(),
-                kind: "deferred".into(),
-                inputs: Vec::new(),
-            },
-        );
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["inline".into(), "deferred".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
+        //
         // The inline gate passes (the unit integrates); the deferred gate fails at the
         // phase boundary with an outage the DEFAULT taxonomy recognises as infra. The
         // deferred gate is seeded at the default autonomy (AutoNotify, above Manual), so a
@@ -38448,34 +38278,17 @@ mod tests {
             fail: "deferred".into(),
             evidence: "FAIL\nno space left on device".into(),
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &runner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        // The unit integrated on its passing inline gate.
-        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
-
-        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let (_rs, events) = deferred_gate_run("false", &runner);
         // The deferred failure is still surfaced truthfully...
         assert!(
-            events.iter().any(|e| {
-                e.type_ == TYPE_DEFERRED_GATE_FAILED
-                    && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
-            }),
+            names_the_deferred_gate(&events, TYPE_DEFERRED_GATE_FAILED),
             "a failing deferred gate must still surface a DeferredGateFailed event"
         );
         // ...but an INFRA outage classified through the SINGLE authority must NEVER demote
         // the deferred gate's ratchet - the same HOLD the inline site gives the identical
         // fault. This is the pinned single-authority invariant the reject demanded.
         assert!(
-            !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            !has_type(&events, TYPE_GATE_DEMOTED),
             "a persistent infra fault at a deferred gate must HOLD the ratchet (FailNoDemote), not demote it"
         );
     }
@@ -39892,32 +39705,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate() {
-        // spec 33 done-when (this criterion OWNS the result handling; it does NOT own the
-        // spawn placement - that is the criterion above). After the sdet-author self-reports,
-        // the conductor AWAITS its result and CONTINUES the lifecycle: it proceeds to the
-        // pre-gate commit, the gates, the review, and integrates. The spec names two results
-        // that must advance - a NORMAL result (the sdet authored periphery tests) and an
-        // EMPTY-ACCOUNTING no-op (a purely-internal unit for which the sdet recorded a
-        // provably-empty accounting, authoring NO periphery file). Both traverse the ONE Ok
-        // arm of the seam (`Ok(_) => Ok(())`), which does NOT branch on whether the sdet
-        // authored anything, so pinning that arm via the STRICTER empty-accounting flavor (the
-        // sdet writes nothing) also covers the normal-result flavor the placement flagship
-        // already integrates. This is c2's INDEPENDENT guard for the advance arm: it does NOT
-        // assert same-commit placement (c1's assertion #5) - only that the lifecycle CONTINUES
-        // past the sdet's result to a merged unit.
-        //
-        // NON-VACUOUS: GREEN on shipped code; RED when the Ok arm is made to NOT advance -
-        // change `Ok(_) => Ok(())` to `Ok(_) => Err(parked_spawn(&sdet_id))` (treat a normal
-        // result as a park) and the seam holds the unit, so it never integrates and the
-        // load-bearing `status == Integrated` assertion fails.
+    /// Run one merging, gated unit `s` in a real repo whose implementer writes the unit's feature
+    /// (so there is a real diff to commit and gate, the worktree is non-empty and control reaches
+    /// the sdet seam) - with an `sdet-author` agent configured when `with_sdet` (it authors
+    /// NOTHING, and its deterministic spawn CRASHES with a non-parked Err when `crash_sdet`).
+    /// The sdet-author is spawned at the seam exactly when configured (`spawn_why`), and the unit
+    /// still integrates (`why`): the build is never blocked by the sdet seam.
+    fn assert_sdet_seam_integrates(with_sdet: bool, crash_sdet: bool, spawn_why: &str, why: &str) {
         let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        if with_sdet {
+            cfg.agents
+                .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        }
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
         cfg.workflow.stages.insert(
             "s".into(),
@@ -39930,174 +39731,102 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        // Only the IMPLEMENTER authors a file (the unit's feature, so there is a real diff to
-        // commit and gate); the sdet-author authors NOTHING - the empty-accounting no-op of a
-        // purely-internal unit. `write_file_by_agent` is keyed on the agent id, so leaving the
-        // sdet out of it (and `write_file: None`) means its spawn returns a normal result
-        // having written no periphery file at all.
-        let driver = Stub {
+        // `write_file_by_agent` is keyed on the agent id, so leaving the sdet out of it (and
+        // `write_file: None`) means its spawn returns a normal result having written no
+        // periphery file at all; `fail_spawn_ids` crashes ONLY the sdet spawn.
+        let mut driver = Stub {
             write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
             ..Stub::new()
         };
+        if crash_sdet {
+            driver.fail_spawn_ids =
+                std::collections::HashSet::from([spawn_id("s", ROLE_SDET_AUTHOR, 0)]);
+        }
         let deps = Deps {
-            repo: repo_path.clone(),
+            repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
-
-        // ANCHOR (the result-handling arm IS the code exercised, not the absent/park paths):
-        // the sdet-author WAS spawned at the seam and returned a normal result. Without this the
-        // advance assertion could pass via the absent-agent no-op instead of the Ok arm.
-        assert!(
-            driver.spawned(ROLE_SDET_AUTHOR),
-            "the sdet-author must be spawned and self-report so the Ok result-handling arm is exercised"
-        );
-        // LOAD-BEARING: the conductor CONTINUED the lifecycle on the sdet's result - proceeding
-        // to the pre-gate commit, the gates, the (trivially-approved) review, and integrate -
-        // EVEN THOUGH the sdet authored nothing. An empty accounting is not a blocker: the build
-        // advances exactly as it would on a normal authored result. Make the Ok arm park instead
-        // of advance (`Ok(_) => Err(parked_spawn(&sdet_id))`) and the unit is held, never
-        // integrating - turning this RED.
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "a normal / empty-accounting sdet-author result must ADVANCE the lifecycle to a merged unit"
-        );
+        assert_eq!(driver.spawned(ROLE_SDET_AUTHOR), with_sdet, "{spawn_why}");
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
     }
 
-    #[test]
-    fn an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates() {
-        // spec 33 done-when (this criterion OWNS absent-agent tolerance): if no `sdet-author`
-        // agent is configured, the build seam is a CLEAN NO-OP - the build proceeds exactly as
-        // it did before spec 33, so an operator who has not installed the persona is NEVER
-        // blocked. Here the config has the implementer but NO sdet-author agent; the unit must
-        // still integrate, and the sdet must never be spawned.
-        //
-        // The seam is reached (a real worktree, so `dir` is non-empty - the worktree gate does
-        // NOT short-circuit first), and the absent-agent arm
-        // (`let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else { return Ok(()) }`)
-        // is the code under test. NON-VACUOUS: GREEN on shipped code; RED when that arm is made
-        // NON-tolerant - change its `return Ok(())` to `return Err(Error("no sdet-author".into()))`
-        // and the absent agent propagates an error out of the seam (`spawn_sdet_author(..)?`),
-        // so the unit never integrates and `status == Integrated` fails.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        // Deliberately NO sdet-author agent - the operator has not installed the persona.
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        // The implementer writes the unit's feature into a REAL worktree, so `dir` is non-empty
-        // and control reaches the absent-agent check (not the empty-dir short-circuit before it).
-        let driver = Stub {
-            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        // ANCHOR (the absent path IS the one exercised): with no sdet-author configured the
-        // conductor never spawns it - distinguishing the clean no-op from a path that spawned
-        // and skipped.
-        assert!(
-            !driver.spawned(ROLE_SDET_AUTHOR),
-            "no sdet-author is configured, so the conductor must not spawn one"
-        );
-        // LOAD-BEARING: the absent sdet-author is a CLEAN no-op - the build proceeds and the
-        // unit integrates exactly as it did before spec 33. Make the absent arm non-tolerant
-        // (`else { return Err(..) }`) and the error propagates out of the seam, holding the unit
-        // - turning this RED.
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "an operator without the sdet-author persona must never be blocked: the unit still integrates"
-        );
-    }
-
-    #[test]
-    fn a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds() {
-        // spec 33 result handling, crash disposition (routed to this criterion by c1:
-        // d33-c1 defers the crash arm to c2, and adv-u33c1r2-crash-arm-budget-accounting-c2 +
-        // adv-u33c1-crash-arm-commits-partial-writes ask c2 to STATE and pin it). A sdet-author
-        // spawn that CRASHES (a non-parked spawn/opts error - a usage-limit / non-zero exit,
-        // distinct from a replay PARK) must NOT block the build: the periphery tests are
-        // best-effort, so a crashed sdet is tolerated exactly like an absent one - the conductor
-        // proceeds to the pre-gate commit, gates, review, and integrates the implementer's unit.
-        // The alternative (propagate the crash) would let one operator's flaky sdet agent wedge
-        // every unit; the tolerant proceed keeps the build resilient. Under the real
-        // stepwise/replay driver the sdet spawn only PARKS or replays and never returns a
-        // crash-Err, so this arm is a defensive disposition, unreachable in-loop - which is why
-        // proceeding (not a bespoke remediation path) is the minimal correct choice. The
-        // crash-without-park budget count divergence flagged for c2 is SHARED with the
-        // implementer reserve (conductor.rs), not sdet-specific, so no separate accounting is
-        // owed here.
-        //
-        // NON-VACUOUS: GREEN on shipped code (crash swallowed, `Err(_) => Ok(())`, unit
-        // integrates); RED when the crash is propagated instead - change `Err(_) => Ok(())` to
-        // `Err(e) => Err(e)` and a crashed sdet errors out of the seam (`spawn_sdet_author(..)?`),
-        // so the unit never integrates and `status == Integrated` fails.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents
-            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        // The implementer returns a normal Ok (writing the unit's feature), so control reaches
-        // the sdet seam; the sdet-author's deterministic spawn id CRASHES (a non-parked Err),
-        // exercising the crash arm. `fail_spawn_ids` crashes ONLY the sdet spawn, leaving the
-        // implementer's spawn untouched.
-        let driver = Stub {
-            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
-            fail_spawn_ids: std::collections::HashSet::from([spawn_id("s", ROLE_SDET_AUTHOR, 0)]),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        // ANCHOR (the crash arm IS the code exercised): the sdet-author spawn WAS attempted at
-        // the seam - the driver recorded the call before crashing it - so it is the CRASH
-        // disposition, not an absent-agent skip, that this test drives.
-        assert!(
-            driver.spawned(ROLE_SDET_AUTHOR),
-            "the sdet-author spawn must be attempted at the seam (it then crashes)"
-        );
-        // LOAD-BEARING: a crashed sdet-author does NOT block the build - the conductor swallows
-        // the non-parked error and proceeds to commit + gates + review + integrate, so the unit
-        // reaches Integrated (the implementer's work is not held hostage to a flaky sdet). Make
-        // the crash propagate (`Err(e) => Err(e)`) and the unit never integrates - turning this RED.
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "a crashed sdet-author must not block the build: the lifecycle proceeds and the unit integrates"
-        );
+    crate::test_cases! {
+        /// spec 33 done-when (this criterion OWNS the result handling; it does NOT own the spawn
+        /// placement - that is the criterion above). After the sdet-author self-reports, the
+        /// conductor AWAITS its result and CONTINUES the lifecycle: it proceeds to the pre-gate
+        /// commit, the gates, the review, and integrates. The spec names two results that must
+        /// advance - a NORMAL result (the sdet authored periphery tests) and an EMPTY-ACCOUNTING
+        /// no-op (a purely-internal unit for which the sdet recorded a provably-empty accounting,
+        /// authoring NO periphery file). Both traverse the ONE Ok arm of the seam
+        /// (`Ok(_) => Ok(())`), which does NOT branch on whether the sdet authored anything, so
+        /// pinning that arm via the STRICTER empty-accounting flavor (the sdet writes nothing) also
+        /// covers the normal-result flavor the placement flagship already integrates. This is c2's
+        /// INDEPENDENT guard for the advance arm: it does NOT assert same-commit placement (c1's
+        /// assertion #5) - only that the lifecycle CONTINUES past the sdet's result to a merged
+        /// unit.
+        ///
+        /// ANCHOR: the sdet-author WAS spawned at the seam and returned a normal result - without
+        /// this the advance assertion could pass via the absent-agent no-op instead of the Ok arm.
+        /// NON-VACUOUS: GREEN on shipped code; RED when the Ok arm is made to NOT advance - change
+        /// `Ok(_) => Ok(())` to `Ok(_) => Err(parked_spawn(&sdet_id))` (treat a normal result as a
+        /// park) and the seam holds the unit, so it never integrates.
+        an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate:
+            assert_sdet_seam_integrates(
+                true,
+                false,
+                "the sdet-author must be spawned and self-report so the Ok result-handling arm is exercised",
+                "a normal / empty-accounting sdet-author result must ADVANCE the lifecycle to a merged unit",
+            );
+        /// spec 33 done-when (this criterion OWNS absent-agent tolerance): if no `sdet-author` agent
+        /// is configured, the build seam is a CLEAN NO-OP - the build proceeds exactly as it did
+        /// before spec 33, so an operator who has not installed the persona is NEVER blocked. Here
+        /// the config has the implementer but NO sdet-author agent; the unit must still integrate,
+        /// and the sdet must never be spawned (the ANCHOR distinguishing the clean no-op from a path
+        /// that spawned and skipped).
+        ///
+        /// The seam is reached (a real worktree, so `dir` is non-empty - the worktree gate does NOT
+        /// short-circuit first), and the absent-agent arm
+        /// (`let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else { return Ok(()) }`) is
+        /// the code under test. NON-VACUOUS: GREEN on shipped code; RED when that arm is made
+        /// NON-tolerant - change its `return Ok(())` to `return Err(Error("no sdet-author".into()))`
+        /// and the absent agent propagates an error out of the seam (`spawn_sdet_author(..)?`), so
+        /// the unit never integrates.
+        an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates:
+            assert_sdet_seam_integrates(
+                false,
+                false,
+                "no sdet-author is configured, so the conductor must not spawn one",
+                "an operator without the sdet-author persona must never be blocked: the unit still integrates",
+            );
+        /// spec 33 result handling, crash disposition (routed to this criterion by c1: d33-c1 defers
+        /// the crash arm to c2, and adv-u33c1r2-crash-arm-budget-accounting-c2 +
+        /// adv-u33c1-crash-arm-commits-partial-writes ask c2 to STATE and pin it). A sdet-author
+        /// spawn that CRASHES (a non-parked spawn/opts error - a usage-limit / non-zero exit,
+        /// distinct from a replay PARK) must NOT block the build: the periphery tests are
+        /// best-effort, so a crashed sdet is tolerated exactly like an absent one - the conductor
+        /// proceeds to the pre-gate commit, gates, review, and integrates the implementer's unit.
+        /// The alternative (propagate the crash) would let one operator's flaky sdet agent wedge
+        /// every unit; the tolerant proceed keeps the build resilient. Under the real
+        /// stepwise/replay driver the sdet spawn only PARKS or replays and never returns a
+        /// crash-Err, so this arm is a defensive disposition, unreachable in-loop - which is why
+        /// proceeding (not a bespoke remediation path) is the minimal correct choice. The
+        /// crash-without-park budget count divergence flagged for c2 is SHARED with the implementer
+        /// reserve (conductor.rs), not sdet-specific, so no separate accounting is owed here.
+        ///
+        /// ANCHOR: the sdet-author spawn WAS attempted at the seam - the driver recorded the call
+        /// before crashing it - so it is the CRASH disposition, not an absent-agent skip, that this
+        /// drives. NON-VACUOUS: GREEN on shipped code (crash swallowed, `Err(_) => Ok(())`, unit
+        /// integrates); RED when the crash is propagated instead - change `Err(_) => Ok(())` to
+        /// `Err(e) => Err(e)` and a crashed sdet errors out of the seam (`spawn_sdet_author(..)?`),
+        /// so the unit never integrates.
+        a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds:
+            assert_sdet_seam_integrates(
+                true,
+                true,
+                "the sdet-author spawn must be attempted at the seam (it then crashes)",
+                "a crashed sdet-author must not block the build: the lifecycle proceeds and the unit integrates",
+            );
     }
 
     #[test]
