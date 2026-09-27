@@ -323,7 +323,7 @@ impl AgentDriver for ReplayDriver<'_> {
                 // Surface the RESOLVED model the worker reported through `rigger result
                 // --meta` (spec 05 line 52), so the conductor can copy it onto this spawn's
                 // unit events.
-                let resolved_model = res.resolved_model();
+                let resolved_model = res.meta_str(crate::spawn::META_RESOLVED_MODEL);
                 return Ok(AgentResult {
                     output: res.output,
                     resolved_model,
@@ -930,7 +930,7 @@ mod tests {
             spawn::result_of(&events, "u/implementer#0")
                 .unwrap()
                 .unwrap()
-                .liveness_class(),
+                .meta_str(crate::spawn::META_LIVENESS_CLASS),
             "product",
             "the class rides the fault as a display label even though treatment ignores it"
         );

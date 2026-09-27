@@ -1701,7 +1701,7 @@ mod tests {
         assert_eq!(res.id, "u1/implementer#0");
         assert_eq!(res.output, "done: the answer is 42");
         assert!(!res.is_error());
-        assert_eq!(res.resolved_model(), "claude-sonnet-4-5-20250929");
+        assert_eq!(res.meta_str(crate::spawn::META_RESOLVED_MODEL), "claude-sonnet-4-5-20250929");
         assert_eq!(res.meta["session_id"], "sess-42");
         assert_eq!(res.meta["usage"]["input"], 100);
         assert_eq!(res.meta["usage"]["output"], 50);

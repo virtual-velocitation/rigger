@@ -727,7 +727,7 @@ pub struct AgentResult {
     pub output: String,
     /// The RESOLVED model id that actually ran this spawn (spec 05 line 52), or empty when
     /// unknown. The replay driver surfaces it from the worker's `rigger result --meta`
-    /// report ([`SpawnResult::resolved_model`](crate::spawn::SpawnResult::resolved_model));
+    /// report ([`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str));
     /// the conductor copies it onto the spawn's unit events via [`META_MODEL_RESOLVED`].
     /// The blocking drivers (cli/workflow) do not learn it and leave it empty.
     pub resolved_model: String,

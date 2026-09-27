@@ -325,7 +325,7 @@ fn workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green
 /// sends when `resolvedModelFromUsage` observed zero or more than one model id and left
 /// `resolvedModel` `''`, so `shim.mjs` never sets `resultArgs.meta`), and `output` itself
 /// contains a resolved-model-shaped JSON fragment - the prose-claim shape
-/// `SpawnResult::resolved_model`'s own pure-function unit test pins, never before driven
+/// `SpawnResult::meta_str(META_RESOLVED_MODEL)`'s own pure-function unit test pins, never before driven
 /// through the real wire. The persisted `green` event's `META_MODEL_RESOLVED` key must be
 /// ABSENT - not present-but-empty, and never the prose text - proving the omission survives
 /// the full `mcpserver.rs::tool_result` -> `workflow::Driver::result` -> `conductor.rs` path,

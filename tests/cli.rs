@@ -11377,7 +11377,7 @@ fn step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events() {
 /// id records none and reports as unmeasured rather than defaulted" AND "a conflicting
 /// agent-prose claim never enters the record". A worker's `rigger result <id> <output>` with
 /// NO `--meta` at all, whose `output` text happens to CONTAIN a resolved-model-shaped JSON
-/// fragment (the exact prose-claim shape `SpawnResult::resolved_model`'s own unit test pins
+/// fragment (the exact prose-claim shape `SpawnResult::meta_str(META_RESOLVED_MODEL)`'s own unit test pins
 /// at the pure-function level), must leave the persisted `green` event's
 /// `META_MODEL_RESOLVED` key ABSENT - never present-but-empty (a fake measurement of
 /// nothing) and never the prose text (a forged measurement). Only the unit-level pin in
