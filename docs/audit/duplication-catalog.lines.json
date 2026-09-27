@@ -16805,21 +16805,6 @@
     ]
   },
   {
-    "id": "dup-d6f58172590a",
-    "sites": [
-      {
-        "file": "tests/graph_around_code_first.rs",
-        "start_line": 204,
-        "end_line": 237
-      },
-      {
-        "file": "tests/graph_around_governance_boundaries.rs",
-        "start_line": 362,
-        "end_line": 392
-      }
-    ]
-  },
-  {
     "id": "dup-66c258b5459c",
     "sites": [
       {

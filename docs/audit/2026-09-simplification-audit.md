@@ -1764,7 +1764,7 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1704 func
 
 ## 2. Duplication Catalog
 
-601 clusters (3233 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+600 clusters (3231 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1774,7 +1774,7 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1704 func
 - **.rigger-path string literals**: 760 site(s) - `dup-ec5b0650a4a0`
 - **error-shaping helper functions**: 12 site(s) - `dup-83a6d4922163`
 
-### Clusters (28 exact, 508 near, 65 semantic)
+### Clusters (27 exact, 508 near, 65 semantic)
 
 #### `dup-7dfa0dd1a6a8` (near, 2 sites)
 
@@ -8874,15 +8874,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_staleness.rs:58-65` `seed_def`
 - `tests/graph_show_surface.rs:71-78` `seed_def`
 
-#### `dup-d6f58172590a` (exact, 2 sites)
-
-Proposed home: `a new shared module (sites span 2 files: tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/graph_around_code_first.rs:204-237` `run_rigger_ignores_an_inherited_ambient_store_fence`
-- `tests/graph_around_governance_boundaries.rs:362-392` `run_rigger_ignores_an_inherited_ambient_store_fence`
-
 #### `dup-66c258b5459c` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/graph_collision_body_and_tiebreak.rs, tests/graph_density_spread_floor_and_centring.rs)`
@@ -9985,38 +9976,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 7051 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 7050 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/canary.rs:238-250` `is_batch_marker` - no duplicate found by reading
-- `src/canary_store.rs:1079-1103` `lens_tier_scores_identically_serial_or_parallel` - no duplicate found by reading
-- `src/concepts.rs:312-322` `edge` - caught: `dup-a9e2c470df31`
-- `src/conductor.rs:9976-9998` `catch_up_owed_regeneration` - no duplicate found by reading
-- `src/conductor.rs:23494-23545` `review_boundary_events_carry_the_worktree_sha` - no duplicate found by reading
-- `src/config_store.rs:801-814` `the_verdict_line_lint_reaches_the_light_tier_adjudicator` - no duplicate found by reading
-- `src/console/map.rs:2251-2281` `frame_selected_card_lists_called_by_and_calls_by_name_with_relation_type` - no duplicate found by reading
-- `src/console/mod.rs:689-702` `statusline_reports_focus_landed_and_working` - caught: `dup-ebdf0a8c1ad4`
-- `src/dash.rs:5375-5381` `console_event_wire_carries_recorded_at` - no duplicate found by reading
-- `src/dash.rs:10350-10360` `card_tolerates_a_malformed_proof_evidence_attr` - caught: `dup-3be7511516ac`
-- `src/liveness.rs:1089-1113` `classify_stale_returns_only_the_stale_spawns_classified` - no duplicate found by reading
-- `src/metrics.rs:1552-1554` `escalated` - caught: `dup-17538867af44`
-- `src/worktree.rs:833-851` `files_touched_by_commit` - no duplicate found by reading
-- `src/worktree.rs:3614-3655` `commits_since_base_lists_this_branchs_own_commits_oldest_first` - no duplicate found by reading
-- `tests/cli.rs:1566-1617` `result_from_a_relocated_git_worktree_outside_the_repo_records_into_the_repo_stream` - caught: `dup-52abb8e62304`
-- `tests/cli.rs:2180-2218` `a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root` - caught: `dup-ca5b8d6d2708`
-- `tests/cli.rs:5519-5533` `resume_unit_refuses_an_unknown_unit` - caught: `dup-45945bd806e6`
-- `tests/cli.rs:27117-27160` `step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base` - caught: `dup-9d43af68ec57`
-- `tests/code_entity_test_exclusion_periphery.rs:1549-1615` `project_batches_also_excludes_an_out_of_line_test_module_declarations_target_file` - no duplicate found by reading
-- `tests/common/mod.rs:346-355` `stop_pid` - no duplicate found by reading
-- `tests/gate_store_fence_periphery.rs:274-331` `a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_store` - no duplicate found by reading
-- `tests/integrate_conflict_merge_periphery.rs:1681-1789` `a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact` - caught: `dup-83a6d4922163`
+- `src/budget.rs:139-154` `unlimited_budget_never_touches_the_filesystem_and_never_blocks` - no duplicate found by reading
+- `src/conductor.rs:44720-44794` `a_resolved_plan_critique_gate_does_not_re_run_on_resume` - no duplicate found by reading
+- `src/console/map.rs:2749-2762` `kind_colour_of_each_named_kind_is_distinct_and_stable` - no duplicate found by reading
+- `src/contextgraph/sqlite.rs:4115-4157` `locate_resolves_by_id_and_name_and_lists_ambiguous_candidates_sorted` - no duplicate found by reading
+- `src/grounder/symbols/grounder.rs:1345-1361` `ground_gives_a_rare_exact_match_priority_over_six_tree_wide_definitions_of_another_term` - no duplicate found by reading
+- `src/grounder/symbols/grounder.rs:1713-1780` `scored_hits_a_strictly_higher_tier_always_wins_over_a_worse_commonness_and_lexical` - caught: `dup-5e84e7b4d6c7`
+- `src/main.rs:577-600` `resolve_conn` - no duplicate found by reading
+- `src/main.rs:1231-1245` `decide_migration` - no duplicate found by reading
+- `src/main.rs:10582-10619` `residue_advisories` - no duplicate found by reading
+- `src/reap.rs:225-231` `read_ppid` - caught: `dup-8e67cb260888`
+- `src/reap.rs:883-919` `processes_rooted_under_matches_a_process_whose_cwd_was_deleted_out_from_under_it` - no duplicate found by reading
+- `src/registry.rs:262-268` `read_live_no_prune` - no duplicate found by reading
+- `src/sidecar.rs:238-278` `decisions_for_scopes_to_the_blast_radius` - caught: `dup-eca5df3ce0b6`
+- `src/spawn.rs:611-613` `is_adjudicator` - no duplicate found by reading
+- `src/spawn_store.rs:62-64` `what` - caught: `dup-e6404599f437`
+- `src/spec.rs:459-468` `denied_owner_positions` - no duplicate found by reading
+- `src/spec.rs:2229-2235` `spec_lint_advisories_is_deterministic` - no duplicate found by reading
+- `tests/calls_down_execution_path_periphery.rs:288-329` `the_depth_bound_clamps_the_layers_the_walk_returns` - caught: `dup-dc997a3ea272`
+- `tests/cli.rs:2479-2497` `ground_via_nop_backend_stays_silent_and_never_prints_the_weak_match_line` - no duplicate found by reading
+- `tests/cli.rs:29241-29288` `guard_write_allows_under_the_root_and_denies_outside_naming_the_first` - no duplicate found by reading
+- `tests/common/fixtures/config.rs:14-20` `cfg_for` - no duplicate found by reading
+- `tests/common/fixtures/graph.rs:20-29` `node_with_attrs` - no duplicate found by reading
+- `tests/console_status_periphery.rs:228-242` `rigger_status_reports_nothing_needs_you_on_a_clean_run` - no duplicate found by reading
+- `tests/graph_query_engine_relocation_periphery.rs:310-315` `an_empty_search_query_yields_no_hits_over_the_op_layer_too` - no duplicate found by reading
 - `tests/metadata_card_periphery.rs:116-163` `the_served_route_carries_a_code_subjects_card` - caught: `dup-776fd9e153e2`
-- `tests/reap_before_removal_periphery.rs:66-121` `worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_reclaiming_it` - caught: `dup-02b6d686ec67`
-- `tests/reset_build_cache_periphery.rs:240-304` `reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard` - no duplicate found by reading
-- `tests/reset_derived_compaction.rs:110-136` `rows` - caught: `dup-cb850da85ff9`
-- `tests/reset_derived_compaction_periphery.rs:1332-1368` `graph_rows` - no duplicate found by reading
-- `tests/simplification_audit.rs:2184-2186` `is_keyword` - caught: `dup-a17e83ea2e51`
-- `tests/simplification_audit.rs:2631-2635` `new` - no duplicate found by reading
-- `tests/simplification_audit.rs:7110-7120` `assemble_fresh_report_contains_section_1_and_every_placeholder` - no duplicate found by reading
+- `tests/metadata_card_periphery.rs:296-337` `the_served_route_carries_each_top_evidence_members_own_kind` - no duplicate found by reading
+- `tests/reset_derived_compaction.rs:591-597` `read_log` - no duplicate found by reading
+- `tests/reset_derived_compaction_periphery.rs:2793-2804` `valid_from_by_position` - no duplicate found by reading
+- `tests/reset_derived_compaction_periphery.rs:3052-3163` `a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_to` - no duplicate found by reading
+- `tests/reset_menu.rs:118-131` `store_row_counts` - no duplicate found by reading
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph); that exclusion still applies unchanged. A later round's own second commit grew the scanned population from 7513 to 7517 functions, reshuffling the draw; every one of the functions above marked "no duplicate found by reading" was re-read by hand against its host file's surrounding context, exactly as this THOROUGHNESS check requires whenever the draw changes, and all are genuinely not duplicates - this redraw surfaced no new recall gap. Two standing shapes an earlier round's reading pass named, neither drawn this time but both still present and still correctly excluded, are restated here so neither is mistaken for a miss on a future draw: `apply` at `src/conductor.rs:38374-38376` (`grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grep_superset`) is a `Projection` test double's own required trait-impl body, the same port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) already excludes from clustering by design; and `gate_verdict_event` (`src/conductor.rs:37733-37742`) together with the `verdict` closure inside `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` (`src/conductor.rs:39138-39147`) do the identical job - find the recorded `GateVerdict` for a `"<unit>/gate:g#<attempt>"` replay key, panicking with the same message when none exists - differing only in whether the unit segment is the literal `"s"` or a parameter. A `let`-bound closure is not a `fn` item, so no change to this catalog's `fn`-only scanner (module doc, THE SCANNER) short of teaching it to see closures could catalog this pair as a cluster; named here, prominently, rather than silently, so a later refactor - or a scanner that learns to see closures - does not miss it.
 
@@ -10079,7 +10070,7 @@ STALE DOC CLAIMS. Scanned every `docs/*.md`, `README.md`, and `CONTRIBUTING.md` 
 
 ## 5. Test-Suite Shape
 
-Instrument: `tests/` holds 156 files today (spec 85's Goal cites 153 - this criterion's own two periphery files plus criterion 2's own periphery file, all landed since the Goal text was written, account for the +3), 104,685 lines by `wc -l` (this section's own prose lives inside `simplification_audit.rs`, one of the 156 files this instrument counts, so this criterion's own edits land inside this same file and this figure grows with each such edit - accurate as of this section's most recent revision, not guaranteed to remain so after further edits to this file). Subsystem grouping is a hand-derived, ordered filename-keyword rule table (mirrors criterion 1's own per-file classification convention: first-match-wins, narrowest first, an explicit residual named rather than silently dropped). The consolidation-candidate columns below cross-reference the ALREADY-COMMITTED `docs/audit/duplication-catalog.json` (criterion 2's own generator output, not re-scanned here) filtered to the 283 clusters whose every site sits under `tests/`.
+Instrument: `tests/` holds 156 files today (spec 85's Goal cites 153 - this criterion's own two periphery files plus criterion 2's own periphery file, all landed since the Goal text was written, account for the +3), 104,685 lines by `wc -l` (this section's own prose lives inside `simplification_audit.rs`, one of the 156 files this instrument counts, so this criterion's own edits land inside this same file and this figure grows with each such edit - accurate as of this section's most recent revision, not guaranteed to remain so after further edits to this file). Subsystem grouping is a hand-derived, ordered filename-keyword rule table (mirrors criterion 1's own per-file classification convention: first-match-wins, narrowest first, an explicit residual named rather than silently dropped). The consolidation-candidate columns below cross-reference the ALREADY-COMMITTED `docs/audit/duplication-catalog.json` (criterion 2's own generator output, not re-scanned here) filtered to the 282 clusters whose every site sits under `tests/`.
 
 ### 5.1 Subsystem grouping and consolidation map
 
@@ -10104,7 +10095,7 @@ Total: 156 files, 104,725 lines by this table's own per-file count (156 files su
 
 ### 5.2 Shared fixtures to extract into `tests/common`
 
-`tests/common/mod.rs` and `tests/common/fixtures/` already hold the shared fixtures - the gap is everything still duplicated OUTSIDE them. The catalog's all-helper-function test-only clusters (104 of the 283 test-only clusters) are the evidence; the 4 widest, by distinct files, are the headline case for extraction:
+`tests/common/mod.rs` and `tests/common/fixtures/` already hold the shared fixtures - the gap is everything still duplicated OUTSIDE them. The catalog's all-helper-function test-only clusters (104 of the 282 test-only clusters) are the evidence; the 4 widest, by distinct files, are the headline case for extraction:
 
 - `temp_project` - 28 sites across 28 files (`dup-2634e1abc409`, semantic).
 - `temp_project` - 21 sites across 21 files (`dup-0792f3c788b4`, near).
@@ -10132,7 +10123,7 @@ Every one of these 104 clusters, with its full site list and the catalog's own `
 
 ### 5.5 Table-driven test families
 
-178 test-only clusters have every site as a `#[test]` function - a literal-differs-only-in-input family, spec 85's own named table-driven-test candidate class. The single largest anywhere in the suite: `dup-7fb3b2dc01eb` (near, 42 sites, all in `tests/spec_lint.rs`, e.g. `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class`, `validate_spec_attributes_a_prose_level_defect_to_no_criterion`, `validate_spec_reports_two_simultaneous_defects_on_the_same_criterion` - near-identical "feed one spec fixture through `validate`, assert one expected defect/advisory line" bodies). Proposed table: `#[test] fn validate_spec_field_guide_defects() { for (fixture, expected) in CASES { ... } }` retiring all 42 named tests into one parametrized loop over a `(&str, &str)` (or richer struct) case table. Other large families (the `tests/reap_before_removal_audit.rs` exemption-coverage family, this generator's own scanner tests and the no-os-kill test helper's pid-refusal tests are already closed: their cases run as `test_cases!` rows over shared case helpers): `dup-a76bc2af4d4b`/`dup-7f174d1fe10b` (11+4 sites, `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test - a `(pattern, is_caught)` table). As with 5.4, the full 178-family list lives in the committed catalog by cluster id for a follow-up test-consolidation spec to consume directly.
+177 test-only clusters have every site as a `#[test]` function - a literal-differs-only-in-input family, spec 85's own named table-driven-test candidate class. The single largest anywhere in the suite: `dup-7fb3b2dc01eb` (near, 42 sites, all in `tests/spec_lint.rs`, e.g. `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class`, `validate_spec_attributes_a_prose_level_defect_to_no_criterion`, `validate_spec_reports_two_simultaneous_defects_on_the_same_criterion` - near-identical "feed one spec fixture through `validate`, assert one expected defect/advisory line" bodies). Proposed table: `#[test] fn validate_spec_field_guide_defects() { for (fixture, expected) in CASES { ... } }` retiring all 42 named tests into one parametrized loop over a `(&str, &str)` (or richer struct) case table. Other large families (the `tests/reap_before_removal_audit.rs` exemption-coverage family, this generator's own scanner tests and the no-os-kill test helper's pid-refusal tests are already closed: their cases run as `test_cases!` rows over shared case helpers): `dup-a76bc2af4d4b`/`dup-7f174d1fe10b` (11+4 sites, `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test - a `(pattern, is_caught)` table). As with 5.4, the full 177-family list lives in the committed catalog by cluster id for a follow-up test-consolidation spec to consume directly.
 
 ## 6. Prioritized Plan
 
@@ -10312,13 +10303,13 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 - Risk: low - test-only.
 - Unblocks: closes out the helper-duplication half of the test suite's own strict-DRY exposure.
 
-#### 18. Sweep the remaining 175 table-driven test families (section 5.5, beyond item 16's headline families)
+#### 18. Sweep the remaining 174 table-driven test families (section 5.5, beyond item 16's headline families)
 
-- Scope: the 178 test-only, all-`#[test]` clusters section 5.5 names, minus the 3 cluster ids item 16 already covers - consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: the 177 test-only, all-`#[test]` clusters section 5.5 names, minus the 3 cluster ids item 16 already covers - consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative.
 - Risk: low - test-only.
-- Unblocks: closes out the table-driven-test half of the test suite's own strict-DRY exposure; combined with items 14 and 16-17, retires all 283 test-only clusters section 2 found.
+- Unblocks: closes out the table-driven-test half of the test suite's own strict-DRY exposure; combined with items 14 and 16-17, retires all 282 test-only clusters section 2 found.
 
 ### 6.7 Tier 6: remaining catalog sweep
 
@@ -10326,11 +10317,11 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 311 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 601 clusters, 283 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-1edec36f5930`, `dup-ec5b0650a4a0`, `dup-e4cc0ac793e5`, `dup-6f592e6f36fa`, `dup-8e67cb260888`, `dup-0f2f14f8c3ce`, `dup-83a6d4922163`); the remaining 311 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-7dfa0dd1a6a8`, `dup-097bb5af6d73`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 600 clusters, 282 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-1edec36f5930`, `dup-ec5b0650a4a0`, `dup-e4cc0ac793e5`, `dup-6f592e6f36fa`, `dup-8e67cb260888`, `dup-0f2f14f8c3ce`, `dup-83a6d4922163`); the remaining 311 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-7dfa0dd1a6a8`, `dup-097bb5af6d73`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
-- Unblocks: the last of the catalog's 601 clusters; after items 1-3 and 10-19 all land, a future spec can state and check that the duplication catalog's own drift guard finds zero live clusters left unaddressed.
+- Unblocks: the last of the catalog's 600 clusters; after items 1-3 and 10-19 all land, a future spec can state and check that the duplication catalog's own drift guard finds zero live clusters left unaddressed.
 
 ### 6.8 Dead and vestigial code beyond item 0: no further follow-up
 

@@ -18297,24 +18297,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-d6f58172590a",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/graph_around_code_first.rs",
-        "name": "run_rigger_ignores_an_inherited_ambient_store_fence",
-        "content_hash": "c32398c3c5d17b19"
-      },
-      {
-        "file": "tests/graph_around_governance_boundaries.rs",
-        "name": "run_rigger_ignores_an_inherited_ambient_store_fence",
-        "content_hash": "c32398c3c5d17b19"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-66c258b5459c",
     "classification": "near",
     "sites": [
