@@ -4500,20 +4500,10 @@ impl RunCtx<'_> {
         gate::decide(&probe) == gate::Action::Pause
     }
 
-    /// The review panel a unit reviews ITSELF with (§3.2): the stage's own `review`
-    /// override when it sets one, otherwise the workflow-wide `defaults.review`.
-    /// Declared once and inherited by every implementer unit, including the
-    /// planner-proposed units that run through `run_single_stage`. Delegates to
-    /// [`crate::config::Workflow::effective_review_panel`] (spec 92 criterion 2), the ONE
-    /// fallback-rule authority the workflow-definition graph indexer also reads.
-    fn effective_review_panel<'a>(&'a self, st: &'a Stage) -> &'a crate::config::ReviewPanel {
-        self.cfg.workflow.effective_review_panel(st)
-    }
-
     /// Select the review panel for a unit by its observable risk (spec 03 / spec 13
     /// unit 4), routing to the LIGHT or FULL tier via [`route_review_tier`] over the
-    /// unit's [`effective_review_panel`](RunCtx::effective_review_panel). `blast_radius`
-    /// is the unit's `.safe` structural blast-radius view (spec 16 unit 3), passed down from
+    /// unit's [`effective_review_panel`](crate::config::Workflow::effective_review_panel).
+    /// `blast_radius` is the unit's `.safe` structural blast-radius view (spec 16 unit 3), passed down from
     /// [`review_unit`](RunCtx::review_unit) via a separate
     /// [`grounded_blast_radius`](RunCtx::grounded_blast_radius) call - the UNCAPPED
     /// structural-width superset on the symbols grounder, equal to the grounded seed on the
@@ -4526,7 +4516,11 @@ impl RunCtx<'_> {
         blast_radius: &[String],
         flapped: bool,
     ) -> TierRouting<'a> {
-        route_review_tier(self.effective_review_panel(st), blast_radius, flapped)
+        route_review_tier(
+            self.cfg.workflow.effective_review_panel(st),
+            blast_radius,
+            flapped,
+        )
     }
 
     /// Log a unit's review-tier routing decision with its inputs (spec 03 / spec 13
@@ -6510,7 +6504,7 @@ impl RunCtx<'_> {
         // `reviewed` stamp uses inline, never a fresh live read here. `verified#{lane}`
         // above legitimately keeps `winner_sha`: it records what the gates verified, not
         // what the review judged.
-        let panel = self.effective_review_panel(st);
+        let panel = self.cfg.workflow.effective_review_panel(st);
         if !panel.is_empty() && !panel.adjudicator.is_empty() {
             self.emit_keyed_meta(
                 &format!("{}/reviewed#{lane}", st.name),
