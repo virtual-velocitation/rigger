@@ -1603,7 +1603,10 @@ grounding noise without wiping the store: it deletes no\n                       
 event. reset itself does write the log once, on a store\n                              \
 still under the legacy basename namespace: the one-time\n                              \
 identity migration renames those streams and records one\n                              \
-DecisionMade before either mode prunes\n  \
+DecisionMade before either mode prunes. When no driver is\n                              \
+alive, it also closes the current run's units whose branch\n                              \
+work is landed on rigger-run, appending the UnitIntegrated\n                              \
+a hand landing never recorded\n  \
 rigger reset --derived      compact the EVENT LOG: keep the latest event per\n                              \
 replay key of each derived index type, delete the\n                              \
 superseded re-recordings, and vacuum so the file shrinks\n                              \
@@ -8516,7 +8519,7 @@ fn cmd_reset(args: &[String]) -> Res {
         migrate_identity_at(&loc)?;
     }
     if modes.runs {
-        reset_runs(&loc, &selection)?;
+        reset_runs(&loc, &selection, rigger::registry::default_dir().as_deref())?;
     }
     if modes.build_cache {
         // A pure filesystem reclaim over the scratch root, orthogonal to the event log and
@@ -9064,6 +9067,54 @@ fn refuse_derived_reset_if_live(
     selection: &StoreSelection,
     registry_dir: Option<&Path>,
 ) -> Res {
+    let backend = resolve_store(selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let reasons = live_writer_facts(loc, selection, registry_dir, &events)?.reasons();
+    if reasons.is_empty() {
+        return Ok(());
+    }
+    Err(live_writer_refusal(&reasons).into())
+}
+
+/// The four facts [`live_writer_reasons`] composes, gathered once so both consumers read the
+/// same probe: `reset --derived`'s refusal ([`refuse_derived_reset_if_live`]) and `reset
+/// --runs`'s dead-driver test ([`close_landed_units`]).
+struct LiveWriterFacts {
+    step_lock_held: bool,
+    live_units: std::collections::HashSet<String>,
+    in_flight_spawn_ids: Vec<String>,
+    driver_registrations: usize,
+}
+
+impl LiveWriterFacts {
+    fn reasons(&self) -> Vec<String> {
+        live_writer_reasons(
+            self.step_lock_held,
+            &self.live_units,
+            &self.in_flight_spawn_ids,
+            self.driver_registrations,
+        )
+    }
+
+    /// Nothing is driving the run: no `rigger step` holds the lock, no spawn awaits its result,
+    /// and no `run`/`serve` is registered for this store. A non-terminal unit alone is not a
+    /// driver - it is exactly what a dead driver leaves behind.
+    fn driver_dead(&self) -> bool {
+        !self.step_lock_held
+            && self.in_flight_spawn_ids.is_empty()
+            && self.driver_registrations == 0
+    }
+}
+
+/// Gather [`LiveWriterFacts`] over `events` (the whole run stream). IMPURE (a lock probe and an
+/// optional registry read) so the decisions built on it stay pure and unit-tested.
+fn live_writer_facts(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    registry_dir: Option<&Path>,
+    events: &[Event],
+) -> Result<LiveWriterFacts, Box<dyn std::error::Error>> {
     // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration,
     // resolved at THIS STORE's own directory (never the process cwd) - `reset --derived` is run
     // from a nested worktree just as every other courier is (see `require_store_dir`), and a
@@ -9078,11 +9129,8 @@ fn refuse_derived_reset_if_live(
         Err(e) => return Err(e),
     };
 
-    let backend = resolve_store(selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let live_units = current_run_units(&events).live_branches;
-    let in_flight_spawn_ids: Vec<String> = spawn::step_result(runscope::current_run(&events))?
+    let live_units = current_run_units(events).live_branches;
+    let in_flight_spawn_ids: Vec<String> = spawn::step_result(runscope::current_run(events))?
         .wave
         .into_iter()
         .map(|w| w.id)
@@ -9110,16 +9158,12 @@ fn refuse_derived_reset_if_live(
         })
         .unwrap_or(0);
 
-    let reasons = live_writer_reasons(
+    Ok(LiveWriterFacts {
         step_lock_held,
-        &live_units,
-        &in_flight_spawn_ids,
+        live_units,
+        in_flight_spawn_ids,
         driver_registrations,
-    );
-    if reasons.is_empty() {
-        return Ok(());
-    }
-    Err(live_writer_refusal(&reasons).into())
+    })
 }
 
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
@@ -9147,7 +9191,7 @@ fn refuse_derived_reset_if_live(
 /// ([`Projector::prune`]). ONE whole-stream forward read feeds the attribution AND the
 /// node-id lookup (the index-keying contract `run_attribution` documents - a filtered slice
 /// would misattribute); the derived node ids are then handed to the prune.
-fn reset_runs(loc: &StoreLocation, selection: &StoreSelection) -> Res {
+fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Option<&Path>) -> Res {
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
@@ -9160,6 +9204,8 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     let boundary = superseded_edge_boundary(&events);
 
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
+    let facts = live_writer_facts(loc, selection, registry_dir, &events)?;
+    close_landed_units(loc, &store, &graph, &events, &facts)?;
     let removed = graph.prune(&drop, boundary)?;
     // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
     // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
@@ -9178,6 +9224,61 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection) -> Res {
         removed.nodes, removed.superseded_edges, reclaimed_bytes
     );
     Ok(())
+}
+
+/// Close the current run's hand-landed units: when nothing drives the run
+/// ([`LiveWriterFacts::driver_dead`]), record the `UnitIntegrated` the conductor never minted for
+/// every unit whose branch work is landed on the run branch
+/// ([`rigger::worktree::landed_branch_tip`]). A run the operator finished by hand otherwise
+/// stays "working" forever, because only the conductor mints that event and `rigger emit`
+/// refuses it. Appends only - no event is deleted or rewritten - and a live run is never
+/// touched.
+fn close_landed_units(
+    loc: &StoreLocation,
+    store: &dyn EventStore,
+    graph: &Projector,
+    events: &[Event],
+    facts: &LiveWriterFacts,
+) -> Res {
+    if !facts.driver_dead() {
+        return Ok(());
+    }
+    let run = ledger::project(runscope::current_run(events))?;
+    let repo = loc.repo_root();
+    let landed = landed_units(&run, |branch| {
+        rigger::worktree::landed_branch_tip(&repo, branch, RUN_BRANCH)
+    });
+    let run_id = runscope::current_run_id(events).unwrap_or_default();
+    let closing = landed
+        .iter()
+        .map(|(unit, tip)| {
+            let body = serde_json::json!({"id": unit, "commit": tip, "by": "operator"});
+            let ev = Event::new(ledger::TYPE_UNIT_INTEGRATED, serde_json::to_vec(&body)?);
+            Ok(ev.with_meta(runscope::META_RUN_ID, &run_id))
+        })
+        .collect::<Result<Vec<Event>, serde_json::Error>>()?;
+    rigger::ingest::append_and_fold_batch(store, Some(graph), conductor::STREAM, &closing)?;
+    for (unit, tip) in &landed {
+        println!(
+            "reset --runs: closed unit {unit:?} of run {run_id}: no driver is alive and its \
+             branch tip {tip} is landed on {RUN_BRANCH}, so its UnitIntegrated is recorded \
+             (by operator)"
+        );
+    }
+    Ok(())
+}
+
+/// The units of `run` that have not integrated but whose branch `landed_tip` reports landed,
+/// as `(unit, tip)` in the run's unit order. Pure over the injected landing oracle.
+fn landed_units(
+    run: &RunState,
+    landed_tip: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    run.units
+        .values()
+        .filter(|u| u.status != ledger::Status::Integrated && !u.branch.is_empty())
+        .filter_map(|u| landed_tip(&u.branch).map(|tip| (u.id.clone(), tip)))
+        .collect()
 }
 
 /// The retention cutoff `rigger reset --runs` reclaims superseded structural edges beneath

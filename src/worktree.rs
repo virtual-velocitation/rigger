@@ -1451,6 +1451,30 @@ pub fn branch_tip(repo: &str, branch: &str) -> Result<String, Error> {
         .map_err(Error)
 }
 
+/// The tip of local branch `branch` when its work is LANDED on `run_branch`: the tip is an
+/// ancestor of `run_branch` AND differs from the commit the branch was created at (the oldest
+/// entry of its reflog), so a branch that never moved - trivially an ancestor of the branch it
+/// was cut from - never reads as landed. `None` whenever either fact cannot be established (no
+/// such branch, no reflog), failing closed: `rigger reset --runs` records a unit's terminal
+/// event on this answer, and an unprovable landing must leave the unit open.
+pub fn landed_branch_tip(repo: &str, branch: &str, run_branch: &str) -> Option<String> {
+    let tip = branch_tip(repo, branch).ok()?;
+    let reflog = run_git(
+        repo,
+        &[
+            "reflog",
+            "show",
+            "--format=%H",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .ok()?;
+    let created = reflog.lines().map(str::trim).rfind(|l| !l.is_empty())?;
+    let landed =
+        created != tip && run_git(repo, &["merge-base", "--is-ancestor", &tip, run_branch]).is_ok();
+    landed.then_some(tip)
+}
+
 /// Whether `r` resolves to a commit in `repo` (a branch, tag, remote-tracking ref,
 /// or sha). Used by [`Worktree::ensure_run_branch`] to distinguish a base ref it can
 /// anchor the run branch to from a not-yet-present default (e.g. `origin/main` on a

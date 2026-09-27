@@ -7773,7 +7773,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "30effd9bc397c24a"
+    "content_hash": "4123394b48abca61"
   },
   {
     "file": "src/main.rs",
@@ -7869,7 +7869,31 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reset_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "47fe382a7b702d4e"
+    "content_hash": "9a020a1c75d82802"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "reasons",
+    "is_test": false,
+    "proposed_module": "main::live_writer_facts",
+    "reason": "method inside `impl LiveWriterFacts`; grouped with its other `LiveWriterFacts` methods.",
+    "content_hash": "11815221ce30002e"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "driver_dead",
+    "is_test": false,
+    "proposed_module": "main::live_writer_facts",
+    "reason": "method inside `impl LiveWriterFacts`; grouped with its other `LiveWriterFacts` methods.",
+    "content_hash": "22f12898f7827d08"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "live_writer_facts",
+    "is_test": false,
+    "proposed_module": "main::liveness",
+    "reason": "name contains \"live\" (liveness/heartbeat reporting); grouped under `main::liveness`.",
+    "content_hash": "de898ee149e1ded8"
   },
   {
     "file": "src/main.rs",
@@ -7877,7 +7901,23 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reset_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "cb27274561bd8ed5"
+    "content_hash": "dc3c2610abec7751"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "close_landed_units",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "9ec2072bcc05e94d"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "landed_units",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "901ad57b77fd9fb5"
   },
   {
     "file": "src/main.rs",
