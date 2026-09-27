@@ -109,7 +109,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "737b5818374f31b2"
+    "content_hash": "1031427e597a3bf7"
   },
   {
     "file": "src/conductor.rs",
@@ -1565,7 +1565,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"normalize\" (normalization helper); grouped under `conductor::support`.",
-    "content_hash": "ae3286aa2107674d"
+    "content_hash": "bee7ff4844c6f51a"
   },
   {
     "file": "src/conductor.rs",
@@ -1582,14 +1582,6 @@
     "proposed_module": "conductor::schedule",
     "reason": "name contains \"criterion\" (unit scheduling); grouped under `conductor::schedule`.",
     "content_hash": "570b503f353de874"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "fnv1a_64",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "189c50da3f67369d"
   },
   {
     "file": "src/conductor.rs",
@@ -2577,35 +2569,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "agent",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "75d44d6040da98b9"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "agent_with_prompt",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "a94e1072a689df5c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "gate_def",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cc9540422cdd0397"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "gate_def_inputs",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b7bdcfa8d6f6b282"
   },
   {
     "file": "src/conductor.rs",
@@ -3241,38 +3209,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "read_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "477c8540a3f25ecc"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b33b5a578a27ef85"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0acfa6ce655248d3"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b6bdbdc8d779c1e2"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "apply",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -3309,7 +3245,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f19de69d9f5e3d84"
+    "content_hash": "78b3724246af9600"
   },
   {
     "file": "src/conductor.rs",
@@ -4190,38 +4126,6 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "1c3e1dada2643d25"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aa4f06f44903b35c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "762287eff39b0e95"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9426cdca6b9af633"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cf4ff0118dc3c5e2"
   },
   {
     "file": "src/conductor.rs",
@@ -5817,38 +5721,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "read_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aa4f06f44903b35c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "762287eff39b0e95"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9426cdca6b9af633"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cf4ff0118dc3c5e2"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -6582,14 +6454,6 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "d94053f13819bb0d"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "fnv1a_64",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "1ce696fda4dba48d"
   },
   {
     "file": "src/main.rs",
@@ -9201,14 +9065,6 @@
   },
   {
     "file": "src/main.rs",
-    "name": "ev",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "02c42dcafc6b2a49"
-  },
-  {
-    "file": "src/main.rs",
     "name": "run_started",
     "is_test": true,
     "proposed_module": "main::tests",
@@ -9221,7 +9077,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b577dc16c2083ad5"
+    "content_hash": "d6907be589a2128d"
   },
   {
     "file": "src/main.rs",
@@ -9249,19 +9105,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "ev",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "883a6c6b9359bcc0"
-  },
-  {
-    "file": "src/main.rs",
     "name": "the_denoise_leaves_metrics_run_pruning_and_blast_radius_unaffected",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6b1edfe7f5f26dcb"
+    "content_hash": "013033d511de5072"
   },
   {
     "file": "src/main.rs",
@@ -9473,14 +9321,6 @@
   },
   {
     "file": "src/main.rs",
-    "name": "gitsemver_available",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "deac22674e638351"
-  },
-  {
-    "file": "src/main.rs",
     "name": "behind_the_tree_git",
     "is_test": true,
     "proposed_module": "main::tests",
@@ -9501,7 +9341,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1ae2dea31a3e2328"
+    "content_hash": "0fc24cb8a58b5151"
   },
   {
     "file": "src/main.rs",
@@ -9509,7 +9349,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "becee0c36393e5ea"
+    "content_hash": "861b1fd85e92daab"
   },
   {
     "file": "src/main.rs",
@@ -9534,14 +9374,6 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "3fe026d0f659c376"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "write_file",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "324bfae9f5fcb5f9"
   },
   {
     "file": "src/main.rs",
@@ -10081,19 +9913,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "drop",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2a0d3bebae654ea2"
-  },
-  {
-    "file": "src/main.rs",
     "name": "require_store_dir_fence_is_off_by_default",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e2516efb5f64e3ca"
+    "content_hash": "1e31b05d2e570a49"
   },
   {
     "file": "src/main.rs",
@@ -10769,19 +10593,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "js_function_body",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "99126f4025d6cb1c"
-  },
-  {
-    "file": "src/main.rs",
     "name": "phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4078755f8b0f811b"
+    "content_hash": "0f74ad7528547522"
   },
   {
     "file": "src/main.rs",
@@ -10797,7 +10613,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "bbff2e161bca234f"
+    "content_hash": "1c39fd50ec11ca36"
   },
   {
     "file": "src/main.rs",
@@ -10869,7 +10685,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0d872f46518077ba"
+    "content_hash": "57fd5cdeb418d918"
   },
   {
     "file": "src/main.rs",
@@ -10878,14 +10694,6 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "49f10ca59a276454"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "npm_available",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d95b93d499dfa8c4"
   },
   {
     "file": "src/main.rs",
@@ -11305,27 +11113,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "drop",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2a0d3bebae654ea2"
-  },
-  {
-    "file": "src/main.rs",
     "name": "cmd_stats_on_a_never_run_project_says_no_runs_and_creates_no_db",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "193917f2175f4578"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "drop",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2a0d3bebae654ea2"
+    "content_hash": "b2dd5f9abed23c71"
   },
   {
     "file": "src/main.rs",
@@ -11333,7 +11125,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "24c47d446d1b42c3"
+    "content_hash": "8deab46c036dd74e"
   },
   {
     "file": "src/main.rs",
@@ -11430,14 +11222,6 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "7811a2b95938a7c6"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "pgid_of",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5fad14eddba6eafd"
   },
   {
     "file": "src/main.rs",
@@ -12881,14 +12665,6 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "ev",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f19e07413a5e127d"
-  },
-  {
-    "file": "src/dash.rs",
     "name": "positioned",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13425,14 +13201,6 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "star_graph",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e1ac8518eb1556b0"
-  },
-  {
-    "file": "src/dash.rs",
     "name": "neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13453,15 +13221,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "88d1c9d4a3aae098"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "chain_graph_local",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "20bf064c920ea290"
+    "content_hash": "8a095455fa6f57c8"
   },
   {
     "file": "src/dash.rs",
@@ -13761,22 +13521,6 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "cedge",
-    "is_test": true,
-    "proposed_module": "dash::tests::calls_route_c4",
-    "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "b1b47e1936962a3e"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "file_node",
-    "is_test": true,
-    "proposed_module": "dash::tests::calls_route_c4",
-    "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "453d345c5061e6a4"
-  },
-  {
-    "file": "src/dash.rs",
     "name": "layer_of",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13813,7 +13557,7 @@
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "2f24be799333bf1c"
+    "content_hash": "e39634d1dc200bfd"
   },
   {
     "file": "src/dash.rs",
@@ -13821,7 +13565,7 @@
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "422bf1b99ecdff32"
+    "content_hash": "d556ffd2ec3353a7"
   },
   {
     "file": "src/dash.rs",
@@ -13829,7 +13573,7 @@
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "f369cbdc4ad3f667"
+    "content_hash": "54fdfd6d99aba1b7"
   },
   {
     "file": "src/dash.rs",
@@ -13862,14 +13606,6 @@
     "proposed_module": "dash::tests::calls_route_c4",
     "reason": "defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
     "content_hash": "9189ef0feb66b649"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "node",
-    "is_test": true,
-    "proposed_module": "dash::tests::rationale_overlay_c3",
-    "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "af4647d051aff8a9"
   },
   {
     "file": "src/dash.rs",
@@ -13985,14 +13721,6 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "node",
-    "is_test": true,
-    "proposed_module": "dash::tests::subject_view_c5",
-    "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "9d612f8c843e2028"
-  },
-  {
-    "file": "src/dash.rs",
     "name": "edge",
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
@@ -14046,14 +13774,6 @@
     "proposed_module": "dash::tests::subject_view_c5",
     "reason": "defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
     "content_hash": "09d17d5aceb6b8d8"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "node",
-    "is_test": true,
-    "proposed_module": "dash::tests::metadata_card_c2",
-    "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "9d612f8c843e2028"
   },
   {
     "file": "src/dash.rs",
