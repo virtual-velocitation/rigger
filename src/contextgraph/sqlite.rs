@@ -4,7 +4,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
@@ -21,7 +20,7 @@ use super::{
     TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
-use crate::eventstore::{Event, Position};
+use crate::eventstore::{to_nanos, Event, Position};
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
 
 const SCHEMA: &str = "
@@ -875,12 +874,6 @@ fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, Erro
 
 fn be<E: std::fmt::Display>(e: E) -> Error {
     Error(e.to_string())
-}
-
-fn to_nanos(t: SystemTime) -> i64 {
-    t.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
 }
 
 impl Projection for Projector {
@@ -2792,6 +2785,7 @@ fn add_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::UNIX_EPOCH;
     // Machinery kinds/rels the fold no longer projects (spec 43 de-noise): imported here because
     // only these tests - which PROVE the machinery is gone - still name them. REL_RAISED stays in
     // the module-level import (invalidate_finding_edges still references it).

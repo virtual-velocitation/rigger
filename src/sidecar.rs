@@ -6,13 +6,12 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::contextgraph;
-use crate::eventstore::{self, Event, EventStore, Filter, Position};
+use crate::eventstore::{self, Event, EventStore, Filter, Position, StoppableThread};
 use crate::run;
 
 /// A peer's decision, as the side-car surfaces it to an agent.
@@ -67,9 +66,10 @@ pub struct PeerLesson {
 /// Sidecar collects the events on a filtered catch-up subscription in the
 /// background while one agent works.
 pub struct Sidecar {
+    // Declared first so it drops first: the collector is stopped and joined before the
+    // events it pushes into are released.
+    _collector: StoppableThread,
     seen: Arc<Mutex<Vec<Event>>>,
-    stop: Arc<AtomicBool>,
-    collector: Option<JoinHandle<()>>,
 }
 
 impl Sidecar {
@@ -94,9 +94,8 @@ impl Sidecar {
             }
         });
         Ok(Sidecar {
+            _collector: StoppableThread::new(stop, collector),
             seen,
-            stop,
-            collector: Some(collector),
         })
     }
 
@@ -212,15 +211,6 @@ impl Sidecar {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-}
-
-impl Drop for Sidecar {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.collector.take() {
-            let _ = h.join();
-        }
     }
 }
 

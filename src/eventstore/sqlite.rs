@@ -7,13 +7,13 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{
-    Appended, ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision, Filter,
-    Position, Revision, Subscription, NO_STREAM,
+    from_nanos, to_nanos, Appended, ContentIdentity, Direction, Error, Event, EventStore,
+    ExpectedRevision, Filter, Position, Revision, Subscription, NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -743,16 +743,6 @@ fn type_list(types: &[String]) -> String {
         .map(|t| sql_literal(t))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn to_nanos(t: SystemTime) -> i64 {
-    t.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
-}
-
-fn from_nanos(n: i64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_nanos(n.max(0) as u64)
 }
 
 fn meta_json(m: &BTreeMap<String, String>) -> String {

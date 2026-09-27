@@ -889,7 +889,7 @@ pub fn project(events: &[Event]) -> Metrics {
                 // verdicts are the integrate-time GATED_BY bookkeeping (one per
                 // changed file), NOT real gate runs, so exclude them - the count
                 // must reflect gate noise, not how many files a unit touched.
-                let Some(v) = gate_verdict(e) else {
+                let Some(v) = e.decode::<GateVerdictView>() else {
                     continue;
                 };
                 if !v.artifact.is_empty() || v.skipped {
@@ -933,18 +933,15 @@ pub fn project(events: &[Event]) -> Metrics {
                 finding_about.insert(id.clone(), about);
                 finding_actor.insert(id, actor);
             }
-            crate::run::TYPE_RUN_STARTED
-                if serde_json::from_slice::<crate::run::RunStarted>(&e.data).is_ok() =>
-            {
+            crate::run::TYPE_RUN_STARTED if e.decode::<crate::run::RunStarted>().is_some() => {
                 // spec 61 SPAWN TIMING: advance the run WINDOW every fold in this module keys
                 // its spawn-pairing state by (see the declaration above) - every event from
                 // here onward, until the next boundary, belongs to this new window. Mirrors
                 // `crate::run::run_attribution`'s identical forward fold over the same event
                 // type, so both derivations agree on where one run ends and the next begins -
                 // which requires gating the advance on a SUCCESSFUL decode of the body, exactly
-                // as `run_attribution` does (`RunStarted::from_event` is module-private to
-                // `run.rs`, so the decode is reproduced here via the same `pub` struct rather
-                // than duplicating its logic under a different name). A malformed/legacy body
+                // as `run_attribution` does (both decode through the one `Event::decode`). A
+                // malformed/legacy body
                 // is simply ignored, like every other fold here, so the two derivations of
                 // "where one run ends and the next begins" can never silently disagree.
                 run_generation += 1;
@@ -1134,12 +1131,6 @@ struct GateVerdictView {
     /// excluded from the pass/fail counts exactly like the artifact-tagged bookkeeping below.
     #[serde(default)]
     skipped: bool,
-}
-
-/// Decode a `GateVerdict` payload, or `None` for a malformed one (the sentinel arm
-/// that keeps the fold panic-free on a foreign / partial event).
-fn gate_verdict(e: &Event) -> Option<GateVerdictView> {
-    serde_json::from_slice(&e.data).ok()
 }
 
 /// Pull a single string field out of an event's JSON payload, or `None` if the
@@ -2339,7 +2330,7 @@ mod tests {
     /// boundary this fold advances on MUST agree with `crate::run::run_attribution`'s identical
     /// forward fold over the same `TYPE_RUN_STARTED` events, since both derive "where one run
     /// ends and the next begins" from the same stream. `run_attribution` only advances its
-    /// window when `RunStarted::from_event` successfully decodes the body (`src/run.rs:220`,
+    /// window when `Event::decode::<RunStarted>` successfully decodes the body (`src/run.rs:220`,
     /// `if let Some(rs) = ...`) - a malformed/legacy-shaped body is simply ignored, like every
     /// other fold in this crate. A boundary-advance keyed on the event TYPE alone, without
     /// attempting the decode, would silently split a request/result pair that

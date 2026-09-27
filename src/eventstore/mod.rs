@@ -167,6 +167,26 @@ impl Event {
         self.valid_from = t;
         self
     }
+
+    /// The payload decoded as a `T`, or `None` when it is not one - the sentinel arm that keeps
+    /// a fold panic-free on a malformed, foreign or partial event.
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Option<T> {
+        serde_json::from_slice(&self.data).ok()
+    }
+}
+
+/// `t` as signed nanoseconds since the Unix epoch - the integer a store persists a
+/// [`Event::valid_from`] as. A time before the epoch encodes as `0`.
+pub fn to_nanos(t: SystemTime) -> i64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
+/// The inverse of [`to_nanos`]: a persisted nanosecond count back to a time, clamping a
+/// negative count to the epoch.
+pub fn from_nanos(n: i64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_nanos(n.max(0) as u64)
 }
 
 /// What an [`EventStore::append`] actually wrote: ONE entry per event the store was
@@ -417,10 +437,37 @@ pub enum Error {
 /// thread; callers consume it with the recv methods and check [`Subscription::err`]
 /// for a terminal error after the stream ends.
 pub struct Subscription {
+    // Declared first so it drops first: the feeding thread is stopped and joined before the
+    // channel it sends on is torn down.
+    _feeder: StoppableThread,
     rx: Receiver<Event>,
     err: Arc<Mutex<Option<String>>>,
+}
+
+/// A background thread that runs until its stop flag is raised: dropping this handle raises
+/// the flag and joins the thread, so the thread never outlives its owner.
+pub struct StoppableThread {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+}
+
+impl StoppableThread {
+    /// Own `handle`, the thread that polls `stop` and ends once it is raised.
+    pub fn new(stop: Arc<AtomicBool>, handle: JoinHandle<()>) -> Self {
+        StoppableThread {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for StoppableThread {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 impl Subscription {
@@ -433,10 +480,9 @@ impl Subscription {
         handle: JoinHandle<()>,
     ) -> Self {
         Subscription {
+            _feeder: StoppableThread::new(stop, handle),
             rx,
             err,
-            stop,
-            handle: Some(handle),
         }
     }
 
@@ -458,15 +504,6 @@ impl Subscription {
     /// The terminal error, if the feeding thread ended in one.
     pub fn err(&self) -> Option<String> {
         self.err.lock().unwrap().clone()
-    }
-}
-
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
     }
 }
 
