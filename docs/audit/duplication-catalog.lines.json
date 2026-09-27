@@ -6299,8 +6299,8 @@
       },
       {
         "file": "tests/worker_persona_label_periphery.rs",
-        "start_line": 312,
-        "end_line": 333
+        "start_line": 307,
+        "end_line": 328
       }
     ]
   },
