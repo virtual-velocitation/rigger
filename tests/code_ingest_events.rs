@@ -23,7 +23,6 @@ use rigger::contextgraph::{
     Projection, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, REL_CONTAINS, REL_REFERENCES,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
-use rigger::eventstore::Event;
 
 #[path = "common/graph_fold.rs"]
 mod graph_fold;
@@ -663,7 +662,7 @@ fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
     // this, and with it the reproducible-rebuild guarantee spec 29a rests on.
     let first = common::project_events(dir.path().to_str().unwrap());
     let second = common::project_events(dir.path().to_str().unwrap());
-    let shape = |evs: &[Event]| {
+    let shape = |evs: &[rigger::eventstore::Event]| {
         evs.iter()
             .map(|e| (e.type_.clone(), e.data.clone()))
             .collect::<Vec<_>>()

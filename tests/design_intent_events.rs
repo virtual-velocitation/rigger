@@ -29,7 +29,6 @@ use rigger::contextgraph::{
     KIND_RATIONALE, REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
     TIER_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
 };
-use rigger::eventstore::Event;
 
 #[path = "common/graph_fold.rs"]
 mod graph_fold;
@@ -289,7 +288,7 @@ fn the_public_extraction_pipeline_is_a_deterministic_reproducible_rebuild() {
 
     let first = run();
     let second = run();
-    let bytes = |es: &[Event]| {
+    let bytes = |es: &[rigger::eventstore::Event]| {
         es.iter()
             .map(|e| (e.type_.clone(), e.data.clone()))
             .collect::<Vec<_>>()
