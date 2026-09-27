@@ -7,7 +7,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use rigger::budget::BuildBudget;
 use rigger::canary;
@@ -47,7 +47,7 @@ use rigger::run_store as runscope_store;
 use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
-use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, watch};
+use rigger::{hooks, mcpserver, playbooks, process, progress, spawn, spawn_store, spec, watch};
 
 // Spec 74, criterion 2: the SAME derivation seam `build.rs` embeds at compile time
 // (`build/gitsemver.rs`, already `#[path]`-included into `build.rs` and the two
@@ -1182,9 +1182,7 @@ fn normalize_origin_url(url: &str) -> String {
 /// (or git is unavailable). Read via `git config --get remote.origin.url`, which needs no
 /// network and no newer git than the rest of rigger already assumes.
 fn origin_url_at(root: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = process::git_in(root)
         .args(["config", "--get", "remote.origin.url"])
         .output()
         .ok()?;
@@ -1791,9 +1789,7 @@ fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
 /// this resolves to the main checkout's root - exactly the outermost directory the
 /// store walk-up is sanctioned to reach. `None` when `start` is not inside any git repo.
 fn main_repo_root(start: &Path) -> Option<PathBuf> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(start)
+    let out = process::git_in(start)
         .args(["rev-parse", "--git-common-dir"])
         .output()
         .ok()?;
@@ -3165,9 +3161,7 @@ fn reap_then_remove_dir(dir: &std::path::Path, authorized_root: &std::path::Path
 fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
     rigger::reap::reap_processes_rooted_under(dir, authorized_root);
     let deregistered = !repo.is_empty()
-        && Command::new("git")
-            .arg("-C")
-            .arg(repo)
+        && process::git_in(repo)
             .args(["worktree", "remove", "--force"])
             .arg(dir)
             .output()
@@ -4049,7 +4043,7 @@ fn cmd_workflow(args: &[String]) -> Res {
         .unwrap_or_else(|_| "rigger".to_string());
 
     let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut cmd = Command::new(&node);
+    let mut cmd = process::command(&node);
     cmd.arg(&shim);
     if let Some(spec) = &spec {
         cmd.arg(spec);
@@ -6174,9 +6168,7 @@ fn materialize_config_at_rev(
     let checkout_str = checkout
         .to_str()
         .ok_or("rigger replay: non-utf8 scratch path")?;
-    let add = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let add = process::git_in(repo)
         .args(["worktree", "add", "--detach"])
         .arg(checkout_str)
         .arg(rev)
@@ -6201,9 +6193,7 @@ fn materialize_config_at_rev(
     // within this one function, and the ONLY things ever run against it in between are
     // `config::load` and `definition_hash` (just above) - both pure `std::fs` readers with
     // no subprocess spawned inside the checkout - so nothing can be rooted there to reap.
-    let _ = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let _ = process::git_in(repo)
         .args(["worktree", "remove", "--force"])
         .arg(checkout_str)
         .output();
@@ -6319,7 +6309,7 @@ fn start_run_dashboard(store: &dyn EventStore) -> Option<dash::ReapedChild> {
 fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::error::Error>> {
     let port = dash::free_port_from(dash::DEFAULT_PORT)?;
     let exe = std::env::current_exe()?;
-    let child = Command::new(exe)
+    let child = process::command(exe)
         .arg("dash")
         .arg("--port")
         .arg(port.to_string())
@@ -6407,28 +6397,6 @@ fn ensure_run_dashboard_at(
     }
 }
 
-/// Place `cmd`'s spawned child in its OWN process group (a new group whose PGID equals the
-/// child's PID, via `process_group(0)`), detached from the parent command's process group.
-/// This is the session-detachment that makes the always-on dash actually survive across steps
-/// (spec 44): WITHOUT it a detached dash inherits `rigger step`'s process group, and when the
-/// workflow courier runs `rigger step` as a foreground command the harness tears down that
-/// command's process group on completion and reaps the dash with it - the spec-39 always-on
-/// dash then dies the instant every step returns. `process_group(0)` makes the child a group
-/// leader in a group the parent's teardown never reaches. Std-only (no `libc`), so it compiles
-/// and holds identically on BOTH the default and `--no-default-features` lanes. Non-Unix builds
-/// keep the group-inheriting behavior (the always-on dash is a Unix-path feature).
-#[cfg(unix)]
-fn detach_process_group(cmd: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    // `process_group(0)` runs a `setpgid(0, 0)`-equivalent in the child before exec, making it a
-    // group leader whose PGID equals its own PID - a brand-new process group the parent command's
-    // group teardown never reaches.
-    cmd.process_group(0);
-}
-
-#[cfg(not(unix))]
-fn detach_process_group(_cmd: &mut Command) {}
-
 /// Raw launch of `rigger dash --port <n> --reap-on-idle` as a session-detached child (spec 44).
 /// NO [`dash::ReapedChild`] guard is held, and NO claim is made about whether it bound. Split
 /// out of [`spawn_run_dashboard_detached`] so the process-group detachment is provable on its
@@ -6448,7 +6416,7 @@ fn detach_process_group(_cmd: &mut Command) {}
 /// acceptable for a best-effort, self-contained observability process whose logs nothing reads.
 fn spawn_dash_child_process(port: u16) -> std::io::Result<(std::process::Child, u32)> {
     let exe = std::env::current_exe()?;
-    let mut cmd = Command::new(exe);
+    let mut cmd = process::command(exe);
     cmd.arg("dash")
         .arg("--port")
         .arg(port.to_string())
@@ -6462,7 +6430,7 @@ fn spawn_dash_child_process(port: u16) -> std::io::Result<(std::process::Child, 
     // Session-detach BEFORE spawning: put the dash in its own process group so the teardown of
     // the foreground `rigger step` command's process group does not reap it (spec 44). Without
     // this the "detached" child still shares step's group and dies the instant the step returns.
-    detach_process_group(&mut cmd);
+    process::detach_process_group(&mut cmd);
     let child = cmd.spawn()?;
     let pid = child.id();
     Ok((child, pid))
@@ -10299,7 +10267,7 @@ fn installed_workflow_provenance(root: &Path) -> Option<String> {
 /// workflow-with-recorded-provenance case [`workflow_drift_advisory`] alone would reach;
 /// mirrors [`git_commit_distance`]'s already-correct `.output()` pattern immediately below.
 fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
-    let out = Command::new("git")
+    let out = process::command("git")
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
         .current_dir(root)
         .output()
@@ -10318,7 +10286,7 @@ fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool
 /// of `descendant`: this just counts, it never itself verifies order (spec 74, criterion
 /// 2's commit-distance figure for the behind-the-tree advisory).
 fn git_commit_distance(root: &Path, ancestor: &str, descendant: &str) -> Option<u64> {
-    let out = Command::new("git")
+    let out = process::command("git")
         .args(["rev-list", "--count", &format!("{ancestor}..{descendant}")])
         .current_dir(root)
         .output()
@@ -10496,7 +10464,7 @@ fn workflow_drift_advisory(
 /// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
 /// [`dirty_tracked_paths`] seam.
 fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
-    let out = Command::new("git")
+    let out = process::command("git")
         .args(["status", "--porcelain", "--", RIGGER_DIR])
         .current_dir(root)
         .output()
@@ -10923,9 +10891,7 @@ fn reclaim_orphan_scratch(
 /// The local `rigger/u/*` branches in the repo governing `cwd`, via `git for-each-ref`.
 /// Empty when git is unavailable or `cwd` is not a repo (nothing to flag then).
 fn local_unit_branches(cwd: &Path) -> Vec<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let out = process::git_in(cwd)
         .args([
             "for-each-ref",
             "--format=%(refname:short)",
@@ -12004,7 +11970,7 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
 
     // Check if the path is tracked in git (it should not be, as .claude/ and .rigger/shim/
     // are machine-local and should never be committed). This is just a safety check.
-    let is_tracked = Command::new("git")
+    let is_tracked = process::command("git")
         .args(["ls-files"])
         .current_dir(root)
         .output()
@@ -12619,9 +12585,7 @@ fn compose_precommit(existing: Option<&str>) -> String {
 /// falling back to `<root>/.git/hooks` when git cannot be consulted. A relative path git
 /// prints is resolved against `root` so the caller gets an absolute-enough path to write to.
 fn git_hooks_dir(root: &Path) -> std::path::PathBuf {
-    let resolved = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let resolved = process::git_in(root)
         .args(["rev-parse", "--git-path", "hooks"])
         .output()
         .ok()
@@ -12753,7 +12717,7 @@ fn run_npm_install(dir: &Path) -> Res {
     } else {
         "install"
     };
-    let status = Command::new(&npm)
+    let status = process::command(&npm)
         .arg(subcmd)
         .current_dir(dir)
         .status()
@@ -13596,9 +13560,7 @@ fn git_repo() -> String {
 /// root) instead of the cwd (which, inside a git-linked worktree, git reports as the
 /// worktree path) - see [`project_identity_at`].
 fn git_repo_at(root: &Path) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
+    process::git_in(root)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .ok()
@@ -14657,6 +14619,7 @@ mod tests {
     use crate::test_support::tool_available;
     use crate::test_support::write_file;
     use crate::test_support::CwdGuard;
+    use std::process::Command;
 
     /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt`
     /// (so it cannot drift from the labels), every optional field empty.
@@ -25703,7 +25666,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        detach_process_group(&mut cmd);
+        process::detach_process_group(&mut cmd);
         let mut child = cmd.spawn().expect("spawn a controlled child");
         let child_pgid = pgid_of(child.id());
 

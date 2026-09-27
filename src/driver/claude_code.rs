@@ -18,7 +18,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, Command, Stdio};
+use std::process::{Child, ChildStderr, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -199,11 +199,8 @@ impl Driver<'_> {
         )?;
 
         let bin = bin_or_path_default(&self.bin, "claude");
-        let mut cmd = Command::new(bin);
+        let mut cmd = crate::process::command_in(bin, &opts.dir);
         cmd.args(&args);
-        if !opts.dir.is_empty() {
-            cmd.current_dir(&opts.dir);
-        }
         // The ONE build-environment authority's injection site for this driver (spec 65),
         // exactly like the cli driver applies it: every var the resolver derived, on top
         // of the inherited ambient environment (`Command` never clears it) - so the

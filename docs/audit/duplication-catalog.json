@@ -69,7 +69,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-1edec36f5930",
+    "id": "dup-cffb3f7498f9",
     "classification": "semantic",
     "sites": [
       {
@@ -343,109 +343,9 @@
         "content_hash": "da3ee123d4540dd7"
       },
       {
-        "file": "src/driver/claude_code.rs",
-        "name": "Command::new",
-        "content_hash": "11ceb008f2a1499c"
-      },
-      {
-        "file": "src/driver/cli.rs",
-        "name": "Command::new",
-        "content_hash": "11ceb008f2a1499c"
-      },
-      {
         "file": "src/gate.rs",
         "name": "Command::new",
         "content_hash": "1f01b7aba566e9fb"
-      },
-      {
-        "file": "src/gate.rs",
-        "name": "Command::new",
-        "content_hash": "1f01b7aba566e9fb"
-      },
-      {
-        "file": "src/gate.rs",
-        "name": "Command::new",
-        "content_hash": "1f01b7aba566e9fb"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "aee1f5011110dcb9"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "1fc8e292e85b94db"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "61ddef17c2141839"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "11ceb008f2a1499c"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "a1f477c446902bbe"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "7266da144e21471d"
       },
       {
         "file": "src/main.rs",
@@ -583,29 +483,9 @@
         "content_hash": "da3ee123d4540dd7"
       },
       {
-        "file": "src/worktree.rs",
+        "file": "src/process.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
+        "content_hash": "b1ad5143fd332b66"
       },
       {
         "file": "src/worktree.rs",
@@ -2034,7 +1914,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 392 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 368 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-15530d0e8b19",
@@ -9408,7 +9288,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-6f592e6f36fa",
+    "id": "dup-2066c47bf52e",
     "classification": "semantic",
     "sites": [
       {
@@ -9613,6 +9493,11 @@
       },
       {
         "file": "tests/simplification_audit.rs",
+        "name": "\"src/process.rs\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
         "name": "\"/proc\"",
         "content_hash": "aa9b79838224af65"
       },
@@ -9693,10 +9578,10 @@
       }
     ],
     "proposed_home": "src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 56 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-1a85bca8b768",
+    "id": "dup-765d751ecdf2",
     "classification": "semantic",
     "sites": [
       {
@@ -9757,7 +9642,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "render_section_6",
-        "content_hash": "80401a652bbf30cd"
+        "content_hash": "fbf686075c226f25"
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -11606,29 +11491,6 @@
       }
     ],
     "proposed_home": "main::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-12ac4b7065b5",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/main.rs",
-        "name": "git_repo_at",
-        "content_hash": "c7703c599c613751"
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "name": "git_toplevel",
-        "content_hash": "c7703c599c613751"
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "name": "git_toplevel",
-        "content_hash": "79c74ed32a4230b3"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: src/main.rs, tests/heartbeat_write_read_agree_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18522,6 +18384,24 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-aa32dcacdf9d",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/heartbeat_write_read_agree_periphery.rs",
+        "name": "git_toplevel",
+        "content_hash": "c7703c599c613751"
+      },
+      {
+        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
+        "name": "git_toplevel",
+        "content_hash": "79c74ed32a4230b3"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/heartbeat_write_read_agree_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

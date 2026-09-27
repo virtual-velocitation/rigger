@@ -80,6 +80,8 @@ pub mod metrics;
 pub mod parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod process;
 pub mod progress;
 /// The write half of [`progress`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
