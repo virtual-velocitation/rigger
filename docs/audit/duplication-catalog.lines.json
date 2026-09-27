@@ -774,8 +774,8 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2498,
-        "end_line": 2500
+        "start_line": 2490,
+        "end_line": 2492
       }
     ]
   },
@@ -3379,28 +3379,28 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 1279,
-        "end_line": 1279
+        "start_line": 1271,
+        "end_line": 1271
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2972,
-        "end_line": 2972
+        "start_line": 2964,
+        "end_line": 2964
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2972,
-        "end_line": 2972
+        "start_line": 2964,
+        "end_line": 2964
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2987,
-        "end_line": 2987
+        "start_line": 2979,
+        "end_line": 2979
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 3022,
-        "end_line": 3022
+        "start_line": 3014,
+        "end_line": 3014
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -4294,18 +4294,18 @@
       },
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 72,
-        "end_line": 72
+        "start_line": 73,
+        "end_line": 73
       },
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 235,
-        "end_line": 235
+        "start_line": 229,
+        "end_line": 229
       },
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 500,
-        "end_line": 500
+        "start_line": 494,
+        "end_line": 494
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -4314,33 +4314,33 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 551,
-        "end_line": 551
+        "start_line": 543,
+        "end_line": 543
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 1288,
-        "end_line": 1288
+        "start_line": 1280,
+        "end_line": 1280
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2539,
-        "end_line": 2539
+        "start_line": 2531,
+        "end_line": 2531
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 2744,
-        "end_line": 2744
+        "start_line": 2736,
+        "end_line": 2736
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 3532,
-        "end_line": 3532
+        "start_line": 3524,
+        "end_line": 3524
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 4198,
-        "end_line": 4198
+        "start_line": 4190,
+        "end_line": 4190
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -5805,21 +5805,6 @@
     ]
   },
   {
-    "id": "dup-7a0ec0f1fd4b",
-    "sites": [
-      {
-        "file": "src/progress.rs",
-        "start_line": 330,
-        "end_line": 333
-      },
-      {
-        "file": "tests/reset_derived_compaction.rs",
-        "start_line": 101,
-        "end_line": 104
-      }
-    ]
-  },
-  {
     "id": "dup-ede1947069a2",
     "sites": [
       {
@@ -7059,8 +7044,8 @@
     "sites": [
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 71,
-        "end_line": 97
+        "start_line": 72,
+        "end_line": 98
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",

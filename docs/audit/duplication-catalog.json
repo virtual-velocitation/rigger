@@ -6265,25 +6265,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7a0ec0f1fd4b",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/progress.rs",
-        "name": "event_unit_id",
-        "content_hash": "5dc5e19421638258"
-      },
-      {
-        "file": "tests/reset_derived_compaction.rs",
-        "name": "replay_key",
-        "content_hash": "864ecb5bb6528ea7"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/progress.rs, tests/reset_derived_compaction.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-ede1947069a2",
     "classification": "near",
     "sites": [

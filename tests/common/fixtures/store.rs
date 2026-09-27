@@ -141,3 +141,12 @@ pub fn pragma_i64(db: &std::path::Path, pragma: &str) -> i64 {
         .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
         .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
 }
+
+/// The replay key an event log row's raw metadata JSON (`meta`) carries, if any - read exactly as
+/// the store reads it.
+pub fn meta_replay_key(meta: &str) -> Option<String> {
+    let meta: serde_json::Value = serde_json::from_str(meta).ok()?;
+    meta.get(rigger::ingest::META_REPLAY_KEY)?
+        .as_str()
+        .map(str::to_string)
+}

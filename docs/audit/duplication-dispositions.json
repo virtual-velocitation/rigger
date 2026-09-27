@@ -665,11 +665,6 @@
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
   },
   {
-    "id": "dup-7a0ec0f1fd4b",
-    "disposition": "not-a-duplicate",
-    "reason": "`event_unit_id` extracts a unit id from a progress event while `replay_key` builds a compaction replay key from a different event shape."
-  },
-  {
     "id": "dup-3439bf494b88",
     "disposition": "not-a-duplicate",
     "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."

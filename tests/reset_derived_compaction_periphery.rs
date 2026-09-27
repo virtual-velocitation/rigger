@@ -88,7 +88,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
-use common::fixtures::{plant_free_pages, pragma_i64};
+use common::fixtures::{meta_replay_key, plant_free_pages, pragma_i64};
 use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
@@ -139,14 +139,6 @@ fn rows_in(rows: &[Row], prefix: &str) -> Vec<Row> {
         .filter(|r| r.1.starts_with(prefix))
         .cloned()
         .collect()
-}
-
-/// The replay key a row carries, if any, read out of its metadata exactly as the store reads it.
-fn replay_key(row: &Row) -> Option<String> {
-    let meta: serde_json::Value = serde_json::from_str(&row.5).ok()?;
-    meta.get(rigger::ingest::META_REPLAY_KEY)?
-        .as_str()
-        .map(str::to_string)
 }
 
 /// The SAME two replay keys are recorded in EVERY seeded namespace below. A prune that partitioned
@@ -281,7 +273,7 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
     for key in [KEY_DEF, KEY_REF] {
         let kept: Vec<Row> = rows_in(&after, &target_prefix)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .collect();
         assert_eq!(
             kept.len(),
@@ -290,7 +282,7 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
         );
         let latest = rows_in(&before, &target_prefix)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .map(|r| r.0)
             .max()
             .expect("the seed recorded this key in the target namespace");
@@ -926,7 +918,7 @@ fn a_migrated_project_log_is_still_seen_and_compacted_at_its_new_namespace() {
     for key in [KEY_DEF, KEY_REF] {
         let kept: Vec<Row> = rows_in(&after, &minted_ns)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .collect();
         assert_eq!(
             kept.len(),
@@ -935,7 +927,7 @@ fn a_migrated_project_log_is_still_seen_and_compacted_at_its_new_namespace() {
         );
         let latest = moved
             .iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .map(|r| r.0)
             .max()
             .expect("the moved namespace holds this key");
@@ -1705,7 +1697,7 @@ fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_
 /// Every recording of `key` the log holds in `stream`, in position order.
 fn rows_of_key(rows: &[Row], stream: &str, key: &str) -> Vec<Row> {
     rows.iter()
-        .filter(|r| r.1 == stream && replay_key(r).as_deref() == Some(key))
+        .filter(|r| r.1 == stream && meta_replay_key(&r.5).as_deref() == Some(key))
         .cloned()
         .collect()
 }
@@ -2767,7 +2759,7 @@ fn dates_by_key(db: &Path) -> DatesByKey {
     let dates = valid_from_by_position(db);
     let mut out: DatesByKey = BTreeMap::new();
     for row in raw_rows(db) {
-        let key = replay_key(&row).unwrap_or_default();
+        let key = meta_replay_key(&row.5).unwrap_or_default();
         out.entry((row.2.clone(), key))
             .or_default()
             .push(dates[&row.0]);
