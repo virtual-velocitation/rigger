@@ -84,6 +84,7 @@ mod common;
 use common::cli::keyed;
 use common::cli::reported_reclaimed_bytes;
 use common::cli::run_rigger;
+use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
@@ -578,35 +579,9 @@ fn event_log(root: &Path) -> PathBuf {
     root.join(".rigger").join("events.db")
 }
 
-/// The project identity the binary resolves for `root`, mirrored here so a seed lands in the very
-/// stream the compiled binary reads back.
-fn project_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
 fn seed_project(root: &Path, rounds: u64) {
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    seed_namespace(&backend, &project_identity(root), rounds);
+    seed_namespace(&backend, &run_stream_identity(root), rounds);
 }
 
 /// The `(type, count)` pairs out of the command's report - the parenthesised list in
@@ -1303,7 +1278,7 @@ const PINNED_ID: &str = "compaction-fixture";
 const DEAD_DECISION: &str = "d-dead-run";
 
 /// A temp project whose identity is PINNED in `.rigger/project.id` - the first rung the binary's
-/// identity resolution reads, and the one [`project_identity`] mirrors. Without it each fixture
+/// identity resolution reads, and the one [`run_stream_identity`] mirrors. Without it each fixture
 /// would take its identity from its own temp directory name, so two identically-seeded projects
 /// would write their events under two different stream names and could not be compared.
 fn pinned_project() -> tempfile::TempDir {
@@ -1393,7 +1368,7 @@ fn row_marks(rows: &[Row]) -> Vec<String> {
 /// the log holds the duplicated derived index for `--derived`. That is the precondition for
 /// separating "this prune did nothing to the other store" from "there was nothing to do".
 fn seed_both_stores(root: &Path, rounds: u64) {
-    let id = project_identity(root);
+    let id = run_stream_identity(root);
     let mut events = vec![
         Event::new("RunStarted", br#"{"run":"dead","criteria":["c"]}"#.to_vec())
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(10)),
@@ -1470,7 +1445,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     let composed = pinned_project();
     for project in [&runs_only, &derived_only, &composed] {
         assert_eq!(
-            project_identity(project.path()),
+            run_stream_identity(project.path()),
             PINNED_ID,
             "the fixtures must all resolve to one identity, or their stores are not comparable"
         );
@@ -1644,7 +1619,7 @@ fn seed_run_history_and_duplication(root: &Path, rounds: u64) {
     }
 
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &project_identity(root));
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the run history");
@@ -1884,7 +1859,7 @@ fn append_run(root: &Path, at: &mut u64, events: &[(&str, &str)]) {
         })
         .collect();
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    Namespaced::new(&backend, &project_identity(root))
+    Namespaced::new(&backend, &run_stream_identity(root))
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &staged)
         .expect("seed the run stream");
 }
@@ -1903,7 +1878,7 @@ fn append_duplication(root: &Path, key: &str, rounds: u64, base_secs: u64) {
         })
         .collect();
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    Namespaced::new(&backend, &project_identity(root))
+    Namespaced::new(&backend, &run_stream_identity(root))
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the duplication");
 }
@@ -2114,7 +2089,7 @@ fn run_rigger_bounded(
 /// its revision cursor furthest apart while leaving a real, answerable spawn behind.
 fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let project = project_identity(root);
+    let project = run_stream_identity(root);
     let store = Namespaced::new(&backend, &project);
     let mut events = vec![
         Event::new(
@@ -3014,7 +2989,7 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
 
     // Seeded BEFORE the mint, so the history is filed under the basename namespace exactly as a
     // pre-identity store's is. A fixture that minted first would prove nothing about the migration.
-    let legacy = project_identity(root);
+    let legacy = run_stream_identity(root);
     let backend = Store::open(event_log(root).to_str().unwrap()).expect("open the event log");
     seed_namespace(&backend, &legacy, rounds);
     drop(backend);
@@ -3032,7 +3007,7 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
     );
     assert_ne!(
         legacy,
-        project_identity(root),
+        run_stream_identity(root),
         "the mint must produce an identity distinct from the basename, or this fixture does not \
          reproduce the shape it exists for"
     );
