@@ -546,8 +546,13 @@ fn warn_if_conn_file_is_exposed(path: &Path) {
 /// linked worktree, so a cwd-anchored read would miss it and fracture the store selection. Falls
 /// back to the cwd's `.rigger` outside any git context.
 fn config_rigger_dir() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = cwd();
     main_repo_root(&cwd).unwrap_or(cwd).join(RIGGER_DIR)
+}
+
+/// The process's working directory, or `.` when it cannot be read.
+fn cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Interpret the committed config's `store.backend` (§48 rung 4): an empty value is "no opinion"
@@ -803,7 +808,7 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
         return RunRegistration::inert(); // homeless environment: degrade to no registration
     };
     let root = if repo.is_empty() {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        cwd()
     } else {
         PathBuf::from(repo)
     };
@@ -914,8 +919,7 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
 /// worktree) - so they bind identity to the RESOLVED store root instead, via
 /// [`StoreLocation::identity`] / [`project_identity_at`].
 fn project_identity() -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    project_identity_at(&cwd)
+    project_identity_at(&cwd())
 }
 
 /// The project identity, anchored at an explicit `root` rather than the process cwd. In
@@ -2432,7 +2436,7 @@ fn cmd_step(args: &[String]) -> Res {
     // FIRST, before any config load, store touch or worktree mutation - a linked worktree
     // gets a clear refusal naming both trees instead of wasting a config/criteria load only
     // to fail deep inside branch setup with git's own opaque error.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = cwd();
     let repo = resolve_main_worktree_or_refuse(&cwd, "rigger step")?;
     // Refuse a doomed run up front: a gating persona that never puts its verdict on the result
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
@@ -3344,13 +3348,30 @@ fn result_of_at(
     id: &str,
     sel: &StoreSelection,
 ) -> Result<Option<spawn::SpawnResult>, Box<dyn std::error::Error>> {
+    let Some(events) = read_project_stream(path, project, conductor::STREAM, sel)? else {
+        return Ok(None);
+    };
+    Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
+}
+
+/// `project`'s namespaced `stream`, read forward from revision 0 out of the store `sel`
+/// resolves at `path` - `None` when that store is an embedded sqlite file that does not exist
+/// yet. The absence check runs BEFORE [`Store::open`], which (via `Connection::open`) would
+/// otherwise create the file and mask a never-run project as an empty one. The
+/// [`Namespaced`] read scopes to `proj-<project>-<stream>`, so an event another project wrote
+/// never leaks in.
+fn read_project_stream(
+    path: &str,
+    project: &str,
+    stream: &str,
+    sel: &StoreSelection,
+) -> Result<Option<Vec<Event>>, Box<dyn std::error::Error>> {
     if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(None);
     }
     let backend = resolve_store(sel, path)?;
     let store = Namespaced::new(backend.as_ref(), project);
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
+    Ok(Some(store.read_stream(stream, 0, Direction::Forward)?))
 }
 
 /// The parsed flags of a `rigger step` invocation.
@@ -3613,7 +3634,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
     // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
     // doc comment.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = cwd();
     let repo = resolve_main_worktree_or_refuse(&cwd, "rigger run")?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
@@ -3845,7 +3866,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // conductor's `Deps`) instead of a `git_repo()` re-read at each site, so there is one
     // resolution authority for the whole call, never several that could in principle
     // disagree with each other or with this guard.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = cwd();
     let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
@@ -4034,7 +4055,7 @@ fn cmd_workflow(args: &[String]) -> Res {
     // main checkout, or (at worst) driving a stray one. See
     // `resolve_main_worktree_or_refuse`'s doc comment. Empty (repo-less) resolves to "." -
     // the existing behavior every prior caller of `locate_shim` already relied on.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = cwd();
     let repo = resolve_main_worktree_or_refuse(&cwd, "rigger workflow")?;
     let shim_root = if repo.is_empty() {
         PathBuf::from(".")
@@ -4755,7 +4776,45 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// d-u53c2-empty-rerun-keep-last-good). A real subsystem removal is a SHRINK - a smaller NON-empty
 /// result - which DOES supersede via the `fresh` boundary and drops the emptied community's node.
 fn cmd_graph_communities(args: &[String]) -> Res {
-    let mut resolution = community::DEFAULT_RESOLUTION;
+    run_graph_pass(
+        "communities",
+        args,
+        community::DEFAULT_RESOLUTION,
+        |whole, resolution| {
+            // Detect communities over the live projection's coupling layer. The `fresh` head
+            // supersedes this grain's prior memberships; the rest re-add, so a re-run REPLACES this
+            // resolution's assignment set.
+            let coupling = community::Coupling::from_graph(whole);
+            let assignment = community::detect(&coupling, resolution);
+            let events = community::events(&assignment);
+            let summary = format!(
+            "detected {} communit{} over {} coupled node(s) at resolution {} ({} membership event(s) recorded into {})",
+            assignment.num_communities,
+            if assignment.num_communities == 1 { "y" } else { "ies" },
+            coupling.len(),
+            resolution,
+            events.len(),
+            db_path("graph.db")
+        );
+            (events, summary)
+        },
+    )
+}
+
+/// One offline, deterministic `rigger graph <verb> [--resolution <r>]` pass: parse the
+/// positive, finite resolution (defaulting to `default`), bootstrap the store like `graph build`/
+/// `run` do (create-or-open under the cwd's `.rigger/`), and read the WHOLE live projection - the
+/// same direct, project-scoped, sorted read the dash's `/api/graph` provider consults. `derive`
+/// turns it into the pass's events plus its summary line; the events are appended in ONE store
+/// append and folded in ONE transaction (the shared batched append-and-fold authority), then the
+/// summary is printed.
+fn run_graph_pass(
+    verb: &str,
+    args: &[String],
+    default: f64,
+    derive: impl FnOnce(&contextgraph::Graph, f64) -> (Vec<Event>, String),
+) -> Res {
+    let mut resolution = default;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -4763,55 +4822,36 @@ fn cmd_graph_communities(args: &[String]) -> Res {
                 i += 1;
                 let raw = args.get(i).cloned().unwrap_or_default();
                 resolution = raw.parse::<f64>().map_err(|_| {
-                    format!("graph communities: --resolution expects a number, got {raw:?}")
+                    format!("graph {verb}: --resolution expects a number, got {raw:?}")
                 })?;
                 if !(resolution.is_finite() && resolution > 0.0) {
                     return Err(format!(
-                        "graph communities: --resolution must be a positive finite number, got {resolution}"
+                        "graph {verb}: --resolution must be a positive finite number, got {resolution}"
                     )
                     .into());
                 }
             }
             other => {
-                return Err(format!("graph communities: unknown argument {other:?}").into());
+                return Err(format!("graph {verb}: unknown argument {other:?}").into());
             }
         }
         i += 1;
     }
 
-    // Bootstrap the store like `graph build`/`run` do (create-or-open under the cwd's `.rigger/`).
     std::fs::create_dir_all(RIGGER_DIR)?;
     let selection = store_selection(None, None)?;
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
 
-    // Read the WHOLE live projection and detect communities over its coupling layer. `whole()` is
-    // the same direct, project-scoped, sorted read the dash's `/api/graph` provider consults.
-    let whole = graph.whole()?;
-    let coupling = community::Coupling::from_graph(&whole);
-    let assignment = community::detect(&coupling, resolution);
-    let events = community::events(&assignment);
-
-    // Append the pass's events in ONE store append and fold them in ONE transaction (the shared
-    // batched append-and-fold authority). The `fresh` head supersedes this grain's prior
-    // memberships; the rest re-add, so a re-run REPLACES this resolution's assignment set.
+    let (events, summary) = derive(&graph.whole()?, resolution);
     rigger::ingest::append_and_fold_batch(
         &store,
         Some(&graph as &dyn Projection),
         conductor::STREAM,
         &events,
     )?;
-
-    println!(
-        "graph communities: detected {} communit{} over {} coupled node(s) at resolution {} ({} membership event(s) recorded into {})",
-        assignment.num_communities,
-        if assignment.num_communities == 1 { "y" } else { "ies" },
-        coupling.len(),
-        resolution,
-        events.len(),
-        db_path("graph.db")
-    );
+    println!("graph {verb}: {summary}");
     Ok(())
 }
 
@@ -4834,64 +4874,29 @@ fn cmd_graph_communities(args: &[String]) -> Res {
 /// empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior grouping - the last NON-empty
 /// pass at that resolution stays live (see `concepts::events`).
 fn cmd_graph_concepts(args: &[String]) -> Res {
-    let mut resolution = concepts::DEFAULT_RESOLUTION;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--resolution" => {
-                i += 1;
-                let raw = args.get(i).cloned().unwrap_or_default();
-                resolution = raw.parse::<f64>().map_err(|_| {
-                    format!("graph concepts: --resolution expects a number, got {raw:?}")
-                })?;
-                if !(resolution.is_finite() && resolution > 0.0) {
-                    return Err(format!(
-                        "graph concepts: --resolution must be a positive finite number, got {resolution}"
-                    )
-                    .into());
-                }
-            }
-            other => {
-                return Err(format!("graph concepts: unknown argument {other:?}").into());
-            }
-        }
-        i += 1;
-    }
-
-    // Bootstrap the store like `graph communities` does (create-or-open under the cwd's `.rigger/`).
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let selection = store_selection(None, None)?;
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
-
-    // Read the WHOLE live projection and derive concepts over its intent layer. `whole()` is the same
-    // direct, project-scoped, sorted read the dash's `/api/graph` provider consults.
-    let whole = graph.whole()?;
-    let layer = concepts::intent_layer(&whole);
-    let derivation = concepts::derive(&whole, &layer, resolution);
-    let events = concepts::events(&derivation);
-
-    // Append the pass's events in ONE store append and fold them in ONE transaction (the shared
-    // batched append-and-fold authority). The `fresh` head supersedes this grain's prior grouping;
-    // the rest re-add, so a re-run REPLACES this resolution's concept set.
-    rigger::ingest::append_and_fold_batch(
-        &store,
-        Some(&graph as &dyn Projection),
-        conductor::STREAM,
-        &events,
-    )?;
-
-    println!(
-        "graph concepts: derived {} concept{} over {} intent-linked node(s) at resolution {} ({} event(s) recorded into {})",
-        derivation.num_concepts,
-        if derivation.num_concepts == 1 { "" } else { "s" },
-        layer.len(),
-        resolution,
-        events.len(),
-        db_path("graph.db")
-    );
-    Ok(())
+    run_graph_pass(
+        "concepts",
+        args,
+        concepts::DEFAULT_RESOLUTION,
+        |whole, resolution| {
+            // Derive concepts over the live projection's intent layer. The `fresh` head supersedes
+            // this grain's prior grouping; the rest re-add, so a re-run REPLACES this resolution's
+            // concept set.
+            let layer = concepts::intent_layer(whole);
+            let derivation = concepts::derive(whole, &layer, resolution);
+            let events = concepts::events(&derivation);
+            let summary = format!(
+            "derived {} concept{} over {} intent-linked node(s) at resolution {} ({} event(s) recorded into {})",
+            derivation.num_concepts,
+            if derivation.num_concepts == 1 { "" } else { "s" },
+            layer.len(),
+            resolution,
+            events.len(),
+            db_path("graph.db")
+        );
+            (events, summary)
+        },
+    )
 }
 
 /// `rigger stats` - print the operator metrics for the current project's run: the
@@ -4975,16 +4980,10 @@ fn stats_lines(
     all: bool,
     sel: &StoreSelection,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
-    if sel.is_sqlite() && !Path::new(path).exists() {
-        return Ok(None);
-    }
-
-    let backend = resolve_store(sel, path)?;
-    let store = Namespaced::new(backend.as_ref(), project);
     // The conductor projects its run state from STREAM read forward from revision 0
     // (inclusive); read the same stream the same way so the metrics fold sees exactly
     // the run the conductor drove, scoped to this project's namespace.
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let events = read_project_stream(path, project, conductor::STREAM, sel)?.unwrap_or_default();
     if events.is_empty() {
         return Ok(None);
     }
@@ -5296,12 +5295,7 @@ fn canary_stats_lines(
     project: &str,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
     let sel = store_selection(None, None)?;
-    if sel.is_sqlite() && !Path::new(path).exists() {
-        return Ok(None);
-    }
-    let backend = resolve_store(&sel, path)?;
-    let store = Namespaced::new(backend.as_ref(), project);
-    let events = store.read_stream(canary::STREAM, 0, Direction::Forward)?;
+    let events = read_project_stream(path, project, canary::STREAM, &sel)?.unwrap_or_default();
     if events.is_empty() {
         return Ok(None);
     }
@@ -5423,13 +5417,9 @@ fn read_model_drift(
     project: &str,
 ) -> Result<metrics::ModelDrift, Box<dyn std::error::Error>> {
     let sel = store_selection(None, None)?;
-    if sel.is_sqlite() && !Path::new(path).exists() {
-        return Ok(metrics::ModelDrift::default());
-    }
-    let backend = resolve_store(&sel, path)?;
-    let store = Namespaced::new(backend.as_ref(), project);
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    Ok(metrics::model_drift(&events))
+    Ok(read_project_stream(path, project, conductor::STREAM, &sel)?
+        .map(|events| metrics::model_drift(&events))
+        .unwrap_or_default())
 }
 
 /// The `rigger validate` GRAPH INDEX LAG sample (spec 92 criterion 1, FRESH ON EVERY
@@ -5445,13 +5435,9 @@ fn read_graph_index_lag(
     root: &str,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let sel = store_selection(None, None)?;
-    if sel.is_sqlite() && !Path::new(path).exists() {
-        return Ok(Vec::new());
-    }
-    let backend = resolve_store(&sel, path)?;
-    let store = Namespaced::new(backend.as_ref(), project);
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    Ok(rigger::ingest::graph_index_lag_sample(root, &events))
+    Ok(read_project_stream(path, project, conductor::STREAM, &sel)?
+        .map(|events| rigger::ingest::graph_index_lag_sample(root, &events))
+        .unwrap_or_default())
 }
 
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
@@ -7322,13 +7308,11 @@ fn dash_read_run(
     // different-user / permission edge §48 contemplates), so the dashboard read reports an empty run
     // against a live server (d-u2rr-observer-selection-loud, spec-19c loud-failure-surfacing).
     let sel = store_selection(None, None)?;
-    if sel.is_sqlite() && !Path::new(events_db).exists() {
-        return Ok(Vec::new());
-    }
-    let backend = resolve_store(&sel, events_db)?;
-    let store = Namespaced::new(backend.as_ref(), identity);
-    let all = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    Ok(runscope::current_run(&all).to_vec())
+    Ok(
+        read_project_stream(events_db, identity, conductor::STREAM, &sel)?
+            .map(|all| runscope::current_run(&all).to_vec())
+            .unwrap_or_default(),
+    )
 }
 
 /// Build the context subgraph around the run's own units/decisions/findings from
@@ -11741,7 +11725,7 @@ fn owning_repo_root(cwd: &Path) -> String {
 fn footprint_report_for(
     cfg: &config::Config,
 ) -> Result<(Vec<String>, Vec<String>), Box<dyn std::error::Error>> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = cwd();
     let repo = owning_repo_root(&cwd);
     let rigger_dir = Path::new(&repo).join(RIGGER_DIR);
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
@@ -12981,16 +12965,36 @@ const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
 /// mirroring [`install_operator_mcp`]'s `existed` distinction), already carrying the
 /// block -> `AlreadyCurrent` (a silent no-op).
 fn install_lookup_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    install_into_claude_settings(root, |existing| {
+        hooks::install_pretooluse_hook(existing, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)
+    })
+}
+
+/// Merge an entry into the project's `.claude/settings.json` (creating `.claude/` first) -
+/// see [`install_into`].
+fn install_into_claude_settings(
+    root: &Path,
+    merge: impl FnOnce(&[u8]) -> Result<Vec<u8>, hooks::Error>,
+) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
     let claude_dir = root.join(".claude");
     std::fs::create_dir_all(&claude_dir)?;
-    let settings_path = claude_dir.join("settings.json");
-    let existed = settings_path.exists();
-    let existing = std::fs::read(&settings_path).unwrap_or_default();
-    let merged = hooks::install_pretooluse_hook(&existing, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)?;
+    install_into(&claude_dir.join("settings.json"), merge)
+}
+
+/// Idempotently merge an entry into the JSON file at `path`: `merge` maps its current bytes
+/// (empty when absent) to the merged ones, and the file is rewritten only when they differ -
+/// reporting whether the entry was already current, refreshed in place, or newly installed.
+fn install_into(
+    path: &Path,
+    merge: impl FnOnce(&[u8]) -> Result<Vec<u8>, hooks::Error>,
+) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let existed = path.exists();
+    let existing = std::fs::read(path).unwrap_or_default();
+    let merged = merge(&existing)?;
     if merged == existing {
         return Ok(InstallOutcome::AlreadyCurrent);
     }
-    std::fs::write(&settings_path, &merged)?;
+    std::fs::write(path, &merged)?;
     Ok(if existed {
         InstallOutcome::Refreshed
     } else {
@@ -13015,20 +13019,8 @@ const STATUS_LINE_COMMAND: &str = "rigger status --line";
 /// settings.json -> `Installed`, an existing settings.json gaining or self-healing the key ->
 /// `Refreshed`, already carrying the exact command -> `AlreadyCurrent` (a silent no-op).
 fn install_status_line(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
-    let claude_dir = root.join(".claude");
-    std::fs::create_dir_all(&claude_dir)?;
-    let settings_path = claude_dir.join("settings.json");
-    let existed = settings_path.exists();
-    let existing = std::fs::read(&settings_path).unwrap_or_default();
-    let merged = hooks::install_status_line(&existing, STATUS_LINE_COMMAND)?;
-    if merged == existing {
-        return Ok(InstallOutcome::AlreadyCurrent);
-    }
-    std::fs::write(&settings_path, &merged)?;
-    Ok(if existed {
-        InstallOutcome::Refreshed
-    } else {
-        InstallOutcome::Installed
+    install_into_claude_settings(root, |existing| {
+        hooks::install_status_line(existing, STATUS_LINE_COMMAND)
     })
 }
 
@@ -13040,18 +13032,8 @@ fn install_status_line(root: &Path) -> Result<InstallOutcome, Box<dyn std::error
 /// self-heals, every OTHER server entry and top-level key in `.mcp.json` survives
 /// untouched.
 fn install_operator_mcp(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
-    let mcp_path = root.join(".mcp.json");
-    let existed = mcp_path.exists();
-    let existing = std::fs::read(&mcp_path).unwrap_or_default();
-    let merged = hooks::install_mcp_server(&existing, "rigger", "rigger", &["mcp"])?;
-    if merged == existing {
-        return Ok(InstallOutcome::AlreadyCurrent);
-    }
-    std::fs::write(&mcp_path, &merged)?;
-    Ok(if existed {
-        InstallOutcome::Refreshed
-    } else {
-        InstallOutcome::Installed
+    install_into(&root.join(".mcp.json"), |existing| {
+        hooks::install_mcp_server(existing, "rigger", "rigger", &["mcp"])
     })
 }
 
@@ -13585,8 +13567,7 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
 }
 
 fn git_repo() -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    git_repo_at(&cwd)
+    git_repo_at(&cwd())
 }
 
 /// The git top-level directory *containing `root`*, resolved with `git -C <root>` so the
@@ -16652,31 +16633,10 @@ mod tests {
         );
     }
 
-    /// Spec 68, criterion 2 (the accuracy pin): every bare `rigger <cmd>` a per-operation
-    /// skill teaches names a REAL entry in [`SUBCOMMANDS`] - the one dispatch registry the
-    /// runtime and `rigger docs` both read. `rigger::docs` cannot see `SUBCOMMANDS` (it
-    /// lives in the binary crate), so this pin lives here: if a command a skill teaches
-    /// were ever dropped from dispatch, this test - not just an operator hitting a dead
-    /// command - would catch it.
-    #[test]
-    fn per_operation_skills_reference_only_real_subcommands() {
+    /// Every bare `rigger <cmd>` each `(skill, commands)` case teaches names a REAL entry in
+    /// [`SUBCOMMANDS`] and is literally present in that skill's rendered content.
+    fn assert_skills_reference_only_real_subcommands(cases: &[(&str, &[&str])]) {
         let ctx = docs_context();
-        let cases: &[(&str, &[&str])] = &[
-            ("rigger-reset-store", &["reset", "validate", "status"]),
-            ("rigger-build-graph", &["graph"]),
-            (
-                "rigger-reindex",
-                &["reindex", "graph", "ground", "validate"],
-            ),
-            (
-                "rigger-resume-a-run",
-                &["status", "run", "serve", "workflow", "step"],
-            ),
-            (
-                "rigger-handle-an-escalation",
-                &["status", "peers", "run", "serve"],
-            ),
-        ];
         let registry = rigger::docs::skill_registry();
         for (name, commands) in cases {
             let entry = registry
@@ -16700,42 +16660,46 @@ mod tests {
         }
     }
 
-    /// Spec 69, criterion 1 (the accuracy pin, extending the spec-68 sibling
-    /// [`per_operation_skills_reference_only_real_subcommands`] to the three watch-discipline
-    /// skills): every bare `rigger <cmd>` `rigger-watch-a-run` / `rigger-restore-the-dash` /
-    /// `rigger-diagnose-churn` teach names a REAL entry in [`SUBCOMMANDS`], and is literally
-    /// present in the rendered output - so a dropped or renamed `rigger dash`, `rigger
-    /// status`, `rigger watch`, or `rigger emit` reference in this family fails here, not
-    /// just misleads an operator.
-    #[test]
-    fn watching_discipline_skills_reference_only_real_subcommands() {
-        let ctx = docs_context();
-        let cases: &[(&str, &[&str])] = &[
+    rigger::test_cases! {
+        /// Spec 68, criterion 2 (the accuracy pin): every bare `rigger <cmd>` a per-operation
+        /// skill teaches names a REAL entry in [`SUBCOMMANDS`] - the one dispatch registry the
+        /// runtime and `rigger docs` both read. `rigger::docs` cannot see `SUBCOMMANDS` (it
+        /// lives in the binary crate), so this pin lives here: if a command a skill teaches
+        /// were ever dropped from dispatch, this test - not just an operator hitting a dead
+        /// command - would catch it.
+        per_operation_skills_reference_only_real_subcommands:
+            assert_skills_reference_only_real_subcommands(&[
+            ("rigger-reset-store", &["reset", "validate", "status"]),
+            ("rigger-build-graph", &["graph"]),
+            (
+                "rigger-reindex",
+                &["reindex", "graph", "ground", "validate"],
+            ),
+            (
+                "rigger-resume-a-run",
+                &["status", "run", "serve", "workflow", "step"],
+            ),
+            (
+                "rigger-handle-an-escalation",
+                &["status", "peers", "run", "serve"],
+            ),
+        ]);
+    }
+
+    rigger::test_cases! {
+        /// Spec 69, criterion 1 (the accuracy pin, extending the spec-68 sibling
+        /// [`per_operation_skills_reference_only_real_subcommands`] to the three watch-discipline
+        /// skills): every bare `rigger <cmd>` `rigger-watch-a-run` / `rigger-restore-the-dash` /
+        /// `rigger-diagnose-churn` teach names a REAL entry in [`SUBCOMMANDS`], and is literally
+        /// present in the rendered output - so a dropped or renamed `rigger dash`, `rigger
+        /// status`, `rigger watch`, or `rigger emit` reference in this family fails here, not
+        /// just misleads an operator.
+        watching_discipline_skills_reference_only_real_subcommands:
+            assert_skills_reference_only_real_subcommands(&[
             ("rigger-watch-a-run", &["status", "watch"]),
             ("rigger-restore-the-dash", &["dash", "status", "watch"]),
             ("rigger-diagnose-churn", &["emit", "watch"]),
-        ];
-        let registry = rigger::docs::skill_registry();
-        for (name, commands) in cases {
-            let entry = registry
-                .iter()
-                .find(|e| e.name == *name)
-                .unwrap_or_else(|| panic!("{name} must be in the registry"));
-            let rendered = entry.render(&ctx);
-            for cmd in *commands {
-                assert!(
-                    SUBCOMMANDS.contains(cmd),
-                    "{name} references `rigger {cmd}`, but {cmd:?} is not in SUBCOMMANDS - \
-                     the binary has no such command"
-                );
-                let literal = format!("rigger {cmd}");
-                assert!(
-                    rendered.contains(&literal),
-                    "{name} must actually reference `{literal}` somewhere in its rendered \
-                     content, not just claim to via this test's own table"
-                );
-            }
-        }
+        ]);
     }
 
     /// Spec 20, unit 2 (the drift seam, at the unit level); spec 68, criterion 1 (the gate
@@ -17269,10 +17233,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn git_is_ancestor_decides_commit_order_in_a_real_repo() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+    /// A fresh repo at `root` with a linear history of `commits` commits (each rewriting one
+    /// file), returning their ids oldest first.
+    fn linear_history(root: &Path, commits: usize) -> Vec<String> {
         let git = |args: &[&str]| {
             let out = std::process::Command::new("git")
                 .args(args)
@@ -17291,26 +17254,35 @@ mod tests {
             String::from_utf8(out.stdout).unwrap().trim().to_string()
         };
         git(&["init", "-q"]);
-        std::fs::write(root.join("a"), "1").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-q", "-m", "one"]);
-        let first = git(&["rev-parse", "HEAD"]);
-        std::fs::write(root.join("a"), "2").unwrap();
-        git(&["commit", "-q", "-am", "two"]);
-        let second = git(&["rev-parse", "HEAD"]);
+        (1..=commits)
+            .map(|n| {
+                std::fs::write(root.join("a"), n.to_string()).unwrap();
+                git(&["add", "."]);
+                git(&["commit", "-q", "-m", &format!("commit {n}")]);
+                git(&["rev-parse", "HEAD"])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn git_is_ancestor_decides_commit_order_in_a_real_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let history = linear_history(root, 2);
+        let (first, second) = (&history[0], &history[1]);
 
         assert_eq!(
-            git_is_ancestor(root, &first, &second),
+            git_is_ancestor(root, first, second),
             Some(true),
             "the parent commit is an ancestor of the child"
         );
         assert_eq!(
-            git_is_ancestor(root, &second, &first),
+            git_is_ancestor(root, second, first),
             Some(false),
             "the child commit is not an ancestor of the parent"
         );
         assert_eq!(
-            git_is_ancestor(root, &"0".repeat(40), &second),
+            git_is_ancestor(root, &"0".repeat(40), second),
             None,
             "an unresolvable id makes the order undecidable"
         );
@@ -17320,46 +17292,21 @@ mod tests {
     fn git_commit_distance_counts_commits_ahead_in_a_real_repo() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@e")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@e")
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            String::from_utf8(out.stdout).unwrap().trim().to_string()
-        };
-        git(&["init", "-q"]);
-        std::fs::write(root.join("a"), "1").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-q", "-m", "one"]);
-        let first = git(&["rev-parse", "HEAD"]);
-        std::fs::write(root.join("a"), "2").unwrap();
-        git(&["commit", "-q", "-am", "two"]);
-        std::fs::write(root.join("a"), "3").unwrap();
-        git(&["commit", "-q", "-am", "three"]);
-        let third = git(&["rev-parse", "HEAD"]);
+        let history = linear_history(root, 3);
+        let (first, third) = (&history[0], &history[2]);
 
         assert_eq!(
-            git_commit_distance(root, &first, &third),
+            git_commit_distance(root, first, third),
             Some(2),
             "two commits separate first and third"
         );
         assert_eq!(
-            git_commit_distance(root, &first, &first),
+            git_commit_distance(root, first, first),
             Some(0),
             "a commit is zero commits ahead of itself"
         );
         assert_eq!(
-            git_commit_distance(root, &"0".repeat(40), &third),
+            git_commit_distance(root, &"0".repeat(40), third),
             None,
             "an unresolvable id makes the distance undecidable"
         );
@@ -17382,37 +17329,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn behind_the_tree_message_is_silent_when_versions_already_match() {
-        assert!(
-            behind_the_tree_message("1.2.3+abc", "1.2.3+abc", Some(5)).is_none(),
-            "identical versions carry nothing actionable, regardless of a nonzero distance"
-        );
+    /// Each `(installed, checkout, distance, why)` case carries nothing actionable: the
+    /// behind-the-tree advisory stays silent.
+    fn assert_behind_the_tree_silent(cases: &[(&str, &str, Option<u64>, &str)]) {
+        for (installed, checkout, distance, why) in cases {
+            assert!(
+                behind_the_tree_message(installed, checkout, *distance).is_none(),
+                "{why}"
+            );
+        }
     }
 
-    #[test]
-    fn behind_the_tree_message_is_silent_when_either_side_is_unversioned() {
-        assert!(
-            behind_the_tree_message("0.3.0+unversioned", "1.0.0+abc", Some(3)).is_none(),
-            "an unversioned installed side is reported by the missing-binary advisory, not \
-             this one"
-        );
-        assert!(
-            behind_the_tree_message("1.0.0+abc", "0.3.0+unversioned", Some(3)).is_none(),
-            "an unversioned checkout side has nothing comparable to report"
-        );
-    }
-
-    #[test]
-    fn behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance() {
-        assert!(
-            behind_the_tree_message("1.0.0+abc", "1.1.0+def", None).is_none(),
-            "an undecidable git order (diverged history, an unresolvable id) reports nothing"
-        );
-        assert!(
-            behind_the_tree_message("1.0.0+abc", "1.1.0+def", Some(0)).is_none(),
-            "zero commits ahead is not behind the tree"
-        );
+    rigger::test_cases! {
+        behind_the_tree_message_is_silent_when_versions_already_match:
+            assert_behind_the_tree_silent(&[(
+            "1.2.3+abc",
+            "1.2.3+abc",
+            Some(5),
+            "identical versions carry nothing actionable, regardless of a nonzero distance",
+        )]);
+        behind_the_tree_message_is_silent_when_either_side_is_unversioned:
+            assert_behind_the_tree_silent(&[
+            (
+                "0.3.0+unversioned",
+                "1.0.0+abc",
+                Some(3),
+                "an unversioned installed side is reported by the missing-binary advisory, not \
+                 this one",
+            ),
+            (
+                "1.0.0+abc",
+                "0.3.0+unversioned",
+                Some(3),
+                "an unversioned checkout side has nothing comparable to report",
+            ),
+        ]);
+        behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance:
+            assert_behind_the_tree_silent(&[
+            (
+                "1.0.0+abc",
+                "1.1.0+def",
+                None,
+                "an undecidable git order (diverged history, an unresolvable id) reports nothing",
+            ),
+            (
+                "1.0.0+abc",
+                "1.1.0+def",
+                Some(0),
+                "zero commits ahead is not behind the tree",
+            ),
+        ]);
     }
 
     #[test]
@@ -17660,88 +17626,63 @@ mod tests {
         );
     }
 
-    #[test]
-    fn refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them() {
+    /// Over a repo whose base commits only `src/main.rs`, each `(setup, criterion, why)` case
+    /// proceeds: the missing-paths base refusal never fires.
+    fn assert_base_path_check_proceeds(cases: &[(RunBranchSetup, &str, &str)]) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         init_committed_repo(root, "src/main.rs", "fn main() {}\n");
         let repo = root.to_str().unwrap();
-        let present = vec!["touches `src/main.rs`".to_string()];
-        assert!(
-            refuse_when_base_lacks_spec_paths(
-                repo,
-                "rigger step",
-                "HEAD",
-                RunBranchSetup::CreatedFromBase,
-                &present,
-            )
-            .is_ok(),
-            "a spec whose referenced path exists in the base must proceed"
-        );
+        for (setup, criterion, why) in cases {
+            assert!(
+                refuse_when_base_lacks_spec_paths(
+                    repo,
+                    "rigger step",
+                    "HEAD",
+                    *setup,
+                    &[criterion.to_string()],
+                )
+                .is_ok(),
+                "{why}"
+            );
+        }
     }
 
-    #[test]
-    fn refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        init_committed_repo(root, "src/main.rs", "fn main() {}\n");
-        let repo = root.to_str().unwrap();
-        // One present, one absent => partial => warn + proceed, never a refusal.
-        let mixed = vec!["touches src/main.rs and adds crates/new/src/lib.rs".to_string()];
-        assert!(
-            refuse_when_base_lacks_spec_paths(
-                repo,
-                "rigger step",
-                "HEAD",
-                RunBranchSetup::CreatedFromBase,
-                &mixed,
-            )
-            .is_ok(),
-            "a partial match must proceed (some named paths may be to-be-created)"
-        );
-    }
-
-    #[test]
-    fn refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        init_committed_repo(root, "src/main.rs", "fn main() {}\n");
-        let repo = root.to_str().unwrap();
-        // No path-like tokens => nothing to check, even on a fresh-from-base anchor.
-        let no_paths = vec!["the store passes its contract suite".to_string()];
-        assert!(refuse_when_base_lacks_spec_paths(
-            repo,
-            "rigger step",
-            "HEAD",
+    rigger::test_cases! {
+        refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them:
+            assert_base_path_check_proceeds(&[(
             RunBranchSetup::CreatedFromBase,
-            &no_paths,
-        )
-        .is_ok());
-        // Only-absent paths, but a REUSED or HEAD-fallback anchor skips the check: the run
-        // already began (or has no resolvable base), so it must never refuse mid-run.
-        let absent = vec!["the file crates/foo/src/bar.rs".to_string()];
-        assert!(
-            refuse_when_base_lacks_spec_paths(
-                repo,
-                "rigger step",
-                "HEAD",
+            "touches `src/main.rs`",
+            "a spec whose referenced path exists in the base must proceed",
+        )]);
+        /// One present, one absent => partial => warn + proceed, never a refusal.
+        refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds:
+            assert_base_path_check_proceeds(&[(
+            RunBranchSetup::CreatedFromBase,
+            "touches src/main.rs and adds crates/new/src/lib.rs",
+            "a partial match must proceed (some named paths may be to-be-created)",
+        )]);
+        /// No path-like tokens => nothing to check, even on a fresh-from-base anchor. Only-absent
+        /// paths, but a REUSED or HEAD-fallback anchor skips the check: the run already began (or
+        /// has no resolvable base), so it must never refuse mid-run.
+        refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor:
+            assert_base_path_check_proceeds(&[
+            (
+                RunBranchSetup::CreatedFromBase,
+                "the store passes its contract suite",
+                "a criterion with no path-like tokens has nothing to check",
+            ),
+            (
                 RunBranchSetup::Reused,
-                &absent,
-            )
-            .is_ok(),
-            "a reused run branch must not re-refuse"
-        );
-        assert!(
-            refuse_when_base_lacks_spec_paths(
-                repo,
-                "rigger step",
-                "HEAD",
+                "the file crates/foo/src/bar.rs",
+                "a reused run branch must not re-refuse",
+            ),
+            (
                 RunBranchSetup::CreatedFromHead,
-                &absent,
-            )
-            .is_ok(),
-            "a HEAD fallback (no resolvable base) must not refuse"
-        );
+                "the file crates/foo/src/bar.rs",
+                "a HEAD fallback (no resolvable base) must not refuse",
+            ),
+        ]);
     }
 
     #[test]
@@ -18928,8 +18869,7 @@ mod tests {
         let grandparent = dir.path();
         git_init_quiet(grandparent);
         let child = grandparent.join("child");
-        std::fs::create_dir_all(child.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(child.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(&child);
         let deep = child.join("src").join("deep");
         std::fs::create_dir_all(&deep).unwrap();
 
@@ -19304,8 +19244,7 @@ mod tests {
     fn find_store_dir_from_returns_the_dir_that_holds_the_store() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(root);
         assert_eq!(find_store_dir_from(root), Some(root.join(RIGGER_DIR)));
     }
 
@@ -19317,8 +19256,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         git_init_quiet(root);
-        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(root);
         let sub = root.join("src").join("deep");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(find_store_dir_from(&sub), Some(root.join(RIGGER_DIR)));
@@ -19333,6 +19271,27 @@ mod tests {
             .unwrap();
     }
 
+    /// Plant a rigger store (`.rigger/events.db`) under `dir`.
+    fn plant_store(dir: &Path) {
+        std::fs::create_dir_all(dir.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(dir.join(RIGGER_DIR).join("events.db")).unwrap();
+    }
+
+    /// `git worktree add` a new `branch` worktree of the repo at `root`, at `worktree`.
+    fn add_worktree(root: &Path, worktree: &Path, branch: &str) {
+        assert!(
+            Command::new("git")
+                .args(["worktree", "add", "-q"])
+                .arg(worktree)
+                .args(["-b", branch])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success(),
+            "git worktree add must succeed for the fixture"
+        );
+    }
+
     #[test]
     fn find_store_dir_from_never_escapes_the_repo_into_a_parent_store() {
         // adv9-walkup-cross-project: a courier in a storeless NESTED repo (an
@@ -19343,8 +19302,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let parent = dir.path();
         git_init_quiet(parent);
-        std::fs::create_dir_all(parent.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(parent.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(&parent);
 
         // A nested, storeless git repo below the parent (not a linked worktree).
         let nested = parent
@@ -19364,8 +19322,7 @@ mod tests {
         let bare = tempfile::tempdir().unwrap();
         let sub = bare.path().join("deep");
         std::fs::create_dir_all(&sub).unwrap();
-        std::fs::create_dir_all(bare.path().join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(bare.path().join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(bare.path());
         assert_eq!(
             find_store_dir_from(&sub),
             None,
@@ -19567,8 +19524,7 @@ mod tests {
         let root = dir.path();
         git_init_quiet(root);
         // The repo root's real store.
-        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(root);
         // A nested worktree with a tracked-but-storeless `.rigger/` (no events.db).
         let worktree = root.join(".rigger").join("tmp").join("rigger-wt-x");
         std::fs::create_dir_all(worktree.join(RIGGER_DIR)).unwrap();
@@ -19600,38 +19556,14 @@ mod tests {
         // relocated worktree would refuse "no rigger store found").
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        git_init_quiet(root);
-        std::fs::write(root.join("README"), "x").unwrap();
-        assert!(Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success());
-        assert!(Command::new("git")
-            .args(["commit", "-q", "-m", "init"])
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success());
-        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        init_committed_repo(root, "README", "x");
+        plant_store(root);
 
         // The worktree lives in a WHOLLY UNRELATED location - a sibling tempdir, never a
         // descendant of `root` - mirroring the relocated cache-home default exactly.
         let elsewhere = tempfile::tempdir().unwrap();
         let worktree = elsewhere.path().join("rigger-wt-x");
-        assert!(
-            Command::new("git")
-                .args(["worktree", "add", "-q"])
-                .arg(&worktree)
-                .args(["-b", "rigger/u/x"])
-                .current_dir(root)
-                .status()
-                .unwrap()
-                .success(),
-            "git worktree add must succeed for the fixture"
-        );
+        add_worktree(root, &worktree, "rigger/u/x");
 
         assert_eq!(
             find_store_dir_from(&worktree),
@@ -19654,41 +19586,16 @@ mod tests {
         // is exactly {the worktree itself, the resolved repo root} - nothing between.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        git_init_quiet(root);
-        std::fs::write(root.join("README"), "x").unwrap();
-        assert!(Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success());
-        assert!(Command::new("git")
-            .args(["commit", "-q", "-m", "init"])
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success());
-        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        init_committed_repo(root, "README", "x");
+        plant_store(root);
 
         // A FOREIGN store sitting at an ancestor of the relocated worktree - the exact
         // shape a plain unbounded climb would wrongly bind to.
         let elsewhere = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(elsewhere.path().join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(elsewhere.path().join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(elsewhere.path());
         let worktree = elsewhere.path().join("nested").join("rigger-wt-x");
         std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
-        assert!(
-            Command::new("git")
-                .args(["worktree", "add", "-q"])
-                .arg(&worktree)
-                .args(["-b", "rigger/u/y"])
-                .current_dir(root)
-                .status()
-                .unwrap()
-                .success(),
-            "git worktree add must succeed for the fixture"
-        );
+        add_worktree(root, &worktree, "rigger/u/y");
 
         assert_eq!(
             find_store_dir_from(&worktree),
@@ -19708,12 +19615,10 @@ mod tests {
         let root = dir.path();
         git_init_quiet(root);
         // The repo root's real store (the outermost in scope).
-        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(root);
         // A nearer SHADOW store in a nested dir under the repo.
         let nested = root.join("sub").join("deep");
-        std::fs::create_dir_all(nested.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(nested.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(&nested);
 
         let walk = walk_stores_from(&nested);
         assert_eq!(
@@ -19735,8 +19640,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         git_init_quiet(root);
-        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(root);
         let sub = root.join("crate").join("src");
         std::fs::create_dir_all(&sub).unwrap();
 
@@ -19839,8 +19743,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        plant_store(root);
         std::env::set_current_dir(root).unwrap();
 
         let (loc, _sel) = require_store_dir().expect("a plain store must resolve normally");
@@ -20089,44 +19992,49 @@ mod tests {
         assert_eq!(res.meta["resolved_model"], "claude-x");
     }
 
+    /// Spawn the implementer `id` of unit `u` through a [`ReplayDriver`] over `store`, the way
+    /// the conductor's next step does.
+    fn replay_spawn(
+        store: &Namespaced<'_>,
+        id: &str,
+    ) -> Result<rigger::conductor::AgentResult, rigger::conductor::Error> {
+        use rigger::conductor::{AgentDriver, Error, SpawnOpts};
+        let opts = SpawnOpts {
+            id: id.to_string(),
+            unit: "u".into(),
+            stage: "u".into(),
+            ..Default::default()
+        };
+        let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
+        ReplayDriver::new(store).spawn(
+            &rigger::config::AgentDef::default(),
+            "do it",
+            &opts,
+            &no_emit,
+        )
+    }
+
     #[test]
     fn a_recorded_result_lets_the_replay_driver_advance_past_the_spawn() {
         // The acceptance shape for this unit: a result recorded through the SAME seam
         // cmd_result uses (build_result -> spawn_store::record_result on the per-project
         // namespaced run stream) flips a PARKED spawn to one the replay driver answers -
         // i.e. the next step advances past it (spec 04, Done-when).
-        use rigger::conductor::{is_parked, AgentDriver, Error, SpawnOpts};
-        use rigger::config::AgentDef;
-        use rigger::driver::replay::ReplayDriver;
-
         let backend = Store::open(":memory:").unwrap();
         let store = Namespaced::new(&backend, "proj");
         let id = spawn::spawn_id("u", spawn::ROLE_IMPLEMENTER, 0);
 
-        let driver = ReplayDriver::new(&store);
-        let agent = AgentDef::default();
-        let opts = SpawnOpts {
-            id: id.clone(),
-            unit: "u".into(),
-            stage: "u".into(),
-            ..Default::default()
-        };
-        let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
-
         // Before any result is recorded, the frontier PARKS (it waits for the courier).
-        let parked = driver
-            .spawn(&agent, "do it", &opts, &no_emit)
-            .expect_err("an unrecorded spawn parks the frontier");
-        assert!(is_parked(&parked));
+        let parked = replay_spawn(&store, &id).expect_err("an unrecorded spawn parks the frontier");
+        assert!(rigger::conductor::is_parked(&parked));
 
         // `rigger result u/implementer#0 "the diff"` records the outcome through the seam.
         let res = build_result(&id, "the diff", false, None).unwrap();
         spawn_store::record_result(&store, &res).unwrap();
 
         // Now the next step ADVANCES PAST it: the same spawn is answered from the log.
-        let answered = driver
-            .spawn(&agent, "do it", &opts, &no_emit)
-            .expect("a recorded result replays instead of re-parking");
+        let answered =
+            replay_spawn(&store, &id).expect("a recorded result replays instead of re-parking");
         assert_eq!(answered.output, "the diff");
     }
 
@@ -20134,10 +20042,6 @@ mod tests {
     fn a_recorded_error_result_replays_as_a_failure_not_a_fake_success() {
         // `rigger result <id> --error <msg>` must replay AS a failure so the conductor
         // remediates it exactly as a live failure, never a fabricated success.
-        use rigger::conductor::{is_parked, AgentDriver, Error, SpawnOpts};
-        use rigger::config::AgentDef;
-        use rigger::driver::replay::ReplayDriver;
-
         let backend = Store::open(":memory:").unwrap();
         let store = Namespaced::new(&backend, "proj");
         let id = spawn::spawn_id("u", spawn::ROLE_IMPLEMENTER, 0);
@@ -20145,22 +20049,10 @@ mod tests {
         let res = build_result(&id, "worker died: non-zero exit", true, None).unwrap();
         spawn_store::record_result(&store, &res).unwrap();
 
-        let driver = ReplayDriver::new(&store);
-        let agent = AgentDef::default();
-        let opts = SpawnOpts {
-            id: id.clone(),
-            unit: "u".into(),
-            stage: "u".into(),
-            ..Default::default()
-        };
-        let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
-
-        let err = driver
-            .spawn(&agent, "do it", &opts, &no_emit)
-            .expect_err("a recorded failure replays as an error");
+        let err = replay_spawn(&store, &id).expect_err("a recorded failure replays as an error");
         assert_eq!(err.0, "worker died: non-zero exit");
         assert!(
-            !is_parked(&err),
+            !rigger::conductor::is_parked(&err),
             "a recorded failure is a real failure, not a park"
         );
     }
@@ -20460,12 +20352,27 @@ mod tests {
         assert_eq!(a.spec.as_deref(), Some("spec.md"));
     }
 
-    #[test]
-    fn parse_run_args_rejects_unknown_flags_and_values() {
-        assert!(parse_run_args(&["--driver".into(), "bogus".into()]).is_err());
-        assert!(parse_run_args(&["--eventstore".into(), "bogus".into()]).is_err());
-        assert!(parse_run_args(&["--nope".into()]).is_err());
-        assert!(parse_run_args(&["a".into(), "b".into()]).is_err());
+    /// `parse` refuses every one of the `cases` argument lists.
+    fn assert_every_arg_list_refused<T>(
+        parse: fn(&[String]) -> Result<T, Box<dyn std::error::Error>>,
+        cases: &[&[&str]],
+    ) {
+        for args in cases {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            assert!(parse(&args).is_err(), "{args:?} must be refused");
+        }
+    }
+
+    rigger::test_cases! {
+        parse_run_args_rejects_unknown_flags_and_values: assert_every_arg_list_refused(
+            parse_run_args,
+            &[
+                &["--driver", "bogus"],
+                &["--eventstore", "bogus"],
+                &["--nope"],
+                &["a", "b"],
+            ],
+        );
     }
 
     /// `rigger run`/`rigger serve` accept `--base <ref>` (spec 18, criterion 6): it is no
@@ -21168,9 +21075,36 @@ mod tests {
         );
     }
 
+    /// A pre-mint deployment under its basename identity `oldname`, in `dir`: one event on the
+    /// legacy `proj-oldname-run` stream and one decision (`pre-d`, governing `pre.rs`) folded
+    /// into the graph tagged `oldname`. Returns the store and the graph's path.
+    fn pre_mint_deployment(dir: &Path) -> (Store, String) {
+        use rigger::eventstore::ExpectedRevision;
+        let store_path = dir.join("events.db");
+        let graph_path = dir.join("graph.db").to_str().unwrap().to_string();
+        let backend = Store::open(store_path.to_str().unwrap()).unwrap();
+        backend
+            .append(
+                "proj-oldname-run",
+                ExpectedRevision::Any,
+                &[Event::new("UnitStarted", b"{}".to_vec())],
+            )
+            .unwrap();
+        let legacy_graph = Projector::open(&graph_path, "oldname").unwrap();
+        let payload = serde_json::json!({
+            "id": "pre-d", "summary": "s", "governs": ["pre.rs"], "supersedes": "",
+        });
+        let mut e = Event::new(
+            contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&payload).unwrap(),
+        );
+        e.position = 1;
+        legacy_graph.apply(&e).unwrap();
+        (backend, graph_path)
+    }
+
     #[test]
     fn migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned() {
-        use rigger::eventstore::ExpectedRevision;
         // Spec 28 GC5 (backward-compat): a single-project deployment behaves EXACTLY as before,
         // even across the spec-09 identity mint. The identity migration renames event STREAMS
         // (`rename_stream_prefix`), but the graph folds incrementally, so the renamed streams are
@@ -21179,33 +21113,10 @@ mod tests {
         // SILENTLY ORPHANED. `migrate_project_identity` must therefore re-key the graph rows the
         // same way it renames the streams, so the minted read still returns the pre-mint history.
         let dir = tempfile::tempdir().unwrap();
-        let store_path = dir.path().join("events.db");
-        let graph_path = dir.path().join("graph.db");
-        let store_path = store_path.to_str().unwrap();
-        let graph_path = graph_path.to_str().unwrap();
-
         // The deployment runs under its basename identity "oldname": it appends a stream under
         // the legacy namespace and folds a decision into the graph tagged "oldname".
-        let backend = Store::open(store_path).unwrap();
-        backend
-            .append(
-                "proj-oldname-run",
-                ExpectedRevision::Any,
-                &[Event::new("UnitStarted", b"{}".to_vec())],
-            )
-            .unwrap();
-        {
-            let legacy_graph = Projector::open(graph_path, "oldname").unwrap();
-            let payload = serde_json::json!({
-                "id": "pre-d", "summary": "s", "governs": ["pre.rs"], "supersedes": "",
-            });
-            let mut e = Event::new(
-                contextgraph::TYPE_DECISION_MADE,
-                serde_json::to_vec(&payload).unwrap(),
-            );
-            e.position = 1;
-            legacy_graph.apply(&e).unwrap();
-        }
+        let (backend, graph_path) = pre_mint_deployment(dir.path());
+        let graph_path = graph_path.as_str();
 
         // It then mints `.rigger/project.id`: the migration opens the graph under the MINTED
         // identity and migrates. Before the re-key fix the graph rows kept the legacy scope, so
@@ -21321,7 +21232,6 @@ mod tests {
 
     #[test]
     fn migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename() {
-        use rigger::eventstore::ExpectedRevision;
         // Spec 28 GC5 (backward-compat), crash-safety RECOVERY. Because the graph re-key runs
         // BEFORE the irreversible stream rename, a crash in the window (graph re-key committed, the
         // rename not yet) leaves the legacy namespace still populated. Recovery therefore decides
@@ -21329,31 +21239,8 @@ mod tests {
         // or a collision), and completes the rename - so the pre-mint history stays visible under
         // the minted read filter, exactly as before the mint.
         let dir = tempfile::tempdir().unwrap();
-        let store_path = dir.path().join("events.db");
-        let graph_path = dir.path().join("graph.db");
-        let store_path = store_path.to_str().unwrap();
-        let graph_path = graph_path.to_str().unwrap();
-
-        let backend = Store::open(store_path).unwrap();
-        backend
-            .append(
-                "proj-oldname-run",
-                ExpectedRevision::Any,
-                &[Event::new("UnitStarted", b"{}".to_vec())],
-            )
-            .unwrap();
-        {
-            let legacy_graph = Projector::open(graph_path, "oldname").unwrap();
-            let payload = serde_json::json!({
-                "id": "pre-d", "summary": "s", "governs": ["pre.rs"], "supersedes": "",
-            });
-            let mut e = Event::new(
-                contextgraph::TYPE_DECISION_MADE,
-                serde_json::to_vec(&payload).unwrap(),
-            );
-            e.position = 1;
-            legacy_graph.apply(&e).unwrap();
-        }
+        let (backend, graph_path) = pre_mint_deployment(dir.path());
+        let graph_path = graph_path.as_str();
 
         // Reproduce the crash-window STATE the correct ordering leaves behind: the graph re-key
         // committed (both pre-mint nodes are already at minted) but the stream rename did not.
@@ -22160,143 +22047,63 @@ mod tests {
         );
     }
 
-    /// Spec 46, criterion 1 (CONSUMER GITIGNORE): the always-on dash writes two runtime
-    /// breadcrumbs under `.rigger/` - `.rigger/dash.url` and `.rigger/dash.marker`. Left
-    /// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's
-    /// commit by `git add`, then collide with the live dash's rewrites when the conductor
-    /// merges the unit (`git merge` aborts with "untracked working tree files would be
-    /// overwritten"). So `rigger init`/`setup` must append an ignore line for BOTH, exactly
-    /// as it does for the other machine-local installs, and the append must be idempotent -
-    /// a second setup adds no duplicate line.
-    #[test]
-    fn init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently() {
+    /// `rigger init`/`setup` on a fresh consumer repo appends one ignore line per `patterns`
+    /// entry (reporting each), and a rerun appends none of them again - no duplicate accrues.
+    fn assert_init_gitignores_idempotently(patterns: &[&str]) {
         let dir = tempfile::tempdir().unwrap();
-
-        // First scaffold on a fresh consumer repo: both dash breadcrumbs are
-        // untracked-and-not-ignored, so setup appends an ignore line for each and reports it.
         let first = init_project(dir.path()).expect("first init scaffolds the project");
-        assert!(
-            first
-                .gitignore_added
-                .contains(&".rigger/dash.url".to_string())
-                && first
-                    .gitignore_added
-                    .contains(&".rigger/dash.marker".to_string())
-                && first
-                    .gitignore_added
-                    .contains(&".rigger/dash.attempt".to_string()),
-            "the first init reports appending ALL THREE dash-artifact ignore patterns (url, \
-             marker, and the round-8 attempt breadcrumb), got: {:?}",
-            first.gitignore_added
-        );
-
         let gitignore = dir.path().join(".gitignore");
         let content = std::fs::read_to_string(&gitignore).unwrap();
-        assert!(
-            content.lines().any(|l| l.trim() == ".rigger/dash.url"),
-            "the written .gitignore ignores the dash url breadcrumb, got:\n{content}"
-        );
-        assert!(
-            content.lines().any(|l| l.trim() == ".rigger/dash.marker"),
-            "the written .gitignore ignores the dash marker breadcrumb, got:\n{content}"
-        );
-        assert!(
-            content.lines().any(|l| l.trim() == ".rigger/dash.attempt"),
-            "the written .gitignore ignores the dash attempt breadcrumb (spec 69, round-8 fix; \
-             the same collision-with-a-unit-commit risk as the other two dash breadcrumbs), \
-             got:\n{content}"
-        );
-
-        // Idempotent: a second setup finds all three already ignored and appends nothing new.
         let second = init_project(dir.path()).expect("a rerun must succeed");
-        assert!(
-            !second
-                .gitignore_added
-                .contains(&".rigger/dash.url".to_string())
-                && !second
-                    .gitignore_added
-                    .contains(&".rigger/dash.marker".to_string())
-                && !second
-                    .gitignore_added
-                    .contains(&".rigger/dash.attempt".to_string()),
-            "a rerun re-appends no dash-artifact ignore pattern, got: {:?}",
-            second.gitignore_added
-        );
-
         let after = std::fs::read_to_string(&gitignore).unwrap();
-        assert_eq!(
-            after
-                .lines()
-                .filter(|l| l.trim() == ".rigger/dash.url")
-                .count(),
-            1,
-            "exactly one .rigger/dash.url ignore line - no duplicate accrued, got:\n{after}"
-        );
-        assert_eq!(
-            after
-                .lines()
-                .filter(|l| l.trim() == ".rigger/dash.marker")
-                .count(),
-            1,
-            "exactly one .rigger/dash.marker ignore line - no duplicate accrued, got:\n{after}"
-        );
-        assert_eq!(
-            after
-                .lines()
-                .filter(|l| l.trim() == ".rigger/dash.attempt")
-                .count(),
-            1,
-            "exactly one .rigger/dash.attempt ignore line - no duplicate accrued, got:\n{after}"
-        );
+        for pattern in patterns {
+            assert!(
+                first.gitignore_added.contains(&pattern.to_string()),
+                "the first init reports appending the {pattern} ignore pattern, got: {:?}",
+                first.gitignore_added
+            );
+            assert!(
+                content.lines().any(|l| l.trim() == *pattern),
+                "the written .gitignore ignores {pattern}, got:\n{content}"
+            );
+            assert!(
+                !second.gitignore_added.contains(&pattern.to_string()),
+                "a rerun re-appends no {pattern} ignore pattern, got: {:?}",
+                second.gitignore_added
+            );
+            assert_eq!(
+                after.lines().filter(|l| l.trim() == *pattern).count(),
+                1,
+                "exactly one {pattern} ignore line - no duplicate accrued, got:\n{after}"
+            );
+        }
     }
 
-    /// Spec 48, SECRETS DISCIPLINE: the per-machine connection-string secret file
-    /// `.rigger/store.conn` (store resolver rung 3) carries credentials, so `rigger init`/`setup`
-    /// must git-ignore it BY CONSTRUCTION - the same scaffold mechanism that ignores the dash
-    /// breadcrumbs - so a developer who drops their credentials into it can never commit them, and
-    /// the committed project config never requires a secret. The append is idempotent: a second
-    /// setup adds no duplicate line.
-    #[test]
-    fn init_project_gitignores_the_store_conn_secret_file_idempotently() {
-        let dir = tempfile::tempdir().unwrap();
-
-        // First scaffold on a fresh consumer repo: the secret file is untracked-and-not-ignored, so
-        // setup appends an ignore line for it and reports it.
-        let first = init_project(dir.path()).expect("first init scaffolds the project");
-        assert!(
-            first
-                .gitignore_added
-                .contains(&".rigger/store.conn".to_string()),
-            "the first init reports appending the store.conn secret-file ignore pattern, got: {:?}",
-            first.gitignore_added
-        );
-
-        let gitignore = dir.path().join(".gitignore");
-        let content = std::fs::read_to_string(&gitignore).unwrap();
-        assert!(
-            content.lines().any(|l| l.trim() == ".rigger/store.conn"),
-            "the written .gitignore ignores the store.conn secret file, got:\n{content}"
-        );
-
-        // Idempotent: a second setup finds it already ignored and appends nothing new.
-        let second = init_project(dir.path()).expect("a rerun must succeed");
-        assert!(
-            !second
-                .gitignore_added
-                .contains(&".rigger/store.conn".to_string()),
-            "a rerun re-appends no store.conn ignore pattern, got: {:?}",
-            second.gitignore_added
-        );
-
-        let after = std::fs::read_to_string(&gitignore).unwrap();
-        assert_eq!(
-            after
-                .lines()
-                .filter(|l| l.trim() == ".rigger/store.conn")
-                .count(),
-            1,
-            "exactly one .rigger/store.conn ignore line - no duplicate accrued, got:\n{after}"
-        );
+    rigger::test_cases! {
+        /// Spec 46, criterion 1 (CONSUMER GITIGNORE): the always-on dash writes two runtime
+        /// breadcrumbs under `.rigger/` - `.rigger/dash.url` and `.rigger/dash.marker`. Left
+        /// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's
+        /// commit by `git add`, then collide with the live dash's rewrites when the conductor
+        /// merges the unit (`git merge` aborts with "untracked working tree files would be
+        /// overwritten"). So `rigger init`/`setup` must append an ignore line for BOTH, exactly
+        /// as it does for the other machine-local installs, and the append must be idempotent -
+        /// a second setup adds no duplicate line.
+        /// The round-8 `.rigger/dash.attempt` breadcrumb (spec 69) carries the same
+        /// collision-with-a-unit-commit risk as the other two.
+        init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently:
+            assert_init_gitignores_idempotently(&[
+            ".rigger/dash.url",
+            ".rigger/dash.marker",
+            ".rigger/dash.attempt",
+        ]);
+        /// Spec 48, SECRETS DISCIPLINE: the per-machine connection-string secret file
+        /// `.rigger/store.conn` (store resolver rung 3) carries credentials, so `rigger init`/`setup`
+        /// must git-ignore it BY CONSTRUCTION - the same scaffold mechanism that ignores the dash
+        /// breadcrumbs - so a developer who drops their credentials into it can never commit them, and
+        /// the committed project config never requires a secret. The append is idempotent: a second
+        /// setup adds no duplicate line.
+        init_project_gitignores_the_store_conn_secret_file_idempotently:
+            assert_init_gitignores_idempotently(&[".rigger/store.conn"]);
     }
 
     /// Spec 48, SECRETS DISCIPLINE (the permission-hygiene rung): the store-connection secret file
@@ -22782,106 +22589,68 @@ mod tests {
         assert!(root.join(".rigger/agents/newcomer.md").exists());
     }
 
-    /// Import runs the same validation `rigger validate` applies: a malformed agent
-    /// file (no frontmatter) fails the import loudly instead of writing a file that
-    /// would later break `config::load`.
-    #[test]
-    fn import_agents_validates_and_rejects_a_malformed_agent() {
+    /// Importing a collection of `files` into a freshly scaffolded project fails (`why`),
+    /// and none of the files is written into `.rigger/agents/` - the import aborts atomically.
+    fn assert_import_refused(files: &[(&str, &str)], why: &str) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         init_project(root).unwrap();
-
         let src = root.join("collection");
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("broken.md"), "no frontmatter here, just prose\n").unwrap();
-
-        assert!(
-            import_agents(root, &src).is_err(),
-            "an agent file with no YAML frontmatter must fail the import validation"
-        );
+        for (name, content) in files {
+            std::fs::write(src.join(name), content).unwrap();
+        }
+        assert!(import_agents(root, &src).is_err(), "{why}");
+        for (name, _) in files {
+            assert!(
+                !root.join(RIGGER_DIR).join("agents").join(name).exists(),
+                "{name} must NOT be written - the import aborts before writing"
+            );
+        }
     }
 
-    /// Import is atomic on an id collision with an agent already on disk. A collection
-    /// file whose normalized id equals a scaffolded agent's - under a DIFFERENT filename,
-    /// so the filename-only overwrite guard does not catch it - is rejected BEFORE any
-    /// write, leaving `.rigger/agents/` untouched. Without this, the file is written and
-    /// the trailing whole-fleet load then fails on the duplicate id, bricking every later
-    /// `config::load`.
-    #[test]
-    fn import_agents_rejects_an_id_colliding_with_an_existing_agent() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        init_project(root).unwrap();
-
-        let src = root.join("collection");
-        std::fs::create_dir_all(&src).unwrap();
-        // A different filename, but its id collides with the scaffolded `planner`.
-        std::fs::write(
-            src.join("my-planner.md"),
-            "---\nid: planner\n---\nA colliding planner under a new filename.\n",
-        )
-        .unwrap();
-
-        assert!(
-            import_agents(root, &src).is_err(),
-            "an imported id that collides with an existing agent must fail the import"
+    rigger::test_cases! {
+        /// Import runs the same validation `rigger validate` applies: a malformed agent
+        /// file (no frontmatter) fails the import loudly instead of writing a file that
+        /// would later break `config::load`.
+        import_agents_validates_and_rejects_a_malformed_agent: assert_import_refused(
+            &[("broken.md", "no frontmatter here, just prose\n")],
+            "an agent file with no YAML frontmatter must fail the import validation",
         );
-        assert!(
-            !root.join(".rigger/agents/my-planner.md").exists(),
-            "the colliding file must NOT be written - the import aborts atomically"
+        /// Import is atomic on an id collision with an agent already on disk. A collection
+        /// file whose normalized id equals a scaffolded agent's - under a DIFFERENT filename,
+        /// so the filename-only overwrite guard does not catch it - is rejected BEFORE any
+        /// write, leaving `.rigger/agents/` untouched. Without this, the file is written and
+        /// the trailing whole-fleet load then fails on the duplicate id, bricking every later
+        /// `config::load`.
+        import_agents_rejects_an_id_colliding_with_an_existing_agent: assert_import_refused(
+            // A different filename, but its id collides with the scaffolded `planner`.
+            &[(
+                "my-planner.md",
+                "---\nid: planner\n---\nA colliding planner under a new filename.\n",
+            )],
+            "an imported id that collides with an existing agent must fail the import",
         );
-    }
-
-    /// Import is atomic on a duplicate id WITHIN one import: two collection files that
-    /// normalize to the same id are rejected before either is written, so no half-import
-    /// is left behind.
-    #[test]
-    fn import_agents_rejects_a_duplicate_id_within_one_import() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        init_project(root).unwrap();
-
-        let src = root.join("collection");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("a-dup.md"), "---\nid: twin\n---\nFirst.\n").unwrap();
-        // `name:` normalizes to the same `id: twin`.
-        std::fs::write(src.join("b-dup.md"), "---\nname: twin\n---\nSecond.\n").unwrap();
-
-        assert!(
-            import_agents(root, &src).is_err(),
-            "two imported files sharing an id must fail the import"
+        /// Import is atomic on a duplicate id WITHIN one import: two collection files that
+        /// normalize to the same id are rejected before either is written, so no half-import
+        /// is left behind.
+        import_agents_rejects_a_duplicate_id_within_one_import: assert_import_refused(
+            // `name:` normalizes to the same `id: twin`.
+            &[
+                ("a-dup.md", "---\nid: twin\n---\nFirst.\n"),
+                ("b-dup.md", "---\nname: twin\n---\nSecond.\n"),
+            ],
+            "two imported files sharing an id must fail the import",
         );
-        assert!(
-            !root.join(".rigger/agents/a-dup.md").exists()
-                && !root.join(".rigger/agents/b-dup.md").exists(),
-            "neither file may be written when the batch has a duplicate id"
-        );
-    }
-
-    /// Import rejects an agent whose identity field is present but blank - the empty-id
-    /// arm - by the SAME rule `config::load` applies, and writes nothing. A `name:` with
-    /// an empty value normalizes to a blank `id:`.
-    #[test]
-    fn import_agents_rejects_an_agent_with_a_blank_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        init_project(root).unwrap();
-
-        let src = root.join("collection");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(
-            src.join("blank.md"),
-            "---\nname: \"\"\ndescription: has a blank identity\n---\nBody.\n",
-        )
-        .unwrap();
-
-        assert!(
-            import_agents(root, &src).is_err(),
-            "a blank id must fail the import (the same rule config::load enforces)"
-        );
-        assert!(
-            !root.join(".rigger/agents/blank.md").exists(),
-            "the blank-id file must NOT be written - the import aborts before writing"
+        /// Import rejects an agent whose identity field is present but blank - the empty-id
+        /// arm - by the SAME rule `config::load` applies, and writes nothing. A `name:` with
+        /// an empty value normalizes to a blank `id:`.
+        import_agents_rejects_an_agent_with_a_blank_id: assert_import_refused(
+            &[(
+                "blank.md",
+                "---\nname: \"\"\ndescription: has a blank identity\n---\nBody.\n",
+            )],
+            "a blank id must fail the import (the same rule config::load enforces)",
         );
     }
 
@@ -24001,53 +23770,58 @@ mod tests {
         );
     }
 
-    /// spec 61, FINDINGS VOLUME criterion: the per-tier finding count `project_canary`
-    /// aggregates onto `CanaryMetrics::findings_raised` must reach the printed scorecard,
-    /// exactly like every other canary measure `format_canary_stats` renders.
-    #[test]
-    fn format_canary_stats_reports_findings_raised_by_tier() {
+    /// `m`'s printed canary scorecard, one line per row.
+    fn canary_scorecard(m: &metrics::CanaryMetrics) -> String {
+        format_canary_stats(m).join("\n")
+    }
+
+    /// The findings-volume section renders each `(tier, count)` finding count raised this run.
+    fn assert_findings_raised_render(counts: &[(&str, u64)]) {
         let mut m = metrics::CanaryMetrics::default();
-        m.findings_raised.insert("lens".to_string(), 7);
-        m.findings_raised.insert("adversary".to_string(), 4);
-        let out = format_canary_stats(&m).join("\n");
+        for (tier, count) in counts {
+            m.findings_raised.insert(tier.to_string(), *count);
+        }
+        let out = canary_scorecard(&m);
         assert!(
             out.contains("findings raised by tier"),
             "the findings-volume section must appear:\n{out}"
         );
-        assert!(
-            out.contains(&format!("{:<16} 7", "lens")),
-            "lens's aggregated finding count must appear:\n{out}"
-        );
-        assert!(
-            out.contains(&format!("{:<16} 4", "adversary")),
-            "adversary's aggregated finding count must appear:\n{out}"
-        );
+        for (tier, count) in counts {
+            assert!(
+                out.contains(&format!("{tier:<16} {count}")),
+                "{tier}'s aggregated finding count must render (an honest 0 included):\n{out}"
+            );
+        }
     }
 
-    /// A tier that raised nothing this run still renders its honest `0` (mirrors the
-    /// catch-rate section's own `0/N` discipline) rather than a blank or omitted line.
-    #[test]
-    fn format_canary_stats_reports_a_zero_findings_count_honestly() {
-        let mut m = metrics::CanaryMetrics::default();
-        m.findings_raised.insert("lens".to_string(), 0);
-        m.findings_raised.insert("adversary".to_string(), 0);
-        let out = format_canary_stats(&m).join("\n");
-        assert!(
-            out.contains(&format!("{:<16} 0", "lens"))
-                && out.contains(&format!("{:<16} 0", "adversary")),
-            "an unmeasured tier's finding count must render an honest 0:\n{out}"
-        );
+    rigger::test_cases! {
+        /// spec 61, FINDINGS VOLUME criterion: the per-tier finding count `project_canary`
+        /// aggregates onto `CanaryMetrics::findings_raised` must reach the printed scorecard,
+        /// exactly like every other canary measure `format_canary_stats` renders.
+        format_canary_stats_reports_findings_raised_by_tier:
+            assert_findings_raised_render(&[("lens", 7), ("adversary", 4)]);
+        /// A tier that raised nothing this run still renders its honest `0` (mirrors the
+        /// catch-rate section's own `0/N` discipline) rather than a blank or omitted line.
+        format_canary_stats_reports_a_zero_findings_count_honestly:
+            assert_findings_raised_render(&[("lens", 0), ("adversary", 0)]);
     }
 
-    /// No findings-volume section at all when the metrics carry none - a caller that never
-    /// populated the map (e.g. an older/foreign scorecard) gets the pre-existing render
-    /// unchanged rather than an empty header with nothing under it.
-    #[test]
-    fn format_canary_stats_omits_the_findings_volume_section_when_empty() {
-        let out = format_canary_stats(&metrics::CanaryMetrics::default()).join("\n");
-        assert!(
-            !out.contains("findings raised by tier"),
-            "an empty findings_raised map must not print a bare header:\n{out}"
+    /// A never-populated scorecard omits every one of `sections` entirely (`why`).
+    fn assert_empty_scorecard_omits(sections: &[&str], why: &str) {
+        let out = canary_scorecard(&metrics::CanaryMetrics::default());
+        for section in sections {
+            assert!(!out.contains(section), "{why}:\n{out}");
+        }
+    }
+
+    rigger::test_cases! {
+        /// No findings-volume section at all when the metrics carry none - a caller that never
+        /// populated the map (e.g. an older/foreign scorecard) gets the pre-existing render
+        /// unchanged rather than an empty header with nothing under it.
+        format_canary_stats_omits_the_findings_volume_section_when_empty:
+            assert_empty_scorecard_omits(
+            &["findings raised by tier"],
+            "an empty findings_raised map must not print a bare header",
         );
     }
 
@@ -24180,55 +23954,41 @@ mod tests {
         );
     }
 
-    /// spec 61, FALSE POSITIVES criterion: a rejected known-good control must render its own
-    /// control/false-positive line on the summary, visible at the same glance as the catch
-    /// rate - computed purely from `CanaryMetrics::controls`/`control_false_positives`
-    /// (themselves folded from `CanaryOutcome`'s existing `planted`/`verdict_approved`
-    /// fields; no new `CanaryOutcome` field). Distinct from the NO FAKE ZEROS criterion's
-    /// per-tier n/a branch and the FINDINGS VOLUME criterion's finding-count aggregate.
-    #[test]
-    fn format_canary_stats_reports_control_items_and_false_positives() {
-        let m = metrics::CanaryMetrics {
-            controls: 3,
-            control_false_positives: 2,
+    /// Over `controls` known-good control items, `false_positives` of them wrongly rejected, the
+    /// summary renders its control/false-positive line with the `approved` and `rejected` counts.
+    fn assert_control_line(controls: u64, false_positives: u64, approved: &str, rejected: &str) {
+        let out = canary_scorecard(&metrics::CanaryMetrics {
+            controls,
+            control_false_positives: false_positives,
             ..Default::default()
-        };
-        let out = format_canary_stats(&m).join("\n");
+        });
         assert!(
             out.contains("control items") && out.contains("false positive"),
             "the control/false-positive line must appear on the summary:\n{out}"
         );
+        assert!(out.contains(approved), "{approved} must render:\n{out}");
         assert!(
-            out.contains("1/3 approved"),
-            "one of the three controls was correctly approved:\n{out}"
-        );
-        assert!(
-            out.contains("2 false positive"),
-            "the two wrongly-rejected controls must be counted as false positives:\n{out}"
+            out.contains(rejected),
+            "{rejected} must render honestly, never omitted:\n{out}"
         );
     }
 
-    /// A run with no false positives still renders the control line, with an honest `0` -
-    /// mirroring the findings-volume section's own "unmeasured tier reports an honest 0, not
-    /// an absent key" discipline. Not the NO FAKE ZEROS n/a case: a control's approve/reject
-    /// verdict is always recorded by the adjudicator, never subject to a missing-attribution
-    /// failure the way tier catch counts are.
-    #[test]
-    fn format_canary_stats_reports_zero_false_positives_honestly() {
-        let m = metrics::CanaryMetrics {
-            controls: 4,
-            control_false_positives: 0,
-            ..Default::default()
-        };
-        let out = format_canary_stats(&m).join("\n");
-        assert!(
-            out.contains("4/4 approved"),
-            "every control was correctly approved:\n{out}"
-        );
-        assert!(
-            out.contains("0 false positive"),
-            "zero false positives must render honestly, not be omitted:\n{out}"
-        );
+    rigger::test_cases! {
+        /// spec 61, FALSE POSITIVES criterion: a rejected known-good control must render its own
+        /// control/false-positive line on the summary, visible at the same glance as the catch
+        /// rate - computed purely from `CanaryMetrics::controls`/`control_false_positives`
+        /// (themselves folded from `CanaryOutcome`'s existing `planted`/`verdict_approved`
+        /// fields; no new `CanaryOutcome` field). Distinct from the NO FAKE ZEROS criterion's
+        /// per-tier n/a branch and the FINDINGS VOLUME criterion's finding-count aggregate.
+        format_canary_stats_reports_control_items_and_false_positives:
+            assert_control_line(3, 2, "1/3 approved", "2 false positive");
+        /// A run with no false positives still renders the control line, with an honest `0` -
+        /// mirroring the findings-volume section's own "unmeasured tier reports an honest 0, not
+        /// an absent key" discipline. Not the NO FAKE ZEROS n/a case: a control's approve/reject
+        /// verdict is always recorded by the adjudicator, never subject to a missing-attribution
+        /// failure the way tier catch counts are.
+        format_canary_stats_reports_zero_false_positives_honestly:
+            assert_control_line(4, 0, "4/4 approved", "0 false positive");
     }
 
     /// MODEL PINNING criterion (spec 61 c7): the scorecard header names binary build,
@@ -24267,15 +24027,14 @@ mod tests {
         );
     }
 
-    /// A run that never recorded a header event (a legacy stream, or `rigger stats
-    /// --canary` on a never-run project) must not fabricate one - the section is omitted
-    /// entirely, byte-for-byte like the pre-MODEL-PINNING render.
-    #[test]
-    fn format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one() {
-        let out = format_canary_stats(&metrics::CanaryMetrics::default()).join("\n");
-        assert!(
-            !out.contains("binary build") && !out.contains("resolved model by tier"),
-            "a legacy/never-run scorecard must not fabricate a header:\n{out}"
+    rigger::test_cases! {
+        /// A run that never recorded a header event (a legacy stream, or `rigger stats
+        /// --canary` on a never-run project) must not fabricate one - the section is omitted
+        /// entirely, byte-for-byte like the pre-MODEL-PINNING render.
+        format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one:
+            assert_empty_scorecard_omits(
+            &["binary build", "resolved model by tier"],
+            "a legacy/never-run scorecard must not fabricate a header",
         );
     }
 
@@ -24481,52 +24240,44 @@ mod tests {
         );
     }
 
+    /// A run whose `lens:sdet` finding survival reads `raised`/`upheld` across `adjudications`
+    /// recorded verdicts, `unattributed` upheld findings carrying no actor.
+    fn sdet_review(raised: u64, upheld: u64, adjudications: u64, unattributed: u64) -> Metrics {
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts { raised, upheld },
+        );
+        Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications,
+                upheld_unattributed: unattributed,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// `m`'s printed stats, one line per row.
+    fn stats_text(m: &Metrics) -> String {
+        format_stats(m).join("\n")
+    }
+
     /// spec 11 remediation: an in-process (cli) run has findings but records NO adjudicator
     /// verdict (no SpawnResult), so the upheld-based folds are unfed. The render must
     /// DISCLOSE that honestly rather than let a reader misread the 0% survival as the
     /// adjudicator having discarded every finding.
     #[test]
     fn stats_discloses_when_no_verdict_was_recorded_on_this_driver() {
-        let mut finding_survival = BTreeMap::new();
-        finding_survival.insert(
-            "lens:sdet".to_string(),
-            metrics::FindingCounts {
-                raised: 3,
-                upheld: 0,
-            },
-        );
-        let m = Metrics {
-            review_quality: metrics::ReviewQuality {
-                finding_survival,
-                adjudications: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let out = format_stats(&m).join("\n");
+        let out = stats_text(&sdet_review(3, 0, 0, 0));
         assert!(
             out.contains("no adjudicator verdict recorded on this run's driver"),
             "an in-process run with findings but no recorded verdict must disclose the unfed numerator:\n{out}"
         );
 
         // With a verdict recorded (the courier path), the disclosure is suppressed.
-        let mut finding_survival = BTreeMap::new();
-        finding_survival.insert(
-            "lens:sdet".to_string(),
-            metrics::FindingCounts {
-                raised: 3,
-                upheld: 2,
-            },
-        );
-        let m = Metrics {
-            review_quality: metrics::ReviewQuality {
-                finding_survival,
-                adjudications: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let out = format_stats(&m).join("\n");
+        let out = stats_text(&sdet_review(3, 2, 1, 0));
         assert!(
             !out.contains("no adjudicator verdict recorded"),
             "a run WITH a recorded verdict must not print the disclosure:\n{out}"
@@ -24543,41 +24294,15 @@ mod tests {
     /// numerator, and stay SILENT only when the adjudicator genuinely upheld nothing.
     #[test]
     fn stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed() {
-        let mut finding_survival = BTreeMap::new();
-        finding_survival.insert(
-            "lens:sdet".to_string(),
-            metrics::FindingCounts {
-                raised: 3,
-                upheld: 0,
-            },
-        );
-        let mut tier_cost = BTreeMap::new();
-        tier_cost.insert(
-            "lens".to_string(),
-            metrics::TierCost {
-                spawns: 2,
-                upheld: 0,
-            },
-        );
-        tier_cost.insert(
-            "adjudicator".to_string(),
-            metrics::TierCost {
-                spawns: 1,
-                upheld: 0,
-            },
-        );
-        let m = Metrics {
-            review_reject: 5,
-            review_quality: metrics::ReviewQuality {
-                finding_survival,
-                tier_cost,
-                adjudications: 1,       // a verdict WAS recorded ...
-                upheld_unattributed: 2, // ... but the findings it upheld are unattributed here
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let out = format_stats(&m).join("\n");
+        // A verdict WAS recorded ... but the findings it upheld are unattributed here.
+        let mut m = sdet_review(3, 0, 1, 2);
+        m.review_reject = 5;
+        for (tier, spawns) in [("lens", 2), ("adjudicator", 1)] {
+            m.review_quality
+                .tier_cost
+                .insert(tier.to_string(), metrics::TierCost { spawns, upheld: 0 });
+        }
+        let out = stats_text(&m);
         assert!(
             out.contains("unfed upheld numerator"),
             "an all-zero-upheld panel with a recorded verdict but unattributed upheld findings must disclose the unfed numerator:\n{out}"
@@ -24593,24 +24318,7 @@ mod tests {
 
         // A verdict that recorded and GENUINELY upheld nothing (nothing dropped) is NOT unfed;
         // its 0% is honest, so the render must stay silent rather than cry an unfed numerator.
-        let mut finding_survival = BTreeMap::new();
-        finding_survival.insert(
-            "lens:sdet".to_string(),
-            metrics::FindingCounts {
-                raised: 3,
-                upheld: 0,
-            },
-        );
-        let m = Metrics {
-            review_quality: metrics::ReviewQuality {
-                finding_survival,
-                adjudications: 1,
-                upheld_unattributed: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let out = format_stats(&m).join("\n");
+        let out = stats_text(&sdet_review(3, 0, 1, 0));
         assert!(
             !out.contains("unfed upheld numerator"),
             "a genuine all-discard verdict (nothing upheld, nothing dropped) must not claim an unfed numerator:\n{out}"
@@ -25344,21 +25052,32 @@ mod tests {
             .expect("append run events");
     }
 
-    /// `stats_lines` against an absent `events.db` returns `None` (the "no runs yet"
-    /// signal) and - critically - does NOT create the file. Opening would create it
-    /// and mask a never-run project as an empty one, so the guard must precede the open.
-    #[test]
-    fn stats_lines_absent_db_returns_none_and_creates_no_file() {
+    /// `read` (the read behind `what`) against an absent `events.db` returns `None` (it
+    /// `reads_as`) and does NOT create the file - opening would create it and mask a never-run
+    /// project as an empty one, so the guard must precede the open.
+    fn assert_absent_db_reads_none<T: std::fmt::Debug>(
+        read: impl FnOnce(&str) -> Result<Option<T>, Box<dyn std::error::Error>>,
+        what: &str,
+        reads_as: &str,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
-        let path_str = path.to_str().unwrap();
-
-        let out = stats_lines(path_str, "proj-x", false, &StoreSelection::Sqlite)
-            .expect("absent db is not an error");
-        assert!(out.is_none(), "an absent db must read as no runs (None)");
+        let out = read(path.to_str().unwrap()).expect("absent db is not an error");
+        assert!(out.is_none(), "an absent db must read as {reads_as} (None)");
         assert!(
             !path.exists(),
-            "stats_lines must not create events.db when it is absent"
+            "{what} must not create events.db when it is absent"
+        );
+    }
+
+    rigger::test_cases! {
+        /// `stats_lines` against an absent `events.db` returns `None` (the "no runs yet"
+        /// signal) and - critically - does NOT create the file. Opening would create it
+        /// and mask a never-run project as an empty one, so the guard must precede the open.
+        stats_lines_absent_db_returns_none_and_creates_no_file: assert_absent_db_reads_none(
+            |path| stats_lines(path, "proj-x", false, &StoreSelection::Sqlite),
+            "stats_lines",
+            "no runs",
         );
     }
 
@@ -25552,24 +25271,31 @@ mod tests {
         );
     }
 
-    /// `result_of_at` (the read behind `rigger reported`, and the same latest-result read
-    /// `spawn_store::record_result_if_absent` consults) treats an absent `events.db` as UNREPORTED
-    /// (`None`) and does NOT create the file: a never-run project has no result for any spawn,
-    /// and opening would create the db, masking the edge. A `None` here makes `rigger reported`
-    /// exit non-zero, correctly reporting the spawn as still unanswered.
-    #[test]
-    fn result_of_at_absent_db_reads_as_unreported_and_creates_no_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path_str = path.to_str().unwrap();
-
-        let got = result_of_at(path_str, "proj-x", "u/impl#0", &StoreSelection::Sqlite)
-            .expect("absent db is not an error");
-        assert!(got.is_none(), "an absent db must read as unreported (None)");
-        assert!(
-            !path.exists(),
-            "result_of_at must not create events.db when it is absent"
+    rigger::test_cases! {
+        /// `result_of_at` (the read behind `rigger reported`, and the same latest-result read
+        /// `spawn_store::record_result_if_absent` consults) treats an absent `events.db` as UNREPORTED
+        /// (`None`) and does NOT create the file: a never-run project has no result for any spawn,
+        /// and opening would create the db, masking the edge. A `None` here makes `rigger reported`
+        /// exit non-zero, correctly reporting the spawn as still unanswered.
+        result_of_at_absent_db_reads_as_unreported_and_creates_no_file:
+            assert_absent_db_reads_none(
+            |path| result_of_at(path, "proj-x", "u/impl#0", &StoreSelection::Sqlite),
+            "result_of_at",
+            "unreported",
         );
+    }
+
+    /// An `events.db` in a fresh dir whose `project` run holds one successful result for `id`.
+    /// Returns the dir (to keep it alive) and the db's path.
+    fn db_with_one_result(project: &str, id: &str, output: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db").to_str().unwrap().to_string();
+        seed_run(
+            &path,
+            project,
+            &[spawn::SpawnResult::ok(id, output).to_event().unwrap()],
+        );
+        (dir, path)
     }
 
     /// A spawn with no recorded result reads as UNREPORTED (`None`) even when the db exists and
@@ -25577,20 +25303,9 @@ mod tests {
     /// spawn id, so an unanswered spawn is correctly treated as still-parked.
     #[test]
     fn result_of_at_unrecorded_spawn_reads_as_unreported() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path_str = path.to_str().unwrap();
-
         // A different spawn HAS a result; the one we ask about does not.
-        seed_run(
-            path_str,
-            "proj-me",
-            &[spawn::SpawnResult::ok("u/other#0", "done")
-                .to_event()
-                .unwrap()],
-        );
-
-        let got = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
+        let (_dir, path) = db_with_one_result("proj-me", "u/other#0", "done");
+        let got = result_of_at(&path, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
             .expect("read is not an error");
         assert!(
             got.is_none(),
@@ -25635,21 +25350,11 @@ mod tests {
     /// on the guard's read path, so a spawn id colliding across projects cannot cross-answer.
     #[test]
     fn result_of_at_is_namespace_scoped() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path_str = path.to_str().unwrap();
-
         // proj-other recorded a result for an id that ALSO exists in proj-me's run.
-        seed_run(
-            path_str,
-            "proj-other",
-            &[spawn::SpawnResult::ok("u/impl#0", "theirs")
-                .to_event()
-                .unwrap()],
-        );
+        let (_dir, path) = db_with_one_result("proj-other", "u/impl#0", "theirs");
 
         // proj-me, reading the same file, sees its OWN (empty) namespace: still unreported.
-        let mine = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
+        let mine = result_of_at(&path, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
             .expect("read is not an error");
         assert!(
             mine.is_none(),
@@ -25657,7 +25362,7 @@ mod tests {
         );
 
         // Sanity: the owner DOES see it, so the None above is the namespace boundary, not a miss.
-        let theirs = result_of_at(path_str, "proj-other", "u/impl#0", &StoreSelection::Sqlite)
+        let theirs = result_of_at(&path, "proj-other", "u/impl#0", &StoreSelection::Sqlite)
             .expect("read is not an error");
         assert!(
             theirs.is_some(),
@@ -26141,28 +25846,42 @@ mod tests {
         );
     }
 
+    /// The reset modes `args` parse to (`what` names the accepted form).
+    fn reset_modes_of(args: &[&str], what: &str) -> ResetModes {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        reset_modes(&args).unwrap_or_else(|e| panic!("{what}: {e}"))
+    }
+
+    /// The refusal `args` meet (`what` names why they must be refused).
+    fn reset_refusal(args: &[&str], what: &str) -> String {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        match reset_modes(&args) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("{what}"),
+        }
+    }
+
     /// `reset_modes` accepts `--force-live` alongside `--derived`, at most once, and it never
     /// implies a mode on its own - a bare `--force-live` still falls through the existing "at
     /// least one mode" refusal exactly as before this flag existed.
     #[test]
     fn reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode()
     {
-        let modes = reset_modes(&["--derived".to_string(), "--force-live".to_string()])
-            .expect("--derived --force-live must parse");
+        let modes = reset_modes_of(
+            &["--derived", "--force-live"],
+            "--derived --force-live must parse",
+        );
         assert!(modes.derived && modes.force_live && !modes.runs);
 
-        let err = match reset_modes(&["--force-live".to_string(), "--force-live".to_string()]) {
-            Err(e) => e,
-            Ok(_) => panic!("a duplicate --force-live must be refused"),
-        };
-        assert!(err.to_string().contains("more than once"), "got {err}");
+        let err = reset_refusal(
+            &["--force-live", "--force-live"],
+            "a duplicate --force-live must be refused",
+        );
+        assert!(err.contains("more than once"), "got {err}");
 
-        let err = match reset_modes(&["--force-live".to_string()]) {
-            Err(e) => e,
-            Ok(_) => panic!("--force-live alone names no mode"),
-        };
+        let err = reset_refusal(&["--force-live"], "--force-live alone names no mode");
         assert!(
-            err.to_string().contains("at least one mode"),
+            err.contains("at least one mode"),
             "a bare --force-live must fall through the same 'at least one mode' refusal as a \
              bare reset; got {err}"
         );
@@ -26199,22 +25918,26 @@ mod tests {
 
     #[test]
     fn reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates() {
-        let modes = reset_modes(&["--build-cache".to_string()]).expect("--build-cache alone");
+        let modes = reset_modes_of(&["--build-cache"], "--build-cache alone");
         assert!(modes.build_cache && !modes.runs && !modes.derived);
 
-        let modes = reset_modes(&["--runs".to_string(), "--build-cache".to_string()])
-            .expect("--runs --build-cache must compose");
+        let modes = reset_modes_of(
+            &["--runs", "--build-cache"],
+            "--runs --build-cache must compose",
+        );
         assert!(modes.runs && modes.build_cache && !modes.derived);
 
-        let modes = reset_modes(&["--derived".to_string(), "--build-cache".to_string()])
-            .expect("--derived --build-cache must compose");
+        let modes = reset_modes_of(
+            &["--derived", "--build-cache"],
+            "--derived --build-cache must compose",
+        );
         assert!(modes.derived && modes.build_cache);
 
-        let err = match reset_modes(&["--build-cache".to_string(), "--build-cache".to_string()]) {
-            Err(e) => e,
-            Ok(_) => panic!("a duplicate --build-cache must be refused"),
-        };
-        assert!(err.to_string().contains("more than once"), "got {err}");
+        let err = reset_refusal(
+            &["--build-cache", "--build-cache"],
+            "a duplicate --build-cache must be refused",
+        );
+        assert!(err.contains("more than once"), "got {err}");
     }
 
     // --- Spec 69, criterion 2: THE WATCHDOG (`rigger watch --once`, wired end to end) ---
@@ -26399,11 +26122,12 @@ mod tests {
         assert_eq!(a.interval_secs, 7);
     }
 
-    #[test]
-    fn parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag() {
-        assert!(parse_watch_args(&["--interval".to_string(), "soon".to_string()]).is_err());
-        assert!(parse_watch_args(&["--interval".to_string()]).is_err());
-        assert!(parse_watch_args(&["--bogus".to_string()]).is_err());
+    rigger::test_cases! {
+        parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag:
+            assert_every_arg_list_refused(
+            parse_watch_args,
+            &[&["--interval", "soon"], &["--interval"], &["--bogus"]],
+        );
     }
 
     /// The headline scenario (spec 69, Done-when "a test proves THE WATCHDOG"): a store
@@ -26715,166 +26439,174 @@ mod tests {
         );
     }
 
-    /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). Supersedes
-    /// `implementer_persona_pins_the_seeded_mutation_step_contract` (spec 73's persona pin) and
-    /// `implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract` (spec
-    /// 77's TMPDIR-registration pin) - both retired here: spec 91 Design decides "the
-    /// implementer persona's mutation block is removed together with its unit.diff/TMPDIR
-    /// choreography", so there is no more seeded per-round step, gating clause, or TMPDIR
-    /// template to pin. The kill-or-justify accounting contract those tests protected now
-    /// lives in the `checkin` stage's own task text (per `tests/cli.rs`'s
-    /// `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`,
-    /// spec 91 criterion 2's own drift guard, naming this as criterion 3's pin) - this
-    /// persona's prose for when it is spawned as the `checkin` stage, after every `implement`
-    /// unit has already integrated and the `mutation` gate (spec 91 criterion 2) has already
-    /// swept the whole spec diff once. This is a DRIFT GUARD, not a feature test: the
-    /// implementer persona (`.rigger/agents/rust-engineer.md`) is OPERATOR CONFIGURATION
-    /// seeded by the operator, not authored by any unit (spec 73 Design: "the grounder cannot
-    /// ground non-code files, so no unit can own a Markdown blast radius").
-    #[test]
-    fn implementer_persona_pins_the_checkin_stage_kill_or_justify_contract() {
+    /// The committed implementer persona (`.rigger/agents/rust-engineer.md`), whitespace-
+    /// normalized (newlines and indentation collapsed to single spaces) so a pure reflow of a
+    /// wrapped paragraph never false-fails or false-passes a contiguous-phrase check.
+    fn implementer_persona_normalized() -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(RIGGER_DIR)
             .join("agents")
             .join("rust-engineer.md");
         let persona = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
-        // Whitespace-normalize before matching (collapse newlines/indentation to single
-        // spaces), matching the retired tests' established drift-guard pattern: the
-        // committed persona wraps this paragraph across markdown list-continuation lines, so
-        // a raw substring match is fragile to a pure reflow (identical words, different line
-        // wrap) and would false-fail or false-pass around a line break.
-        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
-
-        // One contiguous-phrase check, not two independently-satisfiable fragments: a
-        // decomposed persona that keeps "checkin" and "stage" as bare substrings in unrelated
-        // sentences (destroying the "this runs only when you are the checkin stage" gating
-        // relation) must fail this test, not pass it.
-        assert!(
-            normalized.contains("When you are spawned for the `checkin` stage"),
-            "the kill-or-justify step must be gated on being spawned for the checkin stage, \
-             as one contiguous clause, not two independently-satisfiable fragments; \
-             got:\n{normalized}"
-        );
-        assert!(
-            normalized.contains("read `mutants.out/outcomes.json`"),
-            "the checkin stage must read the mutation gate's own outcomes file, never \
-             stdout; got:\n{normalized}"
-        );
-        // One contiguous-phrase check naming the either-or relation itself, not two bare
-        // keywords: a decomposed persona that keeps "KILLED" and "JUSTIFIED" as unrelated
-        // words (e.g. "always JUSTIFIED ... and never KILLED") would still satisfy two
-        // independent `contains` calls despite inverting the disjunction.
-        assert!(
-            normalized.contains(
-                "is either KILLED by a strengthened test or JUSTIFIED with a concrete \
-                 equivalence reason"
-            ),
-            "a missed mutant must be resolved by an explicit kill-or-justify disjunction, as \
-             one contiguous either-or clause, not two independent bare keywords; \
-             got:\n{normalized}"
-        );
-        assert!(
-            normalized.contains("an `exclude_re` entry in `.cargo/mutants.toml`"),
-            "a justification must name the exclude_re mechanism a missed mutant is recorded \
-             equivalent through; got:\n{normalized}"
-        );
-        // The consequence itself, not just the "unjustified miss" keyword: an inversion that
-        // keeps the words "unjustified miss" but reverses the outcome (e.g. "is merely noted
-        // in the log, and the checkin stage may still be marked done") must fail this test.
-        assert!(
-            normalized.contains("an unjustified miss means the checkin stage is not done"),
-            "an unjustified missed mutant must leave the checkin stage not done - the \
-             consequence clause itself, not merely the presence of the words \"unjustified \
-             miss\"; got:\n{normalized}"
-        );
-        // The ACCOUNTING shape (spec 73's deterministic per-mutant DecisionMade format): one
-        // contiguous clause each for the id convention, the no-new-event-type + deterministic
-        // ordering, the exhaustive status vocabulary (in order), and the empty-diff case - a
-        // decomposed persona that keeps these as scattered bare words could satisfy
-        // independent substring checks while dropping the actual shape a downstream consumer
-        // parses against.
-        assert!(
-            normalized.contains("record the accounting as one `<unit>-mutation-accounting`"),
-            "the accounting must be recorded under the deterministic <unit>-mutation- \
-             accounting id (spec 73's shape); got:\n{normalized}"
-        );
-        assert!(
-            normalized.contains("DecisionMade (no new event type), deterministically ordered"),
-            "the accounting must be one DecisionMade, no new event type, deterministically \
-             ordered; got:\n{normalized}"
-        );
-        assert!(
-            normalized.contains(
-                "caught | missed-killed (naming the killing test) | missed-justified (with \
-                 reason) | unviable | timeout"
-            ),
-            "the accounting's per-mutant status vocabulary must be exhaustive and in this \
-             order; got:\n{normalized}"
-        );
-        assert!(
-            normalized.contains("A diff touching no Rust file records a provably-empty accounting"),
-            "an empty-diff checkin must still record a provably-empty accounting, never skip \
-             the step; got:\n{normalized}"
-        );
-        // The scope boundary itself (spec 91 Design: "Nothing mutation-specific enters the
-        // conductor... no cargo-mutants path"): the agent must be told the `mutation` gate
-        // owns running cargo-mutants, so it never re-invokes the sweep by hand.
-        assert!(
-            normalized.contains("the `mutation` gate itself owns running cargo-mutants"),
-            "the persona must name the mutation gate as the sole cargo-mutants invoker, so \
-             the agent never re-runs it by hand; got:\n{normalized}"
-        );
+        persona.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
-    /// Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): CHECKPOINT BEFORE LONG WORK.
-    /// The persona must carry the checkpoint rule literally, using the design's own
-    /// commit-message vocabulary ("mutation sweep", never the banned two-word invocation
-    /// phrase "cargo mutants" - see `no_persona_under_rigger_agents_invokes_cargo_mutants`
-    /// below, which spec 91 landed first and which this persona edit must not regress).
-    #[test]
-    fn implementer_persona_pins_the_checkpoint_before_long_work_contract() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(RIGGER_DIR)
-            .join("agents")
-            .join("rust-engineer.md");
-        let persona = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
-        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
+    /// The committed implementer persona carries (`true`) or never carries (`false`) each
+    /// `(carried, clause, why)` contiguous clause.
+    fn assert_implementer_persona_pins(clauses: &[(bool, &str, &str)]) {
+        let normalized = implementer_persona_normalized();
+        for (carried, clause, why) in clauses {
+            assert_eq!(
+                normalized.contains(clause),
+                *carried,
+                "{why}; got:\n{normalized}"
+            );
+        }
+    }
 
-        // The trigger and the action as ONE contiguous clause - a decomposed persona
-        // that keeps "mutation sweep" and "commit" as unrelated bare words (dropping
-        // the "before long work, commit first" relation) must fail this test.
-        assert!(
-            normalized.contains(
+    rigger::test_cases! {
+        /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). Supersedes
+        /// `implementer_persona_pins_the_seeded_mutation_step_contract` (spec 73's persona pin) and
+        /// `implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract` (spec
+        /// 77's TMPDIR-registration pin) - both retired here: spec 91 Design decides "the
+        /// implementer persona's mutation block is removed together with its unit.diff/TMPDIR
+        /// choreography", so there is no more seeded per-round step, gating clause, or TMPDIR
+        /// template to pin. The kill-or-justify accounting contract those tests protected now
+        /// lives in the `checkin` stage's own task text (per `tests/cli.rs`'s
+        /// `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`,
+        /// spec 91 criterion 2's own drift guard, naming this as criterion 3's pin) - this
+        /// persona's prose for when it is spawned as the `checkin` stage, after every `implement`
+        /// unit has already integrated and the `mutation` gate (spec 91 criterion 2) has already
+        /// swept the whole spec diff once. This is a DRIFT GUARD, not a feature test: the
+        /// implementer persona (`.rigger/agents/rust-engineer.md`) is OPERATOR CONFIGURATION
+        /// seeded by the operator, not authored by any unit (spec 73 Design: "the grounder cannot
+        /// ground non-code files, so no unit can own a Markdown blast radius").
+        implementer_persona_pins_the_checkin_stage_kill_or_justify_contract:
+            assert_implementer_persona_pins(&[
+            // One contiguous-phrase check, not two independently-satisfiable fragments: a
+            // decomposed persona that keeps "checkin" and "stage" as bare substrings in unrelated
+            // sentences (destroying the "this runs only when you are the checkin stage" gating
+            // relation) must fail this test, not pass it.
+            (
+                true,
+                "When you are spawned for the `checkin` stage",
+                "the kill-or-justify step must be gated on being spawned for the checkin stage, \
+                 as one contiguous clause, not two independently-satisfiable fragments",
+            ),
+            (
+                true,
+                "read `mutants.out/outcomes.json`",
+                "the checkin stage must read the mutation gate's own outcomes file, never \
+                 stdout",
+            ),
+            // One contiguous-phrase check naming the either-or relation itself, not two bare
+            // keywords: a decomposed persona that keeps "KILLED" and "JUSTIFIED" as unrelated
+            // words (e.g. "always JUSTIFIED ... and never KILLED") would still satisfy two
+            // independent `contains` calls despite inverting the disjunction.
+            (
+                true,
+                "is either KILLED by a strengthened test or JUSTIFIED with a concrete \
+                 equivalence reason",
+                "a missed mutant must be resolved by an explicit kill-or-justify disjunction, as \
+                 one contiguous either-or clause, not two independent bare keywords",
+            ),
+            (
+                true,
+                "an `exclude_re` entry in `.cargo/mutants.toml`",
+                "a justification must name the exclude_re mechanism a missed mutant is recorded \
+                 equivalent through",
+            ),
+            // The consequence itself, not just the "unjustified miss" keyword: an inversion that
+            // keeps the words "unjustified miss" but reverses the outcome (e.g. "is merely noted
+            // in the log, and the checkin stage may still be marked done") must fail this test.
+            (
+                true,
+                "an unjustified miss means the checkin stage is not done",
+                "an unjustified missed mutant must leave the checkin stage not done - the \
+                 consequence clause itself, not merely the presence of the words \"unjustified \
+                 miss\"",
+            ),
+            // The ACCOUNTING shape (spec 73's deterministic per-mutant DecisionMade format): one
+            // contiguous clause each for the id convention, the no-new-event-type + deterministic
+            // ordering, the exhaustive status vocabulary (in order), and the empty-diff case - a
+            // decomposed persona that keeps these as scattered bare words could satisfy
+            // independent substring checks while dropping the actual shape a downstream consumer
+            // parses against.
+            (
+                true,
+                "record the accounting as one `<unit>-mutation-accounting`",
+                "the accounting must be recorded under the deterministic <unit>-mutation- \
+                 accounting id (spec 73's shape)",
+            ),
+            (
+                true,
+                "DecisionMade (no new event type), deterministically ordered",
+                "the accounting must be one DecisionMade, no new event type, deterministically \
+                 ordered",
+            ),
+            (
+                true,
+                "caught | missed-killed (naming the killing test) | missed-justified (with \
+                 reason) | unviable | timeout",
+                "the accounting's per-mutant status vocabulary must be exhaustive and in this \
+                 order",
+            ),
+            (
+                true,
+                "A diff touching no Rust file records a provably-empty accounting",
+                "an empty-diff checkin must still record a provably-empty accounting, never skip \
+                 the step",
+            ),
+            // The scope boundary itself (spec 91 Design: "Nothing mutation-specific enters the
+            // conductor... no cargo-mutants path"): the agent must be told the `mutation` gate
+            // owns running cargo-mutants, so it never re-invokes the sweep by hand.
+            (
+                true,
+                "the `mutation` gate itself owns running cargo-mutants",
+                "the persona must name the mutation gate as the sole cargo-mutants invoker, so \
+                 the agent never re-runs it by hand",
+            ),
+        ]);
+        /// Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): CHECKPOINT BEFORE LONG WORK.
+        /// The persona must carry the checkpoint rule literally, using the design's own
+        /// commit-message vocabulary ("mutation sweep", never the banned two-word invocation
+        /// phrase "cargo mutants" - see `no_persona_under_rigger_agents_invokes_cargo_mutants`
+        /// below, which spec 91 landed first and which this persona edit must not regress).
+        implementer_persona_pins_the_checkpoint_before_long_work_contract:
+            assert_implementer_persona_pins(&[
+            // The trigger and the action as ONE contiguous clause - a decomposed persona
+            // that keeps "mutation sweep" and "commit" as unrelated bare words (dropping
+            // the "before long work, commit first" relation) must fail this test.
+            (
+                true,
                 "Before a mutation sweep or any full lane suite, commit your current \
-                 tree"
+                 tree",
+                "the checkpoint rule must fire on EITHER a mutation sweep or a full lane \
+                 suite, as one contiguous clause",
             ),
-            "the checkpoint rule must fire on EITHER a mutation sweep or a full lane \
-             suite, as one contiguous clause; got:\n{normalized}"
-        );
-        // The exact commit-message template spec 89 Design specifies, verbatim.
-        assert!(
-            normalized.contains("`wip(<unit>): checkpoint before <mutation sweep | lane suite>`"),
-            "the checkpoint commit message template must be pinned verbatim; \
-             got:\n{normalized}"
-        );
-        assert!(
-            normalized.contains(
+            // The exact commit-message template spec 89 Design specifies, verbatim.
+            (
+                true,
+                "`wip(<unit>): checkpoint before <mutation sweep | lane suite>`",
+                "the checkpoint commit message template must be pinned verbatim",
+            ),
+            (
+                true,
                 "squash that checkpoint into your round's own commit \
-                 when you report"
+                 when you report",
+                "the checkpoint must be squashed into the round commit on report, never \
+                 left standing as a separate commit",
             ),
-            "the checkpoint must be squashed into the round commit on report, never \
-             left standing as a separate commit; got:\n{normalized}"
-        );
-        // Never the banned invocation phrase (spec 91): this persona edit must not
-        // regress the already-landed no-cargo-mutants-invocation drift guard.
-        assert!(
-            !normalized.contains("cargo mutants"),
-            "the checkpoint rule must use the design's own vocabulary (\"mutation \
-             sweep\"), never the literal invocation phrase \"cargo mutants\"; \
-             got:\n{normalized}"
-        );
+            // Never the banned invocation phrase (spec 91): this persona edit must not
+            // regress the already-landed no-cargo-mutants-invocation drift guard.
+            (
+                false,
+                "cargo mutants",
+                "the checkpoint rule must use the design's own vocabulary (\"mutation \
+                 sweep\"), never the literal invocation phrase \"cargo mutants\"",
+            ),
+        ]);
     }
 
     /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). The structural counterpart of
@@ -27102,21 +26834,105 @@ mod tests {
         );
     }
 
-    /// The built-in `Grep` tool call is denied for EVERY `path` (d-spec92-hook-no-target-axis:
-    /// no target axis survives - a guarded tree from the old rule, a tree it never covered,
-    /// an omitted path defaulting to the cwd, an absolute path nowhere near this project),
-    /// and carries no `--literal` escape hatch of its own - the built-in tool has no flag
-    /// slot for it, so a genuinely literal search runs through `Bash` `grep --literal`
-    /// instead.
-    #[test]
-    fn grep_guard_decision_denies_every_grep_tool_path() {
-        for path in ["src/", "docs/", "", "/unrelated/absolute/path", ".."] {
+    /// A `tool` call whose input sets `key` to each of `values` is denied with the guard's own
+    /// message (`why` says what the case proves).
+    fn assert_grep_guard_denies(tool: &str, key: &str, values: &[&str], why: &str) {
+        for value in values {
             assert_eq!(
-                grep_guard_decision("Grep", &serde_json::json!({"path": path})),
+                grep_guard_decision(tool, &serde_json::json!({ key: value })),
                 GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "Grep path={path:?} must be denied - the hook has no target axis"
+                "{why}: {value:?}"
             );
         }
+    }
+
+    rigger::test_cases! {
+        /// The built-in `Grep` tool call is denied for EVERY `path` (d-spec92-hook-no-target-axis:
+        /// no target axis survives - a guarded tree from the old rule, a tree it never covered,
+        /// an omitted path defaulting to the cwd, an absolute path nowhere near this project),
+        /// and carries no `--literal` escape hatch of its own - the built-in tool has no flag
+        /// slot for it, so a genuinely literal search runs through `Bash` `grep --literal`
+        /// instead.
+        grep_guard_decision_denies_every_grep_tool_path: assert_grep_guard_denies(
+            "Grep",
+            "path",
+            &[
+                "src/",
+                "docs/",
+                "",
+                "/unrelated/absolute/path",
+                "..",
+            ],
+            "the hook has no target axis, so a Grep of any path must be denied",
+        );
+        /// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass /
+        /// adv-u92c4r2-command-invokes-grep-tokenizes-on-whitespace-only): a `grep` invocation
+        /// fused to an adjacent command with NO surrounding whitespace - via a pipe `|`, a
+        /// semicolon `;`, an `&`, a `$( )` command substitution, or a backtick - must be denied
+        /// exactly like the spaced form already is. Before that fix `command_invokes_grep` split
+        /// on whitespace only, so a fused metacharacter hid the literal word `grep` from the scan
+        /// entirely; this proof survives d-spec92-hook-no-target-axis unchanged, since detecting
+        /// the invocation (not its target) is still exactly what the tokenizer must get right.
+        grep_guard_decision_denies_a_shell_metacharacter_fused_grep: assert_grep_guard_denies(
+            "Bash",
+            "command",
+            &[
+                "cat src/main.rs|grep pattern",
+                "true;grep pattern src/main.rs",
+                "if $(grep -q pattern src/main.rs); then echo yes; fi",
+                "grep pattern src/main.rs&",
+                "echo hi&&grep pattern src/main.rs",
+                "echo `grep pattern src/main.rs`",
+            ],
+            "a grep fused to an adjacent command via a shell metacharacter must still be denied",
+        );
+        /// Reject-fix (sdet-u92c4r5-redirect-metachar-fuses-guarded-path-first-segment): `<` and
+        /// `>` must end a shell word exactly like `;`/`|`/`&`/`(`/`)` already do - spec 92's HOOK
+        /// SCOPE amendment names `; | & ( ) < >` verbatim. This still matters after
+        /// d-spec92-hook-no-target-axis: a redirection fused directly to the command name with no
+        /// whitespace (`grep<file.txt`, a real shell equivalent of `grep <file.txt`) would
+        /// otherwise merge into one word neither equal to nor ending in the bare basename `grep`,
+        /// hiding the invocation from `command_invokes_grep` entirely - independent of what the
+        /// command targets.
+        grep_guard_decision_denies_a_redirect_metacharacter_fused_grep: assert_grep_guard_denies(
+            "Bash",
+            "command",
+            &[
+                "grep<file.txt pattern",
+                "grep>out.txt pattern file.txt",
+                "true;grep pattern <file.txt",
+            ],
+            "a grep fused to < or > with no surrounding whitespace must still be denied",
+        );
+        /// Reject-fix (adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard): a `grep` word
+        /// wrapped in double quotes, wrapped in single quotes, split by a backslash escape, or split
+        /// by an EMPTY quoted run in the middle of the word - four ordinary shell idioms a real shell
+        /// resolves to the plain word `grep`, none of them adversarial - must all still be denied.
+        grep_guard_decision_denies_a_quoted_or_escaped_grep: assert_grep_guard_denies(
+            "Bash",
+            "command",
+            &[
+                r#""grep" pattern src/main.rs"#,
+                "'grep' pattern src/main.rs",
+                r"gr\ep pattern src/main.rs",
+                "g''rep pattern src/main.rs",
+            ],
+            "a quoted or escaped grep must still be denied",
+        );
+        /// Reject-fix (adv-u92c4-r4-path-qualified-grep-bypasses-command-check): a path-qualified
+        /// spelling of the same binary - `/usr/bin/grep`, `./grep`, a relative `bin/grep` - is the
+        /// same command a bare `grep` names, so it must be denied exactly like the bare form already
+        /// is.
+        grep_guard_decision_denies_a_path_qualified_grep: assert_grep_guard_denies(
+            "Bash",
+            "command",
+            &[
+                "/usr/bin/grep pattern src/main.rs",
+                "./grep pattern src/main.rs",
+                "bin/grep pattern src/main.rs",
+            ],
+            "a path-qualified grep must still be denied",
+        );
     }
 
     /// A tool other than `Grep`/`Bash` is never touched by this hook.
@@ -27126,33 +26942,6 @@ mod tests {
             grep_guard_decision("Read", &serde_json::json!({"file_path": "src/main.rs"})),
             GuardDecision::Allow
         );
-    }
-
-    /// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass /
-    /// adv-u92c4r2-command-invokes-grep-tokenizes-on-whitespace-only): a `grep` invocation
-    /// fused to an adjacent command with NO surrounding whitespace - via a pipe `|`, a
-    /// semicolon `;`, an `&`, a `$( )` command substitution, or a backtick - must be denied
-    /// exactly like the spaced form already is. Before that fix `command_invokes_grep` split
-    /// on whitespace only, so a fused metacharacter hid the literal word `grep` from the scan
-    /// entirely; this proof survives d-spec92-hook-no-target-axis unchanged, since detecting
-    /// the invocation (not its target) is still exactly what the tokenizer must get right.
-    #[test]
-    fn grep_guard_decision_denies_a_shell_metacharacter_fused_grep() {
-        for command in [
-            "cat src/main.rs|grep pattern",
-            "true;grep pattern src/main.rs",
-            "if $(grep -q pattern src/main.rs); then echo yes; fi",
-            "grep pattern src/main.rs&",
-            "echo hi&&grep pattern src/main.rs",
-            "echo `grep pattern src/main.rs`",
-        ] {
-            assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "a grep fused to an adjacent command via a shell metacharacter must still \
-                 be denied: {command:?}"
-            );
-        }
     }
 
     /// `command` - a grep carrying the `--literal` escape hatch - passes the guard with the
@@ -27171,30 +26960,6 @@ mod tests {
         );
     }
 
-    /// Reject-fix (sdet-u92c4r5-redirect-metachar-fuses-guarded-path-first-segment): `<` and
-    /// `>` must end a shell word exactly like `;`/`|`/`&`/`(`/`)` already do - spec 92's HOOK
-    /// SCOPE amendment names `; | & ( ) < >` verbatim. This still matters after
-    /// d-spec92-hook-no-target-axis: a redirection fused directly to the command name with no
-    /// whitespace (`grep<file.txt`, a real shell equivalent of `grep <file.txt`) would
-    /// otherwise merge into one word neither equal to nor ending in the bare basename `grep`,
-    /// hiding the invocation from `command_invokes_grep` entirely - independent of what the
-    /// command targets.
-    #[test]
-    fn grep_guard_decision_denies_a_redirect_metacharacter_fused_grep() {
-        for command in [
-            "grep<file.txt pattern",
-            "grep>out.txt pattern file.txt",
-            "true;grep pattern <file.txt",
-        ] {
-            assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "a grep fused to < or > with no surrounding whitespace must still be \
-                 denied: {command:?}"
-            );
-        }
-    }
-
     /// The same redirect-fused shape with `--literal` added must still pass through, with the
     /// redirection itself surviving the marker's removal untouched.
     #[test]
@@ -27209,26 +26974,6 @@ mod tests {
             stripped, "grep pattern <src/main.rs",
             "only the marker and its one adjacent space must be removed"
         );
-    }
-
-    /// Reject-fix (adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard): a `grep` word
-    /// wrapped in double quotes, wrapped in single quotes, split by a backslash escape, or split
-    /// by an EMPTY quoted run in the middle of the word - four ordinary shell idioms a real shell
-    /// resolves to the plain word `grep`, none of them adversarial - must all still be denied.
-    #[test]
-    fn grep_guard_decision_denies_a_quoted_or_escaped_grep() {
-        for command in [
-            r#""grep" pattern src/main.rs"#,
-            "'grep' pattern src/main.rs",
-            r"gr\ep pattern src/main.rs",
-            "g''rep pattern src/main.rs",
-        ] {
-            assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "a quoted or escaped grep must still be denied: {command:?}"
-            );
-        }
     }
 
     /// The same quoted/escaped shapes with a quoted `--literal` must still pass through, the
@@ -27271,25 +27016,6 @@ mod tests {
         grep_guard_decision_literal_survives_a_line_continuation_split_grep: assert_literal_grep_passes(
             "gr\\\nep --literal pattern src/main.rs",
         );
-    }
-
-    /// Reject-fix (adv-u92c4-r4-path-qualified-grep-bypasses-command-check): a path-qualified
-    /// spelling of the same binary - `/usr/bin/grep`, `./grep`, a relative `bin/grep` - is the
-    /// same command a bare `grep` names, so it must be denied exactly like the bare form already
-    /// is.
-    #[test]
-    fn grep_guard_decision_denies_a_path_qualified_grep() {
-        for command in [
-            "/usr/bin/grep pattern src/main.rs",
-            "./grep pattern src/main.rs",
-            "bin/grep pattern src/main.rs",
-        ] {
-            assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "a path-qualified grep must still be denied: {command:?}"
-            );
-        }
     }
 
     /// The same path-qualified shapes with `--literal` added must still pass through.

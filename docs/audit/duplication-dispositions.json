@@ -138,5 +138,35 @@
     "id": "dup-23cb89af01e7",
     "disposition": "not-a-duplicate",
     "reason": "Four converters projecting two different ledger types (a duplication cluster, a dead-code candidate) onto their two different wire shapes (guarded line-free JSON, unguarded line sidecar); each maps a distinct field set, so only the struct-literal shape is shared."
+  },
+  {
+    "id": "dup-ca8ccf1b9f66",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line cwd adapters over two different resolvers: `project_identity` names the project that scopes the streams, `git_repo` returns the owning repository root."
+  },
+  {
+    "id": "dup-10bf3f3faab0",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `run_graph_pass`; each supplies a different derivation (community detection over the coupling layer vs concept derivation over the intent layer) and its own summary."
+  },
+  {
+    "id": "dup-f5d0a37113e0",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
+  },
+  {
+    "id": "dup-39046faa7f9f",
+    "disposition": "not-a-duplicate",
+    "reason": "Both build their fixture through the shared `linear_history`; they test two different git queries (ancestry order vs commit distance) with different expectations."
+  },
+  {
+    "id": "dup-2e3d71bbeb25",
+    "disposition": "not-a-duplicate",
+    "reason": "Both seed through the shared `db_with_one_result`; one proves an unanswered spawn id reads as unreported, the other proves the read is scoped to its own project namespace."
+  },
+  {
+    "id": "dup-0214889fec22",
+    "disposition": "not-a-duplicate",
+    "reason": "Both use the shared `reset_modes_of`/`reset_refusal`; they pin two different flags' rules (`--force-live` never implying a mode vs `--build-cache` composing with other modes)."
   }
 ]

@@ -6117,7 +6117,15 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "2b3e06811bf55ca0"
+    "content_hash": "5e91eabaa4fc36e7"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "cwd",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "9fc4eb21a59d9ac1"
   },
   {
     "file": "src/main.rs",
@@ -6197,7 +6205,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "d0b7101a484145a5"
+    "content_hash": "b53eb337c6739fc6"
   },
   {
     "file": "src/main.rs",
@@ -6213,7 +6221,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "929000be6ad2f5d6"
+    "content_hash": "ca33bdec5f2677e4"
   },
   {
     "file": "src/main.rs",
@@ -6509,7 +6517,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "4bb7b6dc680eb3e5"
+    "content_hash": "4189f957d30143e8"
   },
   {
     "file": "src/main.rs",
@@ -6589,7 +6597,15 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5f867e66f23602d2"
+    "content_hash": "6f1a7a21717dc593"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "read_project_stream",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"read_\" (generic read helper); grouped under `main::support`.",
+    "content_hash": "214759402e3b3d0d"
   },
   {
     "file": "src/main.rs",
@@ -6637,7 +6653,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "aa2d884dbd45d36b"
+    "content_hash": "c9f464e93c194a72"
   },
   {
     "file": "src/main.rs",
@@ -6653,7 +6669,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"workflow\" (workflow/spec loading); grouped under `main::provenance`.",
-    "content_hash": "9d8c9b6080abe636"
+    "content_hash": "6006b4f95f503781"
   },
   {
     "file": "src/main.rs",
@@ -6677,7 +6693,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "033b45dbf5cf5fe3"
+    "content_hash": "f46346ff7215dcc4"
   },
   {
     "file": "src/main.rs",
@@ -6773,7 +6789,15 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "2c8b13ca2ceb93ac"
+    "content_hash": "a08e194aa9ab98f3"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "run_graph_pass",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "8e4db5f726367713"
   },
   {
     "file": "src/main.rs",
@@ -6781,7 +6805,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "9af071880a5af150"
+    "content_hash": "c1d1a98ba499ce64"
   },
   {
     "file": "src/main.rs",
@@ -6797,7 +6821,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "a502172af1395da7"
+    "content_hash": "1c2cade7e22d9cfa"
   },
   {
     "file": "src/main.rs",
@@ -6861,7 +6885,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "bce65194cd5bf4c3"
+    "content_hash": "7bf72b6fd0857778"
   },
   {
     "file": "src/main.rs",
@@ -6877,7 +6901,7 @@
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"read_\" (generic read helper); grouped under `main::support`.",
-    "content_hash": "63643e5890f124da"
+    "content_hash": "1d18747b4cc2c7ee"
   },
   {
     "file": "src/main.rs",
@@ -6885,7 +6909,7 @@
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"read_\" (generic read helper); grouped under `main::support`.",
-    "content_hash": "5afc593a9f364d91"
+    "content_hash": "92c1d00f7ff91e0b"
   },
   {
     "file": "src/main.rs",
@@ -7189,7 +7213,7 @@
     "is_test": false,
     "proposed_module": "main::dash_glue",
     "reason": "name contains \"dash_\" (dash registry/marker glue); grouped under `main::dash_glue`.",
-    "content_hash": "3372ab072118b3d0"
+    "content_hash": "a721a86e4ab0eb21"
   },
   {
     "file": "src/main.rs",
@@ -8005,7 +8029,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"footprint\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "180daddfbff01a59"
+    "content_hash": "94162d7b5764455e"
   },
   {
     "file": "src/main.rs",
@@ -8229,7 +8253,23 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
-    "content_hash": "eb8dfeab21f6d8d2"
+    "content_hash": "eebea9bad0debc15"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_into_claude_settings",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
+    "content_hash": "9d164f6404592c2a"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_into",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
+    "content_hash": "b0c0c21ac8d2f381"
   },
   {
     "file": "src/main.rs",
@@ -8237,7 +8277,7 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
-    "content_hash": "05090a803e6f745e"
+    "content_hash": "830cfe34204e3f9d"
   },
   {
     "file": "src/main.rs",
@@ -8245,7 +8285,7 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
-    "content_hash": "7fe88f756e7a4596"
+    "content_hash": "4aa5ff591d034c7f"
   },
   {
     "file": "src/main.rs",
@@ -8389,7 +8429,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"git_\" (git/version provenance); grouped under `main::provenance`.",
-    "content_hash": "5d34681e0dde00a0"
+    "content_hash": "eb125a0e6f0c7446"
   },
   {
     "file": "src/main.rs",
@@ -8945,19 +8985,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "per_operation_skills_reference_only_real_subcommands",
+    "name": "assert_skills_reference_only_real_subcommands",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ef0e82595f6cd468"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "watching_discipline_skills_reference_only_real_subcommands",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3644f1e68ce65641"
+    "content_hash": "654b4248147ab523"
   },
   {
     "file": "src/main.rs",
@@ -9049,11 +9081,19 @@
   },
   {
     "file": "src/main.rs",
+    "name": "linear_history",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "49ff9cbd88bd9c29"
+  },
+  {
+    "file": "src/main.rs",
     "name": "git_is_ancestor_decides_commit_order_in_a_real_repo",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b5faf1afb0617839"
+    "content_hash": "bbfc523521fba5d0"
   },
   {
     "file": "src/main.rs",
@@ -9061,7 +9101,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "553ed8e865966160"
+    "content_hash": "3a78af860031b33d"
   },
   {
     "file": "src/main.rs",
@@ -9073,27 +9113,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "behind_the_tree_message_is_silent_when_versions_already_match",
+    "name": "assert_behind_the_tree_silent",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a4e7936aba142dd5"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "behind_the_tree_message_is_silent_when_either_side_is_unversioned",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ec9cfd0fa23c4d3c"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "50d09b2fbf00b298"
+    "content_hash": "22b35294929b93d6"
   },
   {
     "file": "src/main.rs",
@@ -9185,27 +9209,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them",
+    "name": "assert_base_path_check_proceeds",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "048d64734c756a6d"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3bd211826893b152"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "821880a023b06f08"
+    "content_hash": "8b9dd4847e5e1672"
   },
   {
     "file": "src/main.rs",
@@ -9493,7 +9501,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e79126977ec6aeb8"
+    "content_hash": "5f5d6b0c1a665d63"
   },
   {
     "file": "src/main.rs",
@@ -9573,7 +9581,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3eafbef15543cf16"
+    "content_hash": "1a8d7baa90326357"
   },
   {
     "file": "src/main.rs",
@@ -9581,7 +9589,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8d8b63a4839676c0"
+    "content_hash": "6e628c45745a43c9"
   },
   {
     "file": "src/main.rs",
@@ -9593,11 +9601,27 @@
   },
   {
     "file": "src/main.rs",
+    "name": "plant_store",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "af9078b8d3cb6a97"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "add_worktree",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "efa96eb34a072ee0"
+  },
+  {
+    "file": "src/main.rs",
     "name": "find_store_dir_from_never_escapes_the_repo_into_a_parent_store",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7fca80413d044def"
+    "content_hash": "7967e70c7109b5b5"
   },
   {
     "file": "src/main.rs",
@@ -9637,7 +9661,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "181d368c4ea03643"
+    "content_hash": "767e8998adda24f8"
   },
   {
     "file": "src/main.rs",
@@ -9645,7 +9669,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3c7b83bdd7af1314"
+    "content_hash": "c58bb1d3a729db2c"
   },
   {
     "file": "src/main.rs",
@@ -9653,7 +9677,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "217c781e10b47ce3"
+    "content_hash": "208830e1a63dba3e"
   },
   {
     "file": "src/main.rs",
@@ -9661,7 +9685,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1be2999db1e6ade9"
+    "content_hash": "dd3ba4ea41e53738"
   },
   {
     "file": "src/main.rs",
@@ -9669,7 +9693,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ef3cdeaf429d4ca0"
+    "content_hash": "1d62a210365f4cad"
   },
   {
     "file": "src/main.rs",
@@ -9693,7 +9717,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1e31b05d2e570a49"
+    "content_hash": "92581c11449e965c"
   },
   {
     "file": "src/main.rs",
@@ -9801,11 +9825,19 @@
   },
   {
     "file": "src/main.rs",
+    "name": "replay_spawn",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8fb79ca349e3f2c8"
+  },
+  {
+    "file": "src/main.rs",
     "name": "a_recorded_result_lets_the_replay_driver_advance_past_the_spawn",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3caed1d384e85966"
+    "content_hash": "81f18214ce5410d6"
   },
   {
     "file": "src/main.rs",
@@ -9813,7 +9845,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cc2d0177b3a7635f"
+    "content_hash": "6aeb0780a8fe2dbd"
   },
   {
     "file": "src/main.rs",
@@ -9913,11 +9945,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "parse_run_args_rejects_unknown_flags_and_values",
+    "name": "assert_every_arg_list_refused",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7edf2f6bb9aab8ad"
+    "content_hash": "c5568341eca742c5"
   },
   {
     "file": "src/main.rs",
@@ -10041,11 +10073,19 @@
   },
   {
     "file": "src/main.rs",
+    "name": "pre_mint_deployment",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "29a1906d3cdde6f9"
+  },
+  {
+    "file": "src/main.rs",
     "name": "migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7f7ff1e4c5b58093"
+    "content_hash": "ef00f3dc1e9d1365"
   },
   {
     "file": "src/main.rs",
@@ -10061,7 +10101,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4fe8c3c5f5ba2e68"
+    "content_hash": "8dbaf1831b5dd6b4"
   },
   {
     "file": "src/main.rs",
@@ -10185,19 +10225,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently",
+    "name": "assert_init_gitignores_idempotently",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ec1a0b6f72ef6203"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "init_project_gitignores_the_store_conn_secret_file_idempotently",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6c8fff888cafb42c"
+    "content_hash": "7c360f4ca4f20358"
   },
   {
     "file": "src/main.rs",
@@ -10289,35 +10321,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "import_agents_validates_and_rejects_a_malformed_agent",
+    "name": "assert_import_refused",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "64824ec681c6a634"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "import_agents_rejects_an_id_colliding_with_an_existing_agent",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "db022eedad0e8681"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "import_agents_rejects_a_duplicate_id_within_one_import",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "31e1bfe3da736e76"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "import_agents_rejects_an_agent_with_a_blank_id",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ba273f1c63dad078"
+    "content_hash": "2c3f5c6796e12ee4"
   },
   {
     "file": "src/main.rs",
@@ -10489,27 +10497,27 @@
   },
   {
     "file": "src/main.rs",
-    "name": "format_canary_stats_reports_findings_raised_by_tier",
+    "name": "canary_scorecard",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "daada9e95b429893"
+    "content_hash": "ab463bf18b4c51c9"
   },
   {
     "file": "src/main.rs",
-    "name": "format_canary_stats_reports_a_zero_findings_count_honestly",
+    "name": "assert_findings_raised_render",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f0e00f566732f549"
+    "content_hash": "9ac19fc3781e53d6"
   },
   {
     "file": "src/main.rs",
-    "name": "format_canary_stats_omits_the_findings_volume_section_when_empty",
+    "name": "assert_empty_scorecard_omits",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "90038ca9991e89aa"
+    "content_hash": "da06ff12aebcf5e5"
   },
   {
     "file": "src/main.rs",
@@ -10553,19 +10561,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "format_canary_stats_reports_control_items_and_false_positives",
+    "name": "assert_control_line",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "21bf4235469cbe14"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "format_canary_stats_reports_zero_false_positives_honestly",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c6730f17f318b3bd"
+    "content_hash": "f1d63477b5f40320"
   },
   {
     "file": "src/main.rs",
@@ -10574,14 +10574,6 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "5bd91cd458ca5f73"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "192d5fd91826c486"
   },
   {
     "file": "src/main.rs",
@@ -10633,11 +10625,27 @@
   },
   {
     "file": "src/main.rs",
+    "name": "sdet_review",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1c26f8e6edf9c70b"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "stats_text",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8ac29ec9b5ae6b11"
+  },
+  {
+    "file": "src/main.rs",
     "name": "stats_discloses_when_no_verdict_was_recorded_on_this_driver",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7ecc2837ce596ccb"
+    "content_hash": "4095c56526a4df83"
   },
   {
     "file": "src/main.rs",
@@ -10645,7 +10653,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "203719e6e2fa7881"
+    "content_hash": "cd5cbb3261f93196"
   },
   {
     "file": "src/main.rs",
@@ -10921,11 +10929,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "stats_lines_absent_db_returns_none_and_creates_no_file",
+    "name": "assert_absent_db_reads_none",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "42f05c710235f75d"
+    "content_hash": "0699582560cb3c95"
   },
   {
     "file": "src/main.rs",
@@ -10961,11 +10969,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "result_of_at_absent_db_reads_as_unreported_and_creates_no_file",
+    "name": "db_with_one_result",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6e9c543cdd805daf"
+    "content_hash": "f113c7d2e9e9644a"
   },
   {
     "file": "src/main.rs",
@@ -10973,7 +10981,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c9a4c63b9ff9320c"
+    "content_hash": "6d9599d0cb3e0a25"
   },
   {
     "file": "src/main.rs",
@@ -10989,7 +10997,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "71b034f1da074ef0"
+    "content_hash": "b71abf8b3c4e8323"
   },
   {
     "file": "src/main.rs",
@@ -11137,11 +11145,27 @@
   },
   {
     "file": "src/main.rs",
+    "name": "reset_modes_of",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "16a1eeebb747ad09"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "reset_refusal",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "d6aef83108f3373e"
+  },
+  {
+    "file": "src/main.rs",
     "name": "reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "679100954eb73c17"
+    "content_hash": "20387134b331fcb7"
   },
   {
     "file": "src/main.rs",
@@ -11157,7 +11181,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "edff1eedd3c96623"
+    "content_hash": "0ecd6016a7d92b1f"
   },
   {
     "file": "src/main.rs",
@@ -11206,14 +11230,6 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "9722400e1fdebea5"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3fb324f657f75567"
   },
   {
     "file": "src/main.rs",
@@ -11273,19 +11289,19 @@
   },
   {
     "file": "src/main.rs",
-    "name": "implementer_persona_pins_the_checkin_stage_kill_or_justify_contract",
+    "name": "implementer_persona_normalized",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c6039ac13cad2e1e"
+    "content_hash": "6826d78dbd47c83c"
   },
   {
     "file": "src/main.rs",
-    "name": "implementer_persona_pins_the_checkpoint_before_long_work_contract",
+    "name": "assert_implementer_persona_pins",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3ec727f0a2140457"
+    "content_hash": "7eb783115a4e3164"
   },
   {
     "file": "src/main.rs",
@@ -11337,11 +11353,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_denies_every_grep_tool_path",
+    "name": "assert_grep_guard_denies",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "95e85503c3537d9c"
+    "content_hash": "86cb7ae242b0ce6a"
   },
   {
     "file": "src/main.rs",
@@ -11353,14 +11369,6 @@
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_denies_a_shell_metacharacter_fused_grep",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a232994dd537ab79"
-  },
-  {
-    "file": "src/main.rs",
     "name": "assert_literal_grep_passes",
     "is_test": true,
     "proposed_module": "main::tests",
@@ -11369,27 +11377,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_denies_a_redirect_metacharacter_fused_grep",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a80abaffcde562fe"
-  },
-  {
-    "file": "src/main.rs",
     "name": "grep_guard_decision_literal_survives_a_redirect_metacharacter_fused_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "c6a5f6c4b9382763"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_denies_a_quoted_or_escaped_grep",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "61a55c47e43bb8b5"
   },
   {
     "file": "src/main.rs",
@@ -11406,14 +11398,6 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "c54313bd7fc7adeb"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_denies_a_path_qualified_grep",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8dc7089fc97f6b99"
   },
   {
     "file": "src/main.rs",
