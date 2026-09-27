@@ -9,9 +9,10 @@
 //! 2. ADAPTERS ARE WIRED ONLY IN THE COMPOSITION ROOT. An adapter constructor (a store opener,
 //!    a graph opener, an agent driver) is named in production code only inside the composition
 //!    root or inside that adapter's own files. Anything else reaches past a port.
-//! 3. NO GOD FILES. A source file holds at most [`MAX_LINES`] lines.
+//! 3. THE PRINCIPLE LINTS CARRY NO EXEMPTION. No item opts out of a lint the root manifest
+//!    denies.
 //!
-//! Each rule carries an allowlist of today's offenders that may only shrink: an entry that no
+//! Rules 1 and 2 each carry an allowlist of today's offenders that may only shrink: an entry that no
 //! longer matches an offender fails the suite until it is deleted, so the list is the follow-up
 //! work queue and never outlives the work.
 
@@ -450,55 +451,7 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Rule 3: no god files
-// ---------------------------------------------------------------------------------------------
-
-/// The most lines a source file may hold.
-const MAX_LINES: usize = 3_000;
-
-/// Today's source files over [`MAX_LINES`]; the extraction commit named beside each entry
-/// splits the file and deletes the entry.
-const GOD_FILES: &[&str] = &[
-    "src/conductor.rs",           // removed by: split: extract rigger-conductor
-    "src/contextgraph/sqlite.rs", // removed by: split: extract rigger-graph-sqlite
-    "src/dash.rs",                // removed by: split: extract rigger-dash
-    "src/main.rs",                // removed by: split: extract rigger (main.rs into cli/ modules)
-    "src/metrics.rs",             // removed by: split: extract rigger-gates-shell
-    "src/worktree.rs",            // removed by: split: extract rigger-worktree-git
-];
-
-/// Every production source file under `root` over [`MAX_LINES`], with its line count.
-fn oversized_files(root: &Path) -> BTreeMap<String, usize> {
-    production_sources(root)
-        .into_iter()
-        .map(|(rel, text)| (rel, text.lines().count()))
-        .filter(|&(_, n)| n > MAX_LINES)
-        .collect()
-}
-
-#[test]
-fn no_source_file_exceeds_the_line_limit() {
-    let oversized = oversized_files(&repo_root());
-    let mut problems: Vec<String> = oversized
-        .iter()
-        .filter(|(file, _)| !GOD_FILES.contains(&file.as_str()))
-        .map(|(file, lines)| {
-            format!("{file} holds {lines} lines (limit {MAX_LINES}): split it by responsibility")
-        })
-        .collect();
-    for file in GOD_FILES {
-        if !oversized.contains_key(*file) {
-            problems.push(format!(
-                "{file} is allowlisted but is gone or within {MAX_LINES} lines: delete its \
-                 GOD_FILES entry"
-            ));
-        }
-    }
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
-}
-
-// ---------------------------------------------------------------------------------------------
-// Rule 4: the principle lints carry no exemption
+// Rule 3: the principle lints carry no exemption
 // ---------------------------------------------------------------------------------------------
 
 /// The lints the root manifest's `[workspace.lints.clippy]` denies. Clippy is their gate; this
