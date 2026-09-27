@@ -255,6 +255,15 @@ fn assert_render_never_touches_the_kg_panel(page: &str) {
     );
 }
 
+/// [`served_root_page`], asserted to carry every needle of each `(needles, why)` group.
+fn served_root_page_carrying(groups: &[(&[&str], &str)]) -> String {
+    let page = served_root_page();
+    for (needles, why) in groups {
+        assert!(needles.iter().all(|n| page.contains(n)), "{why}");
+    }
+    page
+}
+
 /// The SERVED root page ships the unified-KG detail PANEL and the SELECT-TO-SEED wiring c5 owns: the
 /// `kgpanel` render region, the read-only `GET /api/graph?seed=` fetch keyed on the selected node,
 /// the `data-seed` handle the tree nodes carry, and the single delegated listener that maps a click
@@ -665,40 +674,41 @@ fn the_served_graph_route_flags_god_nodes_and_returns_the_query_path() {
     );
 }
 
-/// The SERVED root page ships the c6 client rendering: a GOD-NODE badge keyed off the server's `god`
-/// flag + `degree`, the QUERY-PATH highlight keyed off the returned `path`, and the shift-click that
-/// selects a second node and fetches the `from=&to=` path over the read-only route. Structural, but
-/// bound to the c6 mechanism so some OTHER panel's markup cannot satisfy it.
-#[test]
-fn the_served_root_page_renders_god_nodes_and_the_query_path() {
-    let page = &served_root_page();
-
-    // The god-node badge is conditional on the server's `god` flag and shows the `degree`.
-    assert!(
-        page.contains("n.god ?") && page.contains("kggod"),
-        "the page must render a god-node badge conditioned on n.god"
-    );
-    assert!(
-        page.contains("n.degree"),
-        "the god-node badge must show the node's in-neighborhood degree"
-    );
-    // The query-path highlight is keyed off the returned `path`, applied to nodes AND edges.
-    assert!(
-        page.contains("g.path") && page.contains("onpath"),
-        "the page must highlight the query path (nodes/edges) from the returned path"
-    );
-    // A shift-click selects the second endpoint and fetches the from=&to= path over the route.
-    assert!(
-        page.contains("shiftKey") && page.contains("pathTo("),
-        "the page must wire a shift-click to trace the query path"
-    );
-    assert!(
-        page.contains("&from=") && page.contains("&to="),
-        "the path request must fetch /api/graph with from= and to= endpoints"
-    );
+rigger::test_cases! {
+    /// The SERVED root page ships the c6 client rendering: a GOD-NODE badge keyed off the server's `god`
+    /// flag + `degree`, the QUERY-PATH highlight keyed off the returned `path`, and the shift-click that
+    /// selects a second node and fetches the `from=&to=` path over the read-only route. Structural, but
+    /// bound to the c6 mechanism so some OTHER panel's markup cannot satisfy it.
     // The panel is NOT written by render(), so the operator's selection (and any traced path)
     // survives the live poll - the c5 poll-survival invariant c6 keeps.
-    assert_render_never_touches_the_kg_panel(page);
+    the_served_root_page_renders_god_nodes_and_the_query_path:
+        assert_render_never_touches_the_kg_panel(&served_root_page_carrying(&[
+            // The god-node badge is conditional on the server's `god` flag and shows the `degree`.
+            (
+                &["n.god ?", "kggod"],
+                "the page must render a god-node badge conditioned on n.god",
+            ),
+            (
+                &["n.degree"],
+                "the god-node badge must show the node's in-neighborhood degree",
+            ),
+            // The query-path highlight is keyed off the returned `path`, applied to nodes AND
+            // edges.
+            (
+                &["g.path", "onpath"],
+                "the page must highlight the query path (nodes/edges) from the returned path",
+            ),
+            // A shift-click selects the second endpoint and fetches the from=&to= path over the
+            // route.
+            (
+                &["shiftKey", "pathTo("],
+                "the page must wire a shift-click to trace the query path",
+            ),
+            (
+                &["&from=", "&to="],
+                "the path request must fetch /api/graph with from= and to= endpoints",
+            ),
+        ]));
 }
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN c6 rendering: (A) it calls
@@ -1261,59 +1271,59 @@ fn toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders() {
     );
 }
 
-/// The SERVED root page ships the c7 client mechanisms: the tier-filter TOGGLES (a `data-tier`
-/// checkbox per confidence tier, backed by a client-side visible-tier set that `renderGraph` filters
-/// the drawn edges by) and the EXPLAIN provenance render (keyed off the server's `explain` DTO), the
-/// toggle wired via a delegated `change` listener on the stable panel container. Structural, but
-/// bound to the c7 mechanism so some OTHER markup cannot satisfy it. The c6 god/path tokens must
-/// remain in `renderGraph`, proving the tier filter COEXISTS with (does not replace) the c6 render.
-#[test]
-fn the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance() {
-    let page = &served_root_page();
-
-    // The tier filter is a CLIENT-side visibility toggle: a data-tier checkbox per tier, a client
-    // visible-tier set, and renderGraph filtering the DRAWN edges by it (never a server-side drop).
-    assert!(
-        page.contains("data-tier="),
-        "the page must ship a data-tier toggle handle per confidence tier"
-    );
-    assert!(
-        page.contains("kgTiers"),
-        "the page must carry the client-side visible-tier set (kgTiers)"
-    );
-    assert!(
-        page.contains("kgTiers.has"),
-        "renderGraph must FILTER the drawn edges by the visible-tier set"
-    );
-    // The three confidence tiers are the toggle vocabulary.
-    assert!(
-        page.contains("\"extracted\"")
-            && page.contains("\"inferred\"")
-            && page.contains("\"ambiguous\""),
-        "the tier toggles must cover extracted / inferred / ambiguous"
-    );
-    // The toggle is wired via a delegated `change` listener on the stable panel container, so it
-    // survives the renderGraph innerHTML swaps (the same delegation the c5 select-to-seed uses).
-    assert!(
-        page.contains("\"change\"") && page.contains("closest(\"[data-tier]\")"),
-        "a delegated change listener must map a tier-checkbox toggle to the visible-tier set"
-    );
-
-    // The explain provenance renders from the server's `explain` DTO into its own panel section.
-    assert!(
-        page.contains("g.explain"),
-        "the panel must render the seed's provenance from the server explain DTO"
-    );
-    assert!(
-        page.contains("kgprov"),
-        "the explain provenance must render in its own section (kgprov)"
-    );
-
-    // The tier filter COEXISTS with the c6 render: the god badge + path highlight tokens remain.
-    assert!(
-        page.contains("kggod") && page.contains("onpath"),
-        "the c7 tier filter must coexist with (not replace) the c6 god/path render"
-    );
+rigger::test_cases! {
+    /// The SERVED root page ships the c7 client mechanisms: the tier-filter TOGGLES (a `data-tier`
+    /// checkbox per confidence tier, backed by a client-side visible-tier set that `renderGraph` filters
+    /// the drawn edges by) and the EXPLAIN provenance render (keyed off the server's `explain` DTO), the
+    /// toggle wired via a delegated `change` listener on the stable panel container. Structural, but
+    /// bound to the c7 mechanism so some OTHER markup cannot satisfy it. The c6 god/path tokens must
+    /// remain in `renderGraph`, proving the tier filter COEXISTS with (does not replace) the c6 render.
+    the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance:
+        served_root_page_carrying(&[
+            // The tier filter is a CLIENT-side visibility toggle: a data-tier checkbox per tier, a
+            // client visible-tier set, and renderGraph filtering the DRAWN edges by it (never a
+            // server-side drop).
+            (
+                &["data-tier="],
+                "the page must ship a data-tier toggle handle per confidence tier",
+            ),
+            (
+                &["kgTiers"],
+                "the page must carry the client-side visible-tier set (kgTiers)",
+            ),
+            (
+                &["kgTiers.has"],
+                "renderGraph must FILTER the drawn edges by the visible-tier set",
+            ),
+            // The three confidence tiers are the toggle vocabulary.
+            (
+                &["\"extracted\"", "\"inferred\"", "\"ambiguous\""],
+                "the tier toggles must cover extracted / inferred / ambiguous",
+            ),
+            // The toggle is wired via a delegated `change` listener on the stable panel container,
+            // so it survives the renderGraph innerHTML swaps (the same delegation the c5
+            // select-to-seed uses).
+            (
+                &["\"change\"", "closest(\"[data-tier]\")"],
+                "a delegated change listener must map a tier-checkbox toggle to the visible-tier set",
+            ),
+            // The explain provenance renders from the server's `explain` DTO into its own panel
+            // section.
+            (
+                &["g.explain"],
+                "the panel must render the seed's provenance from the server explain DTO",
+            ),
+            (
+                &["kgprov"],
+                "the explain provenance must render in its own section (kgprov)",
+            ),
+            // The tier filter COEXISTS with the c6 render: the god badge + path highlight tokens
+            // remain.
+            (
+                &["kggod", "onpath"],
+                "the c7 tier filter must coexist with (not replace) the c6 god/path render",
+            ),
+        ]);
 }
 
 /// A two-file + decision + community fixture the EXPLORATION route (spec 42 c4) drills, overviews,
