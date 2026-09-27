@@ -38,5 +38,100 @@
     "id": "dup-5d444b26662b",
     "disposition": "not-a-duplicate",
     "reason": "`real_files` and `real_workspace_files` memoize two different scans of the tree; the only shared shape is the standard `OnceLock` memoization idiom."
+  },
+  {
+    "id": "dup-37f6bddf866b",
+    "disposition": "not-a-duplicate",
+    "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
+  },
+  {
+    "id": "dup-0b5573eeaebe",
+    "disposition": "not-a-duplicate",
+    "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
+  },
+  {
+    "id": "dup-66994196ec07",
+    "disposition": "not-a-duplicate",
+    "reason": "Three slice accessors returning three different fields of three different types (community nodes, filter types, failure rules)."
+  },
+  {
+    "id": "dup-4f8625f176c2",
+    "disposition": "not-a-duplicate",
+    "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
+  },
+  {
+    "id": "dup-c10a9e4a46df",
+    "disposition": "not-a-duplicate",
+    "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
+  },
+  {
+    "id": "dup-7bae97cd072c",
+    "disposition": "not-a-duplicate",
+    "reason": "`in_community` and `refs` build edges of two different relations (`IN_COMMUNITY` versus `REFERENCES`) through two different edge fixtures."
+  },
+  {
+    "id": "dup-7081e6d4e9ca",
+    "disposition": "not-a-duplicate",
+    "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
+  },
+  {
+    "id": "dup-1b30068be20e",
+    "disposition": "not-a-duplicate",
+    "reason": "Two regression tests pinning the empty-scratch-root guard at two different call sites (`spawn_scratch_path` and `marker_path`), each deliberately tested where callers reach it."
+  },
+  {
+    "id": "dup-03445327d61d",
+    "disposition": "not-a-duplicate",
+    "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
+  },
+  {
+    "id": "dup-c5228cf29179",
+    "disposition": "not-a-duplicate",
+    "reason": "Two builder setters on two different types setting different fields (`valid_from` on an event, `meta` on a spawn result)."
+  },
+  {
+    "id": "dup-09b3cd252ed3",
+    "disposition": "not-a-duplicate",
+    "reason": "`factor` and `cost_per_upheld` are different ratios over different fields with different zero-denominator answers (1.0 versus 0.0)."
+  },
+  {
+    "id": "dup-783dbb4d5f73",
+    "disposition": "not-a-duplicate",
+    "reason": "Three predicates over two different enums, each excluding a different variant (`Product`, `Infra`, `Deferred`) for a different policy."
+  },
+  {
+    "id": "dup-c213c764b52f",
+    "disposition": "not-a-duplicate",
+    "reason": "Two unit tests over two different functions (`marker_filename` and `heading_level`) each asserting their own `None` boundary."
+  },
+  {
+    "id": "dup-bf2e56140b6c",
+    "disposition": "not-a-duplicate",
+    "reason": "Two platform-tolerance tests over two different functions (`leaked_process_advisories` and `processes_rooted_under`) on an absent directory."
+  },
+  {
+    "id": "dup-09df6ba9a4c6",
+    "disposition": "not-a-duplicate",
+    "reason": "`changed` and `is_error` test emptiness of two different fields on two different types for two different questions."
+  },
+  {
+    "id": "dup-315e8a57aba8",
+    "disposition": "not-a-duplicate",
+    "reason": "Two emptiness tests over unrelated functions: the spec lint's disposition advisories and the audit scanner's function list."
+  },
+  {
+    "id": "dup-45945bd806e6",
+    "disposition": "not-a-duplicate",
+    "reason": "`resume-unit` and `watch` refusals exercise two different subcommands after two different fixture setups (an escalated unit versus a bare store)."
+  },
+  {
+    "id": "dup-5c7ae82e0b2e",
+    "disposition": "not-a-duplicate",
+    "reason": "`stats --canary` and `status --line` are two different subcommands asserting two different outputs (a hint substring versus an exact status line)."
+  },
+  {
+    "id": "dup-9c8fbf2fd88a",
+    "disposition": "not-a-duplicate",
+    "reason": "`code_default` and `concepts_default` build two different `Lens` variants at their own default-grain constants, the expected values the selector tests compare against."
   }
 ]

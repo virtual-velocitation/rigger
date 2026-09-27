@@ -2070,7 +2070,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/canary_store.rs, src/grounder/design/extract.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-53188abd6299",
@@ -2162,7 +2163,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 5 files: src/community.rs, src/dash.rs, src/eventstore/mod.rs, src/failure.rs, src/metrics.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-66994196ec07",
@@ -2185,7 +2187,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 3 files: src/community.rs, src/eventstore/mod.rs, src/failure.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-c963bbaabe6f",
@@ -2398,7 +2401,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, src/spawn.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-2f724ff9616c",
@@ -8270,7 +8274,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 4 files: src/config_store.rs, src/contextgraph/query.rs, src/main.rs, src/spec.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-a8f1cb8eda87",
@@ -8408,7 +8413,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/console/map.rs, tests/files_lens_view_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-918c13bc36d3",
@@ -8520,7 +8526,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 3 files: src/console/map.rs, src/eventstore/mod.rs, src/spec.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-de9dbebd736c",
@@ -10290,7 +10297,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/driver/replay.rs, src/liveness.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-8bac3a592ea8",
@@ -10354,7 +10362,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/driver/workflow.rs, src/watch.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-866e5f4c8285",
@@ -10431,7 +10440,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/eventstore/mod.rs, src/spawn.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-34ff03908ec6",
@@ -10467,7 +10477,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/eventstore/sqlite.rs, src/metrics.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-705c28b30bbe",
@@ -10564,7 +10575,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/failure.rs, src/gate.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-cd0c403c5416",
@@ -11366,7 +11378,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/liveness.rs, src/spec.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-21dfa9e879a5",
@@ -11820,7 +11833,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/main.rs, src/reap.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-6ea24d919b4e",
@@ -12376,7 +12390,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/metrics.rs, src/spawn.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-0a954d1e88d1",
@@ -13057,7 +13072,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/spec.rs, tests/simplification_audit.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-ef9582d62608",
@@ -15320,7 +15336,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/cli.rs, tests/watchdog_cli_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-35116801ee32",
@@ -15842,7 +15859,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/cli.rs, tests/statusline_command_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-10b6b0abe3bc",
@@ -17017,7 +17035,8 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-14f55a46039c",
