@@ -10668,20 +10668,105 @@ mod tests {
     }
 
     #[test]
-    fn a_method_name_shared_by_two_impls_with_a_call_site_excludes_both() {
-        // Cannot tell which `reset` a receiver-agnostic `.reset()` call targets - spec 87
-        // Constraints Walk: "reported as ambiguous rather than counted as alive", so neither
-        // sharer is asserted dead.
+    fn a_method_name_shared_by_two_impls_with_an_unresolvable_receiver_excludes_both() {
+        // A `.reset()` call whose receiver's type the scanner cannot read (here a `for` loop
+        // binding) could target either `reset`, so it keeps both sharers alive - the
+        // conservative direction: a false negative, never a live method reported dead.
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
         write_fixture(
             dir.path(),
             "src/amb2.rs",
-            "struct A;\nstruct B;\nimpl A {\n    fn reset(&mut self) {}\n}\nimpl B {\n    fn reset(&mut self) {}\n}\nfn use_one(a: &mut A) {\n    a.reset();\n}\n",
+            "struct A;\nstruct B;\nimpl A {\n    fn reset(&mut self) {}\n}\nimpl B {\n    fn reset(&mut self) {}\n}\nfn use_all(xs: Vec<A>) {\n    for mut a in xs {\n        a.reset();\n    }\n}\n",
         );
         let candidates = candidates_for(dir.path());
         assert!(
             candidates.iter().all(|c| c.name != "reset"),
             "{candidates:?}"
+        );
+    }
+
+    #[test]
+    fn a_same_name_method_on_another_type_does_not_keep_a_method_alive() {
+        // A method is classified on its OWN callers: a call whose receiver resolves to `B`
+        // (a typed parameter, a typed `let`, a struct-literal `let`, a `B::reset` path or
+        // `self` inside `impl B`) is `B::reset`'s caller only, so `A::reset` stays dead.
+        let shapes = [
+            "fn caller(b: &mut B) {\n    b.reset();\n}\n",
+            "fn caller() {\n    let mut b: B = B {};\n    b.reset();\n}\n",
+            "fn caller() {\n    let mut b = B {};\n    b.reset();\n}\n",
+            "fn caller(b: &mut B) {\n    B::reset(b);\n}\n",
+            "impl B {\n    fn caller(&mut self) {\n        self.reset();\n    }\n}\n",
+        ];
+        for caller in shapes {
+            let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+            write_fixture(
+                dir.path(),
+                "src/amb3.rs",
+                &format!(
+                    "struct A;\nstruct B {{}}\nimpl A {{\n    fn reset(&mut self) {{}}\n}}\nimpl B {{\n    fn reset(&mut self) {{}}\n}}\n{caller}"
+                ),
+            );
+            let candidates = candidates_for(dir.path());
+            let resets: Vec<(&str, usize)> = candidates
+                .iter()
+                .filter(|c| c.name == "reset")
+                .map(|c| (c.file.as_str(), c.line))
+                .collect();
+            assert_eq!(
+                resets,
+                vec![("src/amb3.rs", 4)],
+                "only A::reset (line 4) is dead when the one call resolves to B: {caller}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pub_crate_method_behind_an_attribute_is_attributed_by_its_receiver() {
+        // A method's `self` receiver is read from its own parameter list, never from the
+        // first parenthesis on the `fn` line - `pub(crate)` and a `#[cfg_attr(..)]` both
+        // open one earlier.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/ev.rs",
+            "struct A;\nstruct B;\nimpl A {\n    #[cfg_attr(x, allow(dead_code))] pub(crate) fn to_event(&self) {}\n}\nimpl B {\n    #[cfg_attr(x, allow(dead_code))] pub(crate) fn to_event(&self) {}\n}\npub fn caller(a: &A) {\n    a.to_event();\n}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let events: Vec<usize> = candidates
+            .iter()
+            .filter(|c| c.name == "to_event")
+            .map(|c| c.line)
+            .collect();
+        assert_eq!(events, vec![7], "only B::to_event is dead: {candidates:?}");
+    }
+
+    #[test]
+    fn a_caller_in_a_workspace_member_crate_counts_as_production() {
+        // The workspace is one codebase: a member crate under `crates/<name>/src/` calling
+        // into the root package is a production caller, and the member's own functions are
+        // swept like any other - except an `extern "C"` export, which is an entry point.
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/map.rs",
+            "pub fn hit() {}\n\npub fn never_called() {}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "crates/core/src/lib.rs",
+            "#[no_mangle]\npub extern \"C\" fn console_call() {\n    rigger::map::hit();\n}\n\nfn orphan_in_member() {}\n",
+        );
+        let candidates = candidates_for(dir.path());
+        let names: Vec<(&str, &str)> = candidates
+            .iter()
+            .map(|c| (c.file.as_str(), c.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("crates/core/src/lib.rs", "orphan_in_member"),
+                ("src/map.rs", "never_called"),
+            ]
         );
     }
 
