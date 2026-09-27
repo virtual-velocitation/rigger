@@ -7442,45 +7442,23 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-6e5175353084",
-    "classification": "near",
+    "id": "dup-1772cddc48d8",
+    "classification": "exact",
     "sites": [
       {
         "file": "src/config_store.rs",
         "name": "read_store_config",
-        "content_hash": "6e26fecb9da25f46"
+        "content_hash": "cdd864d97a4c53b7"
       },
       {
         "file": "src/config_store.rs",
         "name": "read_scratch_defaults",
-        "content_hash": "e8b3133a255a081a"
+        "content_hash": "cdd864d97a4c53b7"
       }
     ],
     "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-5eaba0e2bfde",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/config_store.rs",
-        "name": "verdict_line_lint_passes_an_unrelated_same_sentence_emit_before_a_verdict_output_clause",
-        "content_hash": "6c3aadea98a036fa"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "verdict_line_lint_passes_a_determiner_verdict_when_a_payload_noun_sits_in_the_span",
-        "content_hash": "df461c01fd729a8b"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "verdict_line_lint_passes_a_determiner_verdict_when_an_unrelated_emit_example_brace_precedes_it",
-        "content_hash": "df461c01fd729a8b"
-      }
-    ],
-    "proposed_home": "config_store::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-898fea4e5b39",
@@ -7521,7 +7499,8 @@
       }
     ],
     "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-c10a9e4a46df",
@@ -7551,103 +7530,6 @@
     "proposed_home": "a new shared module (sites span 4 files: src/config_store.rs, src/contextgraph/query.rs, src/main.rs, src/spec.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-a8f1cb8eda87",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/config_store.rs",
-        "name": "parse_yaml_naming_unknown_keys_recomposes_paths_through_colon_and_marker_bearing_map_keys",
-        "content_hash": "95119cd5e7cfb286"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "parse_yaml_naming_unknown_keys_escapes_a_literal_dot_inside_a_map_key",
-        "content_hash": "c9d08ee8a7e5c633"
-      }
-    ],
-    "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-2e7f97275499",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/config_store.rs",
-        "name": "defaults_max_wall_clock_parses_and_is_zero_when_absent",
-        "content_hash": "cdbbbe721d88ee9c"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "max_retries_parses_from_defaults_and_defaults_to_zero_when_absent",
-        "content_hash": "85b4260d0926db17"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "build_config_parses_wrapper_and_cache_dir_and_defaults_when_omitted",
-        "content_hash": "01ef7477d5012092"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "build_config_parses_jobs_and_defaults_to_zero_when_omitted",
-        "content_hash": "4e085631804b4a07"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "build_config_parses_max_concurrent_defaulting_to_four_when_omitted",
-        "content_hash": "dd86dd661b899edc"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "build_config_parses_mutation_and_defaults_to_empty_when_omitted",
-        "content_hash": "85b4260d0926db17"
-      }
-    ],
-    "proposed_home": "config_store::support (consolidate these 6 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-e3ad868386ae",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/config_store.rs",
-        "name": "validate_catches_unknown_ref",
-        "content_hash": "c433c8147457bacd"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "validate_catches_cycle",
-        "content_hash": "25a87e966f021df2"
-      }
-    ],
-    "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-ae0479d6c9b3",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/config_store.rs",
-        "name": "validate_catches_an_unknown_light_panel_agent",
-        "content_hash": "37198bc754b4cca3"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "validate_rejects_a_light_panel_with_no_adjudicator",
-        "content_hash": "763965de16085b51"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "validate_rejects_a_tiers_policy_on_a_full_panel_with_no_adjudicator",
-        "content_hash": "64dd40e6cfebfaec"
-      }
-    ],
-    "proposed_home": "config_store::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
     "id": "dup-be97ce907814",

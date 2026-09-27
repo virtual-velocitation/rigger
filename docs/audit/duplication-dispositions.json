@@ -138,5 +138,15 @@
     "id": "dup-fc14355d78e6",
     "disposition": "not-a-duplicate",
     "reason": "`git_out` asserts the git command succeeded (through `git_ok`) while `git_stdout` returns the trimmed stdout of any exit status; the two share only the trim, over two different run contracts."
+  },
+  {
+    "id": "dup-7da4ecc76203",
+    "disposition": "not-a-duplicate",
+    "reason": "The two parse different agent frontmatter keys - `tools` plus the prompt body, versus the `model_ladder` list with an absent `model` - and share only the `parse_agent` call."
+  },
+  {
+    "id": "dup-1772cddc48d8",
+    "disposition": "not-a-duplicate",
+    "reason": "Both are one-line public probes over the one shared `read_workflow_probe` read, each declaring the single workflow key its own caller needs (`store:` versus `defaults:`); the read itself is already one definition."
   }
 ]
