@@ -3169,28 +3169,28 @@
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4499,
-        "end_line": 4499
+        "start_line": 4485,
+        "end_line": 4485
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4507,
-        "end_line": 4507
+        "start_line": 4493,
+        "end_line": 4493
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4515,
-        "end_line": 4515
+        "start_line": 4501,
+        "end_line": 4501
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4523,
-        "end_line": 4523
+        "start_line": 4509,
+        "end_line": 4509
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4531,
-        "end_line": 4531
+        "start_line": 4517,
+        "end_line": 4517
       },
       {
         "file": "src/dash.rs",
@@ -7829,8 +7829,8 @@
       },
       {
         "file": "src/spec.rs",
-        "start_line": 949,
-        "end_line": 951
+        "start_line": 986,
+        "end_line": 988
       }
     ]
   },
@@ -8015,21 +8015,6 @@
     ]
   },
   {
-    "id": "dup-0b34706f58ad",
-    "sites": [
-      {
-        "file": "src/console/map.rs",
-        "start_line": 1427,
-        "end_line": 1452
-      },
-      {
-        "file": "src/console/map.rs",
-        "start_line": 1458,
-        "end_line": 1479
-      }
-    ]
-  },
-  {
     "id": "dup-7081e6d4e9ca",
     "sites": [
       {
@@ -8044,53 +8029,23 @@
       },
       {
         "file": "src/spec.rs",
-        "start_line": 1887,
-        "end_line": 1908
+        "start_line": 1913,
+        "end_line": 1934
       }
     ]
   },
   {
-    "id": "dup-de9dbebd736c",
+    "id": "dup-0e618ec2d345",
     "sites": [
       {
         "file": "src/console/map.rs",
         "start_line": 2101,
-        "end_line": 2115
+        "end_line": 2113
       },
       {
         "file": "src/console/map.rs",
-        "start_line": 2460,
-        "end_line": 2477
-      }
-    ]
-  },
-  {
-    "id": "dup-9c2a5feef7eb",
-    "sites": [
-      {
-        "file": "src/console/map.rs",
-        "start_line": 2192,
-        "end_line": 2204
-      },
-      {
-        "file": "src/console/map.rs",
-        "start_line": 2370,
-        "end_line": 2382
-      }
-    ]
-  },
-  {
-    "id": "dup-31f0a377e225",
-    "sites": [
-      {
-        "file": "src/console/map.rs",
-        "start_line": 2387,
-        "end_line": 2401
-      },
-      {
-        "file": "src/console/map.rs",
-        "start_line": 2440,
-        "end_line": 2456
+        "start_line": 2441,
+        "end_line": 2455
       }
     ]
   },
@@ -8099,18 +8054,18 @@
     "sites": [
       {
         "file": "src/console/map.rs",
-        "start_line": 2480,
-        "end_line": 2487
+        "start_line": 2458,
+        "end_line": 2465
       },
       {
         "file": "src/console/map.rs",
-        "start_line": 2584,
-        "end_line": 2589
+        "start_line": 2562,
+        "end_line": 2567
       },
       {
         "file": "src/console/map.rs",
-        "start_line": 2598,
-        "end_line": 2606
+        "start_line": 2576,
+        "end_line": 2584
       }
     ]
   },
@@ -8294,13 +8249,13 @@
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6963,
-        "end_line": 6963
+        "start_line": 6882,
+        "end_line": 6882
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7765,
-        "end_line": 7765
+        "start_line": 7670,
+        "end_line": 7670
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -8309,23 +8264,23 @@
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "start_line": 1449,
-        "end_line": 1449
+        "start_line": 1458,
+        "end_line": 1458
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "start_line": 1706,
-        "end_line": 1706
+        "start_line": 1705,
+        "end_line": 1705
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "start_line": 1724,
-        "end_line": 1724
+        "start_line": 1723,
+        "end_line": 1723
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "start_line": 1738,
-        "end_line": 1738
+        "start_line": 1737,
+        "end_line": 1737
       },
       {
         "file": "src/main.rs",
@@ -8500,22 +8455,17 @@
     ]
   },
   {
-    "id": "dup-a88be81e20b2",
+    "id": "dup-145855a9e558",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
         "start_line": 2035,
-        "end_line": 2060
+        "end_line": 2047
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2093,
-        "end_line": 2118
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2129,
-        "end_line": 2157
+        "start_line": 2103,
+        "end_line": 2115
       }
     ]
   },
@@ -8524,13 +8474,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2798,
-        "end_line": 2812
+        "start_line": 2784,
+        "end_line": 2798
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4705,
-        "end_line": 4712
+        "start_line": 4691,
+        "end_line": 4698
       },
       {
         "file": "src/dash.rs",
@@ -8554,13 +8504,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2887,
-        "end_line": 2900
+        "start_line": 2873,
+        "end_line": 2886
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8122,
-        "end_line": 8142
+        "start_line": 8015,
+        "end_line": 8035
       }
     ]
   },
@@ -8569,8 +8519,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3031,
-        "end_line": 3039
+        "start_line": 3017,
+        "end_line": 3025
       },
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -8589,28 +8539,28 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3322,
-        "end_line": 3340
+        "start_line": 3308,
+        "end_line": 3326
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3356,
-        "end_line": 3376
+        "start_line": 3342,
+        "end_line": 3362
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3425,
-        "end_line": 3444
+        "start_line": 3411,
+        "end_line": 3430
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4679,
-        "end_line": 4690
+        "start_line": 4665,
+        "end_line": 4676
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4973,
-        "end_line": 4993
+        "start_line": 4968,
+        "end_line": 4988
       },
       {
         "file": "src/dash.rs",
@@ -8644,43 +8594,43 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3342,
-        "end_line": 3347
+        "start_line": 3328,
+        "end_line": 3333
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3382,
-        "end_line": 3387
+        "start_line": 3368,
+        "end_line": 3373
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3415,
-        "end_line": 3421
+        "start_line": 3401,
+        "end_line": 3407
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4236,
-        "end_line": 4244
+        "start_line": 4222,
+        "end_line": 4230
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4347,
-        "end_line": 4355
+        "start_line": 4333,
+        "end_line": 4341
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4694,
-        "end_line": 4700
+        "start_line": 4680,
+        "end_line": 4686
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6308,
-        "end_line": 6316
+        "start_line": 6245,
+        "end_line": 6253
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7579,
-        "end_line": 7589
+        "start_line": 7484,
+        "end_line": 7494
       },
       {
         "file": "tests/dash_calls_route_periphery.rs",
@@ -8694,43 +8644,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4358,
-        "end_line": 4481
+        "start_line": 4344,
+        "end_line": 4467
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4484,
-        "end_line": 4602
-      }
-    ]
-  },
-  {
-    "id": "dup-ef319f80acff",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4718,
-        "end_line": 4732
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7036,
-        "end_line": 7054
-      }
-    ]
-  },
-  {
-    "id": "dup-f653c159d604",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5396,
-        "end_line": 5536
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5734,
-        "end_line": 5924
+        "start_line": 4470,
+        "end_line": 4588
       }
     ]
   },
@@ -8739,43 +8659,28 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6041,
-        "end_line": 6074
+        "start_line": 5978,
+        "end_line": 6011
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6128,
-        "end_line": 6156
+        "start_line": 6065,
+        "end_line": 6093
       }
     ]
   },
   {
-    "id": "dup-7017240c22e7",
+    "id": "dup-0d8e695ac484",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6851,
-        "end_line": 6860
+        "start_line": 6786,
+        "end_line": 6788
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7930,
-        "end_line": 7942
-      }
-    ]
-  },
-  {
-    "id": "dup-58ebb5f70eb5",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6863,
-        "end_line": 6945
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7057,
-        "end_line": 7148
+        "start_line": 7835,
+        "end_line": 7843
       }
     ]
   },
@@ -8784,13 +8689,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7669,
-        "end_line": 7710
+        "start_line": 7574,
+        "end_line": 7615
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7713,
-        "end_line": 7728
+        "start_line": 7618,
+        "end_line": 7633
       },
       {
         "file": "tests/code_ingest_events.rs",
@@ -8804,8 +8709,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7839,
-        "end_line": 7841
+        "start_line": 7744,
+        "end_line": 7746
       },
       {
         "file": "src/main.rs",
@@ -8815,32 +8720,17 @@
     ]
   },
   {
-    "id": "dup-72b8ab279760",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8040,
-        "end_line": 8059
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8062,
-        "end_line": 8085
-      }
-    ]
-  },
-  {
     "id": "dup-da0e76ab77ee",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8164,
-        "end_line": 8195
+        "start_line": 8057,
+        "end_line": 8088
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8440,
-        "end_line": 8471
+        "start_line": 8333,
+        "end_line": 8364
       }
     ]
   },
@@ -9385,7 +9275,7 @@
     ]
   },
   {
-    "id": "dup-4fa082976655",
+    "id": "dup-59fa698ee47b",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -9393,9 +9283,9 @@
         "end_line": 9199
       },
       {
-        "file": "tests/calls_down_execution_path_periphery.rs",
-        "start_line": 111,
-        "end_line": 113
+        "file": "tests/common/fixtures/graph.rs",
+        "start_line": 174,
+        "end_line": 176
       }
     ]
   },
@@ -9820,22 +9710,17 @@
     ]
   },
   {
-    "id": "dup-93c3800a4ebf",
+    "id": "dup-1b857c1af535",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
-        "start_line": 1491,
-        "end_line": 1528
+        "start_line": 1536,
+        "end_line": 1561
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "start_line": 1531,
-        "end_line": 1559
-      },
-      {
-        "file": "src/eventstore/sqlite.rs",
-        "start_line": 1562,
-        "end_line": 1616
+        "start_line": 1564,
+        "end_line": 1615
       }
     ]
   },
@@ -10275,32 +10160,17 @@
     ]
   },
   {
-    "id": "dup-109459b28ca6",
+    "id": "dup-ab86de4a6b66",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1070,
-        "end_line": 1081
+        "start_line": 1081,
+        "end_line": 1092
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1322,
-        "end_line": 1336
-      }
-    ]
-  },
-  {
-    "id": "dup-9432fcaa9237",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1187,
-        "end_line": 1193
-      },
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1602,
-        "end_line": 1612
+        "start_line": 1331,
+        "end_line": 1345
       }
     ]
   },
@@ -10309,38 +10179,18 @@
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1239,
-        "end_line": 1285
+        "start_line": 1248,
+        "end_line": 1294
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1288,
-        "end_line": 1314
+        "start_line": 1297,
+        "end_line": 1323
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1615,
-        "end_line": 1642
-      }
-    ]
-  },
-  {
-    "id": "dup-5e84e7b4d6c7",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1713,
-        "end_line": 1780
-      },
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1788,
-        "end_line": 1842
-      },
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1853,
-        "end_line": 1884
+        "start_line": 1622,
+        "end_line": 1649
       }
     ]
   },
@@ -10564,8 +10414,8 @@
       },
       {
         "file": "src/spec.rs",
-        "start_line": 2152,
-        "end_line": 2154
+        "start_line": 2203,
+        "end_line": 2205
       }
     ]
   },
@@ -11215,6 +11065,21 @@
     ]
   },
   {
+    "id": "dup-d04c0e512a77",
+    "sites": [
+      {
+        "file": "src/metrics.rs",
+        "start_line": 2254,
+        "end_line": 2274
+      },
+      {
+        "file": "src/metrics.rs",
+        "start_line": 2371,
+        "end_line": 2386
+      }
+    ]
+  },
+  {
     "id": "dup-576605ec7eeb",
     "sites": [
       {
@@ -11605,97 +11470,12 @@
     ]
   },
   {
-    "id": "dup-349556161f61",
-    "sites": [
-      {
-        "file": "src/spec.rs",
-        "start_line": 1082,
-        "end_line": 1091
-      },
-      {
-        "file": "src/spec.rs",
-        "start_line": 1222,
-        "end_line": 1235
-      }
-    ]
-  },
-  {
-    "id": "dup-0d5eef5ac533",
-    "sites": [
-      {
-        "file": "src/spec.rs",
-        "start_line": 1238,
-        "end_line": 1247
-      },
-      {
-        "file": "src/spec.rs",
-        "start_line": 1260,
-        "end_line": 1266
-      }
-    ]
-  },
-  {
-    "id": "dup-800a16d7cea3",
-    "sites": [
-      {
-        "file": "src/spec.rs",
-        "start_line": 1328,
-        "end_line": 1339
-      },
-      {
-        "file": "src/spec.rs",
-        "start_line": 1348,
-        "end_line": 1364
-      }
-    ]
-  },
-  {
-    "id": "dup-ef13446197e2",
-    "sites": [
-      {
-        "file": "src/spec.rs",
-        "start_line": 1383,
-        "end_line": 1407
-      },
-      {
-        "file": "src/spec.rs",
-        "start_line": 1416,
-        "end_line": 1438
-      }
-    ]
-  },
-  {
-    "id": "dup-7b967b22273b",
-    "sites": [
-      {
-        "file": "src/spec.rs",
-        "start_line": 1508,
-        "end_line": 1521
-      },
-      {
-        "file": "src/spec.rs",
-        "start_line": 1531,
-        "end_line": 1550
-      },
-      {
-        "file": "src/spec.rs",
-        "start_line": 1561,
-        "end_line": 1583
-      },
-      {
-        "file": "src/spec.rs",
-        "start_line": 2086,
-        "end_line": 2096
-      }
-    ]
-  },
-  {
     "id": "dup-315e8a57aba8",
     "sites": [
       {
         "file": "src/spec.rs",
-        "start_line": 1828,
-        "end_line": 1840
+        "start_line": 1854,
+        "end_line": 1866
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -12314,13 +12094,13 @@
     "sites": [
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
-        "start_line": 288,
-        "end_line": 329
+        "start_line": 265,
+        "end_line": 310
       },
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
-        "start_line": 770,
-        "end_line": 838
+        "start_line": 751,
+        "end_line": 823
       }
     ]
   },
@@ -15251,6 +15031,26 @@
         "file": "tests/common/workflow_probe.rs",
         "start_line": 22,
         "end_line": 24
+      }
+    ]
+  },
+  {
+    "id": "dup-b684ceb89441",
+    "sites": [
+      {
+        "file": "tests/common/graph_fold.rs",
+        "start_line": 120,
+        "end_line": 129
+      },
+      {
+        "file": "tests/community_resolution_knob.rs",
+        "start_line": 138,
+        "end_line": 147
+      },
+      {
+        "file": "tests/graph_superseded_prune.rs",
+        "start_line": 55,
+        "end_line": 64
       }
     ]
   },

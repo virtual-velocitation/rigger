@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use rigger::contextgraph::{
-    CallEdge, Edge, Graph, Node, KIND_UNIT, REL_CALLS, REL_REFERENCES, TIER_EXTRACTED,
+    CallEdge, CallGraph, Edge, Graph, Node, KIND_UNIT, REL_CALLS, REL_REFERENCES, TIER_EXTRACTED,
     TIER_INFERRED,
 };
 
@@ -150,4 +150,35 @@ pub fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
         .collect();
     out.sort();
     out
+}
+
+/// The reached node ids of a `CallGraph`, sorted, for a stable membership assertion.
+pub fn call_node_ids(cg: &CallGraph) -> Vec<String> {
+    let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+    v.sort();
+    v
+}
+
+/// The `(from, to)` endpoints of a `CallGraph`'s edges, sorted.
+pub fn call_edge_pairs(cg: &CallGraph) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = cg
+        .edges
+        .iter()
+        .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
+        .collect();
+    v.sort();
+    v
+}
+
+/// The layer a `CallGraph` places node `id` at, if it holds it.
+pub fn call_layer(cg: &CallGraph, id: &str) -> Option<i64> {
+    cg.nodes.iter().find(|n| n.node.id == id).map(|n| n.layer)
+}
+
+/// Whether a `CallGraph`'s `from -> to` edge is a back edge, if it holds one.
+pub fn call_back_edge(cg: &CallGraph, from: &str, to: &str) -> Option<bool> {
+    cg.edges
+        .iter()
+        .find(|e| e.edge.from == from && e.edge.to == to)
+        .map(|e| e.back)
 }

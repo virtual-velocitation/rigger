@@ -168,5 +168,70 @@
     "id": "dup-0214889fec22",
     "disposition": "not-a-duplicate",
     "reason": "Both use the shared `reset_modes_of`/`reset_refusal`; they pin two different flags' rules (`--force-live` never implying a mode vs `--build-cache` composing with other modes)."
+  },
+  {
+    "id": "dup-0d8e695ac484",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already read through the shared `raw_rows`; one selects every edge row's project tag, the other the schema's own index names from `sqlite_master`."
+  },
+  {
+    "id": "dup-0e618ec2d345",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already build through the shared `community_graph`; they are two different fixtures (one three-function district with a caller and a callee, two districts joined by one cross-district call)."
+  },
+  {
+    "id": "dup-0f11f47627d7",
+    "disposition": "not-a-duplicate",
+    "reason": "Three different map queries over one fixture: landmark ranking by degree, case-insensitive name search, and the kind/degree fields a search hit carries."
+  },
+  {
+    "id": "dup-145855a9e558",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already read through the shared `call_edge_rows`; they are the two opposite directions of a direct CALLS hop (a node's callees vs its callers), each with its own query."
+  },
+  {
+    "id": "dup-1a713042d2fe",
+    "disposition": "not-a-duplicate",
+    "reason": "Two named modes of the shared `find_word_boundary` (a hyphen as a word character vs as a boundary), each serving a different caller's matching rule."
+  },
+  {
+    "id": "dup-1b857c1af535",
+    "disposition": "not-a-duplicate",
+    "reason": "Both seed through the shared `store_with`/`keyed`; one proves distinct keys measure no duplication, the other that one key under two covered types is two subjects and cross-checks the real prune."
+  },
+  {
+    "id": "dup-2aabb2b82325",
+    "disposition": "not-a-duplicate",
+    "reason": "Two named modes of the shared `name_occurrence_map` (counting references too vs definitions only), feeding two different ranking signals."
+  },
+  {
+    "id": "dup-2d860358c266",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different fold arms with different fixtures and assertions: the five design-intent link relations vs workflow stage/gate/agent nodes and their needs/runs/reviews edges."
+  },
+  {
+    "id": "dup-32d7509fc4e5",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
+  },
+  {
+    "id": "dup-ab86de4a6b66",
+    "disposition": "not-a-duplicate",
+    "reason": "Both build through the shared `grounder_over`; they pin two different ranking rules (definition over reference, exact over contains tier)."
+  },
+  {
+    "id": "dup-d45ee6096ba3",
+    "disposition": "not-a-duplicate",
+    "reason": "Three different reindex scenarios with different steps and assertions: a concurrent peer's persisted write, a changed file, and a deleted file."
+  },
+  {
+    "id": "dup-da0e76ab77ee",
+    "disposition": "not-a-duplicate",
+    "reason": "Opposite halves of the proof-staging contract: a forward reference is staged then reconciled, while the empty-name boundary sentinel must never stage anything."
+  },
+  {
+    "id": "dup-f0a2e1334847",
+    "disposition": "not-a-duplicate",
+    "reason": "Different concerns sharing a lookup shape: one reaches a decision's summary through GOVERNS, the other proves recording a proof merges into and never wipes an entity's attrs."
   }
 ]

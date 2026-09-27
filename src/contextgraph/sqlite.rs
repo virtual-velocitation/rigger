@@ -2037,15 +2037,25 @@ fn calls_out(
     from_id: &str,
     project: &str,
 ) -> Result<Vec<(String, String, i64, Position)>, Error> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT to_id, tier, valid_from, source FROM edges
+    call_edge_rows(
+        conn,
+        "SELECT to_id, tier, valid_from, source FROM edges
               WHERE from_id = ?1 AND rel = ?2 AND valid_to IS NULL AND project = ?3
               ORDER BY to_id",
-        )
-        .map_err(be)?;
+        params![from_id, REL_CALLS, project],
+    )
+}
+
+/// The `(other end, tier, valid_from, source)` rows a CALLS-edge `sql` query selects, in its
+/// own order - the one row shape every call-graph hop reads.
+fn call_edge_rows(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<(String, String, i64, Position)>, Error> {
+    let mut stmt = conn.prepare(sql).map_err(be)?;
     let rows = stmt
-        .query_map(params![from_id, REL_CALLS, project], |r| {
+        .query_map(params, |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -2095,26 +2105,13 @@ fn callers_direct(
     to_id: &str,
     project: &str,
 ) -> Result<Vec<(String, String, i64, Position)>, Error> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT from_id, tier, valid_from, source FROM edges
+    call_edge_rows(
+        conn,
+        "SELECT from_id, tier, valid_from, source FROM edges
               WHERE to_id = ?1 AND rel = ?2 AND valid_to IS NULL AND project = ?3
               ORDER BY from_id",
-        )
-        .map_err(be)?;
-    let rows = stmt
-        .query_map(params![to_id, REL_CALLS, project], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)? as Position,
-            ))
-        })
-        .map_err(be)?
-        .collect::<Result<_, _>>()
-        .map_err(be)?;
-    Ok(rows)
+        params![to_id, REL_CALLS, project],
+    )
 }
 
 /// The live, caller-attributed `CALLS` edges into a BARE cross-file placeholder whose entity-name
@@ -2131,29 +2128,16 @@ fn callers_via_bare(
     name: &str,
     project: &str,
 ) -> Result<Vec<(String, String, i64, Position)>, Error> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
+    call_edge_rows(
+        conn,
+        "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
                JOIN nodes n ON n.id = e.to_id AND n.project = e.project
               WHERE e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
                 AND substr(e.to_id, instr(e.to_id, '::') + 2) = ?3
                 AND json_extract(n.attrs, '$.name') IS NULL
               ORDER BY e.from_id",
-        )
-        .map_err(be)?;
-    let rows = stmt
-        .query_map(params![REL_CALLS, project, name], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)? as Position,
-            ))
-        })
-        .map_err(be)?
-        .collect::<Result<_, _>>()
-        .map_err(be)?;
-    Ok(rows)
+        params![REL_CALLS, project, name],
+    )
 }
 
 /// One resolved UP caller hop (spec 52 criterion 3): `(caller_id, tier, valid_from, source,
@@ -2793,7 +2777,9 @@ mod tests {
         KIND_AGENT, KIND_GATE, KIND_UNIT, META_ACTOR, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED,
         REL_GATED_BY, REL_TOUCHES,
     };
-    use crate::test_support::apply_ref;
+    use crate::test_support::{
+        apply_ref, call_back_edge, call_edge_pairs, call_layer, call_node_ids,
+    };
 
     fn apply_decision(
         p: &Projector,
@@ -4716,19 +4702,28 @@ mod tests {
     /// a test prove supersede-not-delete: a superseded edge is RETAINED with `valid_to` stamped, so
     /// a historical / as-of reader still reaches it, not removed.
     fn edges_from(p: &Projector, from: &str) -> Vec<(String, String, Option<i64>)> {
+        raw_rows(
+            p,
+            "SELECT to_id, rel, valid_to FROM edges
+             WHERE from_id = ?1 ORDER BY rel, to_id, valid_from",
+            [from],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?)),
+        )
+    }
+
+    /// Every row `sql` selects straight off the projector's own connection, mapped by `row`.
+    fn raw_rows<T, C: FromIterator<T>>(
+        p: &Projector,
+        sql: &str,
+        params: impl rusqlite::Params,
+        row: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    ) -> C {
         let conn = p.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT to_id, rel, valid_to FROM edges
-                 WHERE from_id = ?1 ORDER BY rel, to_id, valid_from",
-            )
-            .unwrap();
-        stmt.query_map([from], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?))
-        })
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
+        let mut stmt = conn.prepare(sql).unwrap();
+        stmt.query_map(params, row)
+            .unwrap()
+            .collect::<Result<C, _>>()
+            .unwrap()
     }
 
     #[test]
@@ -5414,21 +5409,6 @@ mod tests {
         apply_batch_ref_caller(&p, 5, a, "work", "main");
         apply_batch_ref_caller(&p, 6, b, "main", "work");
 
-        let node_ids = |cg: &CallGraph| -> Vec<String> {
-            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
-            v.sort();
-            v
-        };
-        let edge_pairs = |cg: &CallGraph| -> Vec<(String, String)> {
-            let mut v: Vec<(String, String)> = cg
-                .edges
-                .iter()
-                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
-                .collect();
-            v.sort();
-            v
-        };
-
         let cg = p
             .calls(
                 &["src/a.rs::main".to_string()],
@@ -5441,26 +5421,23 @@ mod tests {
         // LAYERS: the seed at 0; both its callees at 1; the cross-file callee resolved to its real
         // definition b.rs::work (NOT the bare a.rs::work placeholder). The cycle back onto main
         // DEDUPS - main appears EXACTLY ONCE, still at layer 0.
-        let layer = |id: &str| -> Option<i64> {
-            cg.nodes.iter().find(|n| n.node.id == id).map(|n| n.layer)
-        };
         assert_eq!(
-            layer("src/a.rs::main"),
+            call_layer(&cg, "src/a.rs::main"),
             Some(0),
             "the seed is layer 0; nodes were {:?}",
-            node_ids(&cg)
+            call_node_ids(&cg)
         );
         assert_eq!(
-            layer("src/a.rs::helper"),
+            call_layer(&cg, "src/a.rs::helper"),
             Some(1),
             "the same-file callee is layer 1; nodes were {:?}",
-            node_ids(&cg)
+            call_node_ids(&cg)
         );
         assert_eq!(
-            layer("src/b.rs::work"),
+            call_layer(&cg, "src/b.rs::work"),
             Some(1),
             "the cross-file callee resolved to its definition at layer 1; nodes were {:?}",
-            node_ids(&cg)
+            call_node_ids(&cg)
         );
         assert_eq!(
             cg.nodes
@@ -5469,18 +5446,18 @@ mod tests {
                 .count(),
             1,
             "the recursion dedups: main appears exactly once (a DAG, not a loop); nodes were {:?}",
-            node_ids(&cg)
+            call_node_ids(&cg)
         );
         // The walk resolved THROUGH the bare cross-file placeholders - they are not in the answer.
         for bare in ["src/a.rs::work", "src/b.rs::main"] {
             assert!(
                 !cg.nodes.iter().any(|n| n.node.id == bare),
                 "the bare cross-file placeholder {bare} is resolved away, not returned; nodes were {:?}",
-                node_ids(&cg)
+                call_node_ids(&cg)
             );
         }
         assert_eq!(
-            node_ids(&cg),
+            call_node_ids(&cg),
             vec!["src/a.rs::helper", "src/a.rs::main", "src/b.rs::work"],
             "exactly the seed plus its two resolved callees"
         );
@@ -5496,32 +5473,26 @@ mod tests {
         );
 
         // EDGES: two forward tree edges (back=false) and the recursion edge work -> main (back=true).
-        let back_of = |from: &str, to: &str| -> Option<bool> {
-            cg.edges
-                .iter()
-                .find(|e| e.edge.from == from && e.edge.to == to)
-                .map(|e| e.back)
-        };
         assert_eq!(
-            back_of("src/a.rs::main", "src/a.rs::helper"),
+            call_back_edge(&cg, "src/a.rs::main", "src/a.rs::helper"),
             Some(false),
             "the same-file forward edge is not a back edge; edges were {:?}",
-            edge_pairs(&cg)
+            call_edge_pairs(&cg)
         );
         assert_eq!(
-            back_of("src/a.rs::main", "src/b.rs::work"),
+            call_back_edge(&cg, "src/a.rs::main", "src/b.rs::work"),
             Some(false),
             "the resolved cross-file forward edge lands on the definition, not a back edge; edges were {:?}",
-            edge_pairs(&cg)
+            call_edge_pairs(&cg)
         );
         assert_eq!(
-            back_of("src/b.rs::work", "src/a.rs::main"),
+            call_back_edge(&cg, "src/b.rs::work", "src/a.rs::main"),
             Some(true),
             "the recursion edge closing the cycle onto the seed is marked BACK; edges were {:?}",
-            edge_pairs(&cg)
+            call_edge_pairs(&cg)
         );
         assert_eq!(
-            edge_pairs(&cg),
+            call_edge_pairs(&cg),
             vec![
                 ("src/a.rs::main".to_string(), "src/a.rs::helper".to_string()),
                 ("src/a.rs::main".to_string(), "src/b.rs::work".to_string()),
@@ -5586,11 +5557,6 @@ mod tests {
             )
             .unwrap();
 
-        let node_ids = |cg: &CallGraph| -> Vec<String> {
-            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
-            v.sort();
-            v
-        };
         let node = |id: &str| cg.nodes.iter().find(|n| n.node.id == id);
 
         // SINGLE-candidate: `solo` IS followed - resolved onto its real definition (not the bare
@@ -5608,7 +5574,7 @@ mod tests {
         assert!(
             node("src/caller.rs::solo").is_none(),
             "the bare cross-file placeholder is resolved away, not returned; nodes were {:?}",
-            node_ids(&cg),
+            call_node_ids(&cg),
         );
         // ...and the walk DESCENDS past it: solo's own callee is reached at layer 2, so the
         // single-candidate hop was followed THROUGH, not merely landed on.
@@ -5652,13 +5618,13 @@ mod tests {
             assert!(
                 node(hidden).is_none(),
                 "{hidden} lies beyond the un-descended frontier and must not be reached; nodes were {:?}",
-                node_ids(&cg),
+                call_node_ids(&cg),
             );
         }
 
         // Exactly the seed, the followed single-candidate chain, and the marked frontier placeholder.
         assert_eq!(
-            node_ids(&cg),
+            call_node_ids(&cg),
             vec![
                 "src/caller.rs::dup".to_string(),
                 "src/caller.rs::entry".to_string(),
@@ -5766,21 +5732,6 @@ mod tests {
         // with NO CALLS twin - the "referenced but not called" site.
         apply_batch_ref(&p, 9, d, "target", true);
 
-        let node_ids = |cg: &CallGraph| -> Vec<String> {
-            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
-            v.sort();
-            v
-        };
-        let edge_pairs = |cg: &CallGraph| -> Vec<(String, String)> {
-            let mut v: Vec<(String, String)> = cg
-                .edges
-                .iter()
-                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
-                .collect();
-            v.sort();
-            v
-        };
-
         let cg = p
             .calls(
                 &["src/a.rs::target".to_string()],
@@ -5793,39 +5744,36 @@ mod tests {
         // LAYERS: the seed at 0; its direct same-file caller and its single-candidate cross-file
         // caller at 1; the caller-of-a-caller at 2. Cross-file callers resolved THROUGH their bare
         // placeholders onto the real caller definitions (b.rs::mid, c.rs::top), never the bare nodes.
-        let layer = |id: &str| -> Option<i64> {
-            cg.nodes.iter().find(|n| n.node.id == id).map(|n| n.layer)
-        };
         assert_eq!(
-            layer("src/a.rs::target"),
+            call_layer(&cg, "src/a.rs::target"),
             Some(0),
             "the seed is layer 0; nodes were {:?}",
-            node_ids(&cg)
+            call_node_ids(&cg)
         );
         assert_eq!(
-            layer("src/a.rs::local"),
+            call_layer(&cg, "src/a.rs::local"),
             Some(1),
             "the same-file caller is layer 1; nodes were {:?}",
-            node_ids(&cg)
+            call_node_ids(&cg)
         );
         assert_eq!(
-            layer("src/b.rs::mid"),
+            call_layer(&cg, "src/b.rs::mid"),
             Some(1),
             "the cross-file caller resolved to its def at layer 1; nodes were {:?}",
-            node_ids(&cg)
+            call_node_ids(&cg)
         );
         assert_eq!(
-            layer("src/c.rs::top"),
+            call_layer(&cg, "src/c.rs::top"),
             Some(2),
             "the caller-of-a-caller is two hops up; nodes were {:?}",
-            node_ids(&cg)
+            call_node_ids(&cg)
         );
         // The bare cross-file placeholders the callers literally target are resolved away.
         for bare in ["src/b.rs::target", "src/c.rs::mid", "src/a.rs::mid"] {
             assert!(
                 !cg.nodes.iter().any(|n| n.node.id == bare),
                 "the bare cross-file placeholder {bare} is resolved away, not returned; nodes were {:?}",
-                node_ids(&cg),
+                call_node_ids(&cg),
             );
         }
         // The mutual call dedups: the seed appears EXACTLY ONCE, still at layer 0 (a DAG, not a loop).
@@ -5836,10 +5784,10 @@ mod tests {
                 .count(),
             1,
             "the recursion dedups: the seed appears exactly once; nodes were {:?}",
-            node_ids(&cg),
+            call_node_ids(&cg),
         );
         assert_eq!(
-            node_ids(&cg),
+            call_node_ids(&cg),
             vec![
                 "src/a.rs::local".to_string(),
                 "src/a.rs::target".to_string(),
@@ -5861,33 +5809,27 @@ mod tests {
 
         // EDGES keep the real CALLS direction (caller -> callee). Three forward caller edges and the
         // mutual recursion target -> mid marked BACK (its caller, the seed, sits no deeper than mid).
-        let back_of = |from: &str, to: &str| -> Option<bool> {
-            cg.edges
-                .iter()
-                .find(|e| e.edge.from == from && e.edge.to == to)
-                .map(|e| e.back)
-        };
         assert_eq!(
-            back_of("src/a.rs::local", "src/a.rs::target"),
+            call_back_edge(&cg, "src/a.rs::local", "src/a.rs::target"),
             Some(false),
             "the same-file forward caller edge is not a back edge; edges were {:?}",
-            edge_pairs(&cg)
+            call_edge_pairs(&cg)
         );
-        assert_eq!(back_of("src/b.rs::mid", "src/a.rs::target"), Some(false), "the resolved cross-file caller edge lands on the seed def, not a back edge; edges were {:?}", edge_pairs(&cg));
+        assert_eq!(call_back_edge(&cg, "src/b.rs::mid", "src/a.rs::target"), Some(false), "the resolved cross-file caller edge lands on the seed def, not a back edge; edges were {:?}", call_edge_pairs(&cg));
         assert_eq!(
-            back_of("src/c.rs::top", "src/b.rs::mid"),
+            call_back_edge(&cg, "src/c.rs::top", "src/b.rs::mid"),
             Some(false),
             "the caller-of-a-caller forward edge is not a back edge; edges were {:?}",
-            edge_pairs(&cg)
+            call_edge_pairs(&cg)
         );
         assert_eq!(
-            back_of("src/a.rs::target", "src/b.rs::mid"),
+            call_back_edge(&cg, "src/a.rs::target", "src/b.rs::mid"),
             Some(true),
             "the mutual-call edge closing the cycle is marked BACK; edges were {:?}",
-            edge_pairs(&cg)
+            call_edge_pairs(&cg)
         );
         assert_eq!(
-            edge_pairs(&cg),
+            call_edge_pairs(&cg),
             vec![
                 (
                     "src/a.rs::local".to_string(),
@@ -5953,11 +5895,6 @@ mod tests {
             )
             .unwrap();
         let node = |id: &str| cg.nodes.iter().find(|n| n.node.id == id);
-        let node_ids = |cg: &CallGraph| -> Vec<String> {
-            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
-            v.sort();
-            v
-        };
 
         // The ambiguous caller is a marked FRONTIER at layer 1, carrying its SORTED candidate defs.
         // TEETH: e.rs was folded before a.rs, so a missing `ORDER BY id` would return [e, a]; only the
@@ -5985,11 +5922,11 @@ mod tests {
             assert!(
                 node(hidden).is_none(),
                 "{hidden} lies beyond the un-ascended frontier and must not be reached; nodes were {:?}",
-                node_ids(&cg),
+                call_node_ids(&cg),
             );
         }
         assert_eq!(
-            node_ids(&cg),
+            call_node_ids(&cg),
             vec!["src/a.rs::target".to_string(), "src/f.rs::amb".to_string()],
             "the reached set is the seed plus the marked frontier caller, nothing more",
         );
@@ -6836,27 +6773,18 @@ mod tests {
     /// directly to prove the fold stamps it. Reads through the same connection, so on a shared
     /// backend it observes every project's committed rows.
     fn node_projects(p: &Projector) -> Vec<(String, String)> {
-        let conn = p.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT id, project FROM nodes ORDER BY id, project")
-            .unwrap();
-        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
+        raw_rows(
+            p,
+            "SELECT id, project FROM nodes ORDER BY id, project",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
     }
 
     /// The project stamped on every edge row, in insertion order. Same rationale as
     /// [`node_projects`]: the write tag is on the raw column, read directly.
     fn edge_projects(p: &Projector) -> Vec<String> {
-        let conn = p.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT project FROM edges ORDER BY id")
-            .unwrap();
-        stmt.query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
+        raw_rows(p, "SELECT project FROM edges ORDER BY id", [], |r| r.get(0))
     }
 
     #[test]
@@ -6884,19 +6812,10 @@ mod tests {
         // A decision governing shared.rs, decided by agent-7: folds a decision node, an artifact
         // node (shared.rs), an agent node (agent-7), a DECIDED edge and a GOVERNS edge - every
         // node kind and both edge directions from one event.
-        let fold_at = |p: &Projector, pos: u64| {
-            let payload = serde_json::json!({
-                "id": "d1", "summary": "x", "governs": ["shared.rs"], "supersedes": "",
-            });
-            let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
-            e.position = pos;
-            e.meta.insert(META_ACTOR.to_string(), "agent-7".to_string());
-            p.apply(&e).unwrap();
-        };
 
         // (1) project "alpha": every row tagged "alpha".
         let alpha = Projector::open(shared, "alpha").unwrap();
-        fold_at(&alpha, 1);
+        apply_decision_by(&alpha, 1, "d1", "x", &["shared.rs"], "agent-7");
         let a_nodes = node_projects(&alpha);
         assert!(
             a_nodes.iter().any(|(id, _)| id == "d1"),
@@ -6915,7 +6834,7 @@ mod tests {
 
         // (2) same backend, project "beta": the SAME event (a later global position) tags "beta".
         let beta = Projector::open(shared, "beta").unwrap();
-        fold_at(&beta, 2);
+        apply_decision_by(&beta, 2, "d1", "x", &["shared.rs"], "agent-7");
         let all_nodes = node_projects(&beta);
         // (3) the SAME seed id d1 now exists under BOTH projects - two distinct rows on ONE
         // shared backend (the composite (id, project) key), never one overwriting the other.
@@ -7034,23 +6953,19 @@ mod tests {
     /// EVERY project's edges that reference `id`, exactly what a cross-project prune leak
     /// would show.
     fn edges_touching(p: &Projector, id: &str) -> Vec<(String, String, String)> {
-        let conn = p.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT from_id, to_id, project FROM edges
-                 WHERE from_id = ?1 OR to_id = ?1 ORDER BY id",
-            )
-            .unwrap();
-        stmt.query_map([id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
+        raw_rows(
+            p,
+            "SELECT from_id, to_id, project FROM edges
+             WHERE from_id = ?1 OR to_id = ?1 ORDER BY id",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
     }
 
     #[test]
@@ -7070,22 +6985,12 @@ mod tests {
         let shared = dir.path().join("graph.db");
         let shared = shared.to_str().unwrap();
 
-        let fold_drop_d = |p: &Projector, pos: u64| {
-            let payload = serde_json::json!({
-                "id": "drop-d", "summary": "x", "governs": ["shared.rs"], "supersedes": "",
-            });
-            let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
-            e.position = pos;
-            e.meta.insert(META_ACTOR.to_string(), "agent-7".to_string());
-            p.apply(&e).unwrap();
-        };
-
         let alpha = Projector::open(shared, "alpha").unwrap();
-        fold_drop_d(&alpha, 1);
+        apply_decision_by(&alpha, 1, "drop-d", "x", &["shared.rs"], "agent-7");
         // beta folds the SAME event at a later global position (the Namespaced decorator scopes
         // streams over one global log), so beta's drop-d is a distinct row on the one backend.
         let beta = Projector::open(shared, "beta").unwrap();
-        fold_drop_d(&beta, 2);
+        apply_decision_by(&beta, 2, "drop-d", "x", &["shared.rs"], "agent-7");
 
         // Before: the SAME seed id drop-d exists as one row per project, and BOTH projects have
         // edges touching it - so the survival assertions below are non-vacuous.
@@ -7928,17 +7833,13 @@ mod tests {
     /// implicit `sqlite_autoindex_*` primary-key indexes are excluded), so a test can assert an
     /// additive migration created a named index.
     fn index_names(p: &Projector) -> BTreeSet<String> {
-        let conn = p.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT name FROM sqlite_master
-                  WHERE type = 'index' AND name NOT LIKE 'sqlite_%'",
-            )
-            .unwrap();
-        stmt.query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
+        raw_rows(
+            p,
+            "SELECT name FROM sqlite_master
+              WHERE type = 'index' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        )
     }
 
     /// The `EXPLAIN QUERY PLAN` `detail` lines for `sql`, so a test can assert the planner chose a
@@ -8036,52 +7937,44 @@ mod tests {
                 .unwrap_or_default()
         }
 
-        #[test]
-        fn a_same_file_test_reference_increments_proven_by_and_records_its_evidence() {
-            // The overwhelmingly common `#[cfg(test)] mod tests` idiom: `product.rs::product_fn` is
-            // defined, then a test in the SAME file references it. proven_by lands on the
-            // definition's OWN id directly - no bare placeholder, no second node.
+        /// `product.rs::product_fn`, referenced by one test-origin reference per `(file, line)`
+        /// in `references`, is proven that many times, its evidence naming each `file:line` in
+        /// fold order.
+        fn assert_product_fn_proven_by(references: &[(&str, u32)]) {
             let p = Projector::open(":memory:", "test").unwrap();
             apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
+            for (pos, (file, line)) in (2..).zip(references) {
+                apply_edge_inferred_evidence(&p, pos, file, "product_fn", *line);
+            }
             let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
             assert_eq!(
                 proven_by(&g, "product.rs::product_fn"),
-                1,
-                "one test-origin reference proves the entity once; got {:?}",
+                references.len(),
+                "each test-origin reference proves the entity once; got {:?}",
                 g.nodes
             );
+            let evidence: Vec<String> = references
+                .iter()
+                .map(|(file, line)| format!("{file}:{line}"))
+                .collect();
             assert_eq!(
                 proof_evidence(&g, "product.rs::product_fn"),
-                vec!["product.rs:7".to_string()],
-                "the evidence list names the reference's own file:line"
+                evidence,
+                "the evidence list names each reference's own file:line, in fold order"
             );
         }
 
-        #[test]
-        fn two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries() {
-            // Spec 86 criterion 2's own literal Done-when example: "a product entity referenced by
-            // two test functions carries proven_by: 2 with both file:line's". One same-file, one
-            // cross-file (a `tests/` integration test), proving accumulation is not same-file-only.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
-            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
-            apply_edge_inferred_evidence(&p, 3, "tests/integration.rs", "product_fn", 4);
-            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
-            assert_eq!(
-                proven_by(&g, "product.rs::product_fn"),
-                2,
-                "two test-origin references accumulate to proven_by: 2; got {:?}",
-                g.nodes
-            );
-            assert_eq!(
-                proof_evidence(&g, "product.rs::product_fn"),
-                vec![
-                    "product.rs:7".to_string(),
-                    "tests/integration.rs:4".to_string()
-                ],
-                "both file:line evidence entries are recorded, in fold order"
-            );
+        crate::test_cases! {
+            /// The overwhelmingly common `#[cfg(test)] mod tests` idiom: `product.rs::product_fn` is
+            /// defined, then a test in the SAME file references it. proven_by lands on the
+            /// definition's OWN id directly - no bare placeholder, no second node.
+            a_same_file_test_reference_increments_proven_by_and_records_its_evidence:
+                assert_product_fn_proven_by(&[("product.rs", 7)]);
+            /// Spec 86 criterion 2's own literal Done-when example: "a product entity referenced by
+            /// two test functions carries proven_by: 2 with both file:line's". One same-file, one
+            /// cross-file (a `tests/` integration test), proving accumulation is not same-file-only.
+            two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries:
+                assert_product_fn_proven_by(&[("product.rs", 7), ("tests/integration.rs", 4)]);
         }
 
         #[test]
