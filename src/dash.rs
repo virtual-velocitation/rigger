@@ -9725,11 +9725,9 @@ mod rationale_overlay_c3 {
         }
     }
 
-    fn ids(leaves: &[RationaleLeaf]) -> Vec<String> {
-        leaves.iter().map(|l| l.id.clone()).collect()
-    }
-    fn kinds(leaves: &[RationaleLeaf]) -> Vec<String> {
-        leaves.iter().map(|l| l.kind.clone()).collect()
+    /// One `field` of every leaf, in order.
+    fn leaf_fields(leaves: &[RationaleLeaf], field: fn(&RationaleLeaf) -> &String) -> Vec<String> {
+        leaves.iter().map(|l| field(l).clone()).collect()
     }
 
     /// The per-node query returns the decisions/findings/lessons attached to a node, deterministically
@@ -9740,13 +9738,13 @@ mod rationale_overlay_c3 {
         let g = rationale_graph();
         let leaves = node_rationale(&g, "shared.rs");
         assert_eq!(
-            ids(&leaves),
+            leaf_fields(&leaves, |l| &l.id),
             vec!["da", "dz", "a-find", "l1"],
             "leaves sort by (kind, id): decisions (da<dz) before findings before lessons - NOT by \
              id alone (which would float a-find first)"
         );
         assert_eq!(
-            kinds(&leaves),
+            leaf_fields(&leaves, |l| &l.kind),
             vec!["decision", "decision", "finding", "lesson"],
             "each leaf carries its node kind"
         );
@@ -9848,12 +9846,12 @@ mod rationale_overlay_c3 {
             "only nodes with rationale appear, ordered by node id (other.rs is dropped)"
         );
         assert_eq!(
-            ids(&batch[0].leaves),
+            leaf_fields(&batch[0].leaves, |l| &l.id),
             vec!["da", "dz", "a-find", "l1"],
             "shared.rs carries its four ordered leaves"
         );
         assert_eq!(
-            ids(&batch[1].leaves),
+            leaf_fields(&batch[1].leaves, |l| &l.id),
             vec!["da"],
             "shared.rs::foo carries its one leaf"
         );
