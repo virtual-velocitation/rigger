@@ -78,7 +78,7 @@ fn rigger_init_fails_loudly_on_unknown_key_workflow_and_scaffolds_no_agents() {
     std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
     std::fs::write(
         rigger_dir.join("workflow.yml"),
-        "name: fixture\ndefaults:\n  max_parallel_unitz: 2\n",
+        "defaults:\n  max_parallel_unitz: 2\n",
     )
     .expect("write the unknown-key workflow.yml fixture");
 
@@ -120,7 +120,7 @@ fn rigger_setup_fails_loudly_on_unknown_key_workflow_and_never_reintroduces_the_
     // init so `write_if_absent` keeps it verbatim, exactly as a real committed file would be.
     std::fs::write(
         rigger_dir.join("workflow.yml"),
-        "name: fixture\nstages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n",
+        "stages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n",
     )
     .expect("write the curated workflow.yml fixture");
 
@@ -149,7 +149,7 @@ fn rigger_setup_fails_loudly_on_unknown_key_workflow_and_never_reintroduces_the_
     // agents - the exact shape a hand-edit gone wrong produces.
     std::fs::write(
         rigger_dir.join("workflow.yml"),
-        "name: fixture\nstages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n  \
+        "stages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n  \
          bad:\n    agent: planner\n    gatez: [build]\n",
     )
     .expect("overwrite workflow.yml with the unknown-key fixture");

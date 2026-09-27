@@ -585,12 +585,6 @@ pub struct Defaults {
     /// spec-07 infra-vs-product semantics.
     #[serde(default)]
     pub failure_rules: Vec<FailureRuleDef>,
-    /// The SDET periphery-test author toggle (spec 32). Accepted so an existing workflow
-    /// file that sets it still parses; nothing reads it - the sdet-author role is always
-    /// spawned at the build seam, where it self-scopes to a fast no-op on a purely-internal
-    /// unit.
-    #[serde(default)]
-    pub sdet_author: Option<bool>,
 }
 
 /// Stage is one node of the workflow DAG.
@@ -878,8 +872,6 @@ fn default_max_concurrent() -> u32 {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workflow {
-    #[serde(default)]
-    pub name: String,
     #[serde(default)]
     pub defaults: Defaults,
     /// The event-store selection this project's committed config pins (§48 rung 4). Absent (the

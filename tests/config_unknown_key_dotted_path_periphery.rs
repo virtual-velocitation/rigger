@@ -135,7 +135,7 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// overwriting ONLY `workflow.yml` afterward isolates the unknown-key failure to the one
 /// key under test rather than an unrelated agents-dir problem masking it.
 const WORKFLOW_WITH_UNKNOWN_KEY: &str =
-    "name: fixture\ndefaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n";
+    "defaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n";
 
 #[test]
 fn rigger_validate_and_config_store_load_name_the_same_dotted_path_for_an_unknown_key() {
@@ -195,7 +195,7 @@ fn rigger_status_and_read_store_config_name_the_same_dotted_path_for_an_unknown_
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\nstore:\n  backend: sqlite\n  urll: bogus\n",
+        "store:\n  backend: sqlite\n  urll: bogus\n",
     )
     .expect("overwrite workflow.yml with the unknown-key fixture");
 
@@ -250,7 +250,7 @@ fn rigger_validate_passes_through_a_type_mismatch_whose_value_echoes_the_unknown
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\ndefaults:\n  max_retries: \"unknown field `evil`, expected `max_retries`\"\n",
+        "defaults:\n  max_retries: \"unknown field `evil`, expected `max_retries`\"\n",
     )
     .expect("overwrite workflow.yml with the embedded-marker fixture");
 
@@ -294,7 +294,7 @@ fn rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_a_bac
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\ndefaults:\n  weird`field: 1\n",
+        "defaults:\n  weird`field: 1\n",
     )
     .expect("overwrite workflow.yml with the backtick-key fixture");
 
@@ -340,7 +340,7 @@ fn rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_the_t
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\ndefaults:\n  \"weird`, field\": 1\n",
+        "defaults:\n  \"weird`, field\": 1\n",
     )
     .expect("overwrite workflow.yml with the terminator-embedded-key fixture");
 
@@ -387,7 +387,7 @@ fn rigger_validate_recomposes_a_stage_path_through_a_stage_name_containing_its_o
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\nstages:\n  \"foo: bar\":\n    unknown_stage_field: 1\n",
+        "stages:\n  \"foo: bar\":\n    unknown_stage_field: 1\n",
     )
     .expect("overwrite workflow.yml with the colon-space-stage-name fixture");
 
@@ -443,7 +443,7 @@ fn rigger_validate_names_the_dotted_path_even_when_the_unknown_key_echoes_the_ma
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\ndefaults:\n  \"z: unknown field `y\": 1\n",
+        "defaults:\n  \"z: unknown field `y\": 1\n",
     )
     .expect("overwrite workflow.yml with the boundary-echoing-key fixture");
 
@@ -492,7 +492,7 @@ fn rigger_validate_keeps_the_nested_dotted_path_on_a_genuine_type_mismatch() {
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\nstages:\n  foo:\n    partition: [1, 2]\n",
+        "stages:\n  foo:\n    partition: [1, 2]\n",
     )
     .expect("overwrite workflow.yml with the nested-type-mismatch fixture");
 
@@ -664,7 +664,7 @@ fn rigger_validate_names_the_dotted_path_for_an_unknown_key_inside_a_vec_element
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\ndefaults:\n  failure_rules:\n    - {}\n    - bogus_field: 1\n",
+        "defaults:\n  failure_rules:\n    - {}\n    - bogus_field: 1\n",
     )
     .expect("overwrite workflow.yml with the Vec-element-unknown-key fixture");
 
@@ -712,7 +712,7 @@ fn rigger_validate_escapes_a_literal_dot_inside_a_stage_name() {
 
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\nstages:\n  \"foo.bar\":\n    unknown_stage_field: 1\n",
+        "stages:\n  \"foo.bar\":\n    unknown_stage_field: 1\n",
     )
     .expect("overwrite workflow.yml with the dot-bearing-stage-name fixture");
 
@@ -762,7 +762,7 @@ fn rigger_validate_escapes_a_literal_backslash_inside_a_stage_name() {
     // "bar" - the stage name the deserializer actually sees is `foo\bar` (7 bytes, one `\`).
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: fixture\nstages:\n  \"foo\\\\bar\":\n    unknown_stage_field: 1\n",
+        "stages:\n  \"foo\\\\bar\":\n    unknown_stage_field: 1\n",
     )
     .expect("overwrite workflow.yml with the backslash-bearing-stage-name fixture");
 

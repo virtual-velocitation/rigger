@@ -117,8 +117,7 @@ fn write_solo_unit_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: haltrecoverytest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -701,8 +700,7 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
     }
     std::fs::write(
         rigger.join("workflow.yml"),
-        "name: resumedconflicttest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
+        "defaults:\n  grounder: nop\n  budget: 60\n\
          gates:\n  ok: { run: \"true\", kind: core }\n\
          regenerate:\n  - paths: [\"shared.rs\"]\n    run: \"printf 'REGENERATED\\n' > shared.rs\"\n\
          stages:\n  s:\n    agent: worker\n    gates: [ok]\n    on_pass: merge\n    \

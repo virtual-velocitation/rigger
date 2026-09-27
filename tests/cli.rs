@@ -1417,7 +1417,7 @@ fn scratch_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_fle
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         format!(
-            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            "defaults:\n  workdir: \"{}\"\n",
             relocated.path().to_string_lossy()
         ),
     )
@@ -2369,7 +2369,7 @@ fn write_grounder_workflow(root: &Path, grounder: &str) {
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        format!("name: t\ndefaults:\n  grounder: {grounder}\n"),
+        format!("defaults:\n  grounder: {grounder}\n"),
     )
     .unwrap();
 }
@@ -4594,8 +4594,7 @@ fn write_two_stage_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: steptest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 stages:
@@ -4623,8 +4622,7 @@ fn write_budget_one_two_stage_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: steptest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 1
 stages:
@@ -4733,8 +4731,7 @@ fn write_standalone_review_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: reviewparktest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 stages:
@@ -4851,8 +4848,7 @@ fn step_halts_on_an_exhausted_reviewer_beside_a_parked_sibling_and_keeps_the_rev
     }
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: reviewracetest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 stages:
@@ -4959,8 +4955,7 @@ fn write_unit_review_lenses_workflow(root: &Path) {
     }
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: unitworktreeparktest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -5144,8 +5139,7 @@ fn write_reviewless_git_unit_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: terminalintegratetest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -5175,8 +5169,7 @@ fn write_reviewless_git_escalating_unit_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: terminalescalatetest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 1
@@ -5632,8 +5625,7 @@ fn step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn() {
     std::fs::write(
         rigger.join("workflow.yml"),
         format!(
-            r#"name: ensureonparktest
-defaults:
+            r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -5870,8 +5862,7 @@ fn step_integrates_after_the_exhaustive_gate_deletes_the_worktree_post_approval(
     std::fs::write(
         rigger.join("workflow.yml"),
         format!(
-            r#"name: ensureonparkintegratetest
-defaults:
+            r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -6064,8 +6055,7 @@ fn step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions() {
     }
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: ensureonparktierstest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -6324,8 +6314,7 @@ fn step_stamps_the_real_routed_roster_onto_the_printed_wave() {
     }
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: reviewrostertest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -6488,8 +6477,7 @@ fn step_stamps_a_real_failed_sha_after_a_deletion_before_the_reject_stamp() {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: ensureonparkfailedshatest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -6686,8 +6674,7 @@ fn run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review() {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: ensureonparkendtoendtest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -6893,8 +6880,7 @@ fn run_speculation_restores_a_gate_deleted_worktree_across_concurrent_lenses_and
     std::fs::write(
         rigger.join("workflow.yml"),
         format!(
-            r#"name: ensureonparkspeculationwinnertest
-defaults:
+            r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -7123,8 +7109,7 @@ fn speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletio
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: ensureonparkspeculationrejecttest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -7298,8 +7283,7 @@ fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own
     std::fs::write(
         rigger.join("workflow.yml"),
         format!(
-            r#"name: ensureonparkresumedgatefailtest
-defaults:
+            r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -7479,8 +7463,7 @@ fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_
     std::fs::write(
         rigger.join("workflow.yml"),
         format!(
-            r#"name: ensureonparkresumedpostmergetest
-defaults:
+            r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -7695,8 +7678,7 @@ fn run_speculation_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_de
     std::fs::write(
         rigger.join("workflow.yml"),
         format!(
-            r#"name: ensureonparkspeculationpostmergetest
-defaults:
+            r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -8095,8 +8077,7 @@ fn write_failing_gate_escalating_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: esctest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 1
@@ -8129,8 +8110,7 @@ fn write_manual_review_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: manualtest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   autonomy: manual
@@ -8357,8 +8337,7 @@ fn write_budget_one_dependency_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: steptest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 1
 stages:
@@ -8447,7 +8426,7 @@ fn write_liveness_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        "name: livetest\ndefaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+        "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
     )
     .unwrap();
 }
@@ -8780,7 +8759,7 @@ fn write_unbounded_liveness_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        "name: livetest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+        "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
     )
     .unwrap();
 }
@@ -9862,8 +9841,7 @@ fn an_isolation_none_units_registered_mutation_scratch_is_reaped_by_the_real_sin
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: isolationnonereaptest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 stages:
@@ -10032,8 +10010,7 @@ fn a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: specwinnermutationscratchreaptest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -10185,8 +10162,7 @@ fn a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_rea
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: specescalationmutationscratchreaptest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -10346,8 +10322,7 @@ fn a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lan
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: specOnPassNoneMutationScratchReapTest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -10510,8 +10485,7 @@ fn a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: resumereaptest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   autonomy: manual
@@ -10652,8 +10626,7 @@ fn a_resumed_spec_driven_runs_baseline_on_pass_none_unit_has_its_registered_muta
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: baselineOnPassNoneReorderTest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   autonomy: manual
@@ -11317,7 +11290,7 @@ fn step_resolves_the_model_ladders_first_rung_for_the_initial_attempt() {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        "name: laddertest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+        "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
     )
     .unwrap();
 
@@ -11971,8 +11944,7 @@ fn write_gated_reviewed_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: statstest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   review:
@@ -12567,8 +12539,7 @@ fn write_candidate_workflow(root: &Path, yaml: &str) {
 /// the `solo` unit still gates but no adjudicator reviews it. Re-driving the baseline
 /// trajectory (which recorded a review approve) under THIS config must drop `review
 /// approved` from 1 to 0 - the signal that a config edit changes the re-driven metrics.
-const NO_REVIEW_WORKFLOW: &str = r#"name: statstest
-defaults:
+const NO_REVIEW_WORKFLOW: &str = r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -12630,8 +12601,7 @@ fn replay_candidate_column_reacts_to_a_changed_config() {
 /// recorded one passing gate verdict) under THIS config must drop `gate runs` from 1 to 0 -
 /// the re-drive's `run_gates` never iterates a gate the stage no longer lists, so its seeded
 /// verdict is not reached.
-const NO_GATE_WORKFLOW: &str = r#"name: statstest
-defaults:
+const NO_GATE_WORKFLOW: &str = r#"defaults:
   grounder: nop
   budget: 60
   review:
@@ -12696,8 +12666,7 @@ fn replay_removing_a_gate_lowers_the_candidate_gate_runs() {
 /// the recorded `check`. The re-drive replays `check` from its seeded verdict but has NO
 /// recorded verdict for `extra`, so `ReplayRunner` answers it FAIL-SAFE (never a fabricated
 /// pass) - the `solo` unit's gates fail and it cannot integrate first-pass.
-const ADDED_GATE_WORKFLOW: &str = r#"name: statstest
-defaults:
+const ADDED_GATE_WORKFLOW: &str = r#"defaults:
   grounder: nop
   budget: 60
   review:
@@ -12766,8 +12735,7 @@ fn replay_an_added_gate_fails_safe_and_never_fabricates_a_pass() {
 /// A candidate variant that adds a SECOND, independent stage (`probe`) whose implementer spawn
 /// the baseline trajectory never recorded. The re-drive replays `solo` fully but PARKS `probe`
 /// (no recorded result to answer it), so the candidate column is partial and honest.
-const EXTRA_STAGE_WORKFLOW: &str = r#"name: statstest
-defaults:
+const EXTRA_STAGE_WORKFLOW: &str = r#"defaults:
   grounder: nop
   budget: 60
   review:
@@ -12919,10 +12887,7 @@ fn replay_resolves_a_configured_workdir_from_an_agents_less_owning_root() {
     );
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        format!(
-            "name: statstest\ndefaults:\n  workdir: \"{}\"\n",
-            nested.to_string_lossy()
-        ),
+        format!("defaults:\n  workdir: \"{}\"\n", nested.to_string_lossy()),
     )
     .unwrap();
     // The agents fleet is removed from the LIVE working tree only (uncommitted) - the candidate
@@ -17389,7 +17354,7 @@ fn write_gating_lint_project(root: &Path, adjudicator_body: &str) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        "name: linttest\ndefaults:\n  grounder: nop\n  review:\n    adjudicator: judge\n",
+        "defaults:\n  grounder: nop\n  review:\n    adjudicator: judge\n",
     )
     .unwrap();
 }
@@ -17584,8 +17549,7 @@ fn validate_excludes_the_conductor_injected_plan_critique_gate_adjudicator() {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        "name: linttest\n\
-         defaults:\n  grounder: nop\n  review:\n    adjudicator: judge\n\
+        "defaults:\n  grounder: nop\n  review:\n    adjudicator: judge\n\
          stages:\n  \
          plan:\n    agent: planner\n    produces: dag\n  \
          plan-critique:\n    needs: [plan]\n    adjudicator: dag-critic\n",
@@ -17622,8 +17586,7 @@ fn validate_excludes_the_conductor_injected_plan_critique_gate_adjudicator() {
     .unwrap();
     std::fs::write(
         rigger2.join("workflow.yml"),
-        "name: linttest\n\
-         defaults:\n  grounder: nop\n  review:\n    adjudicator: dag-critic\n\
+        "defaults:\n  grounder: nop\n  review:\n    adjudicator: dag-critic\n\
          stages:\n  \
          plan:\n    agent: planner\n    produces: dag\n  \
          plan-critique:\n    needs: [plan]\n    adjudicator: dag-critic\n",
@@ -21965,8 +21928,7 @@ fn the_real_spec_flag_persists_on_a_real_step_and_reaches_the_status_pr_head() {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: spec82SpecFlagWiringTest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   autonomy: manual
@@ -27049,7 +27011,7 @@ fn step_given_a_spec_path_names_the_spec_lint_on_stderr_without_corrupting_the_w
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        "name: steptest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n    coverage: \"a test proves the thing works\"\n",
+        "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n    coverage: \"a test proves the thing works\"\n",
     )
     .unwrap();
     std::fs::write(
@@ -27749,7 +27711,7 @@ fn run_driver_workflow_fresh_notice_never_reaches_stdout() {
     // MCP-serving loop at all, so this test can never hang on stdin.
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: steptest\ndefaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
+        "defaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
     )
     .unwrap();
 
@@ -27787,7 +27749,7 @@ fn run_driver_cli_fresh_notice_still_prints_on_stdout() {
     write_two_stage_workflow(root);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "name: steptest\ndefaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
+        "defaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
     )
     .unwrap();
 

@@ -138,8 +138,8 @@ fn the_workflow_store_field_deserializes_and_defaults_for_back_compat() {
     assert_eq!(with_store.store.backend, "kurrentdb");
     assert_eq!(with_store.store.url, "kurrentdb://h:2113?tls=false");
 
-    let legacy: Workflow = serde_yaml::from_str("name: legacy\ngates: {}\n")
-        .expect("a store-less workflow must still deserialize");
+    let legacy: Workflow =
+        serde_yaml::from_str("gates: {}\n").expect("a store-less workflow must still deserialize");
     assert_eq!(
         legacy.store,
         StoreConfig::default(),

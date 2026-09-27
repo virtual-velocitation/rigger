@@ -176,8 +176,7 @@ fn write_reviewless_git_unit_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: terminalintegratetest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:

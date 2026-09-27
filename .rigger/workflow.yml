@@ -19,7 +19,6 @@
 # integrate - and a reject or a gate failure feeds back into that same unit's
 # remediation loop. `defaults.review` declares the panel once; every unit (the
 # `implement` stage and every planner-proposed unit) inherits it.
-name: rigger-self-hosted
 
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent

@@ -46,8 +46,6 @@ The entry gate is real: `rigger run <spec>` refuses to start unless every accept
 The workflow is a GitHub-Actions-style DAG declaring defaults, a gate library, and stages. The example below is the Rigger repo's own `.rigger/workflow.yml` - Rigger produces itself with it, so the gates are cargo commands and the engineer is a Rust engineer. Nothing about the structure is Rust-specific: your gate library is whatever your CI runs (`npm test`, `pytest`, `go vet ./...`), and your engineer agent is whatever your stack needs.
 
 ```yaml
-name: rigger-self-hosted
-
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
   grounder: symbols         # symbols | grep | nop

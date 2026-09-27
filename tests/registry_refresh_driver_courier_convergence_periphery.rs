@@ -70,8 +70,7 @@ fn driver_project() -> tempfile::TempDir {
     .expect("write the agent prompt");
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: convergencetest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 stages:

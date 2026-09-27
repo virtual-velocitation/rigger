@@ -219,9 +219,6 @@ event-store backend (section 5.1.1) and `dash:` opts the always-on dashboard in 
 
 ```yaml
 # .rigger/workflow.yml - a GitHub-Actions-style DAG for the producing loop
-name: produce-from-spec
-on: { spec: { path: "specs/**.md" } }      # what kicks off a run
-
 store:                                      # the committed event-store selection (section 5.1.1)
   backend: sqlite                           # sqlite (default) | kurrentdb (shared server)
   # url: kurrentdb://db.internal:2113       # optional NON-SECRET host/port for the server backend;

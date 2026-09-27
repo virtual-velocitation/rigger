@@ -209,7 +209,6 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     let cache_dir = project.path().join("shared-build-cache");
     write_workflow(
         project.path(),
-        "buildenvtest",
         &format!(
             "build:\n  wrapper: sccache\n  cache_dir: {}\n",
             cache_dir.display()
@@ -242,7 +241,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     // resolve to nothing at all, so today's ambient-environment behavior is genuinely
     // unchanged for every pre-existing project.
     let legacy = tempfile::tempdir().expect("create temp project");
-    write_workflow(legacy.path(), "buildenvtest", "");
+    write_workflow(legacy.path(), "");
     let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no build: section must still load");
     assert_eq!(cfg.workflow.build.wrapper, "");
@@ -266,7 +265,7 @@ fn build_config_round_trips_an_explicit_jobs_value_through_the_real_on_disk_load
     // `serde_yaml::from_str` literal, never through the real `config::load` entry point
     // (agent parsing + `Config::validate` included).
     let project = tempfile::tempdir().expect("create temp project");
-    write_workflow(project.path(), "buildenvtest", "build:\n  jobs: 6\n");
+    write_workflow(project.path(), "build:\n  jobs: 6\n");
     let cfg = config_store::load(project.path().to_str().unwrap())
         .expect("load a valid workflow.yml with an explicit build.jobs value");
     assert_eq!(cfg.workflow.build.jobs, 6);

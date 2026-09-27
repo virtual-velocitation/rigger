@@ -413,7 +413,7 @@ fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_flee
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         format!(
-            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            "defaults:\n  workdir: \"{}\"\n",
             relocated.path().to_string_lossy()
         ),
     )
@@ -509,7 +509,7 @@ fn watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolve
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         format!(
-            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            "defaults:\n  workdir: \"{}\"\n",
             relocated.path().to_string_lossy()
         ),
     )
@@ -592,7 +592,7 @@ fn dash_export_resolves_a_configured_workdir_from_the_owning_root_with_no_agents
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         format!(
-            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            "defaults:\n  workdir: \"{}\"\n",
             relocated.path().to_string_lossy()
         ),
     )

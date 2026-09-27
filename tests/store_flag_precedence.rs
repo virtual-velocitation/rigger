@@ -131,7 +131,7 @@ fn assert_selected_server(out: &Output, root: &Path, why: &str) {
 fn assert_bare_conn_selects_the_server(store_block: &str, why: &str) {
     let project = committed_project();
     let root = project.path();
-    write_workflow(root, "flagtest", store_block);
+    write_workflow(root, store_block);
     let out = run_with_flags(root, &["--conn", UNREACHABLE]);
     assert_selected_server(&out, root, why);
 }
