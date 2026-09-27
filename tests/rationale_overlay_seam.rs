@@ -129,7 +129,7 @@ fn fetch_served(path: &str, whole_graph: &Graph, poll_graph: &Graph) -> String {
     );
 }
 
-/// Split a raw HTTP response into its body (everything past the header terminator). `Response::json`
+/// Split a raw HTTP response into its body (everything past the header terminator). `Response::rendered` (JSON)
 /// frames the body as the exact JSON bytes with `Content-Length` and no trailing newline, so the body
 /// this returns is byte-identical to the serialized batch.
 fn body_of(resp: &str) -> &str {

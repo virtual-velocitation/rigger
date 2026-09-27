@@ -2070,7 +2070,7 @@ where
     // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
     // a 500 with the same shape the neighborhood route uses, so the panel never sees a torn body.
     match serde_json::to_string(&view) {
-        Ok(body) => Some(Response::json(200, body)),
+        Ok(body) => Some(Response::rendered(200, JSON_CONTENT_TYPE, body)),
         Err(e) => Some(Response::text(
             500,
             &format!("dash: calls projection failed: {e}"),
@@ -2881,7 +2881,7 @@ pub fn live_page() -> String {
 
 /// The Mission Control shell (spec 94 criterion 1): served verbatim, no substitution -
 /// unlike [`live_page`], it carries no state placeholder to resolve. `String` (not
-/// `&'static str`) only to match [`Response::html`]'s signature; the bytes themselves
+/// `&'static str`) only to match [`Response::rendered`]'s signature; the bytes themselves
 /// are the compile-time-embedded [`CONSOLE_PAGE`].
 pub fn console_page() -> String {
     CONSOLE_PAGE.to_string()
@@ -2944,6 +2944,12 @@ fn escape_for_script(json: &str) -> String {
 // HTTP: a hand-rolled synchronous response + router. No async runtime, no dependency.
 // ---------------------------------------------------------------------------
 
+/// The content type of a served HTML page.
+const HTML_CONTENT_TYPE: &str = "text/html; charset=utf-8";
+
+/// The content type of a JSON API reply.
+const JSON_CONTENT_TYPE: &str = "application/json";
+
 /// A minimal HTTP response the router returns and the server writes.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Response {
@@ -2953,17 +2959,12 @@ pub struct Response {
 }
 
 impl Response {
-    fn html(status: u16, body: String) -> Self {
+    /// A rendered text body of `content_type` ([`HTML_CONTENT_TYPE`] for a page,
+    /// [`JSON_CONTENT_TYPE`] for an API reply).
+    fn rendered(status: u16, content_type: &'static str, body: String) -> Self {
         Response {
             status,
-            content_type: "text/html; charset=utf-8",
-            body: body.into_bytes(),
-        }
-    }
-    fn json(status: u16, body: String) -> Self {
-        Response {
-            status,
-            content_type: "application/json",
+            content_type,
             body: body.into_bytes(),
         }
     }
@@ -3053,12 +3054,12 @@ pub fn route(
     }
     let path = target.split('?').next().unwrap_or(target);
     match path {
-        "/" | "/index.html" => Response::html(200, live_page()),
+        "/" | "/index.html" => Response::rendered(200, HTML_CONTENT_TYPE, live_page()),
         // The LANDING list (spec 50, criterion 3): every registered rigger instance the operator
         // can attach to, read from the machine-global registry by the server's `instances`
         // provider. A registry projection, independent of any single instance's store - so it
         // serves even before this dash's own run has created a store.
-        "/api/instances" => Response::json(200, instances_json(instances)),
+        "/api/instances" => Response::rendered(200, JSON_CONTENT_TYPE, instances_json(instances)),
         // THE ROUTE (spec 93 criterion 3): the console core's compiled WebAssembly module,
         // embedded at compile time by `build.rs`'s nested cross-compile - served verbatim,
         // never generated or read from disk per request.
@@ -3066,7 +3067,7 @@ pub fn route(
         // THE PAGE (spec 94 criterion 1): the Mission Control shell, served at `/console` -
         // NOT `/`, which the old dashboard keeps until spec 98 retires it and moves the
         // console there. Static, like the wasm route above: no run/graph/liveness input.
-        "/console" => Response::html(200, console_page()),
+        "/console" => Response::rendered(200, HTML_CONTENT_TYPE, console_page()),
         // THE ASSETS (spec 94 criterion 1): the embedded fonts and their OFL license
         // text, matched against the fixed [`CONSOLE_FONTS`] table - never a filesystem
         // read, so a path-traversal attempt is just an unmatched suffix (a 404).
@@ -3078,7 +3079,7 @@ pub fn route(
         // definition names this run's events actually recorded. See `console_snapshot_json`.
         "/api/console/snapshot" => {
             match console_snapshot_json(events, progress_events, liveness_ages, base) {
-                Ok(body) => Response::json(200, body),
+                Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                 Err(e) => Response::text(500, &format!("dash: console snapshot failed: {e}")),
             }
         }
@@ -3092,7 +3093,7 @@ pub fn route(
                 run_branch,
                 base,
             ) {
-                Ok(body) => Response::json(200, body),
+                Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                 Err(e) => Response::text(500, &format!("dash: state projection failed: {e}")),
             }
         }
@@ -3100,7 +3101,7 @@ pub fn route(
             let since = query_param(target, "since")
                 .and_then(|v| v.parse::<Position>().ok())
                 .unwrap_or(0);
-            Response::json(200, events_json(events, since))
+            Response::rendered(200, JSON_CONTENT_TYPE, events_json(events, since))
         }
         // The unified-KG panel: ONE route, THREE views selected by parameter (spec 42 c4, extending
         // the spec 30 c5 seeded panel):
@@ -3145,7 +3146,7 @@ pub fn route(
                     nodes: rationale_batch(graph, &ids),
                 };
                 return match serde_json::to_string(&batch) {
-                    Ok(body) => Response::json(200, body),
+                    Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                     Err(e) => {
                         Response::text(500, &format!("dash: rationale projection failed: {e}"))
                     }
@@ -3163,7 +3164,7 @@ pub fn route(
                     card: card(graph, &percent_decode(raw_card)),
                 };
                 return match serde_json::to_string(&body) {
-                    Ok(body) => Response::json(200, body),
+                    Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                     Err(e) => Response::text(500, &format!("dash: card projection failed: {e}")),
                 };
             }
@@ -3207,7 +3208,7 @@ pub fn route(
                 }
             };
             match body {
-                Ok(body) => Response::json(200, body),
+                Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                 Err(e) => Response::text(500, &format!("dash: graph projection failed: {e}")),
             }
         }
