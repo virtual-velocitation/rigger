@@ -24,14 +24,9 @@
 //! touches no backend symbol. It is deliberately NOT feature-gated: it runs identically in
 //! both feature lanes.
 
-use std::path::PathBuf;
+mod common;
 
-/// The committed front-door README, resolved from the manifest dir so the test does not
-/// depend on the process CWD (integration tests may run from anywhere).
-fn readme_text() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("README.md");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
+use common::repo::repo_text;
 
 /// Every (fact, needle) the README must carry to tell the new grounding truth. Each needle is
 /// a lowercased literal the retirement rationale states, so a README that drops the default
@@ -87,7 +82,7 @@ const RETIRED_INVERSIONS: &[&str] = &[
 
 #[test]
 fn readme_records_the_symbols_default_and_the_retirement_rationale() {
-    let text = readme_text().to_lowercase();
+    let text = repo_text("README.md").to_lowercase();
 
     let missing: Vec<String> = REQUIRED_TRUTHS
         .iter()
@@ -108,7 +103,7 @@ fn readme_records_the_symbols_default_and_the_retirement_rationale() {
 
 #[test]
 fn readme_carries_none_of_the_retired_grounder_inversions() {
-    let text = readme_text().to_lowercase();
+    let text = repo_text("README.md").to_lowercase();
 
     let inversions: Vec<&str> = RETIRED_INVERSIONS
         .iter()

@@ -47,19 +47,8 @@
 mod common;
 
 use common::fixtures::js_declaration;
-use std::path::Path;
+use common::repo::repo_text;
 use std::process::Command;
-
-/// Read `workflows/rigger.js` at test time from the crate manifest dir - the same
-/// `rigger_js_source` helper `tests/phase_of_role_mapping_periphery.rs` and `tests/cli.rs`
-/// each keep their own copy of (the established per-file duplication convention for this
-/// small fixture).
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
 
 /// One declared phase, as `meta.phases` ACTUALLY parses under node - never re-derived from
 /// source text.
@@ -76,7 +65,7 @@ struct Phase {
 /// `src/main.rs`'s own `node --check` test already establish for this crate (missing node is
 /// an environment fact, never a test failure).
 fn run_meta_phases() -> Option<Vec<Phase>> {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let meta_decl = js_declaration(&src, "export const meta = {");
     // Drop the ESM `export` keyword so the extracted literal runs as a plain top-level
     // `const` under a script invoked directly by `node` (no --input-type=module, no other

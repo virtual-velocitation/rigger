@@ -147,8 +147,12 @@
 //! a gap: still out of periphery reach by the same white-box-only reasoning, now genuinely closed
 //! rather than merely claimed.
 
+mod common;
+
+use common::repo::committed_json;
+use common::repo::repo_root;
+use common::repo::repo_text;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 /// Mirrors `tests/simplification_audit.rs`'s private `TestOnlyRefWire` shape field-for-field,
 /// from the outside - see the module doc comment for why this is a deliberate re-declaration,
@@ -181,29 +185,9 @@ struct ConsumedDeadCodeCandidate {
 }
 
 const DEAD_CODE_PATH: &str = "docs/audit/dead-code.json";
-
-/// The repo root this test binary was compiled from - never the process CWD (same convention as
-/// `tests/simplification_audit.rs::repo_root` and `tests/duplication_catalog_contract_periphery.rs`).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn read_committed_dead_code_raw() -> String {
-    let path = repo_root().join(DEAD_CODE_PATH);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{DEAD_CODE_PATH} is missing or unreadable ({e})"))
-}
-
-fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
-    let raw = read_committed_dead_code_raw();
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!(
-            "{DEAD_CODE_PATH} does not deserialize as the documented DeadCodeCandidate contract \
-             (name/file/content_hash/visibility/ambiguous/ambiguous_with/test_only_references, \
-             test_only_references as file/content_hash): {e}"
-        )
-    })
-}
+/// The documented contract a downstream consumer decodes [`DEAD_CODE_PATH`] as.
+const DEAD_CODE_CONTRACT: &str =
+    "DeadCodeCandidate contract (name/file/content_hash/visibility/ambiguous/ambiguous_with/test_only_references, test_only_references as file/content_hash)";
 
 /// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 87's documented field shape
 /// (not the producer's private Rust type) can actually parse the committed artifact. This is the
@@ -211,7 +195,7 @@ fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
 /// never exercise it against the real committed file, only a producer-internal string compare.
 #[test]
 fn the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would() {
-    deserialize_committed_dead_code();
+    committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
 }
 
 /// Spec 87 OUTPUT: "one entry per production fn ... name, file:line, visibility, the test-only
@@ -226,7 +210,8 @@ fn the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would() {
 #[test]
 fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_content_hash_and_a_recognized_visibility(
 ) {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for c in &candidates {
         assert!(!c.name.is_empty(), "{c:?} has an empty name");
         assert!(
@@ -252,7 +237,8 @@ fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_content_hash_a
 /// line-free).
 #[test]
 fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_hash_shaped() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for c in &candidates {
         assert_eq!(
             c.ambiguous,
@@ -288,7 +274,8 @@ fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_hash_sha
 /// per-reference shape.
 #[test]
 fn every_deserialized_test_only_reference_has_a_non_empty_file_and_content_hash() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for c in &candidates {
         for r in &c.test_only_references {
             assert!(
@@ -325,15 +312,6 @@ struct ConsumedDeadCodeCandidateLines {
     test_only_references: Vec<ConsumedTestOnlyRefLines>,
 }
 
-fn deserialize_committed_dead_code_lines() -> Vec<ConsumedDeadCodeCandidateLines> {
-    let path = repo_root().join(DEAD_CODE_LINES_PATH);
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{DEAD_CODE_LINES_PATH} is missing or unreadable ({e})"));
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!("{DEAD_CODE_LINES_PATH} does not deserialize as the documented lines contract: {e}")
-    })
-}
-
 /// Determinism/ordering, checked against the PERSISTED files rather than the generator's
 /// in-memory value (the producer's own `build_dead_code_candidates` sorts its output by
 /// `(file, line)` three times over - `tests/simplification_audit.rs`'s internal fixture tests
@@ -346,8 +324,12 @@ fn deserialize_committed_dead_code_lines() -> Vec<ConsumedDeadCodeCandidateLines
 #[test]
 fn the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_ascending_by_file_then_line(
 ) {
-    let candidates = deserialize_committed_dead_code();
-    let lines = deserialize_committed_dead_code_lines();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
+    let lines = committed_json::<Vec<ConsumedDeadCodeCandidateLines>>(
+        DEAD_CODE_LINES_PATH,
+        "lines contract",
+    );
     assert_eq!(
         candidates.len(),
         lines.len(),
@@ -400,8 +382,9 @@ fn the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_as
 #[test]
 fn deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly(
 ) {
-    let committed = read_committed_dead_code_raw();
-    let candidates = deserialize_committed_dead_code();
+    let committed = repo_text(DEAD_CODE_PATH);
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     let mut reencoded =
         serde_json::to_string_pretty(&candidates).expect("ConsumedDeadCodeCandidate re-serializes");
     reencoded.push('\n');
@@ -445,7 +428,8 @@ const KNOWN_OUT_OF_LINE_TEST_FILES: [&str; 2] =
 /// happen to still agree with each other on some future fixture.
 #[test]
 fn no_committed_candidate_comes_from_a_known_out_of_line_test_file() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for c in &candidates {
         assert!(
             !KNOWN_OUT_OF_LINE_TEST_FILES.contains(&c.file.as_str()),
@@ -465,7 +449,8 @@ fn no_committed_candidate_comes_from_a_known_out_of_line_test_file() {
 /// have scheduled a real, live function for deletion in the wave.
 #[test]
 fn default_build_config_referenced_only_via_a_serde_default_attribute_is_absent() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     assert!(
         !candidates.iter().any(|c| c.name == "default_build_config"),
         "default_build_config appears in {DEAD_CODE_PATH} - a regression of the \
@@ -497,7 +482,8 @@ fn default_build_config_referenced_only_via_a_serde_default_attribute_is_absent(
 /// test.
 #[test]
 fn generic_impl_header_constructors_previously_false_flagged_are_absent_from_the_committed_file() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for (name, file) in [
         ("new", "src/eventstore/namespace.rs"), // Namespaced::new
         ("new", "src/driver/replay.rs"),        // ReplayDriver::new
@@ -534,7 +520,8 @@ fn generic_impl_header_constructors_previously_false_flagged_are_absent_from_the
 #[test]
 fn value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from_the_committed_file(
 ) {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for (name, file) in [
         // src/docs.rs skill_registry()'s 10 render_body: render_*_skill struct-literal field
         // values (src/docs.rs:1207-1243) - the fnptr-struct-field-value class.
@@ -574,7 +561,8 @@ fn value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from
 /// shape`), not just the one instance every prior round's periphery layer could name.
 #[test]
 fn the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for (name, file) in [
         ("is_grep_fallback", "src/progress.rs"),
         ("is_snapshot_drift", "src/metrics.rs"),
@@ -603,7 +591,8 @@ fn the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_clas
 /// leaving mute.
 #[test]
 fn getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for (name, file) in [
         ("placements", "src/eventstore/mod.rs"),
         ("written", "src/watch.rs"),
@@ -632,7 +621,8 @@ fn getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_
 /// never again appear as a dead-code candidate, which would recommend deleting live code.
 #[test]
 fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     assert!(
         !candidates
             .iter()
@@ -701,7 +691,10 @@ fn the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_r
     let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
         .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
     let citations = section_4_3_citations(&report);
-    let lines = deserialize_committed_dead_code_lines();
+    let lines = committed_json::<Vec<ConsumedDeadCodeCandidateLines>>(
+        DEAD_CODE_LINES_PATH,
+        "lines contract",
+    );
     assert_eq!(
         citations.len(),
         lines.len(),
@@ -786,8 +779,12 @@ fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactl
     let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
         .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
     let citations = section_6_deletion_list_citations(&report);
-    let candidates = deserialize_committed_dead_code();
-    let lines = deserialize_committed_dead_code_lines();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
+    let lines = committed_json::<Vec<ConsumedDeadCodeCandidateLines>>(
+        DEAD_CODE_LINES_PATH,
+        "lines contract",
+    );
     assert_eq!(
         candidates.len(),
         lines.len(),

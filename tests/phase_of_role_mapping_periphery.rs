@@ -32,18 +32,8 @@
 mod common;
 
 use common::fixtures::js_declaration;
-use std::path::Path;
+use common::repo::repo_text;
 use std::process::Command;
-
-/// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors `tests/
-/// cli.rs`'s and `tests/step_attention_periphery.rs`'s identical `rigger_js_source` helper
-/// (the established per-file duplication convention for this small fixture).
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
 
 /// Run the REAL `phaseOf` - extracted verbatim from the shipped `workflows/rigger.js` together
 /// with the `roleOf` helper it calls, never hand-copied - against one `req` shape, under a
@@ -53,7 +43,7 @@ fn rigger_js_source() -> String {
 /// .rs::run_relay_attention` and `src/main.rs`'s own `node --check` test already establish for
 /// this crate (missing node is an environment fact, never a test failure).
 fn run_phase_of(id: &str, unit: &str) -> Option<String> {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let role_of_fn = js_declaration(&src, "function roleOf(req) {");
     let phase_of_fn = js_declaration(&src, "function phaseOf(req) {");
     let req = serde_json::json!({ "id": id, "unit": unit, "stage": "irrelevant" }).to_string();

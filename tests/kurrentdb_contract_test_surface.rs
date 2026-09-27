@@ -31,18 +31,9 @@
 //! source as text (resolved from `CARGO_MANIFEST_DIR`, so it is CWD-independent) and runs
 //! identically in both feature lanes, a real member of each lane's `cargo test` battery.
 
-use std::path::PathBuf;
+mod common;
 
-/// The committed KurrentDB adapter source, resolved from the crate manifest dir so the
-/// test does not depend on the process CWD (integration tests may run from anywhere).
-fn adapter_source() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("eventstore")
-        .join("kurrentdb.rs");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read adapter source at {}: {e}", path.display()))
-}
+use common::repo::repo_text;
 
 /// The body of the first `fn <name>` in `src`, from its opening `{` to the matching `}`
 /// (brace-balanced, so nested blocks are included). Panics if the function or a balanced
@@ -81,7 +72,7 @@ fn fn_body(src: &str, name: &str) -> String {
 /// breaking "runs in BOTH lanes". Space-insensitive so `feature="x"` is caught too.
 #[test]
 fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
-    let src = adapter_source();
+    let src = repo_text("src/eventstore/kurrentdb.rs");
 
     assert!(
         src.contains("fn passes_the_contract"),
@@ -107,7 +98,10 @@ fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
 /// `cargo test` time rather than left to surface as a lane failure on a runtime-less box.
 #[test]
 fn the_contract_test_gracefully_skips_without_a_container_runtime() {
-    let body = fn_body(&adapter_source(), "passes_the_contract");
+    let body = fn_body(
+        &repo_text("src/eventstore/kurrentdb.rs"),
+        "passes_the_contract",
+    );
 
     let start_at = body.find("image.start()").unwrap_or_else(|| {
         panic!(

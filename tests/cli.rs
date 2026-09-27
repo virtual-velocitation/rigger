@@ -6,6 +6,7 @@
 //! `graph.db` projector, `conductor::STREAM`) the `serve` path uses.
 
 use common::git::git_ok;
+use common::repo::repo_text;
 use rigger::conductor::normalize_ws;
 use std::path::Path;
 use std::process::Command;
@@ -3517,18 +3518,6 @@ fn emit_spawn_flag_stamps_the_emitting_spawn_id() {
     );
 }
 
-/// The `main.rs` source text, read at test time from the crate manifest dir. `main.rs` is
-/// a BINARY, not part of the `rigger` library, so its comments are not reachable through
-/// the crate API - we assert on the file's bytes instead. `CARGO_MANIFEST_DIR` is stable
-/// for both `cargo test` and the integration-test binary, so this resolves regardless of
-/// the process cwd.
-fn main_rs_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("main.rs");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
 /// Spec 51, criterion 5 (SWEEP-BEFORE-ADD ORDERING): within one `rigger step`, no worktree ADD
 /// begins until the terminal-worktree SWEEP has completed, and both worktree mutations happen
 /// UNDER the step's serialization (the step lock). This pins the lifecycle SEAM where `cmd_step`'s
@@ -3547,7 +3536,7 @@ fn main_rs_source() -> String {
 /// in the order lock -> sweep -> add.
 #[test]
 fn worktree_sweep_completes_before_any_add_within_one_step() {
-    let src = main_rs_source();
+    let src = repo_text("src/main.rs");
 
     // Isolate cmd_step's body (its declaration up to the next top-level `fn`) so the ordering
     // assertions stay pointed at the step lifecycle and are immune to the OTHER
@@ -4054,18 +4043,6 @@ fn step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree(
     );
 }
 
-/// The `workflows/rigger.js` native-driver source, read at test time from the crate manifest
-/// dir. The driver is embedded into the binary via `include_str!` (not reachable through the
-/// crate API) and runs only under the workflow harness (top-level await, the injected
-/// `agent`/`parallel`/`log` globals), so it cannot execute in the Rust test harness - we assert
-/// on the file's bytes, the same convention the sibling driver fixtures use.
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
 /// Spec 89, criterion 4: the driver's step-courier command must carry the MAIN tree as an
 /// ABSOLUTE path, not the raw `A.repo || '.'` relative default. A relative `cd .` is a no-op
 /// that leaves the courier's Bash tool call wherever its OWN cwd happens to already be - which
@@ -4083,7 +4060,7 @@ fn rigger_js_source() -> String {
 /// driver, the same convention `native_driver_enforces_an_outer_wall_clock...` uses.
 #[test]
 fn native_driver_couriers_the_step_against_an_absolute_repo_path() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // The caller's raw `repo` arg must no longer be used directly as REPO: it is captured
     // under its own name and resolved through an agent() round-trip before REPO is bound.
@@ -4148,7 +4125,7 @@ fn native_driver_couriers_the_step_against_an_absolute_repo_path() {
 /// other driver-shaped proof in this file - this is a source fixture over the embedded script.
 #[test]
 fn native_driver_schema_and_runtime_both_reject_a_non_absolute_resolved_repo() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // The schema constrains `path` at the source: a leading-slash pattern, not a bare
     // `{ type: 'string' }` with no shape constraint at all.
@@ -4217,7 +4194,7 @@ fn native_driver_schema_and_runtime_both_reject_a_non_absolute_resolved_repo() {
 /// `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`.
 #[test]
 fn native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // (1) The outer total-runtime ceiling constant and the helper that races against it exist.
     assert!(
@@ -4318,7 +4295,7 @@ fn native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn()
 /// future edit cannot silently regress it back to a hardcoded, unbucketed literal.
 #[test]
 fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_container() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     let policy_at = src
         .find("SCRATCH POLICY (hard rule):")
@@ -4392,7 +4369,7 @@ fn native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_contai
 /// cannot pass.
 #[test]
 fn native_driver_couriers_ride_the_drive_lane_and_the_global_plan_marker_is_retired() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // No global `phase(...)` marker call - or its now-stale explaining comment (which itself
     // names a second hypothetical `phase('Build')` marker) - survives anywhere in the file.
@@ -4466,7 +4443,7 @@ fn native_driver_couriers_ride_the_drive_lane_and_the_global_plan_marker_is_reti
 /// file - this is a source fixture over the embedded script.
 #[test]
 fn native_driver_pipelines_wave_items_instead_of_awaiting_the_whole_wave_as_one_batch() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     // The old monolithic per-wave await is gone entirely.
     assert!(
@@ -4531,7 +4508,7 @@ fn native_driver_pipelines_wave_items_instead_of_awaiting_the_whole_wave_as_one_
 /// before returning - both halves of the guard, not just the read.
 #[test]
 fn native_driver_never_spawns_an_in_flight_item_twice() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     let filter_at = src
         .find("inFlight.has(req.id)")
@@ -4567,7 +4544,7 @@ fn native_driver_never_spawns_an_in_flight_item_twice() {
 /// rather than misclassifying it as the same anomaly.
 #[test]
 fn native_driver_fixpoint_requires_done_and_an_empty_in_flight_set() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     assert!(
         src.contains("step.done && inFlight.size === 0"),
@@ -4598,7 +4575,7 @@ fn native_driver_fixpoint_requires_done_and_an_empty_in_flight_set() {
 /// after draining the current wave, treats a present step.halted as a LOUD stop").
 #[test]
 fn native_driver_drains_in_flight_workers_before_a_loud_stop() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
 
     assert!(
         src.contains("if (fatal.length > 0) {\n    await drainInFlight()"),
@@ -9040,7 +9017,7 @@ fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
 /// text, at a bar a no-op cannot pass.
 #[test]
 fn the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed() {
-    let src = main_rs_source();
+    let src = repo_text("src/main.rs");
 
     let step_at = src
         .find("fn cmd_step(args: &[String]) -> Res {")
@@ -26226,16 +26203,6 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     );
 }
 
-/// The committed `.rigger/workflow.yml` text, read fresh each call (mirrors
-/// `rust_engineer_persona_text`'s own shape) - so a pin against it fails loudly the moment
-/// the checked-in workflow definition drifts, rather than against a stale in-memory copy.
-fn rigger_workflow_yml_text() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".rigger")
-        .join("workflow.yml");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
-
 /// Spec 91 (THE CHECK-IN STAGE IS DEFINITION, criterion 2): the committed `.rigger/
 /// workflow.yml` must define the `checkin` stage and its `mutation` gate, and must NAME
 /// this spec in the definition's own prose - superseding
@@ -26246,7 +26213,7 @@ fn rigger_workflow_yml_text() -> String {
 /// implementer round.
 #[test]
 fn rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91() {
-    let text = normalize_ws(&rigger_workflow_yml_text());
+    let text = normalize_ws(&repo_text(".rigger/workflow.yml"));
 
     assert!(
         text.contains("checkin:"),

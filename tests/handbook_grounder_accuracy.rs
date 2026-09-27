@@ -26,13 +26,10 @@
 //! `CARGO_MANIFEST_DIR`, so it does not depend on the process CWD), parses text, and touches
 //! no backend symbol. It is deliberately NOT feature-gated: it runs identically in both lanes.
 
-use std::path::{Path, PathBuf};
+mod common;
 
-/// The repo root, resolved from the manifest dir so the test does not depend on the process
-/// CWD (integration tests may run from anywhere).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
+use common::repo::repo_root;
+use std::path::{Path, PathBuf};
 
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))

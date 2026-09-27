@@ -42,25 +42,9 @@
 //! changes to the port and fails RED the moment the front door and the code disagree
 //! about the contract a consumer must implement.
 
-use std::path::PathBuf;
+mod common;
 
-/// The committed architecture document, resolved from the manifest dir so the test does
-/// not depend on the process CWD (integration tests may run from anywhere).
-fn architecture_text() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("docs")
-        .join("architecture.md");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
-
-/// The committed event-store port, resolved the same CWD-independent way.
-fn eventstore_source() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("eventstore")
-        .join("mod.rs");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
+use common::repo::repo_text;
 
 /// The return type `EventStore::append` is declared with inside `text`, extracted rather
 /// than matched: find the trait, then its `append` arm, then the arrow that closes the
@@ -150,7 +134,7 @@ const WRONG_DEFAULT_OR_RETIRED_PHRASINGS: &[&str] = &[
 
 #[test]
 fn architecture_names_the_current_store_and_inspector_surface() {
-    let text = architecture_text();
+    let text = repo_text("docs/architecture.md");
 
     let missing: Vec<String> = CURRENT_SURFACE_TOKENS
         .iter()
@@ -171,8 +155,8 @@ fn architecture_names_the_current_store_and_inspector_surface() {
 
 #[test]
 fn architecture_renders_the_event_store_port_the_source_declares() {
-    let declared = append_return_type(&eventstore_source());
-    let rendered = append_return_type(&architecture_text());
+    let declared = append_return_type(&repo_text("src/eventstore/mod.rs"));
+    let rendered = append_return_type(&repo_text("docs/architecture.md"));
 
     assert_eq!(
         rendered, declared,
@@ -186,7 +170,7 @@ fn architecture_renders_the_event_store_port_the_source_declares() {
 
 #[test]
 fn architecture_names_no_retired_or_wrong_default_grounder() {
-    let text = architecture_text().to_lowercase();
+    let text = repo_text("docs/architecture.md").to_lowercase();
 
     let inversions: Vec<&str> = WRONG_DEFAULT_OR_RETIRED_PHRASINGS
         .iter()

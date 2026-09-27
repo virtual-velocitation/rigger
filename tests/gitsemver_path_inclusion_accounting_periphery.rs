@@ -41,17 +41,13 @@
 //! attribute as a worked example of an upward-escaping `#[path]` value; a naive substring
 //! scan would misidentify that comment as a fifth inclusion site).
 
+mod common;
+
+use common::repo::repo_root;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const RECORD_PATH: &str = "docs/audit/stage1-compiler-pass.json";
-
-/// The repo root this test binary was compiled from - never the process CWD (same convention
-/// as `tests/simplification_audit.rs::repo_root`, `tests/no_os_kill_audit.rs`, and
-/// `tests/duplication_catalog_contract_periphery.rs`).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
 
 /// Every `.rs` file strictly under `dir`, recursively, appended to `out`, deterministically
 /// ordered - the same walk shape as `tests/no_os_kill_audit.rs::collect_rs_files`.

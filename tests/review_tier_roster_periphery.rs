@@ -10,17 +10,8 @@
 mod common;
 
 use common::fixtures::js_declaration;
-use std::path::Path;
+use common::repo::repo_text;
 use std::process::Command;
-
-/// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors this crate's
-/// other `rigger_js_source` helpers.
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
 
 /// Run the REAL `workerLabel(req)` - extracted verbatim along with `PERSONA_VERB`,
 /// `ROSTER_VERB`, and the `personaOf`/`firstSentence`/`roleAttempt` helpers it calls - under a
@@ -52,7 +43,7 @@ fn run_worker_label_for_unit_and_reviews(
     title: &str,
     reviews: Option<&[&str]>,
 ) -> Option<String> {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let verb_table = js_declaration(&src, "const PERSONA_VERB = {");
     let roster_table = js_declaration(&src, "const ROSTER_VERB = {");
     let persona_of = js_declaration(&src, "function personaOf(role) {");

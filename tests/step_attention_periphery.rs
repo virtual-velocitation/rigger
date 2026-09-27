@@ -67,6 +67,8 @@
 //! an accidental drop of `pub` (or of `pub mod liveness` in `lib.rs`) fails HERE, at the
 //! crate boundary, rather than only inside the module that would silently stop exporting it.
 
+use common::repo::repo_text;
+
 /// Spec 69, criterion 5 (review u69c5 round 4, cause genuine-defect): `liveness::
 /// hung_cursor_path`, `read_hung_cursor`, and `write_hung_cursor` are the three new PUBLIC
 /// functions the round-4 fix added - called EXACTLY as an external crate consumer would
@@ -576,7 +578,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
 /// same graceful-absence contract `src/main.rs`'s own `node --check` test already established
 /// for this crate (missing node is an environment fact, never a test failure).
 fn run_relay_attention(step_json: &str) -> Option<Vec<String>> {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let response_table = js_declaration(&src, "const ATTENTION_RESPONSE = {");
     let relay_fn = js_declaration(&src, "function relayAttention(step) {");
 
@@ -827,7 +829,7 @@ fn relay_attention_maps_the_remaining_three_known_kinds_to_their_documented_resp
 fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_skill() {
     use rigger::watch::Signal;
 
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let table = js_declaration(&src, "const ATTENTION_RESPONSE = {");
 
     for (js_kind, signal) in [
@@ -847,14 +849,4 @@ fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_ski
              ATTENTION_RESPONSE table: {table}"
         );
     }
-}
-
-/// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors `tests/
-/// cli.rs`'s identical `rigger_js_source` helper (this file's own established per-file
-/// duplication convention, documented at the top of this file).
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }

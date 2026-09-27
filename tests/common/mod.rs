@@ -16,6 +16,7 @@ use std::process::Command;
 pub mod cli;
 pub mod fixtures;
 pub mod git;
+pub mod repo;
 
 /// The product binary that belongs to the target dir a test executable is running out of, or
 /// `None` when `test_exe` is not a cargo-run integration suite.

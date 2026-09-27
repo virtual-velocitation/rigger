@@ -14,18 +14,8 @@
 mod common;
 
 use common::fixtures::js_declaration;
-use std::path::Path;
+use common::repo::repo_text;
 use std::process::Command;
-
-/// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors `tests/
-/// cli.rs`'s and `tests/step_attention_periphery.rs`'s identical `rigger_js_source` helper (the
-/// established per-file duplication convention).
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
 
 /// Run the REAL `workerLabel(req)` - extracted verbatim from the shipped `workflows/rigger.js`
 /// along with the `PERSONA_VERB` table and the `personaOf`/`firstSentence` helpers it calls -
@@ -45,7 +35,7 @@ fn run_worker_label(id: &str, title: &str) -> Option<String> {
 /// comment in `workflows/rigger.js`). `None` omits the field entirely, matching an ordinary
 /// build unit's wave item.
 fn run_worker_label_for_unit(id: &str, title: &str, unit: Option<&str>) -> Option<String> {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let verb_table = js_declaration(&src, "const PERSONA_VERB = {");
     let persona_of = js_declaration(&src, "function personaOf(role) {");
     let first_sentence = js_declaration(&src, "function firstSentence(s) {");
@@ -386,7 +376,7 @@ fn an_ordinary_build_units_real_unit_field_still_uses_the_role_based_persona() {
 /// this proves the call site actually reaches it.
 #[test]
 fn workerlabel_is_actually_wired_into_runworkers_agent_call_label() {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let rw_at = src
         .find("async function runWorker(")
         .expect("the driver must still define runWorker");

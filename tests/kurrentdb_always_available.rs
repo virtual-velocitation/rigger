@@ -26,48 +26,13 @@
 //! Deliberately NOT feature-gated: it parses a text file and touches no backend
 //! symbol, so it runs identically in both feature lanes.
 
-use std::path::{Path, PathBuf};
+mod common;
 
-/// The committed crate manifest, resolved from the manifest dir so the test does not
-/// depend on the process CWD (integration tests may run from anywhere).
-fn manifest_text() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read Cargo.toml at {}: {e}", path.display()))
-}
-
-/// The body lines of the first top-level `[header]` table: every line after the
-/// `[header]` line up to (not including) the next line that opens a new `[...]`
-/// table. Empty when the table is absent.
-fn table_lines(manifest: &str, header: &str) -> Vec<String> {
-    let want = format!("[{header}]");
-    let mut in_table = false;
-    let mut out = Vec::new();
-    for raw in manifest.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            in_table = line == want;
-            continue;
-        }
-        if in_table {
-            out.push(raw.to_string());
-        }
-    }
-    out
-}
-
-/// Does the `[header]` table declare a key named `key` at its top level (`key = ...`,
-/// `key.<sub> = ...`, or a bare `key`)? Continuation lines of a multi-line array
-/// value (e.g. `    "dep:foo",`) never match, so this keys on the DECLARATION line.
-fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
-    table_lines(manifest, header).iter().any(|line| {
-        let t = line.trim();
-        t == key
-            || t.starts_with(&format!("{key} "))
-            || t.starts_with(&format!("{key}="))
-            || t.starts_with(&format!("{key}."))
-    })
-}
+use common::repo::for_each_rs_file;
+use common::repo::repo_text;
+use common::repo::table_declares_key;
+use common::repo::table_lines;
+use std::path::PathBuf;
 
 /// The declaration line for dependency `dep` in `[header]`, if present.
 fn dependency_line(manifest: &str, header: &str, dep: &str) -> Option<String> {
@@ -100,7 +65,7 @@ fn native_dependency_line(manifest: &str, dep: &str) -> Option<String> {
 /// tree can ever compile the adapter conditionally again.
 #[test]
 fn kurrentdb_cargo_feature_is_retired() {
-    let m = manifest_text();
+    let m = repo_text("Cargo.toml");
     assert!(
         !table_declares_key(&m, "features", "kurrentdb"),
         "the `kurrentdb` cargo feature must be gone from [features] so `cargo build -F kurrentdb` \
@@ -120,7 +85,7 @@ fn kurrentdb_cargo_feature_is_retired() {
 /// `[dependencies]` (the production dependency tree).
 #[test]
 fn testcontainers_is_a_dev_dependency_only() {
-    let m = manifest_text();
+    let m = repo_text("Cargo.toml");
     assert!(
         table_declares_key(&m, "dev-dependencies", "testcontainers"),
         "testcontainers drives the contract TEST, so it must be declared under [dev-dependencies]"
@@ -139,7 +104,7 @@ fn testcontainers_is_a_dev_dependency_only() {
 /// re-optionalizes them.
 #[test]
 fn kurrentdb_and_tokio_are_unconditional_dependencies() {
-    let m = manifest_text();
+    let m = repo_text("Cargo.toml");
     for dep in ["kurrentdb", "tokio"] {
         let line = native_dependency_line(&m, dep).unwrap_or_else(|| {
             panic!(
@@ -181,25 +146,6 @@ fn kurrentdb_adapter_is_a_public_library_symbol_in_every_lane() {
         open as usize != 0,
         "the adapter's `open` constructor must resolve as a public library symbol (spec 47)"
     );
-}
-
-/// Recurse `dir`, invoking `visit(path, file_text)` for every `.rs` file beneath it.
-/// A std-only walk (no extra dev-dependency) sufficient for scanning the crate's `src/`.
-fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => panic!("cannot read dir {}: {e}", dir.display()),
-    };
-    for entry in entries {
-        let path = entry.expect("dir entry must be readable").path();
-        if path.is_dir() {
-            for_each_rs_file(&path, visit);
-        } else if path.extension().is_some_and(|x| x == "rs") {
-            let text = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-            visit(&path, &text);
-        }
-    }
 }
 
 /// SOURCE HYGIENE (spec 47): retiring the cargo feature is only half the story - NO
