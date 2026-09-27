@@ -13982,6 +13982,25 @@ mod tests {
             recorded.lock().unwrap().clone()
         }
 
+        /// Run dependencies over `store` and `driver` grounding `criteria`, with the real gate
+        /// runner and no repo, grounder or graph - the shape most of this module's runs take
+        /// (a test needing a repo overrides it with struct-update syntax).
+        pub(super) fn stub_deps<'a>(
+            store: &'a dyn EventStore,
+            driver: &'a dyn AgentDriver,
+            criteria: Vec<String>,
+        ) -> Deps<'a> {
+            Deps {
+                store,
+                driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria,
+            }
+        }
+
         /// A stage map's observable shape - `(id, needs, coverage, criterion_id)` per stage -
         /// for comparing two DAGs (`Stage` has no `PartialEq`).
         pub(super) fn stage_shape(
@@ -14363,87 +14382,93 @@ mod tests {
         )
     }
 
-    #[test]
-    fn prior_criterion_unit_never_adopts_across_two_different_specs_sharing_the_same_criterion_id()
-    {
-        // adv-u88c2-r2-criterion-id-unscoped-crosses-specs (upheld, round 2): two
-        // UNRELATED specs whose criterion at the same position happens to be
-        // byte-for-byte identical text mint the SAME criterion_id (position + content
-        // hash, spec 18 §3.3 - no spec identity folded in). A fresh unit for spec B's
-        // criterion must never adopt spec A's abandoned attempt at ITS OWN, textually
-        // identical criterion - that is real content contamination across unrelated
-        // specs, not a legitimate continuation.
-        let events = vec![
-            run_started_with_spec("specs/80-criteria-survive-extraction.md"),
-            started_with_criterion("spec-a-unit", "c3-deadbeef"),
-            // Spec B's own run begins later in the SAME log (a later campaign).
-            run_started_with_spec("specs/90-hermetic-test-git.md"),
-        ];
+    /// `prior_criterion_unit` over `events` finds `expected` as the prior unit a fresh `unit` for
+    /// `criterion_id` adopts (`why`).
+    fn assert_prior_criterion_unit(
+        events: &[Event],
+        criterion_id: &str,
+        unit: &str,
+        expected: Option<&str>,
+        why: &str,
+    ) {
         assert_eq!(
-            prior_criterion_unit(&events, "c3-deadbeef", "spec-b-unit"),
-            None,
-            "spec A's un-integrated attempt must never be adopted by spec B's unit even \
-             though both share the same position+content criterion_id"
+            prior_criterion_unit(events, criterion_id, unit),
+            expected.map(str::to_string),
+            "{why}"
         );
     }
 
-    #[test]
-    fn prior_criterion_unit_still_adopts_across_two_runs_of_the_same_spec() {
-        // The positive control for the same fix: TWO runs of the SAME spec (a
-        // replanned campaign) must still adopt across the run boundary exactly as
-        // spec 88 originally decided - the spec-scoping must not regress the
-        // feature's own reason to exist.
-        let events = vec![
-            run_started_with_spec("specs/88-adoption-keys-on-criterion.md"),
-            started_with_criterion("old-slug", "c1-aaa"),
-            run_started_with_spec("specs/88-adoption-keys-on-criterion.md"),
-        ];
-        assert_eq!(
-            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
-            Some("old-slug".to_string()),
-            "a re-run of the SAME spec must still adopt its own prior abandoned attempt"
+    crate::test_cases! {
+        /// adv-u88c2-r2-criterion-id-unscoped-crosses-specs (upheld, round 2): two UNRELATED specs
+        /// whose criterion at the same position happens to be byte-for-byte identical text mint the
+        /// SAME criterion_id (position + content hash, spec 18 §3.3 - no spec identity folded in). A
+        /// fresh unit for spec B's criterion must never adopt spec A's abandoned attempt at ITS OWN,
+        /// textually identical criterion - that is real content contamination across unrelated
+        /// specs, not a legitimate continuation.
+        prior_criterion_unit_never_adopts_across_two_different_specs_sharing_the_same_criterion_id:
+            assert_prior_criterion_unit(
+                &[
+                    run_started_with_spec("specs/80-criteria-survive-extraction.md"),
+                    started_with_criterion("spec-a-unit", "c3-deadbeef"),
+                    // Spec B's own run begins later in the SAME log (a later campaign).
+                    run_started_with_spec("specs/90-hermetic-test-git.md"),
+                ],
+                "c3-deadbeef",
+                "spec-b-unit",
+                None,
+                "spec A's un-integrated attempt must never be adopted by spec B's unit even though \
+                 both share the same position+content criterion_id",
+            );
+        /// The positive control for the same fix: TWO runs of the SAME spec (a replanned campaign)
+        /// must still adopt across the run boundary exactly as spec 88 originally decided - the
+        /// spec-scoping must not regress the feature's own reason to exist.
+        prior_criterion_unit_still_adopts_across_two_runs_of_the_same_spec: assert_prior_criterion_unit(
+            &[
+                run_started_with_spec("specs/88-adoption-keys-on-criterion.md"),
+                started_with_criterion("old-slug", "c1-aaa"),
+                run_started_with_spec("specs/88-adoption-keys-on-criterion.md"),
+            ],
+            "c1-aaa",
+            "new-slug",
+            Some("old-slug"),
+            "a re-run of the SAME spec must still adopt its own prior abandoned attempt",
         );
-    }
-
-    #[test]
-    fn prior_criterion_unit_readopts_after_a_compensation_reverts_the_integration() {
-        // adv-u88c2-r2-exclusion-set-permanent-blocks-a-genuine-redo-after-integration
-        // (upheld, round 2): a LATER compensation (spec 12, unit 4) proves the
-        // integrated unit's work wrong and reverts it - the criterion is genuinely
-        // un-integrated again, so a fresh redo must be able to adopt the reverted
-        // unit's still-existing, mostly-reviewed branch rather than starting from base.
-        let events = vec![
-            run_started_with_spec("specs/1-x.md"),
-            started_with_criterion("attempt-1", "c1-aaa"),
-            integrated("attempt-1"),
-            compensated("attempt-1"),
-        ];
-        assert_eq!(
-            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
-            Some("attempt-1".to_string()),
-            "a compensation-reverted integration must clear the exclusion so the \
-             genuine redo can still adopt the reverted unit's branch"
-        );
-    }
-
-    #[test]
-    fn prior_criterion_unit_a_plain_non_compensation_failure_never_reopens_an_integrated_criterion()
-    {
-        // The control for the same fix: an ORDINARY `UnitFailed` (no META_COMPENSATED)
-        // must never be mistaken for a compensation revert - an integrated unit stays
-        // excluded from adoption unless a REAL compensation reverted it.
-        let events = vec![
-            run_started_with_spec("specs/1-x.md"),
-            started_with_criterion("attempt-1", "c1-aaa"),
-            integrated("attempt-1"),
-            plain_failure("attempt-1", 1),
-        ];
-        assert_eq!(
-            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
-            None,
-            "a plain UnitFailed carrying no META_COMPENSATED must never reopen an \
-             already-integrated criterion for adoption"
-        );
+        /// adv-u88c2-r2-exclusion-set-permanent-blocks-a-genuine-redo-after-integration (upheld,
+        /// round 2): a LATER compensation (spec 12, unit 4) proves the integrated unit's work wrong
+        /// and reverts it - the criterion is genuinely un-integrated again, so a fresh redo must be
+        /// able to adopt the reverted unit's still-existing, mostly-reviewed branch rather than
+        /// starting from base.
+        prior_criterion_unit_readopts_after_a_compensation_reverts_the_integration:
+            assert_prior_criterion_unit(
+                &[
+                    run_started_with_spec("specs/1-x.md"),
+                    started_with_criterion("attempt-1", "c1-aaa"),
+                    integrated("attempt-1"),
+                    compensated("attempt-1"),
+                ],
+                "c1-aaa",
+                "new-slug",
+                Some("attempt-1"),
+                "a compensation-reverted integration must clear the exclusion so the genuine redo \
+                 can still adopt the reverted unit's branch",
+            );
+        /// The control for the same fix: an ORDINARY `UnitFailed` (no META_COMPENSATED) must never
+        /// be mistaken for a compensation revert - an integrated unit stays excluded from adoption
+        /// unless a REAL compensation reverted it.
+        prior_criterion_unit_a_plain_non_compensation_failure_never_reopens_an_integrated_criterion:
+            assert_prior_criterion_unit(
+                &[
+                    run_started_with_spec("specs/1-x.md"),
+                    started_with_criterion("attempt-1", "c1-aaa"),
+                    integrated("attempt-1"),
+                    plain_failure("attempt-1", 1),
+                ],
+                "c1-aaa",
+                "new-slug",
+                None,
+                "a plain UnitFailed carrying no META_COMPENSATED must never reopen an \
+                 already-integrated criterion for adoption",
+            );
     }
 
     /// A hand-built `UnitStatus` event shaped exactly like the durable mark
@@ -15773,44 +15798,109 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
     }
 
-    #[test]
-    fn coverage_gate_refuses_an_uncovered_criterion() {
+    /// A config whose only stage is `stage`, run by agent `agent` when it names one.
+    fn one_stage_cfg(agent_id: Option<&str>, stage: Stage) -> Config {
         let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.stages.insert(
-            "s".into(),
+        if let Some(a) = agent_id {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(stage.name.clone(), stage);
+        cfg
+    }
+
+    /// Running `cfg` over `criteria` - one of which it leaves uncovered - with a driver that
+    /// proposes nothing must be refused (`why`); returns the log the refused run left.
+    fn uncovered_run_log(cfg: Config, criteria: &[&str], why: &str) -> Vec<Event> {
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(
+            &st,
+            &driver,
+            criteria.iter().map(|c| c.to_string()).collect(),
+        );
+        assert!(run(&cfg, &deps).is_err(), "{why}");
+        st.read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+    }
+
+    /// A stage run by agent `a` that covers only "criterion one".
+    fn covers_criterion_one() -> Config {
+        one_stage_cfg(
+            Some("a"),
             Stage {
                 name: "s".into(),
                 agent: "a".into(),
                 coverage: "criterion one".into(),
                 ..Default::default()
             },
+        )
+    }
+
+    crate::test_cases! {
+        coverage_gate_refuses_an_uncovered_criterion: uncovered_run_log(
+            covers_criterion_one(),
+            &["criterion one", "criterion two"],
+            "an uncovered criterion refuses the run",
         );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec!["criterion one".into(), "criterion two".into()],
+        /// The gap halts the run (§4.4): flagSpecDefect, then return Err.
+        coverage_gap_flags_a_spec_defect_and_errors: assert!(
+            uncovered_run_log(
+                covers_criterion_one(),
+                &["criterion one", "criterion two"],
+                "the gap halts the run",
+            )
+            .iter()
+            .any(|e| e.type_ == TYPE_SPEC_DEFECT),
+            "an uncovered criterion must be flagged as a spec defect"
+        );
+        /// The `produces` planner proposes no unit covering "crit"; coverage is checked AFTER
+        /// planning and finds the gap -> SpecDefect + Err (§3.2, the coverage gate is not silently
+        /// disabled by the presence of a `produces` stage).
+        planner_leaving_a_gap_flags_a_spec_defect: assert!(
+            uncovered_run_log(
+                one_stage_cfg(
+                    Some("planner"),
+                    Stage {
+                        name: "plan".into(),
+                        agent: "planner".into(),
+                        produces: "dag".into(),
+                        ..Default::default()
+                    },
+                ),
+                &["crit"],
+                "a planner that proposes nothing leaves the criterion uncovered",
+            )
+            .iter()
+            .any(|e| e.type_ == TYPE_SPEC_DEFECT),
+            "a planner that leaves a criterion uncovered must flag a spec defect"
+        );
+        /// A stage that "covers" a criterion but has only a gate command and no agent is a
+        /// mechanical proxy, not an LLM judge: it does not satisfy the criterion, so the run is
+        /// refused with a SpecDefect (§8 proxy-gap guard).
+        gate_only_stage_is_a_coverage_proxy_gap: {
+            let mut cfg = one_stage_cfg(
+                None,
+                Stage {
+                    name: "gateonly".into(),
+                    coverage: "crit".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default() // no agent / agents / adjudicator
+                },
+            );
+            cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+            assert!(uncovered_run_log(
+                cfg,
+                &["crit"],
+                "a criterion covered only by a gate-only stage must be an uncovered gap",
+            )
+            .iter()
+            .any(|e| e.type_ == TYPE_SPEC_DEFECT));
         };
-        assert!(run(&cfg, &deps).is_err());
     }
 
     #[test]
@@ -15835,15 +15925,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["impl"].status, ledger::Status::Integrated);
     }
@@ -15948,15 +16030,11 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: criteria.iter().map(|c| c.to_string()).collect(),
-        };
+        let deps = stub_deps(
+            &st,
+            &driver,
+            criteria.iter().map(|c| c.to_string()).collect(),
+        );
         let rs = run(&cfg, &deps).unwrap();
 
         // The bare template was NOT run as its own unit - the per-criterion units
@@ -16047,15 +16125,11 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: criteria.iter().map(|c| c.to_string()).collect(),
-        };
+        let deps = stub_deps(
+            &st,
+            &driver,
+            criteria.iter().map(|c| c.to_string()).collect(),
+        );
         let rs = run(&cfg, &deps).unwrap();
 
         assert!(
@@ -16298,15 +16372,7 @@ mod tests {
         .unwrap();
         // The planner proposes nothing this run; the baseline covers criterion A.
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
         let state = run(&cfg, &deps).unwrap();
         assert!(
             !state.units.contains_key("u-zombie-mod"),
@@ -16346,15 +16412,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
         let rs = run(&cfg, &deps).unwrap();
 
         // The planner's unit for A ran and integrated, carrying criterion A.
@@ -16453,15 +16511,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
         let rs = run(&cfg, &deps).unwrap();
 
         // The supersede happened exactly as `planner_unit_supersedes_the_matching_
@@ -16504,15 +16554,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // The planner proposes nothing (no emits) - pure baseline decomposition.
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
         let rs = run(&cfg, &deps).unwrap();
 
         for (ordinal, crit) in [(1, crit_a), (2, crit_b)] {
@@ -16568,15 +16610,7 @@ mod tests {
             ],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
         let rs = run(&cfg, &deps).unwrap();
         // Both split units were harvested, ran, and integrated.
         for id in ["refine-part-1", "refine-part-2"] {
@@ -16654,15 +16688,7 @@ mod tests {
         }
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         // Seed the DAG exactly as `run` does before the first harvest: the producer
@@ -16834,15 +16860,7 @@ mod tests {
         );
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let mut stages = seed_refine_dag(&deps.criteria);
@@ -16907,15 +16925,7 @@ mod tests {
         );
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let mut stages = seed_refine_dag(&deps.criteria);
@@ -16969,15 +16979,7 @@ mod tests {
         );
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let shape = |m: &BTreeMap<String, Stage>| -> Vec<(String, Vec<String>, String)> {
@@ -17051,15 +17053,7 @@ mod tests {
         );
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let mut stages = seed_refine_dag(&deps.criteria);
@@ -17166,15 +17160,7 @@ mod tests {
         }
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let mut stages = seed_refine_dag(&deps.criteria);
@@ -17254,15 +17240,7 @@ mod tests {
         }
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
@@ -17322,15 +17300,7 @@ mod tests {
         }
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let mut stages = seed_refine_dag(&deps.criteria);
@@ -17441,15 +17411,7 @@ mod tests {
         .unwrap();
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         // All three events fold in ONE call, exactly like a live run's every harvest
@@ -17568,15 +17530,7 @@ mod tests {
         .unwrap();
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let mut stages = seed_refine_dag(&deps.criteria);
@@ -17663,15 +17617,7 @@ mod tests {
             append_proposal(&st_resume, id, crit, cid, Some(spawn));
         }
         let driver_resume = Stub::new();
-        let deps_resume = Deps {
-            store: &st_resume,
-            driver: &driver_resume,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: criteria.clone(),
-        };
+        let deps_resume = stub_deps(&st_resume, &driver_resume, criteria.clone());
         let ctx_resume = RunCtx::for_test(&cfg, &deps_resume);
         let mut stages_resume = seed_refine_dag(&deps_resume.criteria);
         let mut proposed_resume: HashSet<String> = HashSet::new();
@@ -17689,15 +17635,7 @@ mod tests {
         // SAME `stages`/`proposed` across calls.
         let st_live = Store::open(":memory:").unwrap();
         let driver_live = Stub::new();
-        let deps_live = Deps {
-            store: &st_live,
-            driver: &driver_live,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: criteria.clone(),
-        };
+        let deps_live = stub_deps(&st_live, &driver_live, criteria.clone());
         let ctx_live = RunCtx::for_test(&cfg, &deps_live);
         let mut stages_live = seed_refine_dag(&deps_live.criteria);
         let mut proposed_live: HashSet<String> = HashSet::new();
@@ -17772,15 +17710,7 @@ mod tests {
         append_proposal(&st_resume, "u-new", criterion, &cid, Some("plan/replan#1"));
 
         let driver_resume = Stub::new();
-        let deps_resume = Deps {
-            store: &st_resume,
-            driver: &driver_resume,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: criteria.clone(),
-        };
+        let deps_resume = stub_deps(&st_resume, &driver_resume, criteria.clone());
         let ctx_resume = RunCtx::for_test(&cfg, &deps_resume);
         let mut stages_resume = seed_refine_dag(&deps_resume.criteria);
         let mut proposed_resume: HashSet<String> = HashSet::new();
@@ -17809,15 +17739,7 @@ mod tests {
         // LIVE: the identical history, folded one event at a time.
         let st_live = Store::open(":memory:").unwrap();
         let driver_live = Stub::new();
-        let deps_live = Deps {
-            store: &st_live,
-            driver: &driver_live,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: criteria.clone(),
-        };
+        let deps_live = stub_deps(&st_live, &driver_live, criteria.clone());
         let ctx_live = RunCtx::for_test(&cfg, &deps_live);
         let mut stages_live = seed_refine_dag(&deps_live.criteria);
         let mut proposed_live: HashSet<String> = HashSet::new();
@@ -17924,15 +17846,7 @@ mod tests {
         .unwrap();
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let mut stages = seed_refine_dag(&deps.criteria);
@@ -17996,15 +17910,7 @@ mod tests {
             );
 
             let driver = Stub::new();
-            let deps = Deps {
-                store: &st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: vec![crit_a.to_string(), crit_b.to_string()],
-            };
+            let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
             let ctx = RunCtx::for_test(&cfg, &deps);
 
             let mut stages = seed_refine_dag(&deps.criteria);
@@ -18093,15 +17999,7 @@ mod tests {
         .unwrap();
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
         let ctx = RunCtx::for_test(&cfg, &deps);
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
@@ -18210,15 +18108,7 @@ mod tests {
         .unwrap();
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
 
         // Window 1 (the live window): harvest over a freshly-seeded DAG.
         let ctx1 = RunCtx::for_test(&cfg, &deps);
@@ -18297,129 +18187,60 @@ mod tests {
             })
     }
 
-    #[test]
-    fn a_verbatim_copy_still_supersedes_its_baseline() {
-        // Spec 18 §3.3 fixture (a): a VERBATIM copy still supersedes its baseline, even
-        // with NO echoed id - the whitespace-normalized prose fallback keeps a
-        // hand-authored proposal (or an older planner) working. One unit per criterion,
-        // and NO unmatched-proposal signal (it matched a criterion, so it is not new).
-        let crit_a = "criterion A: the metrics module is implemented";
-        let crit_b = "criterion B: the stats endpoint is implemented";
+    /// The two criteria every supersede fixture plans against.
+    const SUPERSEDE_CRIT_A: &str = "criterion A: the metrics module is implemented";
+    const SUPERSEDE_CRIT_B: &str = "criterion B: the stats endpoint is implemented";
+
+    /// A planner proposes unit `id` (agent `worker`, gate `ok`) whose `criterion` is `text` and
+    /// whose `criterion_id` is `criterion_id` (omitted when `None`), against criteria
+    /// [`SUPERSEDE_CRIT_A`] and [`SUPERSEDE_CRIT_B`]. The proposal must run and integrate
+    /// (`kind` names it), supersede criterion A's baseline EXACTLY once - inheriting the exact
+    /// criterion text as its coverage, never duplicating it - leave criterion B's baseline
+    /// integrated, serve each criterion by exactly one unit, and draw NO unmatched-proposal signal
+    /// (it matched a real criterion, so it is not new).
+    fn assert_supersedes_criterion_a_once(
+        id: &str,
+        text: &str,
+        criterion_id: Option<&str>,
+        kind: &str,
+    ) {
+        let (crit_a, crit_b) = (SUPERSEDE_CRIT_A, SUPERSEDE_CRIT_B);
+        let mut proposal = json!({
+            "id": id,
+            "agent": "worker",
+            "criterion": text,
+            "gates": ["ok"],
+        });
+        if let Some(cid) = criterion_id {
+            proposal["criterion_id"] = json!(cid);
+        }
         let cfg = supersede_cfg();
         let st = Store::open(":memory:").unwrap();
         let driver = Stub {
-            emits: vec![(
-                TYPE_UNIT_PROPOSED.to_string(),
-                json!({
-                    "id": "verbatim-a",
-                    "agent": "worker",
-                    "criterion": crit_a, // copied verbatim, criterion_id omitted
-                    "gates": ["ok"],
-                }),
-            )],
+            emits: vec![(TYPE_UNIT_PROPOSED.to_string(), proposal)],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
         let rs = run(&cfg, &deps).unwrap();
 
         assert_eq!(
-            rs.units["verbatim-a"].status,
+            rs.units[id].status,
             ledger::Status::Integrated,
-            "the verbatim planner unit must run and integrate"
+            "the {kind} planner unit must run and integrate"
         );
-        assert_eq!(rs.units["verbatim-a"].spec_criterion, crit_a);
         assert!(
             !rs.units.contains_key(&baseline_id(1, crit_a)),
-            "criterion A's baseline must be superseded by the verbatim copy"
+            "criterion A's baseline must be superseded by the {kind} proposal, not run as a duplicate"
+        );
+        assert_eq!(
+            rs.units[id].spec_criterion, crit_a,
+            "a matched {kind} proposal inherits the exact criterion text as its coverage"
         );
         assert_eq!(
             rs.units[&baseline_id(2, crit_b)].status,
             ledger::Status::Integrated,
             "criterion B's baseline survives (no unit covers B)"
         );
-        // Exactly one unit per criterion - no duplication.
-        for c in [crit_a, crit_b] {
-            let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
-            assert_eq!(n, 1, "criterion {c:?} must be served by exactly one unit");
-        }
-        assert!(
-            !has_unmatched_signal(&st, "verbatim-a"),
-            "a verbatim copy matches its criterion, so it must NOT be flagged unmatched"
-        );
-    }
-
-    #[test]
-    fn a_paraphrased_proposal_matches_its_baseline_by_id_not_prose() {
-        // Spec 18 §3.3 fixture (b): the highest-risk case. A planner that PARAPHRASES a
-        // criterion it was told to copy verbatim, but ECHOES the stable id, now matches
-        // its baseline by id instead of duplicating. The paraphrase is deliberately
-        // prose-DISJOINT from every criterion, so the ONLY thing that can match it is
-        // the echoed id - proving the match is on the id, not re-normalized prose.
-        let crit_a = "criterion A: the metrics module is implemented";
-        let crit_b = "criterion B: the stats endpoint is implemented";
-        let paraphrase = "wire up end-to-end coverage of the reporting subsystem";
-        // Sanity: the paraphrase does NOT prose-match either criterion, so a duplicate
-        // is impossible EXCEPT via the id path this fixture exercises.
-        assert_ne!(normalize_ws(paraphrase), normalize_ws(crit_a));
-        assert_ne!(normalize_ws(paraphrase), normalize_ws(crit_b));
-
-        let cfg = supersede_cfg();
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            emits: vec![(
-                TYPE_UNIT_PROPOSED.to_string(),
-                json!({
-                    "id": "paraphrase-a",
-                    "agent": "worker",
-                    "criterion": paraphrase,
-                    // The stable id the conductor shows the planner for criterion A.
-                    "criterion_id": criterion_stable_id(1, crit_a),
-                    "gates": ["ok"],
-                }),
-            )],
-            ..Stub::new()
-        };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        // The paraphrased unit ran and superseded criterion A's baseline (no duplicate).
-        assert_eq!(
-            rs.units["paraphrase-a"].status,
-            ledger::Status::Integrated,
-            "the paraphrased planner unit must run and integrate"
-        );
-        assert!(
-            !rs.units.contains_key(&baseline_id(1, crit_a)),
-            "criterion A's baseline must be superseded by id, not run as a duplicate"
-        );
-        // The superseding unit carries the EXACT criterion text, not the paraphrase, so
-        // it grounds on and records the real criterion and the coverage gate stays exact.
-        assert_eq!(
-            rs.units["paraphrase-a"].spec_criterion, crit_a,
-            "a matched proposal inherits the exact criterion text as its coverage"
-        );
-        // Criterion B's baseline is untouched.
-        assert_eq!(
-            rs.units[&baseline_id(2, crit_b)].status,
-            ledger::Status::Integrated
-        );
-        // Exactly one unit per criterion - the whole point: no duplication.
         for c in [crit_a, crit_b] {
             let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
             assert_eq!(
@@ -18428,171 +18249,78 @@ mod tests {
             );
         }
         assert!(
-            !has_unmatched_signal(&st, "paraphrase-a"),
-            "an id-matched paraphrase serves a real criterion, so it is NOT unmatched"
+            !has_unmatched_signal(&st, id),
+            "a {kind} proposal that matches a criterion must NOT be flagged unmatched"
         );
     }
 
-    #[test]
-    fn a_bracketed_id_echo_with_a_paraphrase_still_supersedes_exactly_once() {
-        // Regression for the bracketed-id-echo defect (spec 18 §3.3, adjudicator
-        // remedy): the criteria are DISPLAYED to the planner as `- [<id>] <text>`
-        // (`plan_protocol`/PLAN_PROTOCOL), so a planner that echoes the id AS SHOWN
-        // copies the display brackets and emits `criterion_id = "[c1-<hex>]"`, while the
-        // baseline stores the UN-bracketed `c1-<hex>`. The matcher MUST tolerate that
-        // bracketed form (strip surrounding brackets before comparing) or a compliant
-        // echo paired with a PARAPHRASE re-opens the exact duplicate this unit exists to
-        // kill: the id-match fails on the brackets AND the prose-disjoint paraphrase
-        // fails the whitespace-normalized fallback, so the baseline and the planner unit
-        // BOTH run. This fixture drives that exact input - bracketed id + prose-disjoint
-        // paraphrase - and asserts the baseline is superseded EXACTLY once, the matched
-        // unit inherits the real criterion text, and NO unmatched-proposal signal fires.
-        let crit_a = "criterion A: the metrics module is implemented";
-        let crit_b = "criterion B: the stats endpoint is implemented";
-        let paraphrase = "wire up end-to-end coverage of the reporting subsystem";
-        // The paraphrase is prose-disjoint from every criterion, so the ONLY path to a
-        // supersede is the bracketed id resolving AFTER the strip - never the prose
-        // fallback. Without the strip this proposal is treated genuinely-new (duplicate).
-        assert_ne!(normalize_ws(paraphrase), normalize_ws(crit_a));
-        assert_ne!(normalize_ws(paraphrase), normalize_ws(crit_b));
-        // The id EXACTLY as the planner reads it in the prompt line `- [<id>] <text>`:
-        // the display brackets included. This is what "copy the bracketed id" produces.
-        let bracketed_id = format!("[{}]", criterion_stable_id(1, crit_a));
+    /// A criterion-disjoint paraphrase: it does NOT prose-match either supersede criterion, so a
+    /// supersede is impossible EXCEPT via the id path a fixture exercises.
+    const SUPERSEDE_PARAPHRASE: &str = "wire up end-to-end coverage of the reporting subsystem";
 
-        let cfg = supersede_cfg();
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            emits: vec![(
-                TYPE_UNIT_PROPOSED.to_string(),
-                json!({
-                    "id": "bracketed-a",
-                    "agent": "worker",
-                    "criterion": paraphrase,
-                    "criterion_id": bracketed_id,
-                    "gates": ["ok"],
-                }),
-            )],
-            ..Stub::new()
-        };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        assert_eq!(
-            rs.units["bracketed-a"].status,
-            ledger::Status::Integrated,
-            "the bracketed-id planner unit must run and integrate"
-        );
-        // Superseded by id AFTER the bracket strip - not run as a duplicate.
-        assert!(
-            !rs.units.contains_key(&baseline_id(1, crit_a)),
-            "criterion A's baseline must be superseded once by the bracketed id, not run as a duplicate"
-        );
-        // The matched unit inherits the EXACT criterion text (not the paraphrase).
-        assert_eq!(
-            rs.units["bracketed-a"].spec_criterion, crit_a,
-            "a bracketed-id match inherits the exact criterion text as its coverage"
-        );
-        // Criterion B's baseline is untouched.
-        assert_eq!(
-            rs.units[&baseline_id(2, crit_b)].status,
-            ledger::Status::Integrated
-        );
-        // Exactly one unit per criterion - the duplicate this unit exists to kill is gone.
-        for c in [crit_a, crit_b] {
-            let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
-            assert_eq!(
-                n, 1,
-                "criterion {c:?} must be served by exactly one unit, got {n}"
+    crate::test_cases! {
+        /// Spec 18 §3.3 fixture (a): a VERBATIM copy still supersedes its baseline, even with NO
+        /// echoed id - the whitespace-normalized prose fallback keeps a hand-authored proposal (or an
+        /// older planner) working.
+        a_verbatim_copy_still_supersedes_its_baseline:
+            assert_supersedes_criterion_a_once("verbatim-a", SUPERSEDE_CRIT_A, None, "verbatim");
+        /// Spec 18 §3.3 fixture (b): the highest-risk case. A planner that PARAPHRASES a criterion
+        /// it was told to copy verbatim, but ECHOES the stable id (the one the conductor shows the
+        /// planner for criterion A), now matches its baseline by id instead of duplicating. The
+        /// paraphrase is deliberately prose-DISJOINT from every criterion, so the ONLY thing that
+        /// can match it is the echoed id - proving the match is on the id, not re-normalized prose.
+        a_paraphrased_proposal_matches_its_baseline_by_id_not_prose: {
+            assert_ne!(normalize_ws(SUPERSEDE_PARAPHRASE), normalize_ws(SUPERSEDE_CRIT_A));
+            assert_ne!(normalize_ws(SUPERSEDE_PARAPHRASE), normalize_ws(SUPERSEDE_CRIT_B));
+            assert_supersedes_criterion_a_once(
+                "paraphrase-a",
+                SUPERSEDE_PARAPHRASE,
+                Some(&criterion_stable_id(1, SUPERSEDE_CRIT_A)),
+                "id-matched paraphrase",
             );
-        }
-        // It matched a real criterion, so NO unmatched-proposal signal may fire.
-        assert!(
-            !has_unmatched_signal(&st, "bracketed-a"),
-            "a bracketed-id echo that matches a criterion must NOT be flagged unmatched"
-        );
-    }
-
-    #[test]
-    fn a_stale_non_matching_id_falls_back_to_the_verbatim_prose_match() {
-        // Regression for the stale-id-prose-rescue branch (spec 18 §3.3, closes
-        // sdet-u18-5-stale-id-prose-rescue-untested): a proposal that echoes a NON-EMPTY
-        // but non-matching `criterion_id` (a stale id from an older run, or garbage that
-        // is not even bracket-recoverable) yet copies its criterion VERBATIM must still
-        // supersede its baseline via the whitespace-normalized prose FALLBACK - the id
-        // resolver's graceful degradation. This exercises the `.or_else` prose branch
-        // that the verbatim fixture (empty id, short-circuits before it) and the
-        // paraphrase/bracketed fixtures (matching id) never reach: a regression that
-        // dropped the fallback, or forced a non-matching id to genuinely-new, would spawn
-        // a duplicate baseline and no other fixture would notice.
-        let crit_a = "criterion A: the metrics module is implemented";
-        let crit_b = "criterion B: the stats endpoint is implemented";
-        // A stale/garbage id that matches NO criterion even after a bracket strip, so the
-        // ONLY thing that can supersede is the verbatim prose fallback.
-        let stale_id = "c9-bogusdeadbeef";
-        assert_ne!(stale_id, criterion_stable_id(1, crit_a));
-        assert_ne!(stale_id, criterion_stable_id(2, crit_b));
-
-        let cfg = supersede_cfg();
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            emits: vec![(
-                TYPE_UNIT_PROPOSED.to_string(),
-                json!({
-                    "id": "stale-id-a",
-                    "agent": "worker",
-                    "criterion": crit_a, // copied VERBATIM
-                    "criterion_id": stale_id,
-                    "gates": ["ok"],
-                }),
-            )],
-            ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        assert_eq!(
-            rs.units["stale-id-a"].status,
-            ledger::Status::Integrated,
-            "the stale-id verbatim planner unit must run and integrate"
-        );
-        // Superseded via the prose fallback despite the non-matching id.
-        assert!(
-            !rs.units.contains_key(&baseline_id(1, crit_a)),
-            "criterion A's baseline must be superseded via the verbatim prose fallback, not duplicated"
-        );
-        assert_eq!(rs.units["stale-id-a"].spec_criterion, crit_a);
-        assert_eq!(
-            rs.units[&baseline_id(2, crit_b)].status,
-            ledger::Status::Integrated
-        );
-        for c in [crit_a, crit_b] {
-            let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
-            assert_eq!(
-                n, 1,
-                "criterion {c:?} must be served by exactly one unit, got {n}"
+        /// Regression for the bracketed-id-echo defect (spec 18 §3.3, adjudicator remedy): the
+        /// criteria are DISPLAYED to the planner as `- [<id>] <text>` (`plan_protocol`/
+        /// PLAN_PROTOCOL), so a planner that echoes the id AS SHOWN copies the display brackets and
+        /// emits `criterion_id = "[c1-<hex>]"`, while the baseline stores the UN-bracketed
+        /// `c1-<hex>`. The matcher MUST tolerate that bracketed form (strip surrounding brackets
+        /// before comparing) or a compliant echo paired with a PARAPHRASE re-opens the exact
+        /// duplicate this unit exists to kill: the id-match fails on the brackets AND the
+        /// prose-disjoint paraphrase fails the whitespace-normalized fallback, so the baseline and
+        /// the planner unit BOTH run. This fixture drives that exact input - the id EXACTLY as the
+        /// planner reads it in the prompt line, display brackets included, plus a prose-disjoint
+        /// paraphrase - so the ONLY path to a supersede is the bracketed id resolving AFTER the
+        /// strip, never the prose fallback.
+        a_bracketed_id_echo_with_a_paraphrase_still_supersedes_exactly_once: {
+            assert_ne!(normalize_ws(SUPERSEDE_PARAPHRASE), normalize_ws(SUPERSEDE_CRIT_A));
+            assert_ne!(normalize_ws(SUPERSEDE_PARAPHRASE), normalize_ws(SUPERSEDE_CRIT_B));
+            assert_supersedes_criterion_a_once(
+                "bracketed-a",
+                SUPERSEDE_PARAPHRASE,
+                Some(&format!("[{}]", criterion_stable_id(1, SUPERSEDE_CRIT_A))),
+                "bracketed-id echo",
             );
-        }
-        // A prose-rescued proposal serves a real criterion, so it is NOT unmatched.
-        assert!(
-            !has_unmatched_signal(&st, "stale-id-a"),
-            "a verbatim proposal that prose-matches a criterion must NOT be flagged unmatched"
-        );
+        };
+        /// Regression for the stale-id-prose-rescue branch (spec 18 §3.3, closes
+        /// sdet-u18-5-stale-id-prose-rescue-untested): a proposal that echoes a NON-EMPTY but
+        /// non-matching `criterion_id` (a stale id from an older run, or garbage that is not even
+        /// bracket-recoverable) yet copies its criterion VERBATIM must still supersede its baseline
+        /// via the whitespace-normalized prose FALLBACK - the id resolver's graceful degradation.
+        /// This exercises the `.or_else` prose branch that the verbatim fixture (empty id,
+        /// short-circuits before it) and the paraphrase/bracketed fixtures (matching id) never
+        /// reach: a regression that dropped the fallback, or forced a non-matching id to
+        /// genuinely-new, would spawn a duplicate baseline and no other fixture would notice.
+        a_stale_non_matching_id_falls_back_to_the_verbatim_prose_match: {
+            let stale_id = "c9-bogusdeadbeef";
+            assert_ne!(stale_id, criterion_stable_id(1, SUPERSEDE_CRIT_A));
+            assert_ne!(stale_id, criterion_stable_id(2, SUPERSEDE_CRIT_B));
+            assert_supersedes_criterion_a_once(
+                "stale-id-a",
+                SUPERSEDE_CRIT_A,
+                Some(stale_id),
+                "stale-id verbatim",
+            );
+        };
     }
 
     #[test]
@@ -18619,15 +18347,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
         let rs = run(&cfg, &deps).unwrap();
 
         // The genuinely-new unit ran and integrated (it is not refused).
@@ -18696,15 +18416,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["new-subunit"].status,
@@ -18773,15 +18485,7 @@ mod tests {
         // ONLY UnitProposed in play is the seeded one, so a correct resume must fold it
         // before the first wave.
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-        };
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
         let rs = run(&cfg, &deps).unwrap();
 
         // Criterion A's BASELINE is superseded before it could be scheduled: it never
@@ -18894,15 +18598,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: criteria.clone(),
-        };
+        let deps = stub_deps(&st, &driver, criteria.clone());
         run(&cfg, &deps).expect("the real spec must decompose and run without a coverage gap");
 
         // One UnitStarted per real criterion, carrying the REAL criterion as
@@ -18961,15 +18657,7 @@ mod tests {
         }
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
@@ -19012,15 +18700,7 @@ mod tests {
             }
             let st = Store::open(":memory:").unwrap();
             let driver = Stub::new();
-            let deps = Deps {
-                store: &st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
+            let deps = stub_deps(&st, &driver, Vec::new());
             run(&cfg, &deps).unwrap();
             st.read_all(0, Direction::Forward, &Filter::default())
                 .unwrap()
@@ -19069,13 +18749,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
@@ -21276,15 +20951,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let deps = Deps {
-                store: &st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: vec![criterion.to_string()],
-            };
+            let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
             run(&cfg, &deps).unwrap()
         };
         let keyed = |events: &[Event], key: &str, type_: &str| -> usize {
@@ -22177,15 +21844,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         run(&cfg, &deps).unwrap(); // resume on the same store
         let events = st
@@ -22358,13 +22017,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -22447,13 +22101,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -22557,13 +22206,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -22624,13 +22268,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -22757,13 +22396,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -22859,13 +22493,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -22935,13 +22564,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["fenced"].status, ledger::Status::Integrated);
@@ -23014,13 +22638,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -23111,13 +22730,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -23198,13 +22812,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -23293,13 +22902,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -23379,13 +22983,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo.path().to_str().unwrap().to_string(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -23436,13 +23035,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo.path().to_str().unwrap().to_string(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -23492,13 +23086,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo.path().to_str().unwrap().to_string(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -23583,15 +23172,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -23698,15 +23279,7 @@ mod tests {
             output_by_agent: HashMap::from([("sdet".to_string(), "lens: no blocker".to_string())]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         run(&cfg, &deps).expect("a substantive retry folds the review normally");
 
         // The adjudicator was spawned exactly twice: the degenerate original + one retry.
@@ -24033,15 +23606,7 @@ mod tests {
             )]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let err = match run(&cfg, &deps) {
             Ok(_) => panic!(
                 "a gating spawn that emits approve but returns no verdict line must HARD-ERROR"
@@ -24121,15 +23686,7 @@ mod tests {
             )]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         // A reject that exhausts remediation escalates; `run` still returns Ok (the run
         // completed, the unit escalated), never the mismatch hard error.
         run(&cfg, &deps).expect("a result-channel reject is a normal reject, not a mismatch halt");
@@ -24168,15 +23725,7 @@ mod tests {
             // mismatch conjunction is false: this is a plain empty-verdict reject.
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         // No hard error: an empty verdict with no emitted approve remediates and escalates.
         run(&cfg, &deps)
             .expect("an empty verdict with no emitted approve is a normal reject, not a halt");
@@ -24230,15 +23779,7 @@ mod tests {
 
         let cfg = Config::default();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let ctx = RunCtx {
             cfg: &cfg,
             deps: &deps,
@@ -24324,15 +23865,7 @@ mod tests {
             )]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         run(&cfg, &deps).expect("the review proceeds once the degenerate lens recovers");
 
         assert_eq!(
@@ -24380,15 +23913,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         run(&cfg, &deps).expect("a finding-emitting lens with empty stdout is not degenerate");
 
         // The lens was spawned EXACTLY ONCE - its empty stdout was not misread as degenerate
@@ -24435,15 +23960,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let err = match run(&cfg, &deps) {
             Ok(_) => panic!("an all-degenerate reviewer must halt the run"),
             Err(e) => e,
@@ -24576,13 +24093,8 @@ mod tests {
 
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -24686,13 +24198,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -24779,15 +24286,7 @@ mod tests {
             output: r#"{"verdict":"reject","issues":[]}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
 
         // The unit escalated this window (not churned, not skipped).
@@ -24888,15 +24387,7 @@ mod tests {
         );
 
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
 
         assert!(
@@ -24962,13 +24453,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -25063,15 +24549,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec!["crit".into()],
-        };
+        let deps = stub_deps(&st, &driver, vec!["crit".into()]);
         let rs = run(&cfg, &deps).unwrap();
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
@@ -25105,15 +24583,7 @@ mod tests {
             output: r#"{"verdict":"reject","issues":[]}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["review"].status,
@@ -25153,15 +24623,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["review"].status,
@@ -25218,15 +24680,7 @@ mod tests {
             output: r#"{"verdict":"reject","issues":[]}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["review"].status,
@@ -25281,15 +24735,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
@@ -26074,13 +25520,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -26162,13 +25603,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -26258,13 +25694,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
 
@@ -26295,13 +25726,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
@@ -26341,13 +25767,8 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let driver = crate::driver::replay::ReplayDriver::new(&store);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).expect("a parked candidate frontier is not a run failure");
 
@@ -26540,13 +25961,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -26737,13 +26153,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         // The fold-neutral reject marker must NOT disturb the unit's real terminal state:
@@ -26788,13 +26199,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -26862,13 +26268,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -26933,13 +26334,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -27243,13 +26639,8 @@ mod tests {
             repo: repo_path.clone(),
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -27350,13 +26741,8 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let c = RunCtx::for_test(&cfg, &deps);
         assert!(
@@ -27377,15 +26763,7 @@ mod tests {
         // Repo-less: no checkout to protect, so an empty cwd is allowed.
         let st2 = Store::open(":memory:").unwrap();
         let driver2 = Stub::new();
-        let deps2 = Deps {
-            store: &st2,
-            driver: &driver2,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps2 = stub_deps(&st2, &driver2, Vec::new());
         let c2 = RunCtx::for_test(&cfg, &deps2);
         assert!(
             c2.assert_isolated_cwd("implementer", "x", "").is_ok(),
@@ -27446,15 +26824,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
 
         // Every agent the conductor spawned received a system prompt that contains
@@ -27512,15 +26882,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
 
         let sys = driver.system_prompt_for("a").expect("agent a was spawned");
@@ -27562,15 +26924,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         // An agent with no persona body still receives the rigger communication
         // discipline (every agent gets it), but no fabricated persona text - the
@@ -27634,15 +26988,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
 
         for (id, persona) in [
@@ -27713,15 +27059,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["impl-unit"].status,
@@ -27787,15 +27125,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
 
         // The producer reached the DAG-terminal Integrated TRUTHFULLY - with the
@@ -27882,13 +27212,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -27946,13 +27271,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -28050,13 +27370,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -28135,13 +27450,8 @@ mod tests {
         // branch (from the prior window) is what conflicts.
         let driver = Stub::new();
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -28202,13 +27512,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -28313,13 +27618,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -28383,13 +27683,8 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -28561,13 +27856,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
 
         let err = match run(&cfg, &deps) {
@@ -28642,15 +27932,7 @@ mod tests {
             output: r#"{"verdict":"reject","issues":[]}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
@@ -28720,15 +28002,7 @@ mod tests {
             output: r#"{"verdict":"reject","issues":[]}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         // The run RETURNS (Ok) - it does not loop forever.
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -28823,15 +28097,7 @@ mod tests {
                 output: r#"{"verdict":"reject","issues":[]}"#.into(),
                 ..Stub::new()
             };
-            let deps = Deps {
-                store: &st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
+            let deps = stub_deps(&st, &driver, Vec::new());
             let rs = run(&cfg, &deps).unwrap();
             let order = driver.call_order.lock().unwrap().clone();
             let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
@@ -28922,15 +28188,7 @@ mod tests {
             output: r#"{"verdict":"reject","issues":[]}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         let order = driver.call_order.lock().unwrap().clone();
         let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
@@ -28983,15 +28241,7 @@ mod tests {
             output: r#"{"verdict":"reject","issues":[]}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
 
         // First window: escalates after exactly the configured 2 attempts.
         let rs1 = run(&cfg, &deps).unwrap();
@@ -29062,15 +28312,7 @@ mod tests {
         cfg.workflow.defaults.max_retries = 2;
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let mut ctx = RunCtx::for_test(&cfg, &deps);
         let no_override = Stage::default();
         ctx.prior_resume_bound.insert("resumed-unit".into(), 4);
@@ -29107,15 +28349,7 @@ mod tests {
         cfg.workflow.defaults.max_retries = 2;
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let overriding = Stage {
@@ -29244,15 +28478,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = AdjApprovesOnAttempt::new("adj", CAP - 1);
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
@@ -29323,15 +28549,7 @@ mod tests {
         // Reject attempt 0, approve attempt 1: exactly one remediation, so the ladder advances
         // exactly once (rung 0 -> rung 1).
         let driver = AdjApprovesOnAttempt::new("adj", 1);
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
@@ -29408,15 +28626,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = AdjApprovesOnAttempt::new("adj", CAP - 1);
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["review"].status,
@@ -29463,15 +28673,7 @@ mod tests {
             fail_spawn: true,
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         // The run completes (Ok), not aborted; the crashing unit escalates.
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
@@ -29504,15 +28706,7 @@ mod tests {
             fail_spawn: true,
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
         // The default remediation bound (MAX_RETRIES=3) means the escalating attempt is
@@ -29559,15 +28753,7 @@ mod tests {
         }
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         // A budget of 1 is ALSO its own final tenth (1 - 1/10 = 1, floored): the one
         // admitted spawn crosses both signals in the same call, deterministically ordered
@@ -29626,15 +28812,7 @@ mod tests {
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
-            let deps = Deps {
-                store: st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
+            let deps = stub_deps(st, &driver, Vec::new());
             run(&cfg, &deps).unwrap()
         };
 
@@ -29732,15 +28910,7 @@ mod tests {
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
-            let deps = Deps {
-                store: st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
+            let deps = stub_deps(st, &driver, Vec::new());
             run(&cfg, &deps).unwrap()
         };
 
@@ -29823,15 +28993,7 @@ mod tests {
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
-            let deps = Deps {
-                store: st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
+            let deps = stub_deps(st, &driver, Vec::new());
             run(&cfg, &deps).unwrap()
         };
 
@@ -29897,15 +29059,7 @@ mod tests {
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
-            let deps = Deps {
-                store: st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
+            let deps = stub_deps(st, &driver, Vec::new());
             run(&cfg, &deps).unwrap()
         };
 
@@ -29966,15 +29120,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert!(
             rs.attention.is_empty(),
@@ -30015,15 +29161,7 @@ mod tests {
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
-            let deps = Deps {
-                store: st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
+            let deps = stub_deps(st, &driver, Vec::new());
             run(&cfg, &deps).unwrap()
         };
 
@@ -30134,15 +29272,7 @@ mod tests {
         }
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert!(
             rs.budget_halt.is_none(),
@@ -30199,15 +29329,7 @@ mod tests {
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
-            let deps = Deps {
-                store: st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
+            let deps = stub_deps(st, &driver, Vec::new());
             run(&cfg, &deps).unwrap()
         };
 
@@ -30280,15 +29402,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s1"].status, ledger::Status::Integrated);
         assert!(
@@ -30331,15 +29445,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
@@ -30374,15 +29480,7 @@ mod tests {
         }
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.budget_halt.as_deref(),
@@ -30410,15 +29508,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.budget_halt, None,
@@ -30452,15 +29542,7 @@ mod tests {
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.defaults.budget = 2;
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let c = RunCtx::for_test(&cfg, &deps);
 
         // The cumulative count was folded from the log, not reset to 0.
@@ -30516,15 +29598,7 @@ mod tests {
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.defaults.budget = 2;
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let c = RunCtx::for_test(&cfg, &deps);
 
         // Nothing new spent yet - the recorded frontier is free to replay.
@@ -30574,15 +29648,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
 
         // The run HALTS cleanly - the review-tier refusal must not surface as a run error.
         run(&cfg, &deps).expect("a review-tier budget refusal halts the run, it does not error");
@@ -30614,41 +29680,6 @@ mod tests {
                     && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
             }),
             "the unit reaches verified before the review tier is refused"
-        );
-    }
-
-    #[test]
-    fn coverage_gap_flags_a_spec_defect_and_errors() {
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                coverage: "criterion one".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec!["criterion one".into(), "criterion two".into()],
-        };
-        // The gap halts the run (§4.4): flagSpecDefect, then return Err.
-        assert!(run(&cfg, &deps).is_err());
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        assert!(
-            events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT),
-            "an uncovered criterion must be flagged as a spec defect"
         );
     }
 
@@ -30912,15 +29943,7 @@ mod tests {
             )],
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec!["crit".into()],
-        };
+        let deps = stub_deps(&st, &driver, vec!["crit".into()]);
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["impl"].status, ledger::Status::Integrated);
         let events = st
@@ -30930,80 +29953,6 @@ mod tests {
             !events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT),
             "a planner that covers every criterion must not flag a defect"
         );
-    }
-
-    #[test]
-    fn planner_leaving_a_gap_flags_a_spec_defect() {
-        // The `produces` planner proposes no unit covering "crit"; coverage is checked
-        // AFTER planning and finds the gap -> SpecDefect + Err (§3.2, the coverage gate
-        // is not silently disabled by the presence of a `produces` stage).
-        let mut cfg = Config::default();
-        cfg.agents.insert("planner".into(), agent("planner"));
-        cfg.workflow.stages.insert(
-            "plan".into(),
-            Stage {
-                name: "plan".into(),
-                agent: "planner".into(),
-                produces: "dag".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new(); // proposes nothing
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec!["crit".into()],
-        };
-        assert!(run(&cfg, &deps).is_err());
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        assert!(
-            events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT),
-            "a planner that leaves a criterion uncovered must flag a spec defect"
-        );
-    }
-
-    #[test]
-    fn gate_only_stage_is_a_coverage_proxy_gap() {
-        // A stage that "covers" a criterion but has only a gate command and no agent
-        // is a mechanical proxy, not an LLM judge: it does not satisfy the criterion,
-        // so the run is refused with a SpecDefect (§8 proxy-gap guard).
-        let mut cfg = Config::default();
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "gateonly".into(),
-            Stage {
-                name: "gateonly".into(),
-                coverage: "crit".into(),
-                gates: vec!["ok".into()],
-                ..Default::default() // no agent / agents / adjudicator
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: vec!["crit".into()],
-        };
-        assert!(
-            run(&cfg, &deps).is_err(),
-            "a criterion covered only by a gate-only stage must be an uncovered gap"
-        );
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        assert!(events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT));
     }
 
     #[test]
@@ -31034,15 +29983,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["auto"].status,
@@ -31097,13 +30038,8 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
         let opts = driver.opts_by_agent.lock().unwrap();
@@ -31135,13 +30071,8 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
         let opts = driver.opts_by_agent.lock().unwrap();
@@ -31176,13 +30107,8 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -31230,15 +30156,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         assert_eq!(
             driver.reviews_for("adversary"),
@@ -31281,15 +30199,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         assert_eq!(
             driver.reviews_for("judge"),
@@ -31332,15 +30242,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         assert!(
             !driver.spawned("adversary"),
@@ -31469,15 +30371,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         assert_eq!(
             driver.reviews_for("adversary"),
@@ -31522,15 +30416,7 @@ mod tests {
         let driver = Stub::new();
         let ctx = RunCtx {
             cfg: &cfg,
-            deps: &Deps {
-                store: &st,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            },
+            deps: &stub_deps(&st, &driver, Vec::new()),
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
@@ -31596,13 +30482,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_ne!(
@@ -31846,13 +30727,8 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let driver = UnitDistinctWriter;
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path,
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_ne!(
@@ -32719,13 +31595,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -32801,13 +31672,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -32902,13 +31768,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -32977,13 +31838,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -33091,13 +31947,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -33193,13 +32044,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
 
         let err = match run(&cfg, &deps) {
@@ -33329,13 +32175,8 @@ mod tests {
             ..Stub::new()
         };
         let deps1 = Deps {
-            store: &store,
-            driver: &driver1,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver1, Vec::new())
         };
         run(&cfg, &deps1).unwrap();
 
@@ -33372,13 +32213,8 @@ mod tests {
             ..Stub::new()
         };
         let deps2 = Deps {
-            store: &store,
-            driver: &driver2,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver2, Vec::new())
         };
         run(&cfg, &deps2).unwrap();
 
@@ -33522,13 +32358,8 @@ mod tests {
             ..Stub::new()
         };
         let deps1 = Deps {
-            store: &store,
-            driver: &driver1,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver1, Vec::new())
         };
         run(&cfg, &deps1).unwrap();
 
@@ -33564,13 +32395,8 @@ mod tests {
             ..Stub::new()
         };
         let deps2 = Deps {
-            store: &store,
-            driver: &driver2,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver2, Vec::new())
         };
         run(&cfg, &deps2).unwrap();
 
@@ -33707,13 +32533,8 @@ mod tests {
             ..Stub::new()
         };
         let deps1 = Deps {
-            store: &store,
-            driver: &driver1,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver1, Vec::new())
         };
         run(&cfg, &deps1).unwrap();
 
@@ -33749,13 +32570,8 @@ mod tests {
             ..Stub::new()
         };
         let deps2 = Deps {
-            store: &store,
-            driver: &driver2,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver2, Vec::new())
         };
         let rs = run(&cfg, &deps2).unwrap();
 
@@ -33993,13 +32809,8 @@ mod tests {
 
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -34121,13 +32932,8 @@ mod tests {
 
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -34248,13 +33054,8 @@ mod tests {
 
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -34433,13 +33234,8 @@ mod tests {
 
         let driver = Stub::new();
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         // The core regression: before the fix, `run_single_stage`'s unconditional
         // halted-commit capture calls `Worktree::commit` on this exact merge-in-progress,
@@ -34499,13 +33295,8 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -34772,13 +33563,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -35039,13 +33825,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         // Requirement (1): "b"'s genuine crash still halts the run loudly - it must NOT be
         // masked by "a"'s park in the same concurrent chunk.
@@ -35167,15 +33948,7 @@ mod tests {
         }
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         for n in 0..6 {
             assert_eq!(
@@ -35212,15 +33985,7 @@ mod tests {
         }
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let ctx = RunCtx::for_test(&cfg, &deps);
         let stages = cfg.workflow.stages.clone();
         let mut integrated: HashSet<String> = HashSet::new();
@@ -35332,15 +34097,7 @@ mod tests {
                 .collect(),
             ..Stub::new()
         };
-        let deps1 = Deps {
-            store: &store,
-            driver: &driver1,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps1 = stub_deps(&store, &driver1, Vec::new());
         let rs1 = run(&cfg, &deps1).unwrap();
         assert_ne!(
             rs1.units["z-hung"].status,
@@ -35363,15 +34120,7 @@ mod tests {
             },
         );
         let driver2 = Stub::new(); // z-hung's re-attempt now resolves normally (no park).
-        let deps2 = Deps {
-            store: &store,
-            driver: &driver2,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps2 = stub_deps(&store, &driver2, Vec::new());
         let rs2 = run(&cfg, &deps2).unwrap();
         let spawned = driver2.spawn_ids();
         let z_pos = spawned.iter().position(|id| id.starts_with("z-hung/"));
@@ -35466,15 +34215,7 @@ mod tests {
         cfg.workflow.stages.insert("impl".into(), st);
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["impl"].status, ledger::Status::Integrated);
         let opts = driver.opts_by_agent.lock().unwrap();
@@ -35510,15 +34251,7 @@ mod tests {
             output: "reviewed the diff".into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
         let opts = driver.opts_by_agent.lock().unwrap();
@@ -35672,13 +34405,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -35749,13 +34477,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         // Requirement (2): the genuine crash still propagates and halts the run - it must
         // NOT be silently swallowed by "b"'s park in the same chunk.
@@ -35833,13 +34556,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
 
         let err = match run(&cfg, &deps) {
@@ -35936,13 +34654,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
 
         let err = match run(&cfg, &deps) {
@@ -36026,13 +34739,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
 
         // Exactly one of the two lenses is admitted by the budget and genuinely crashes;
@@ -36103,13 +34811,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps)
             .expect("a budget-refused review spawn halts the run cleanly, it does not error");
@@ -36432,15 +35135,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         let lens_prompt = driver.prompts_for("lens").pop().unwrap();
         assert!(
@@ -36494,15 +35189,7 @@ mod tests {
             output: "the diff looks fine to me, ship it".into(), // no JSON verdict
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["review"].status,
@@ -36941,15 +35628,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
         assert!(
@@ -37004,15 +35683,7 @@ mod tests {
             output_by_agent,
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
@@ -37072,13 +35743,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
 
@@ -37134,15 +35800,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         // The stage reached its DAG-terminal state with the EXPLICIT no-artifact
         // marker, not an empty (dropped-looking) commit hash.
@@ -37194,15 +35852,7 @@ mod tests {
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         // The wave returns the first error (run halts), but BOTH stages must have left
         // a record before the collapse.
         let _ = run(&cfg, &deps);
@@ -37251,15 +35901,7 @@ mod tests {
         }
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         let integrated = ["w1", "w2", "w3"]
             .iter()
@@ -39665,15 +38307,7 @@ mod tests {
 
         let cfg = Config::default();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         assert_eq!(
@@ -39724,15 +38358,7 @@ mod tests {
 
         let cfg = Config::default();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let ctx = RunCtx::for_test(&cfg, &deps);
         // c2 was already reverted by an earlier compensation cycle this process ran
         // (the resume-seeded guard) - re-deriving must exclude it, leaving only the
@@ -39780,15 +38406,7 @@ mod tests {
 
         let cfg = Config::default();
         let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&store, &driver, Vec::new());
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         assert_eq!(
@@ -40419,13 +39037,8 @@ mod tests {
             repo: repo_path.clone(),
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -40699,13 +39312,8 @@ mod tests {
             repo: repo_path.clone(),
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         for u in ["unit-a", "unit-b"] {
@@ -40872,13 +39480,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
@@ -40950,13 +39553,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
@@ -41165,13 +39763,8 @@ mod tests {
         cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
 
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -41263,13 +39856,8 @@ mod tests {
         cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
 
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -41340,13 +39928,8 @@ mod tests {
         cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
 
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -41526,13 +40109,8 @@ mod tests {
         );
 
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let err = match run(&cfg, &deps) {
             Ok(_) => panic!(
@@ -42619,13 +41197,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo.path().to_str().unwrap().to_string(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -42813,13 +41386,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -42943,13 +41511,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         // The run completes (Ok): a spent budget halts the run with a BudgetExhausted
         // record, never a raw error.
@@ -43039,13 +41602,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         // A parked wave unwinds cleanly (no UnitFailed, no error propagated out of `run`): the
         // step ends and a later step replays the recorded result.
@@ -43124,13 +41682,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -43239,13 +41792,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         // A parked wave unwinds cleanly (no error propagated out of `run`): the step ends and a
         // later step replays the recorded result.
@@ -43352,13 +41900,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -43421,13 +41964,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -43499,13 +42037,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -43576,13 +42109,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&st, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
 
@@ -43888,15 +42416,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         assert_eq!(
             driver.reviews_for("adversary"),
@@ -44887,13 +43407,8 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps)
             .expect("a plan-critique-gate budget refusal halts the run cleanly, it does not error");
@@ -44936,15 +43451,7 @@ mod tests {
         let silent = crate::eventstore::SilentStore;
         let driver = Stub::new();
         let cfg = Config::default();
-        let deps = Deps {
-            store: &silent,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
+        let deps = stub_deps(&silent, &driver, Vec::new());
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         let err = ctx
