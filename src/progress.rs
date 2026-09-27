@@ -481,22 +481,24 @@ mod tests {
 
     // ---- ended/class closing (spec 104 criteria 5/6) ----
 
-    #[test]
-    fn spawn_launched_closed_builds_a_closing_record_with_ended_and_class() {
-        let closing = SpawnLaunched::closed("u/implementer#0", 0, "sess-1", "stopped", "infra");
-        assert_eq!(closing.spawn, "u/implementer#0");
-        assert_eq!(closing.launch, 0);
-        assert_eq!(closing.session_id, "sess-1");
-        assert_eq!(closing.ended.as_deref(), Some("stopped"));
-        assert_eq!(closing.class.as_deref(), Some("infra"));
+    /// `SpawnLaunched::closed` over `ended`/`class` records `ended` and the class as `class`
+    /// (an empty class stored as `None`); the record is returned for further checks.
+    fn assert_closed(ended: &str, class: &str, want_class: Option<&str>) -> SpawnLaunched {
+        let closing = SpawnLaunched::closed("u/implementer#0", 0, "sess-1", ended, class);
+        assert_eq!(closing.ended.as_deref(), Some(ended));
+        assert_eq!(closing.class.as_deref(), want_class);
+        closing
     }
 
-    #[test]
-    fn spawn_launched_closed_stores_an_empty_class_as_none() {
+    crate::test_cases! {
+        spawn_launched_closed_builds_a_closing_record_with_ended_and_class: {
+            let closing = assert_closed("stopped", "infra", Some("infra"));
+            assert_eq!(closing.spawn, "u/implementer#0");
+            assert_eq!(closing.launch, 0);
+            assert_eq!(closing.session_id, "sess-1");
+        };
         // completed/interrupted carry no failure class.
-        let closing = SpawnLaunched::closed("u/implementer#0", 0, "sess-1", "completed", "");
-        assert_eq!(closing.ended.as_deref(), Some("completed"));
-        assert_eq!(closing.class, None);
+        spawn_launched_closed_stores_an_empty_class_as_none: assert_closed("completed", "", None);
     }
 
     #[test]
