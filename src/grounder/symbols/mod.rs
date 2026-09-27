@@ -315,35 +315,47 @@ mod staleness_tests {
         assert_eq!(staleness(root), None);
     }
 
-    #[test]
-    fn a_file_added_to_the_tree_since_the_index_was_built_is_flagged() {
+    /// A tree of `on_disk` `(path, content)` files, over an index persisted with `indexed`
+    /// `(path, content)` entries (each under its content's hash), reads as drift (`why`) whose
+    /// path sets are exactly `added` and `removed`.
+    fn assert_path_drift(
+        on_disk: &[(&str, &str)],
+        indexed: &[(&str, &str)],
+        added: &[&str],
+        removed: &[&str],
+        why: &str,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
-        let content = "fn one() {}\n";
-        std::fs::write(dir.path().join("a.rs"), content).unwrap();
-        std::fs::write(dir.path().join("b.rs"), "fn two() {}\n").unwrap();
-        persist(root, &[("a.rs", &store::content_hash(content))]);
-        let drift = staleness(root).expect("a new file must be flagged as drift");
-        assert_eq!(drift.added, vec!["b.rs".to_string()]);
-        assert!(drift.removed.is_empty());
+        for (path, content) in on_disk {
+            std::fs::write(dir.path().join(path), content).unwrap();
+        }
+        let hashes: Vec<(&str, String)> = indexed
+            .iter()
+            .map(|(path, content)| (*path, store::content_hash(content)))
+            .collect();
+        let entries: Vec<(&str, &str)> = hashes.iter().map(|(p, h)| (*p, h.as_str())).collect();
+        persist(root, &entries);
+        let drift = staleness(root).expect(why);
+        assert_eq!(drift.added, added);
+        assert_eq!(drift.removed, removed);
     }
 
-    #[test]
-    fn a_file_removed_from_the_tree_since_the_index_was_built_is_flagged() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        let content = "fn one() {}\n";
-        std::fs::write(dir.path().join("a.rs"), content).unwrap();
-        persist(
-            root,
-            &[
-                ("a.rs", &store::content_hash(content)),
-                ("gone.rs", &store::content_hash("fn gone() {}\n")),
-            ],
+    crate::test_cases! {
+        a_file_added_to_the_tree_since_the_index_was_built_is_flagged: assert_path_drift(
+            &[("a.rs", "fn one() {}\n"), ("b.rs", "fn two() {}\n")],
+            &[("a.rs", "fn one() {}\n")],
+            &["b.rs"],
+            &[],
+            "a new file must be flagged as drift",
         );
-        let drift = staleness(root).expect("a deleted file must be flagged as drift");
-        assert_eq!(drift.removed, vec!["gone.rs".to_string()]);
-        assert!(drift.added.is_empty());
+        a_file_removed_from_the_tree_since_the_index_was_built_is_flagged: assert_path_drift(
+            &[("a.rs", "fn one() {}\n")],
+            &[("a.rs", "fn one() {}\n"), ("gone.rs", "fn gone() {}\n")],
+            &[],
+            &["gone.rs"],
+            "a deleted file must be flagged as drift",
+        );
     }
 
     #[test]

@@ -104,14 +104,7 @@ const JS_CONSTANT_TAGS: &str = r#"
 /// [`typescript_tags_query`] below.
 fn javascript_tags_query() -> &'static str {
     static Q: OnceLock<String> = OnceLock::new();
-    Q.get_or_init(|| {
-        format!(
-            "{}\n{}",
-            tree_sitter_javascript::TAGS_QUERY,
-            JS_CONSTANT_TAGS
-        )
-    })
-    .as_str()
+    composed_once(&Q, &[tree_sitter_javascript::TAGS_QUERY, JS_CONSTANT_TAGS])
 }
 
 /// The TypeScript `tags` query, composed ONCE. The upstream `tree-sitter-typescript` crate
@@ -125,15 +118,20 @@ fn javascript_tags_query() -> &'static str {
 /// `&'static str` via a process-lifetime `OnceLock` so `LanguageEntry` stays borrow-free.
 fn typescript_tags_query() -> &'static str {
     static Q: OnceLock<String> = OnceLock::new();
-    Q.get_or_init(|| {
-        format!(
-            "{}\n{}\n{}",
+    composed_once(
+        &Q,
+        &[
             tree_sitter_javascript::TAGS_QUERY,
             tree_sitter_typescript::TAGS_QUERY,
-            JS_CONSTANT_TAGS
-        )
-    })
-    .as_str()
+            JS_CONSTANT_TAGS,
+        ],
+    )
+}
+
+/// `parts` joined one per line into `cell` on first use - a tags query composed ONCE for the
+/// process lifetime, so a [`LanguageEntry`] can borrow it as `&'static str`.
+fn composed_once(cell: &'static OnceLock<String>, parts: &[&str]) -> &'static str {
+    cell.get_or_init(|| parts.join("\n")).as_str()
 }
 
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, and the `tags` query the
