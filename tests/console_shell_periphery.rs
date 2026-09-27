@@ -17,6 +17,10 @@ use common::served::get_raw;
 use common::served::header_value;
 use common::served::split_response;
 
+#[path = "common/served_asset.rs"]
+mod served_asset;
+use served_asset::served_binary_asset;
+
 /// The woff2 format's own magic header, `wOF2`.
 const WOFF2_MAGIC: [u8; 4] = *b"wOF2";
 
@@ -73,36 +77,12 @@ fn the_served_console_route_returns_the_shell_page_with_correct_headers_over_a_r
 
 #[test]
 fn the_served_font_route_returns_a_real_woff2_asset_with_correct_binary_headers() {
-    let raw = get_raw("/console/fonts/sora/Sora-400.woff2");
-    let (headers, body) = split_response(&raw);
-
-    let status_line = headers.lines().next().expect("a status line");
-    assert!(
-        status_line.starts_with("HTTP/1.1 200"),
-        "the font route serves 200 over the real socket: {status_line}"
-    );
-    assert_eq!(
-        header_value(headers, "Content-Type"),
-        Some("font/woff2"),
-        "the served content type must be font/woff2 over the real socket: {headers}"
-    );
-
-    let declared_len: usize = header_value(headers, "Content-Length")
-        .expect("a Content-Length header must be present")
-        .parse()
-        .expect("Content-Length must be a valid integer");
-    assert_eq!(
-        declared_len,
-        body.len(),
-        "Content-Length must name the actual BINARY body length over the wire, not a \
-         string's character count: declared {declared_len}, actual {}",
-        body.len()
-    );
-    assert!(
-        body.starts_with(&WOFF2_MAGIC),
-        "the served body must start with the woff2 magic header {:x?}: got {:x?}",
-        WOFF2_MAGIC,
-        &body[..body.len().min(8)]
+    served_binary_asset(
+        "/console/fonts/sora/Sora-400.woff2",
+        "font route",
+        "font/woff2",
+        "woff2",
+        &WOFF2_MAGIC,
     );
 }
 

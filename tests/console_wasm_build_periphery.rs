@@ -186,6 +186,51 @@ fn read_recording(dump_file: &std::path::Path) -> String {
         .unwrap_or_else(|e| panic!("reading the recording-cargo dump file {dump_file:?}: {e}"))
 }
 
+/// One real `build_wasm_artifact` call through the recording cargo fixture.
+struct RecordedBuild {
+    result: Result<PathBuf, String>,
+    dump_file: PathBuf,
+    target_dir: PathBuf,
+    _scratch: tempfile::TempDir,
+}
+
+impl RecordedBuild {
+    /// What the spawned process recorded ([`read_recording`]).
+    fn recording(&self) -> String {
+        read_recording(&self.dump_file)
+    }
+}
+
+/// Calls the real `build_wasm_artifact` through [`recording_cargo_fixture`] into
+/// `<scratch>/<target_dir_name>`, under [`env_test_lock`], with every one of `inherited` set
+/// on THIS process - the recording env cleared before and after, so each call starts and
+/// ends on the same deterministic baseline.
+fn recorded_build(inherited: &[(&str, &str)], target_dir_name: &str) -> RecordedBuild {
+    let _guard = env_test_lock();
+    clear_recording_cargo_env();
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let dump_file = scratch.path().join("recorded.txt");
+    for (key, value) in inherited {
+        std::env::set_var(key, value);
+    }
+    std::env::set_var("RECORDING_CARGO_DUMP_FILE", &dump_file);
+
+    let target_dir = scratch.path().join(target_dir_name);
+    let result = console_wasm::build_wasm_artifact(
+        scratch.path(),
+        recording_cargo_fixture().to_str().expect("utf-8 path"),
+        "wasm32-unknown-unknown",
+        &target_dir,
+    );
+    clear_recording_cargo_env();
+    RecordedBuild {
+        result,
+        dump_file,
+        target_dir,
+        _scratch: scratch,
+    }
+}
+
 /// THE BUG THIS FUNCTION EXISTS TO CLOSE (`d-u93c3-cargo-feature-env-leak-fix`): this test
 /// binary is itself a `cargo test` artifact, built with `CARGO_FEATURE_STORE` and
 /// `CARGO_FEATURE_TURBOVEC` plausibly ambient in a real build-script's environment; a naive
@@ -196,28 +241,20 @@ fn read_recording(dump_file: &std::path::Path) -> String {
 /// deterministic regardless of what feature flags built this very test binary.
 #[test]
 fn build_wasm_artifact_scrubs_every_inherited_cargo_feature_env_var_before_spawning() {
-    let _guard = env_test_lock();
-    clear_recording_cargo_env();
-    let scratch = tempfile::tempdir().expect("tempdir");
-    let dump_file = scratch.path().join("recorded.txt");
-    std::env::set_var("CARGO_FEATURE_STORE", "1");
-    std::env::set_var("CARGO_FEATURE_TURBOVEC", "1");
-    std::env::set_var("RECORDING_CARGO_DUMP_FILE", &dump_file);
-
-    let target_dir = scratch.path().join("target");
-    let result = console_wasm::build_wasm_artifact(
-        scratch.path(),
-        recording_cargo_fixture().to_str().expect("utf-8 path"),
-        "wasm32-unknown-unknown",
-        &target_dir,
+    let build = recorded_build(
+        &[
+            ("CARGO_FEATURE_STORE", "1"),
+            ("CARGO_FEATURE_TURBOVEC", "1"),
+        ],
+        "target",
     );
-    clear_recording_cargo_env();
+    let result = &build.result;
 
     assert!(
         result.is_ok(),
         "a successful nested command must return Ok: {result:?}"
     );
-    let recorded = read_recording(&dump_file);
+    let recorded = build.recording();
     assert!(
         !recorded.contains("CARGO_FEATURE_STORE"),
         "CARGO_FEATURE_STORE leaked into the nested cargo invocation - the exact \
@@ -237,29 +274,21 @@ fn build_wasm_artifact_scrubs_every_inherited_cargo_feature_env_var_before_spawn
 /// empty-string override.
 #[test]
 fn build_wasm_artifact_clears_rustflags_and_empties_the_wrapper_vars() {
-    let _guard = env_test_lock();
-    clear_recording_cargo_env();
-    let scratch = tempfile::tempdir().expect("tempdir");
-    let dump_file = scratch.path().join("recorded.txt");
-    std::env::set_var("RUSTFLAGS", "-C target-cpu=native");
-    std::env::set_var("RUSTC_WRAPPER", "sccache");
-    std::env::set_var("RUSTC_WORKSPACE_WRAPPER", "sccache");
-    std::env::set_var("RECORDING_CARGO_DUMP_FILE", &dump_file);
-
-    let target_dir = scratch.path().join("target");
-    let result = console_wasm::build_wasm_artifact(
-        scratch.path(),
-        recording_cargo_fixture().to_str().expect("utf-8 path"),
-        "wasm32-unknown-unknown",
-        &target_dir,
+    let build = recorded_build(
+        &[
+            ("RUSTFLAGS", "-C target-cpu=native"),
+            ("RUSTC_WRAPPER", "sccache"),
+            ("RUSTC_WORKSPACE_WRAPPER", "sccache"),
+        ],
+        "target",
     );
-    clear_recording_cargo_env();
+    let result = &build.result;
 
     assert!(
         result.is_ok(),
         "a successful nested command returns Ok: {result:?}"
     );
-    let recorded = read_recording(&dump_file);
+    let recorded = build.recording();
     assert!(
         !recorded.lines().any(|l| l.starts_with("RUSTFLAGS=")),
         "RUSTFLAGS must be removed entirely from the nested invocation, not merely emptied: \
@@ -280,26 +309,14 @@ fn build_wasm_artifact_clears_rustflags_and_empties_the_wrapper_vars() {
 /// right target, and its OWN target-dir (never the caller's shared build cache/lock).
 #[test]
 fn build_wasm_artifact_invokes_the_expected_release_locked_command_line() {
-    let _guard = env_test_lock();
-    clear_recording_cargo_env();
-    let scratch = tempfile::tempdir().expect("tempdir");
-    let dump_file = scratch.path().join("recorded.txt");
-    std::env::set_var("RECORDING_CARGO_DUMP_FILE", &dump_file);
-
-    let target_dir = scratch.path().join("nested-target");
-    let result = console_wasm::build_wasm_artifact(
-        scratch.path(),
-        recording_cargo_fixture().to_str().expect("utf-8 path"),
-        "wasm32-unknown-unknown",
-        &target_dir,
-    );
-    clear_recording_cargo_env();
+    let build = recorded_build(&[], "nested-target");
+    let (result, target_dir) = (&build.result, &build.target_dir);
 
     assert!(
         result.is_ok(),
         "a successful nested command returns Ok: {result:?}"
     );
-    let recorded = read_recording(&dump_file);
+    let recorded = build.recording();
     let args_line = recorded
         .lines()
         .find(|l| l.starts_with("ARGS:"))
@@ -320,20 +337,9 @@ fn build_wasm_artifact_invokes_the_expected_release_locked_command_line() {
 /// `OUT_DIR` copy destination is built from in `build.rs`.
 #[test]
 fn build_wasm_artifact_returns_the_release_artifact_path_on_success() {
-    let _guard = env_test_lock();
-    clear_recording_cargo_env();
-    let scratch = tempfile::tempdir().expect("tempdir");
-    let dump_file = scratch.path().join("recorded.txt");
-    std::env::set_var("RECORDING_CARGO_DUMP_FILE", &dump_file);
-
-    let target_dir = scratch.path().join("nested-target");
-    let result = console_wasm::build_wasm_artifact(
-        scratch.path(),
-        recording_cargo_fixture().to_str().expect("utf-8 path"),
-        "wasm32-unknown-unknown",
-        &target_dir,
-    );
-    clear_recording_cargo_env();
+    let RecordedBuild {
+        result, target_dir, ..
+    } = recorded_build(&[], "nested-target");
 
     let artifact = result.expect("a successful nested command returns Ok");
     assert_eq!(
@@ -351,21 +357,7 @@ fn build_wasm_artifact_returns_the_release_artifact_path_on_success() {
 /// wrapping this in `panic!("... {e}")` itself only at the top level).
 #[test]
 fn build_wasm_artifact_returns_err_never_panics_on_a_nonzero_exit() {
-    let _guard = env_test_lock();
-    clear_recording_cargo_env();
-    let scratch = tempfile::tempdir().expect("tempdir");
-    let dump_file = scratch.path().join("recorded.txt");
-    std::env::set_var("RECORDING_CARGO_DUMP_FILE", &dump_file);
-    std::env::set_var("RECORDING_CARGO_EXIT_CODE", "1");
-
-    let target_dir = scratch.path().join("nested-target");
-    let result = console_wasm::build_wasm_artifact(
-        scratch.path(),
-        recording_cargo_fixture().to_str().expect("utf-8 path"),
-        "wasm32-unknown-unknown",
-        &target_dir,
-    );
-    clear_recording_cargo_env();
+    let result = recorded_build(&[("RECORDING_CARGO_EXIT_CODE", "1")], "nested-target").result;
 
     let err = result.expect_err("a nonzero exit must be reported as Err, never a panic");
     assert!(

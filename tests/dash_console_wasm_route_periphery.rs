@@ -45,6 +45,10 @@ use common::served::get_raw;
 use common::served::header_value;
 use common::served::split_response;
 
+#[path = "common/served_asset.rs"]
+mod served_asset;
+use served_asset::served_binary_asset;
+
 /// The WASM magic header every validator and runtime checks first: the four bytes `\0asm`.
 const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
 
@@ -61,45 +65,20 @@ fn get_body(target: &str) -> Vec<u8> {
 
 #[test]
 fn the_served_console_wasm_route_returns_a_real_wasm_module_with_correct_binary_headers() {
-    let raw = get_raw("/console/core.wasm");
-    let (headers, body) = split_response(&raw);
-
-    let status_line = headers.lines().next().expect("a status line");
-    assert!(
-        status_line.starts_with("HTTP/1.1 200"),
-        "the console-core wasm route serves 200 over the real socket: {status_line}"
-    );
-    assert_eq!(
-        header_value(headers, "Content-Type"),
-        Some("application/wasm"),
-        "the served content type must be application/wasm over the real socket: {headers}"
-    );
-    assert_eq!(
-        header_value(headers, "Connection"),
-        Some("close"),
-        "the response must be framed with Connection: close: {headers}"
-    );
-
-    let declared_len: usize = header_value(headers, "Content-Length")
-        .expect("a Content-Length header must be present")
-        .parse()
-        .expect("Content-Length must be a valid integer");
-    assert_eq!(
-        declared_len,
-        body.len(),
-        "Content-Length must name the actual BINARY body length over the wire, not a \
-         string's character count: declared {declared_len}, actual {}",
-        body.len()
-    );
-
     // A real WASM module, proven from the served bytes themselves - not from the embedded
     // constant, which is deliberately unreachable from this crate (see this file's own doc
     // comment).
-    assert!(
-        body.starts_with(&WASM_MAGIC),
-        "the served body must start with the WASM magic header {:x?}: got {:x?}",
-        WASM_MAGIC,
-        &body[..body.len().min(16)]
+    let (headers, body) = served_binary_asset(
+        "/console/core.wasm",
+        "console-core wasm route",
+        "application/wasm",
+        "WASM",
+        &WASM_MAGIC,
+    );
+    assert_eq!(
+        header_value(&headers, "Connection"),
+        Some("close"),
+        "the response must be framed with Connection: close: {headers}"
     );
     assert!(
         !body.is_empty() && body.len() < THREE_MB,
