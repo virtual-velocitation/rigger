@@ -3529,13 +3529,13 @@
       },
       {
         "file": "tests/stop_failure_hook_periphery.rs",
-        "start_line": 232,
-        "end_line": 232
+        "start_line": 226,
+        "end_line": 226
       },
       {
         "file": "tests/stop_failure_hook_periphery.rs",
-        "start_line": 247,
-        "end_line": 247
+        "start_line": 241,
+        "end_line": 241
       },
       {
         "file": "tests/store_content_identity_periphery.rs",

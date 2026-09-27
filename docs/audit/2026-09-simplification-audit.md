@@ -3243,8 +3243,8 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/step_sheds_the_freshen.rs:282-282` `"constructing the default grounder builds and persists the SYMBOL index under \
          .rigger/symbols/ - the freshen's real target"`
 - `tests/stop_failure_hook_periphery.rs:56-56` `".rigger/progress.db"`
-- `tests/stop_failure_hook_periphery.rs:232-232` `".rigger/events.db"`
-- `tests/stop_failure_hook_periphery.rs:247-247` `".rigger/progress.db"`
+- `tests/stop_failure_hook_periphery.rs:226-226` `".rigger/events.db"`
+- `tests/stop_failure_hook_periphery.rs:241-241` `".rigger/progress.db"`
 - `tests/store_content_identity_periphery.rs:628-628` `".rigger"`
 - `tests/store_content_identity_periphery.rs:629-629` `"create .rigger"`
 - `tests/store_content_identity_periphery.rs:675-675` `".rigger"`
