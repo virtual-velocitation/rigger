@@ -17,6 +17,10 @@ mod common;
 
 use common::served::node_harness_passes;
 
+#[path = "common/vm_harness.rs"]
+mod vm_harness;
+use vm_harness::vm_harness;
+
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
 /// surfaces the client seam touches (innerHTML / textContent / dataset / .hidden / .className /
 /// addEventListener, a stubbed querySelector so bindKgView's lookups resolve without throwing). Kept
@@ -71,26 +75,8 @@ const fetch = function(url){
 };
 "#;
 
-/// Assemble a complete node `vm` program from a per-test `fetch` + fixtures prelude and a driver: the
-/// shared DOM shim, then the fetch prelude, then the served page script (read from `argv[2]`), then the
-/// driver - which shares the page's scope, so it calls the page's own functions and reads its module
-/// state directly.
-fn build_harness(fetch_prelude: &str, driver: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__RAIL_SHIM__`;
-const DRIVER = String.raw`__RAIL_DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-memory-rail-harness.js" });
-"##;
-    let shim = format!("{DOM_SHIM}\n{fetch_prelude}");
-    TEMPLATE
-        .replace("__RAIL_SHIM__", &shim)
-        .replace("__RAIL_DRIVER__", driver)
-}
+/// The node `vm` program name this suite's harness runs under.
+const HARNESS_FILE: &str = "dash-memory-rail-harness.js";
 
 /// Driver: on load the rail is hidden (no subject); clicking a node (`seedGraph`) reveals the rail
 /// and renders the decision/finding/concept content from the response's `memory` field, WITHOUT that
@@ -153,5 +139,5 @@ rigger::test_cases! {
     /// itself, and clearing the subject hides the rail again. Dropping `renderMemoryRail`'s wiring (or
     /// folding its content into `#kgpanel`) reddens this.
     clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel:
-        node_harness_passes(&build_harness(RESOLVING_FETCH, RAIL_DRIVER), "OK memory-rail-shows-on-seed-and-hides-on-clear");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], RAIL_DRIVER, HARNESS_FILE), "OK memory-rail-shows-on-seed-and-hides-on-clear");
 }

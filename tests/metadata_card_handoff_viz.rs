@@ -25,6 +25,10 @@ mod common;
 
 use common::served::node_harness_passes;
 
+#[path = "common/vm_harness.rs"]
+mod vm_harness;
+use vm_harness::vm_harness;
+
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
 /// dataset / .hidden / addEventListener). Mirrors `subject_view_memory_rail_client.rs`'s shim
 /// verbatim - the same handful of surfaces every dash client-seam harness in this repo needs.
@@ -95,25 +99,8 @@ const fetch = function(url){
 };
 "#;
 
-/// Assemble a complete node `vm` program: the shared DOM shim, the fetch fixtures, the served page
-/// script (read from `argv[2]`), then the driver - which shares the page's scope, so it calls the
-/// page's own functions and reads its module state (`kgLens`, `kgSubject`, `kgSeed`) directly.
-fn build_harness(driver: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__CARD_SHIM__`;
-const DRIVER = String.raw`__CARD_DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-metadata-card-harness.js" });
-"##;
-    let shim = format!("{DOM_SHIM}\n{RESOLVING_FETCH}");
-    TEMPLATE
-        .replace("__CARD_SHIM__", &shim)
-        .replace("__CARD_DRIVER__", driver)
-}
+/// The node `vm` program name this suite's harness runs under.
+const HARNESS_FILE: &str = "dash-metadata-card-harness.js";
 
 /// Driver: (1) `renderCard` draws each of the three card taxonomies with their documented rows and
 /// chips, and hides on `null`; (2) `#kgcard`'s own delegated click listener hands a FILE/CONCEPTS/
@@ -243,13 +230,13 @@ rigger::test_cases! {
     /// chip's own taxonomy carrying the chosen subject - proven for EVERY card taxonomy (code, file,
     /// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
     metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens:
-        node_harness_passes(&build_harness(CARD_DRIVER), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], CARD_DRIVER, HARNESS_FILE), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
     /// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
     /// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
     /// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
     /// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
     metadata_card_wiring_fires_at_every_render_and_drill_call_site:
-        node_harness_passes(&build_harness(WIRING_DRIVER), "OK metadata-card-wiring-fires-at-every-call-site");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], WIRING_DRIVER, HARNESS_FILE), "OK metadata-card-wiring-fires-at-every-call-site");
 }
 
 /// Driver for the CARD's OWN WIRING (spec 63 c2): `renderCard`/`loadCard` are proven above in

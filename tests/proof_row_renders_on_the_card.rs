@@ -15,6 +15,10 @@ mod common;
 
 use common::served::node_harness_passes;
 
+#[path = "common/vm_harness.rs"]
+mod vm_harness;
+use vm_harness::vm_harness;
+
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
 /// dataset / .hidden / addEventListener). Mirrors `metadata_card_handoff_viz.rs::DOM_SHIM` verbatim
 /// - the same handful of surfaces every dash client-seam harness in this repo needs.
@@ -47,25 +51,8 @@ const REJECTING_FETCH: &str = r#"
 const fetch = function(url){ return Promise.reject(new Error("no network needed for this seam: " + url)); };
 "#;
 
-/// Assemble a complete node `vm` program: the shared DOM shim, the fetch stub, the served page
-/// script (read from `argv[2]`), then the driver - which shares the page's scope, so it calls the
-/// page's own `renderCard` directly. Mirrors `metadata_card_handoff_viz.rs::build_harness`.
-fn build_harness(driver: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__CARD_SHIM__`;
-const DRIVER = String.raw`__CARD_DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "proof-row-harness.js" });
-"##;
-    let shim = format!("{DOM_SHIM}\n{REJECTING_FETCH}");
-    TEMPLATE
-        .replace("__CARD_SHIM__", &shim)
-        .replace("__CARD_DRIVER__", driver)
-}
+/// The node `vm` program name this suite's harness runs under.
+const HARNESS_FILE: &str = "proof-row-harness.js";
 
 /// Driver: (1) a proven code entity's card names its count and both evidence `file:line`s inside an
 /// expandable detail, never eagerly visible text outside it; (2) an UNPROVEN code entity's card
@@ -126,5 +113,5 @@ rigger::test_cases! {
     /// PROOF row - "proven by N tests" with the list on expand - and an explicit "no test reaches this
     /// entity" state (amber, not silent).
     proof_row_renders_count_evidence_and_the_explicit_empty_state:
-        node_harness_passes(&build_harness(PROOF_DRIVER), "OK proof-row-renders-count-evidence-and-the-explicit-empty-state");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, REJECTING_FETCH], PROOF_DRIVER, HARNESS_FILE), "OK proof-row-renders-count-evidence-and-the-explicit-empty-state");
 }

@@ -26,6 +26,10 @@ mod common;
 
 use common::served::node_harness_passes;
 
+#[path = "common/vm_harness.rs"]
+mod vm_harness;
+use vm_harness::vm_harness;
+
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
 /// surfaces the client seam touches (innerHTML / textContent / dataset / .hidden / .className /
 /// addEventListener, a stubbed querySelector so bindKgView's lookups resolve without throwing). Kept
@@ -53,26 +57,8 @@ const window = { addEventListener: function(){} };
 const setTimeout = function(){ return 0; };
 "#;
 
-/// Assemble a complete node `vm` program from a per-test `fetch` + fixtures prelude and a driver: the
-/// shared DOM shim, then the fetch prelude, then the served page script (read from `argv[2]`), then the
-/// driver - which shares the page's scope, so it calls the page's own functions and reads its module
-/// state directly.
-fn build_harness(fetch_prelude: &str, driver: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__CLIENT_ARM_SHIM__`;
-const DRIVER = String.raw`__CLIENT_ARM_DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-client-arm-harness.js" });
-"##;
-    let shim = format!("{DOM_SHIM}\n{fetch_prelude}");
-    TEMPLATE
-        .replace("__CLIENT_ARM_SHIM__", &shim)
-        .replace("__CLIENT_ARM_DRIVER__", driver)
-}
+/// The node `vm` program name this suite's harness runs under.
+const HARNESS_FILE: &str = "dash-client-arm-harness.js";
 
 /// A `fetch` + fixtures prelude whose EVERY `/api/graph` view resolves: the whole-graph overview (the
 /// no-argument route, and any `lens=` overview reload), a seeded neighborhood, a subject x lens
@@ -236,11 +222,11 @@ rigger::test_cases! {
     /// subject-sticky rule, which the served-page runtime (always flipping the lens WITH a subject) never
     /// drives. Dropping the `else loadKgOverview()` branch reddens it.
     a_lens_flip_with_no_subject_reloads_the_whole_graph_overview:
-        node_harness_passes(&build_harness(RESOLVING_FETCH, NO_SUBJECT_LENS_DRIVER), "OK no-subject-lens-flip-reloads-overview");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], NO_SUBJECT_LENS_DRIVER, HARNESS_FILE), "OK no-subject-lens-flip-reloads-overview");
     /// RUNTIME guard (spec 55 c4, degrade arm): a FAILED live subject-re-projection fetch degrades the panel
     /// to the documented "unavailable" message (the panel-never-throws contract on the NEW re-request path),
     /// the LIVE `catch` neither the served-page test (fetch always resolves) nor the serving-seam test
     /// (`!LIVE` static-export degrade) reaches. Dropping reprojectSubject's try/catch reddens it.
     a_failed_live_reprojection_fetch_degrades_to_a_message:
-        node_harness_passes(&build_harness(REPROJECT_FAILS_FETCH, REPROJECT_FAILURE_DRIVER), "OK reprojection-fetch-failure-degrades");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, REPROJECT_FAILS_FETCH], REPROJECT_FAILURE_DRIVER, HARNESS_FILE), "OK reprojection-fetch-failure-degrades");
 }
