@@ -401,10 +401,17 @@ fn a_crashed_implementer_renders_no_gates_node() {
     let unit = child(&spec, "u30-c1");
 
     // The Implement stage carries the crash; the Gates stage is ABSENT (no gate ran or can run).
+    assert_crash_at_implement_and_no_gates(unit, "u30-c1");
+}
+
+/// `unit_id`'s crashed implementer surfaces its failure at the Implement stage, and the unit
+/// renders NO Gates node: no gate ran or can run without a successful implementer, so the spine
+/// cannot fabricate a Gates line (least of all a `passed` one) for gates that never ran.
+fn assert_crash_at_implement_and_no_gates(unit: &Value, unit_id: &str) {
     assert_eq!(
         child(unit, "Implement")["status"],
         "failed",
-        "the crashed implementer surfaces its failure at the Implement stage"
+        "{unit_id}'s crashed implementer surfaces its failure at the Implement stage"
     );
     let stage_labels: Vec<&str> = unit["children"]
         .as_array()
@@ -414,7 +421,7 @@ fn a_crashed_implementer_renders_no_gates_node() {
         .collect();
     assert!(
         !stage_labels.contains(&"Gates"),
-        "a crashed implementer renders no Gates node (no gate ran without a successful implementer): {stage_labels:?}"
+        "{unit_id} renders no Gates node - no gate ran without a successful implementer: {stage_labels:?}"
     );
 }
 
@@ -669,24 +676,7 @@ fn an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed() {
             unit["status"], want_status,
             "{unit_id} carries its real off-linear status, not a masked one"
         );
-        // The crash surfaces at the Implement stage...
-        assert_eq!(
-            child(unit, "Implement")["status"],
-            "failed",
-            "{unit_id}'s crashed implementer surfaces its failure at the Implement stage"
-        );
-        // ...and there is NO Gates node: no gate ran (crashed implementer, no recorded verdict), so
-        // the spine cannot fabricate a `passed` for gates that never ran.
-        let stage_labels: Vec<&str> = unit["children"]
-            .as_array()
-            .expect("the unit has a children array")
-            .iter()
-            .map(|c| c["label"].as_str().unwrap())
-            .collect();
-        assert!(
-            !stage_labels.contains(&"Gates"),
-            "{unit_id} (off-linear, no recorded verdict) renders NO Gates node - no phantom passed: {stage_labels:?}"
-        );
+        assert_crash_at_implement_and_no_gates(unit, unit_id);
     }
 }
 
