@@ -14509,10 +14509,10 @@ lint:  { run: \"echo lint ok; true\",  kind: elevated }\n  \
 # exact id requires `cargo-mutants` on PATH (rigger validate checks at run start).\n  \
 mutation: { run: \"echo mutation ok; true\", kind: core }\n\
 # The boundary gate: Clean Architecture made mechanical. Replace with your\n  \
-# project's own check that dependencies point inward, adapters are constructed only\n  \
-# in the composition root, and no source file grows past its size limit (see this\n  \
-# crate's tests/boundary_audit.rs for the worked example). A red boundary gate is\n  \
-# non-negotiable: the adjudicator rejects, never balances it against other evidence.\n  \
+# project's own check that dependencies point inward and adapters are constructed\n  \
+# only in the composition root (see this crate's tests/boundary_audit.rs for the\n  \
+# worked example). A red boundary gate is non-negotiable: the adjudicator\n  \
+# rejects, never balances it against other evidence.\n  \
 boundary: { run: \"echo boundary ok; true\", kind: core }\n\
 # The audit gate: DRY and YAGNI as a red gate. Replace with your project's own\n  \
 # duplication and dead-code check; if it keeps a generated catalog, regenerate it\n  \

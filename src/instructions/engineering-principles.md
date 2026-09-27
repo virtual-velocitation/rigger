@@ -16,9 +16,8 @@ mechanical proof that the inner layer is clean, and every crate's place in the d
 order below is that rule made structural.
 
 **SOLID.** Single responsibility: one crate per concern, one module per responsibility, one
-reason to change per type; a file over 3,000 lines or a function over 100 lines fails the
-boundary gate, so you extract, never append. Open/closed: extend through the existing ports
-and enums; a new behavior is a new adapter or variant, never a branch bolted into a caller.
+reason to change per type. Open/closed: extend through the existing ports and enums; a new
+behavior is a new adapter or variant, never a branch bolted into a caller.
 Liskov: an adapter honors its port's whole contract; the conformance suites pass unchanged.
 Interface segregation: ports stay small; a consumer depends on the trait it uses. Dependency
 inversion: domain and conductor code depend on traits; stores, processes, clocks and
@@ -30,9 +29,8 @@ core <- store, graph, grounder <- driver, gates <- conductor <- console, dash <-
 exemption. Before writing a function, look it up in the graph; extend the one that exists.
 The simplification audit's duplication and dead-code reports are gates, not advisories.
 
-**KISS.** The simplest design that meets the criterion, stated in the fewest moving parts.
-Cognitive-complexity and function-length lints are set to deny; when a lint fires, the
-answer is a simpler shape, never an `#[allow]`.
+**KISS.** The simplest design that meets the criterion: the fewest moving parts and points
+of failure. Line counts measure nothing here; never split or merge code to hit a size.
 
 **YAGNI.** Build exactly what the criterion names. No speculative parameter, trait method,
 config key, feature flag or "for later" abstraction. Anything the criterion does not require
