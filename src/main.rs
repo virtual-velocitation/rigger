@@ -41,6 +41,7 @@ use rigger::grounder::Grounder;
 use rigger::instructions;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
+use rigger::playbooks::fnv1a_64;
 use rigger::run as runscope;
 use rigger::run_store as runscope_store;
 use rigger::sidecar::{PeerDecision, Sidecar};
@@ -1006,21 +1007,6 @@ fn has_tracked_project_id(root: &Path) -> bool {
         Path::new(&toplevel)
     };
     read_project_id(base).is_some()
-}
-
-/// A stable, deterministic 64-bit FNV-1a hash. The project id derived from a remote must
-/// be the SAME on every clone, machine, and rigger version, so this uses the fixed FNV
-/// constants rather than `std::collections::hash_map::DefaultHasher` (whose output is
-/// explicitly NOT guaranteed stable across builds).
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
 }
 
 /// Canonicalize definition text for hashing (spec 13, unit 1): normalize CRLF -> LF and

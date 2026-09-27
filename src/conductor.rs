@@ -23,6 +23,7 @@ use crate::grounder::{BlastRadius, Grounder};
 use crate::instructions::Instruction;
 use crate::ledger::{self, RunState};
 use crate::liveness;
+use crate::playbooks::fnv1a_64;
 use crate::safety;
 use crate::spawn::{
     self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
@@ -587,17 +588,9 @@ fn input_digest(command: &str, tree_sha: &str) -> String {
     if tree_sha.is_empty() {
         return String::new();
     }
-    // FNV-1a over the command bytes - the SAME fixed constants `main::fnv1a_64` uses, so
-    // the crate has one stable-hash idiom. The collision-sensitive input (the tree) rides
-    // verbatim, so this 64-bit fold covers
-    // only the short, config-authored command string.
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for &b in command.as_bytes() {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
+    // The collision-sensitive input (the tree) rides verbatim, so the 64-bit hash covers only
+    // the short, config-authored command string.
+    let hash = fnv1a_64(command.as_bytes());
     format!("{hash:016x}:{tree_sha}")
 }
 
@@ -11834,20 +11827,6 @@ fn criterion_stable_id(position: usize, criterion: &str) -> String {
         "c{position}-{:016x}",
         fnv1a_64(normalize_ws(criterion).as_bytes())
     )
-}
-
-/// FNV-1a 64-bit hash of `bytes`: a tiny, dependency-free, stable-across-releases hash
-/// used only to derive the [`criterion_stable_id`] content digest (never for security).
-/// Chosen over `std`'s `DefaultHasher`, whose output is explicitly not guaranteed
-/// stable across toolchain versions - the criterion id must reproduce identically so
-/// the planner's echoed id keeps matching its baseline.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
 }
 
 /// The evidence map folded into a unit's `verified` status (item 4): the gates that
