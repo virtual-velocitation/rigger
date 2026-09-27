@@ -255,6 +255,16 @@ impl Config {
         if let Err(e) = crate::gate::resolve_build_layer(&wf.build.wrapper, &wf.build.cache_dir) {
             return Err(err(e.to_string()));
         }
+        // The top-level workflow `name` key is retired: nothing ever read it, so a workflow that
+        // still sets it fails loudly at the exact line to delete rather than carrying a setting
+        // the operator believes does something.
+        if !wf.name.trim().is_empty() {
+            return Err(err(
+                "the workflow key `name` is retired (nothing reads it): delete the `name:` line \
+                 from your workflow.yml (config key: name)"
+                    .to_string(),
+            ));
+        }
         // `build.mutation` schema retirement (spec 91): the per-round mutation-efficacy
         // switch spec 73 introduced is superseded by the `checkin` stage's own `mutation`
         // gate, which runs the sweep ONCE at check-in through the ordinary gate pipeline
@@ -2274,6 +2284,29 @@ class: product\n";
             );
             assert!(msg.contains("91"), "the error must name spec 91: {msg:?}");
         }
+    }
+
+    /// The top-level workflow `name` key is RETIRED: nothing ever read it. A workflow.yml that
+    /// still carries a `name:` line parses, and validation refuses it naming the key and the
+    /// line to delete - never a bare unknown-key error that leaves the operator guessing.
+    #[test]
+    fn validate_rejects_the_retired_workflow_name_key_with_the_line_to_delete() {
+        let workflow: Workflow = crate::config::parse_yaml_naming_unknown_keys(
+            "name: my-project\ndefaults:\n  budget: 10\n",
+        )
+        .expect("a workflow carrying the retired name key still parses, so validate can name it");
+        let cfg = Config {
+            workflow,
+            ..Default::default()
+        };
+        let msg = cfg
+            .validate()
+            .expect_err("the retired name key must fail validation")
+            .to_string();
+        assert!(
+            msg.contains("`name` is retired") && msg.contains("delete the `name:` line"),
+            "the error must name the retired key and the line to delete: {msg:?}"
+        );
     }
 
     /// The un-set default (every pre-existing workflow.yml) must never fail validation over

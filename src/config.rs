@@ -872,6 +872,11 @@ fn default_max_concurrent() -> u32 {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workflow {
+    /// RETIRED: the top-level workflow `name` key. Nothing ever read it. Kept as a `String`
+    /// field purely so a workflow.yml still carrying the line parses far enough for `validate`
+    /// to name it in its rejection - the same convention as the retired `build.mutation`.
+    #[serde(default)]
+    pub name: String,
     #[serde(default)]
     pub defaults: Defaults,
     /// The event-store selection this project's committed config pins (§48 rung 4). Absent (the

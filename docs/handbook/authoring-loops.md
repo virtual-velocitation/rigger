@@ -77,6 +77,8 @@ stages:
     coverage: "each unit is implemented, reviews itself, and integrates green"
 ```
 
+Upgrading an older workflow: the top-level `name:` key is retired, and `rigger validate` refuses a workflow.yml that still carries it - delete that line.
+
 ### The knobs that matter
 
 **`budget`** is the hard cap on agent spawns for one unattended run. When spawns reach it, the breaker records `BudgetExhausted` and aborts. Keep it non-zero always: `0` means unlimited, and unlimited is how a unit a reviewer keeps rejecting churns for five hours. Raise it for a big spec; never disable it for an unattended run.
