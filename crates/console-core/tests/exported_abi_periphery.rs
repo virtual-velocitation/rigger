@@ -22,6 +22,7 @@
 //! never a hardcoded magic number) rather than by reconstructing an unreadable pointer.
 
 use console_core::{console_alloc, console_call, console_free};
+use rigger::spawn::SpawnEvent;
 
 /// Write `bytes` into a fresh `console_alloc`'d buffer and hand back its pointer - the same
 /// alloc-then-write sequence a real caller performs before every `console_call`.
