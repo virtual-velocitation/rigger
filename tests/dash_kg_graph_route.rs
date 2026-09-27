@@ -229,6 +229,32 @@ fn the_served_graph_route_returns_a_tier_tagged_seeded_neighborhood() {
     );
 }
 
+/// The body of `GET /` over the real serve socket, asserted to be a 200 HTML page.
+fn served_root_page() -> String {
+    let resp = fetch_served("/", &fixture_graph());
+    assert!(
+        resp.starts_with("HTTP/1.1 200 OK") && resp.contains("text/html"),
+        "GET / returns a 200 HTML page over the real serve socket:\n{resp}"
+    );
+    body_of(&resp).to_string()
+}
+
+/// The served page's `render()` never touches `el("kgpanel")`, so an operator's selection in the
+/// KG panel survives the live poll.
+fn assert_render_never_touches_the_kg_panel(page: &str) {
+    let r = page
+        .find("function render(state)")
+        .expect("the served page carries render()");
+    let render_end = page[r..]
+        .find("\n// The run-tree spine")
+        .map(|i| r + i)
+        .expect("render() ends before the tree helpers");
+    assert!(
+        !page[r..render_end].contains("kgpanel"),
+        "render() must NOT touch the KG panel, so a selection survives the live poll"
+    );
+}
+
 /// The SERVED root page ships the unified-KG detail PANEL and the SELECT-TO-SEED wiring c5 owns: the
 /// `kgpanel` render region, the read-only `GET /api/graph?seed=` fetch keyed on the selected node,
 /// the `data-seed` handle the tree nodes carry, and the single delegated listener that maps a click
@@ -236,12 +262,7 @@ fn the_served_graph_route_returns_a_tier_tagged_seeded_neighborhood() {
 /// or `fetch` some OTHER panel emits cannot satisfy it.
 #[test]
 fn the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring() {
-    let resp = fetch_served("/", &fixture_graph());
-    assert!(
-        resp.starts_with("HTTP/1.1 200 OK") && resp.contains("text/html"),
-        "GET / returns a 200 HTML page over the real serve socket:\n{resp}"
-    );
-    let page = body_of(&resp);
+    let page = &served_root_page();
 
     // The KG detail panel ships as its own render region.
     assert!(
@@ -279,19 +300,9 @@ fn the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring() {
         page.contains("tierClass(") && page.contains("kgedge"),
         "the KG panel must render each edge with its confidence-tier badge"
     );
-    // The panel is NOT written by render(): render() must never touch el("kgpanel"), so an operator
-    // selection survives the live poll. (The runtime guard below proves the survival behaviorally.)
-    let r = page
-        .find("function render(state)")
-        .expect("the served page carries render()");
-    let render_end = page[r..]
-        .find("\n// The run-tree spine")
-        .map(|i| r + i)
-        .expect("render() ends before the tree helpers");
-    assert!(
-        !page[r..render_end].contains("kgpanel"),
-        "render() must NOT touch the KG panel, so an operator's selection survives the live poll"
-    );
+    // The panel is NOT written by render(), so an operator selection survives the live poll. (The
+    // runtime guard below proves the survival behaviorally.)
+    assert_render_never_touches_the_kg_panel(page);
 }
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN select-to-seed path: it
@@ -660,12 +671,7 @@ fn the_served_graph_route_flags_god_nodes_and_returns_the_query_path() {
 /// bound to the c6 mechanism so some OTHER panel's markup cannot satisfy it.
 #[test]
 fn the_served_root_page_renders_god_nodes_and_the_query_path() {
-    let resp = fetch_served("/", &fixture_graph());
-    assert!(
-        resp.starts_with("HTTP/1.1 200 OK") && resp.contains("text/html"),
-        "GET / returns a 200 HTML page over the real serve socket:\n{resp}"
-    );
-    let page = body_of(&resp);
+    let page = &served_root_page();
 
     // The god-node badge is conditional on the server's `god` flag and shows the `degree`.
     assert!(
@@ -690,19 +696,9 @@ fn the_served_root_page_renders_god_nodes_and_the_query_path() {
         page.contains("&from=") && page.contains("&to="),
         "the path request must fetch /api/graph with from= and to= endpoints"
     );
-    // The panel is NOT written by render(): render() must never touch el("kgpanel"), so the operator's
-    // selection (and any traced path) survives the live poll - the c5 poll-survival invariant c6 keeps.
-    let r = page
-        .find("function render(state)")
-        .expect("the served page carries render()");
-    let render_end = page[r..]
-        .find("\n// The run-tree spine")
-        .map(|i| r + i)
-        .expect("render() ends before the tree helpers");
-    assert!(
-        !page[r..render_end].contains("kgpanel"),
-        "render() must NOT touch the KG panel, so a selection/path survives the live poll"
-    );
+    // The panel is NOT written by render(), so the operator's selection (and any traced path)
+    // survives the live poll - the c5 poll-survival invariant c6 keeps.
+    assert_render_never_touches_the_kg_panel(page);
 }
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN c6 rendering: (A) it calls
@@ -1273,12 +1269,7 @@ fn toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders() {
 /// remain in `renderGraph`, proving the tier filter COEXISTS with (does not replace) the c6 render.
 #[test]
 fn the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance() {
-    let resp = fetch_served("/", &fixture_graph());
-    assert!(
-        resp.starts_with("HTTP/1.1 200 OK") && resp.contains("text/html"),
-        "GET / returns a 200 HTML page over the real serve socket:\n{resp}"
-    );
-    let page = body_of(&resp);
+    let page = &served_root_page();
 
     // The tier filter is a CLIENT-side visibility toggle: a data-tier checkbox per tier, a client
     // visible-tier set, and renderGraph filtering the DRAWN edges by it (never a server-side drop).
