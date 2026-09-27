@@ -1329,8 +1329,7 @@ fn scratch_prints_the_exact_container_rigger_result_reclaims() {
     let (out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
     assert!(ok, "scratch must succeed for a live run; stderr: {err}");
     let scratch_dir = Path::new(out.trim());
-    std::fs::create_dir_all(scratch_dir).unwrap();
-    std::fs::write(scratch_dir.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+    seed_bytes(scratch_dir.join("cargo-target-debris.rlib"), 64);
 
     let (out2, err2, ok2) = run_rigger(root, &["result", "u/implementer#0", "did the work"]);
     assert!(
@@ -1738,6 +1737,87 @@ fn write_agent(root: &Path, id: &str, tools: &str, body: &str) {
     .unwrap();
 }
 
+/// A throwaway git project `rigger init` has scaffolded (asserting the init succeeds).
+fn initialized_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    dir
+}
+
+/// A throwaway git project with a real commit that `rigger init` has scaffolded, the scaffold
+/// itself committed on top.
+fn committed_scaffold_project() -> tempfile::TempDir {
+    let dir = initialized_git_project();
+    git_ok(dir.path(), &["add", "-A"]);
+    git_ok(dir.path(), &["commit", "-q", "-m", "scaffold"]);
+    dir
+}
+
+/// A throwaway git project with a real commit that `rigger init` has scaffolded.
+fn initialized_git_project() -> tempfile::TempDir {
+    let dir = temp_git_project_with_commit();
+    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    dir
+}
+
+/// `rigger validate` in `root` with its scratch root (`RIGGER_TMPDIR`) at `scratch` and
+/// `XDG_CACHE_HOME` at `cache_home`; returns (stdout, stderr, success).
+fn validate_with_scratch_and_cache_home(
+    root: &Path,
+    scratch: &Path,
+    cache_home: &Path,
+) -> (String, String, bool) {
+    run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    )
+}
+
+/// A hermetic `(scratch root, cache home)` pair under `root`, both created - so the operator's
+/// REAL `$HOME/.cache` never bleeds into a byte-exact footprint assertion.
+fn footprint_roots(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let scratch = root.join("scratchroot");
+    let cache_home = root.join("cachehome");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&cache_home).unwrap();
+    (scratch, cache_home)
+}
+
+/// [`validate_with_scratch_and_cache_home`], asserting validate still exits 0 while it flags
+/// footprint advisories; returns (stdout, stderr).
+fn validate_footprint_advisories(
+    root: &Path,
+    scratch: &Path,
+    cache_home: &Path,
+) -> (String, String) {
+    let (out, err, ok) = validate_with_scratch_and_cache_home(root, scratch, cache_home);
+    assert!(
+        ok,
+        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
+    );
+    (out, err)
+}
+
+/// Write `n` bytes at `file` inside `spawn_id`'s own agent-scratch leaf of `run` under the
+/// scratch root `scratch` - the path the single authority `spawn_scratch_path` computes.
+fn seed_spawn_scratch(scratch: &Path, run: &str, spawn_id: &str, file: &str, n: usize) {
+    let leaf = rigger::driver::replay::spawn_scratch_path(scratch.to_str().unwrap(), run, spawn_id)
+        .unwrap();
+    seed_bytes(leaf.join(file), n);
+}
+
+/// Write `n` zero bytes at `path`, creating its parent dirs.
+fn seed_bytes(path: std::path::PathBuf, n: usize) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, vec![0u8; n]).unwrap();
+}
+
 /// A throwaway project whose store already holds a live run's `RunStarted` (run `r1`), so
 /// run-scoped paths - per-spawn scratch, printed containers - resolve exactly as in production,
 /// from the store's latest `RunStarted`.
@@ -1846,8 +1926,7 @@ fn assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
         let done = registered.join("u_2fimplementer_230");
         let live = registered.join("v_2fimplementer_230");
         for d in [&done, &live] {
-            std::fs::create_dir_all(d).unwrap();
-            std::fs::write(d.join("scratch-debris"), [0u8; 64]).unwrap();
+            seed_bytes(d.join("scratch-debris"), 64);
         }
 
         let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), args);
@@ -8072,8 +8151,7 @@ fn step_reclaims_a_hung_spawns_agent_scratch_the_moment_the_sweep_records_its_fa
         .expect("the hung spawn's agent-scratch dir has a run-scoped parent")
         .join("z_2fimplementer_230");
     for d in [&hung_scratch, &other_scratch] {
-        std::fs::create_dir_all(d).unwrap();
-        std::fs::write(d.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+        seed_bytes(d.join("cargo-target-debris.rlib"), 64);
     }
 
     // Plant the SYNTHETIC STALE MARKER at the wire path (worker-write path == sweep-read path).
@@ -11915,120 +11993,208 @@ fn path_with_fake_wrapper(root: &Path, name: &str) -> String {
     format!("{}:{}", bindir.display(), path_with_no_known_wrapper(root))
 }
 
-/// A CONFIGURED (non-auto, non-off) `build.wrapper` absent from PATH fails `rigger
-/// validate` at run start (`config::load`'s `Config::validate` call), naming both the
-/// missing binary and the `build.wrapper` config key - a configured-explicit failure,
-/// never a silent degrade. Uses the real ambient PATH (the fake name is virtually certain
-/// to be absent from it), so no synthetic PATH is needed for this direction.
-#[test]
-fn validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path() {
-    let dir = temp_project();
+/// `rigger validate` over an initialized project with `build_block` appended to its config
+/// (empty = none) and, when given, `PATH` set to `path`, must FAIL at run start - a
+/// configured-explicit failure, never a silent degrade - with a stderr naming every one of
+/// `names` (the missing binary, the config key or gate, the spec). Returns the stdout.
+fn assert_validate_fails_naming(build_block: &str, path: Option<String>, names: &[&str]) -> String {
+    let dir = initialized_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    append_build_block(
-        root,
-        "build:\n  wrapper: definitely-not-a-real-wrapper-rigger-cli-test\n",
-    );
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
+    if !build_block.is_empty() {
+        append_build_block(root, build_block);
+    }
+    let envs: Vec<(&str, &str)> = path.iter().map(|p| ("PATH", p.as_str())).collect();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &envs);
     assert!(
         !ok,
-        "a named-but-absent build.wrapper must fail validate (run start); \
+        "validate must fail at run start over build block {build_block:?}; \
          stdout:\n{out}\nstderr:\n{err}"
     );
-    assert!(
-        err.contains("definitely-not-a-real-wrapper-rigger-cli-test"),
-        "the failure must name the missing binary; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("build.wrapper"),
-        "the failure must name the config key; stderr:\n{err}"
-    );
+    for name in names {
+        assert!(
+            err.contains(name),
+            "the failure must name {name:?}; stderr:\n{err}"
+        );
+    }
+    out
 }
 
-/// `build.wrapper: auto` finding NO known wrapper on PATH must never fail validate (a
-/// discovered-implicit degrade, not a configured-explicit failure) and must report "none"
-/// through `rigger validate`'s output - so a silently-skipped cache layer is SEEN, not
-/// invisible.
-#[test]
-fn validate_reports_none_when_auto_finds_no_known_wrapper_on_path() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    append_build_block(root, "build:\n  wrapper: auto\n");
+rigger::test_cases! {
+    /// A CONFIGURED (non-auto, non-off) `build.wrapper` absent from PATH fails `rigger
+    /// validate` at run start (`config::load`'s `Config::validate` call), naming both the
+    /// missing binary and the `build.wrapper` config key - a configured-explicit failure,
+    /// never a silent degrade. Uses the real ambient PATH (the fake name is virtually certain
+    /// to be absent from it), so no synthetic PATH is needed for this direction.
+    validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path:
+        assert_validate_fails_naming(
+            "build:\n  wrapper: definitely-not-a-real-wrapper-rigger-cli-test\n",
+            None,
+            &["definitely-not-a-real-wrapper-rigger-cli-test", "build.wrapper"],
+        );
+    /// The retired `build.mutation` switch (spec 73) is now a schema-rejection naming spec 91,
+    /// end to end through the real CLI: an explicit `build.mutation: on` fails `rigger validate`
+    /// at run start with a message naming both the retired key and this spec, regardless of
+    /// whether `cargo-mutants` is even resolvable - the config.rs unit tests
+    /// (`validate_rejects_any_explicit_build_mutation_value_naming_spec_91`) already prove the
+    /// full on/off/nonsense matrix against the pure `Config`; this is the one black-box proof
+    /// that the real compiled binary's `config::load` path enforces it too.
+    validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end:
+        assert_validate_fails_naming("build:\n  mutation: on\n", None, &["build.mutation", "91"]);
+    /// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91:
+    /// `gates.mutation` + `stages.checkin` are shipped in `SCAFFOLD_WORKFLOW`) - so `Config::
+    /// validate` requires `cargo-mutants` resolvable on PATH at run start with NO
+    /// `build.mutation` override needed at all, unlike spec 73's retired switch which required
+    /// an explicit `on`. A configured-explicit failure, never a silent skip. Mirrors
+    /// `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path` above.
+    validate_fails_at_run_start_when_the_scaffolded_mutation_gate_has_no_cargo_mutants_on_path:
+        assert_validate_fails_naming(
+            "",
+            Some(path_with_no_cargo_mutants()),
+            &["cargo-mutants", "mutation"],
+        );
+}
 
-    let path = path_with_no_known_wrapper(root);
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+/// The cross-module seam (spec 91, moved from spec 73's retired switch): `Config::validate`
+/// (`config.rs`) and `cmd_validate`'s own reporting call (`main.rs`) both read the SAME
+/// gates-list-driven `mutation_gate_binary_on_path` resolution - "never a second,
+/// independently re-derived check" (per the doc comments at both call sites). A black-box
+/// exit-code-and-stderr check alone cannot tell WHICH of the two calls actually produced the
+/// failure: `cmd_validate` prints the version line and a "config valid: ..." line to stdout
+/// BEFORE it ever reaches its own report, so if `Config::validate` ever stopped gating this
+/// (leaving only `cmd_validate`'s local report as a redundant backstop), this same scenario
+/// would still exit non-zero and still name the binary and the gate id - but only AFTER
+/// that partial stdout had already printed. Asserting stdout is EMPTY here proves the
+/// failure truly originates in `config::load`'s `Config::validate` call, before
+/// `cmd_validate`'s body runs at all - the single-authority guarantee that also makes every
+/// OTHER `config::load` caller (not just `validate`) fail at run start, not merely this one
+/// command's own report.
+#[test]
+fn validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants() {
+    let out = assert_validate_fails_naming("", Some(path_with_no_cargo_mutants()), &[]);
     assert!(
-        ok,
-        "auto finding nothing must never fail validate; stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        out.lines().any(|l| l == "build wrapper: none"),
-        "auto with no known wrapper on PATH must report none through validate; \
+        out.is_empty(),
+        "the failure must originate in Config::validate (config::load), before cmd_validate \
+         prints anything - a non-empty stdout means some OTHER, later check caught this \
+         instead, which would leave every non-validate config::load caller unprotected; \
          stdout:\n{out}"
     );
 }
 
-/// `build.wrapper: auto` finding a known wrapper on PATH resolves and reports its name
-/// through `rigger validate`'s output.
-#[test]
-fn validate_reports_the_resolved_wrapper_when_auto_finds_a_known_wrapper_on_path() {
-    let dir = temp_project();
+/// `rigger validate` over an initialized project with `build_block(root)` appended to its
+/// config (empty = none) and `PATH` set to `path(root)` must SUCCEED - a discovered-implicit
+/// degrade never fails validate - and report every line `expected(root)` names through its
+/// output, so what the build layer actually resolved (or silently skipped) is SEEN.
+fn assert_validate_reports(
+    build_block: fn(&Path) -> String,
+    path: fn(&Path) -> String,
+    expected: fn(&Path) -> Vec<String>,
+) {
+    let dir = initialized_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    append_build_block(root, "build:\n  wrapper: auto\n");
-
-    let path = path_with_fake_wrapper(root, "sccache");
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    let block = build_block(root);
+    if !block.is_empty() {
+        append_build_block(root, &block);
+    }
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path(root))]);
     assert!(
         ok,
-        "a found wrapper must not fail validate; stdout:\n{out}\nstderr:\n{err}"
+        "validate must not fail over build block {block:?}; stdout:\n{out}\nstderr:\n{err}"
     );
-    assert!(
-        out.lines().any(|l| l == "build wrapper: sccache"),
-        "auto finding sccache on PATH must report it through validate; stdout:\n{out}"
-    );
+    for line in expected(root) {
+        assert!(
+            out.lines().any(|l| l == line),
+            "validate must report {line:?} over build block {block:?}; stdout:\n{out}"
+        );
+    }
 }
 
-/// Spec 65 unit 5 (HONEST SURFACES), end to end through the real CLI: with a wrapper
-/// active AND a custom `max_concurrent`, `rigger validate` reports the wrapper, the cache
-/// dir it resolved to, AND the resolved budget - all three, not just the wrapper the
-/// earlier (spec 65 unit 2) test above already covers.
-#[test]
-fn validate_reports_cache_dir_and_budget_alongside_the_wrapper() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let cache_dir = root.join("my-cache");
-    append_build_block(
-        root,
-        &format!(
-            "build:\n  wrapper: auto\n  cache_dir: {}\n  max_concurrent: 7\n",
-            cache_dir.display()
-        ),
-    );
+/// The `build.wrapper: auto` config block.
+fn auto_wrapper_block(_: &Path) -> String {
+    "build:\n  wrapper: auto\n".to_string()
+}
 
-    let path = path_with_fake_wrapper(root, "sccache");
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        ok,
-        "a found wrapper with a custom budget must not fail validate; \
-         stdout:\n{out}\nstderr:\n{err}"
+/// A `PATH` whose only known build wrapper is a fake `sccache`.
+fn path_with_fake_sccache(root: &Path) -> String {
+    path_with_fake_wrapper(root, "sccache")
+}
+
+rigger::test_cases! {
+    /// `build.wrapper: auto` finding NO known wrapper on PATH must never fail validate (a
+    /// discovered-implicit degrade, not a configured-explicit failure) and must report "none"
+    /// through `rigger validate`'s output - so a silently-skipped cache layer is SEEN, not
+    /// invisible.
+    validate_reports_none_when_auto_finds_no_known_wrapper_on_path: assert_validate_reports(
+        auto_wrapper_block,
+        path_with_no_known_wrapper,
+        |_| vec!["build wrapper: none".to_string()],
     );
-    assert!(
-        out.lines()
-            .any(|l| l == format!("build cache dir: {}", cache_dir.display())),
-        "the resolved cache dir must be reported; stdout:\n{out}"
+    /// `build.wrapper: auto` finding a known wrapper on PATH resolves and reports its name
+    /// through `rigger validate`'s output.
+    validate_reports_the_resolved_wrapper_when_auto_finds_a_known_wrapper_on_path:
+        assert_validate_reports(auto_wrapper_block, path_with_fake_sccache, |_| {
+            vec!["build wrapper: sccache".to_string()]
+        });
+    /// Spec 65 unit 5 (HONEST SURFACES), end to end through the real CLI: with a wrapper
+    /// active AND a custom `max_concurrent`, `rigger validate` reports the wrapper, the cache
+    /// dir it resolved to, AND the resolved budget - all three, not just the wrapper the
+    /// earlier (spec 65 unit 2) test above already covers.
+    validate_reports_cache_dir_and_budget_alongside_the_wrapper: assert_validate_reports(
+        |root| {
+            format!(
+                "build:\n  wrapper: auto\n  cache_dir: {}\n  max_concurrent: 7\n",
+                root.join("my-cache").display()
+            )
+        },
+        path_with_fake_sccache,
+        |root| {
+            vec![
+                format!("build cache dir: {}", root.join("my-cache").display()),
+                "build budget: 7".to_string(),
+            ]
+        },
     );
-    assert!(
-        out.lines().any(|l| l == "build budget: 7"),
-        "the resolved max_concurrent budget must be reported; stdout:\n{out}"
-    );
+    /// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir cannot be
+    /// created must never fail validate - a DISCOVERED-IMPLICIT degrade, mirroring auto finding
+    /// no wrapper binary at all - and must report "none" (the whole layer skipped), so an
+    /// operator SEES the cache is not actually live rather than trusting a resolved name that
+    /// silently never worked.
+    validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir:
+        assert_validate_reports(
+            |root| {
+                format!(
+                    "build:\n  wrapper: auto\n  cache_dir: {}\n",
+                    uncreatable_cache_dir(root).display()
+                )
+            },
+            path_with_fake_sccache,
+            |_| vec!["build wrapper: none".to_string()],
+        );
+    /// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir ALREADY EXISTS
+    /// yet is not WRITABLE must never fail validate - a DISCOVERED-IMPLICIT degrade, mirroring
+    /// `validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir` above
+    /// for the writability rather than creatability failure mode - and must report "none" (the
+    /// whole layer skipped), so an operator SEES the cache is not actually live rather than
+    /// trusting a resolved name that silently never worked.
+    #[cfg(unix)]
+    validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwritable_cache_dir:
+        assert_validate_reports(
+            |root| {
+                format!(
+                    "build:\n  wrapper: auto\n  cache_dir: {}\n",
+                    preexisting_unwritable_cache_dir(root).display()
+                )
+            },
+            path_with_fake_sccache,
+            |_| vec!["build wrapper: none".to_string()],
+        );
+    /// A declared `mutation` gate with `cargo-mutants` resolvable on PATH must not fail
+    /// validate, and `rigger validate` must report it as declared through its output.
+    validate_reports_mutation_gate_declared_when_cargo_mutants_is_resolvable:
+        assert_validate_reports(
+            |_| String::new(),
+            |root| path_with_fake_wrapper(root, "cargo-mutants"),
+            |_| vec!["mutation gate (\"mutation\"): declared".to_string()],
+        );
 }
 
 /// With the wrapper layer off, `rigger validate` still reports the budget (it gates every
@@ -12036,10 +12202,8 @@ fn validate_reports_cache_dir_and_budget_alongside_the_wrapper() {
 /// layer touches no cache dir, so a claimed one would be fabricated.
 #[test]
 fn validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off() {
-    let dir = temp_project();
+    let dir = initialized_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
     append_build_block(root, "build:\n  wrapper: off\n  max_concurrent: 2\n");
 
     let (out, err, ok) = run_rigger(root, &["validate"]);
@@ -12135,10 +12299,8 @@ fn assert_named_wrapper_cache_dir_fails_validate(
     cache_dir: fn(&Path) -> std::path::PathBuf,
     what: &str,
 ) {
-    let dir = temp_project();
+    let dir = initialized_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
     let cache_dir = cache_dir(root);
     append_build_block(
         root,
@@ -12172,39 +12334,6 @@ rigger::test_cases! {
     /// validate` must fail at run start naming the dir and the `build.cache_dir` config key,
     /// never silently proceed with a cache that never actually writes anything.
     validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created: assert_named_wrapper_cache_dir_fails_validate(uncreatable_cache_dir, "uncreatable");
-}
-
-/// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir cannot be
-/// created must never fail validate - a DISCOVERED-IMPLICIT degrade, mirroring auto finding
-/// no wrapper binary at all - and must report "none" (the whole layer skipped), so an
-/// operator SEES the cache is not actually live rather than trusting a resolved name that
-/// silently never worked.
-#[test]
-fn validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let cache_dir = uncreatable_cache_dir(root);
-    append_build_block(
-        root,
-        &format!(
-            "build:\n  wrapper: auto\n  cache_dir: {}\n",
-            cache_dir.display()
-        ),
-    );
-
-    let path = path_with_fake_wrapper(root, "sccache");
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        ok,
-        "auto's uncreatable cache dir must never fail validate; stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        out.lines().any(|l| l == "build wrapper: none"),
-        "auto with an uncreatable cache dir must report none (the whole layer skipped) \
-         through validate; stdout:\n{out}"
-    );
 }
 
 /// A cache-dir path guaranteed to EXIST but be UNWRITABLE: created first, then chmod'd
@@ -12243,42 +12372,6 @@ rigger::test_cases! {
     );
 }
 
-/// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir ALREADY EXISTS
-/// yet is not WRITABLE must never fail validate - a DISCOVERED-IMPLICIT degrade, mirroring
-/// `validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir` above
-/// for the writability rather than creatability failure mode - and must report "none" (the
-/// whole layer skipped), so an operator SEES the cache is not actually live rather than
-/// trusting a resolved name that silently never worked.
-#[cfg(unix)]
-#[test]
-fn validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwritable_cache_dir() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let cache_dir = preexisting_unwritable_cache_dir(root);
-    append_build_block(
-        root,
-        &format!(
-            "build:\n  wrapper: auto\n  cache_dir: {}\n",
-            cache_dir.display()
-        ),
-    );
-
-    let path = path_with_fake_wrapper(root, "sccache");
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        ok,
-        "auto's pre-existing-but-unwritable cache dir must never fail validate; \
-         stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        out.lines().any(|l| l == "build wrapper: none"),
-        "auto with a pre-existing-but-unwritable cache dir must report none (the whole \
-         layer skipped) through validate; stdout:\n{out}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // `defaults.max_parallel_units` scaffold + config-load (spec 102 criterion 2: THE
 // SCAFFOLD WRITES THE KEY). Criterion 1 (the wave-width bound `run_wave` enforces) and
@@ -12298,10 +12391,8 @@ fn validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwrita
 /// in-process struct-level test would miss, fails here.
 #[test]
 fn a_fresh_scaffolded_init_writes_max_parallel_units_and_validates_through_the_binary() {
-    let dir = temp_project();
+    let dir = initialized_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
 
     let workflow_path = root.join(".rigger").join("workflow.yml");
     let workflow = std::fs::read_to_string(&workflow_path).unwrap();
@@ -12336,10 +12427,8 @@ fn a_fresh_scaffolded_init_writes_max_parallel_units_and_validates_through_the_b
 /// config that predates the key.
 #[test]
 fn a_workflow_without_max_parallel_units_still_validates_through_the_binary() {
-    let dir = temp_project();
+    let dir = initialized_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
 
     let workflow_path = root.join(".rigger").join("workflow.yml");
     let workflow = std::fs::read_to_string(&workflow_path).unwrap();
@@ -12392,105 +12481,14 @@ fn path_with_no_cargo_mutants() -> String {
     dir
 }
 
-/// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91:
-/// `gates.mutation` + `stages.checkin` are shipped in `SCAFFOLD_WORKFLOW`) - so `Config::
-/// validate` requires `cargo-mutants` resolvable on PATH at run start with NO
-/// `build.mutation` override needed at all, unlike spec 73's retired switch which required
-/// an explicit `on`. A configured-explicit failure, never a silent skip. Mirrors
-/// `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path` above.
-#[test]
-fn validate_fails_at_run_start_when_the_scaffolded_mutation_gate_has_no_cargo_mutants_on_path() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let path = path_with_no_cargo_mutants();
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        !ok,
-        "a scaffolded mutation gate with no cargo-mutants on PATH must fail validate (run \
-         start); stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        err.contains("cargo-mutants"),
-        "the failure must name the missing binary; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("mutation"),
-        "the failure must name the gate id; stderr:\n{err}"
-    );
-}
-
-/// The cross-module seam (spec 91, moved from spec 73's retired switch): `Config::validate`
-/// (`config.rs`) and `cmd_validate`'s own reporting call (`main.rs`) both read the SAME
-/// gates-list-driven `mutation_gate_binary_on_path` resolution - "never a second,
-/// independently re-derived check" (per the doc comments at both call sites). A black-box
-/// exit-code-and-stderr check alone cannot tell WHICH of the two calls actually produced the
-/// failure: `cmd_validate` prints the version line and a "config valid: ..." line to stdout
-/// BEFORE it ever reaches its own report, so if `Config::validate` ever stopped gating this
-/// (leaving only `cmd_validate`'s local report as a redundant backstop), this same scenario
-/// would still exit non-zero and still name the binary and the gate id - but only AFTER
-/// that partial stdout had already printed. Asserting stdout is EMPTY here proves the
-/// failure truly originates in `config::load`'s `Config::validate` call, before
-/// `cmd_validate`'s body runs at all - the single-authority guarantee that also makes every
-/// OTHER `config::load` caller (not just `validate`) fail at run start, not merely this one
-/// command's own report.
-#[test]
-fn validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let path = path_with_no_cargo_mutants();
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        !ok,
-        "a scaffolded mutation gate with no cargo-mutants on PATH must fail validate; \
-         stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        out.is_empty(),
-        "the failure must originate in Config::validate (config::load), before cmd_validate \
-         prints anything - a non-empty stdout means some OTHER, later check caught this \
-         instead, which would leave every non-validate config::load caller unprotected; \
-         stdout:\n{out}"
-    );
-}
-
-/// A declared `mutation` gate with `cargo-mutants` resolvable on PATH must not fail
-/// validate, and `rigger validate` must report it as declared through its output.
-#[test]
-fn validate_reports_mutation_gate_declared_when_cargo_mutants_is_resolvable() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let path = path_with_fake_wrapper(root, "cargo-mutants");
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        ok,
-        "a resolvable cargo-mutants must not fail validate; stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        out.lines()
-            .any(|l| l == "mutation gate (\"mutation\"): declared"),
-        "a declared mutation gate must report declared through validate; stdout:\n{out}"
-    );
-}
-
 /// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91) - on
 /// this test suite's own real ambient PATH (which genuinely has `cargo-mutants` installed,
 /// per this repo's own committed gate), `rigger validate` must succeed and report it
 /// declared, never the retired switch's "on"/"off" vocabulary.
 #[test]
 fn validate_reports_mutation_gate_declared_by_default_on_a_fresh_scaffold() {
-    let dir = temp_project();
+    let dir = initialized_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
 
     let (out, err, ok) = run_rigger(root, &["validate"]);
     assert!(
@@ -12502,37 +12500,6 @@ fn validate_reports_mutation_gate_declared_by_default_on_a_fresh_scaffold() {
             .any(|l| l == "mutation gate (\"mutation\"): declared"),
         "a fresh scaffold's default-declared mutation gate must report declared through \
          validate; stdout:\n{out}"
-    );
-}
-
-/// The retired `build.mutation` switch (spec 73) is now a schema-rejection naming spec 91,
-/// end to end through the real CLI: an explicit `build.mutation: on` fails `rigger validate`
-/// at run start with a message naming both the retired key and this spec, regardless of
-/// whether `cargo-mutants` is even resolvable - the config.rs unit tests
-/// (`validate_rejects_any_explicit_build_mutation_value_naming_spec_91`) already prove the
-/// full on/off/nonsense matrix against the pure `Config`; this is the one black-box proof
-/// that the real compiled binary's `config::load` path enforces it too.
-#[test]
-fn validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    append_build_block(root, "build:\n  mutation: on\n");
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !ok,
-        "an explicit build.mutation value must fail validate (run start), retired by spec \
-         91; stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        err.contains("build.mutation"),
-        "the failure must name the retired config key; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("91"),
-        "the failure must name spec 91; stderr:\n{err}"
     );
 }
 
@@ -12720,8 +12687,7 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     std::fs::create_dir_all(ghost_wt.join(".rigger")).unwrap();
     std::fs::write(ghost_wt.join("payload.bin"), [0u8; 4096]).unwrap();
     std::fs::write(ghost_wt.join(".rigger").join("events.db"), b"shadow").unwrap();
-    std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
-    std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 2048]).unwrap();
+    seed_bytes(scratch.join("cargo-target").join("x.rlib"), 2048);
     std::fs::create_dir_all(scratch.join("probe").join(".rigger")).unwrap();
     std::fs::write(
         scratch.join("probe").join(".rigger").join("events.db"),
@@ -12779,13 +12745,8 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
 /// that same input and asserts `validate` finds it there.
 #[test]
 fn validate_reports_residue_under_the_relocated_cache_home_default_root() {
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     seed_store(root); // empty store -> zero live units -> leftovers read as residue
 
     let cache_home = tempfile::tempdir().expect("create a throwaway XDG_CACHE_HOME");
@@ -12798,8 +12759,7 @@ fn validate_reports_residue_under_the_relocated_cache_home_default_root() {
 
     // Plant an orphaned build cache under the resolved DEFAULT (cache-home) root - the exact
     // shape the sibling test above plants under an explicit `RIGGER_TMPDIR` instead.
-    std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
-    std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 2048]).unwrap();
+    seed_bytes(scratch.join("cargo-target").join("x.rlib"), 2048);
 
     let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), &["validate"]);
     assert!(
@@ -12829,13 +12789,8 @@ fn validate_reports_residue_under_the_relocated_cache_home_default_root() {
 /// measuring/formatting functions are unit-tested in `src/main.rs`.
 #[test]
 fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     seed_store(root); // a real store, so the store/backups categories have something to size
 
     // A backup file, standing in for a prior repair/rotation - the store never auto-deletes
@@ -12849,29 +12804,14 @@ fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
 
     // Point the scratch root and the mutation-scratch cache home at dirs this test controls,
     // so the scan is hermetic (never touches the operator's real `~/.cache/rigger-mutants`).
-    let scratch = root.join("scratchroot");
-    let cache_home = root.join("cachehome");
-    std::fs::create_dir_all(&scratch).unwrap();
-    std::fs::create_dir_all(&cache_home).unwrap();
+    let (scratch, cache_home) = footprint_roots(root);
 
     // Seed the SHARED build cache directly under the scratch root - a pure cache, so its
     // whole size is dead share by design (spec 77 Design, criterion 5): this is the
     // category the dead-share-breach half of this test exercises.
-    std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
-    std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 4096]).unwrap();
+    seed_bytes(scratch.join("cargo-target").join("x.rlib"), 4096);
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["validate"],
-        &[
-            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
-        ],
-    );
-    assert!(
-        ok,
-        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
-    );
+    let (out, err) = validate_footprint_advisories(root, &scratch, &cache_home);
 
     // Every category's total is reported, unconditionally, on stdout.
     for category in [
@@ -12922,13 +12862,8 @@ fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
 /// function being unit-tested in `src/main.rs`.
 #[test]
 fn validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratch_root() {
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
 
     let scratch = root.join("scratchroot");
     let cache_home = root.join("cachehome");
@@ -12940,21 +12875,9 @@ fn validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratc
     // encoding contract is pinned elsewhere); only its total size, and that it lives under
     // the root the crate's own path authority computes, matters here.
     let mutation_root = cache_home.join("rigger-mutants");
-    std::fs::create_dir_all(mutation_root.join("some-spawn-leaf")).unwrap();
-    std::fs::write(
-        mutation_root.join("some-spawn-leaf").join("x.tmp"),
-        [0u8; 777],
-    )
-    .unwrap();
+    seed_bytes(mutation_root.join("some-spawn-leaf").join("x.tmp"), 777);
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["validate"],
-        &[
-            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
-        ],
-    );
+    let (out, err, ok) = validate_with_scratch_and_cache_home(root, &scratch, &cache_home);
     assert!(ok, "validate must exit 0; stderr:\n{err}");
     assert!(
         out.contains("footprint: registered scratch roots 777B"),
@@ -12986,15 +12909,10 @@ fn validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratc
 ///   (`adv-u77c2r8-mutation-scratch-orphan-on-never-reported-spawn`).
 #[test]
 fn validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store() {
-    use rigger::driver::replay::{mutation_scratch_path, spawn_scratch_path};
+    use rigger::driver::replay::mutation_scratch_path;
 
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     seed_store(root);
 
     let live_id = "u-live/implementer#0";
@@ -13027,67 +12945,34 @@ fn validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liven
         ],
     );
 
-    let scratch = root.join("scratchroot");
-    let cache_home = root.join("cachehome");
-    std::fs::create_dir_all(&scratch).unwrap();
-    std::fs::create_dir_all(&cache_home).unwrap();
+    let (scratch, cache_home) = footprint_roots(root);
 
-    let seed = |path: std::path::PathBuf, n: usize| {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, vec![0u8; n]).unwrap();
-    };
     // The LIVE spawn's own scratch, in both registered roots - spared.
-    seed(
-        spawn_scratch_path(scratch.to_str().unwrap(), "r2", live_id)
-            .unwrap()
-            .join("x"),
-        30,
-    );
-    seed(
+    seed_spawn_scratch(&scratch, "r2", live_id, "x", 30);
+    seed_bytes(
         mutation_scratch_path(&cache_home, live_id)
             .unwrap()
             .join("x"),
         10,
     );
     // The ANSWERED spawn's own scratch - dead the moment its result landed.
-    seed(
-        spawn_scratch_path(scratch.to_str().unwrap(), "r2", answered_id)
-            .unwrap()
-            .join("x"),
-        60,
-    );
-    seed(
+    seed_spawn_scratch(&scratch, "r2", answered_id, "x", 60);
+    seed_bytes(
         mutation_scratch_path(&cache_home, answered_id)
             .unwrap()
             .join("x"),
         20,
     );
     // The PRIOR run's own orphaned spawn scratch - dead, never answered, never in scope.
-    seed(
-        spawn_scratch_path(scratch.to_str().unwrap(), "r1", prior_id)
-            .unwrap()
-            .join("x"),
-        90,
-    );
-    seed(
+    seed_spawn_scratch(&scratch, "r1", prior_id, "x", 90);
+    seed_bytes(
         mutation_scratch_path(&cache_home, prior_id)
             .unwrap()
             .join("x"),
         30,
     );
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["validate"],
-        &[
-            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
-        ],
-    );
-    assert!(
-        ok,
-        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
-    );
+    let (out, err) = validate_footprint_advisories(root, &scratch, &cache_home);
 
     // Every seeded byte, live and dead together, across both registered roots.
     assert!(
@@ -13133,15 +13018,8 @@ fn validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liven
 #[test]
 fn validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the_identical_spawn_id(
 ) {
-    use rigger::driver::replay::spawn_scratch_path;
-
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     seed_store(root);
 
     // The self-hosting re-proposal shape: both runs' spawns carry the IDENTICAL unit/attempt
@@ -13170,47 +13048,19 @@ fn validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the
         ],
     );
 
-    let scratch = root.join("scratchroot");
     // An empty, hermetic cache-home - mirroring the sibling test above - so the mutation-
     // scratch root the operator's REAL `$HOME/.cache/rigger-mutants` might hold never bleeds
     // into this test's byte-exact assertions.
-    let cache_home = root.join("cachehome");
-    std::fs::create_dir_all(&scratch).unwrap();
-    std::fs::create_dir_all(&cache_home).unwrap();
+    let (scratch, cache_home) = footprint_roots(root);
 
-    let seed = |path: std::path::PathBuf, n: usize| {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, vec![0u8; n]).unwrap();
-    };
     // The OLD run's own orphaned scratch, under the OLD run's own run-id subdir.
-    seed(
-        spawn_scratch_path(scratch.to_str().unwrap(), "r-old-abandoned", reused_id)
-            .unwrap()
-            .join("orphan"),
-        500,
-    );
+    seed_spawn_scratch(&scratch, "r-old-abandoned", reused_id, "orphan", 500);
     // The CURRENT run's own live spawn's scratch, under the CURRENT run's own run-id
     // subdir - the SAME leaf name as the orphan above, but a genuinely different,
     // in-flight resource that must be spared.
-    seed(
-        spawn_scratch_path(scratch.to_str().unwrap(), "r-current", reused_id)
-            .unwrap()
-            .join("live"),
-        5,
-    );
+    seed_spawn_scratch(&scratch, "r-current", reused_id, "live", 5);
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["validate"],
-        &[
-            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
-        ],
-    );
-    assert!(
-        ok,
-        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
-    );
+    let (out, err) = validate_footprint_advisories(root, &scratch, &cache_home);
 
     // Every seeded byte, old orphan and current-run live spawn together.
     assert!(
@@ -13244,13 +13094,8 @@ fn validate_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_neve
 ) {
     use rigger::driver::replay::spawn_scratch_path;
 
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     seed_store(root);
 
     let live_id = "u-live/implementer#0";
@@ -13265,10 +13110,7 @@ fn validate_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_neve
         ],
     );
 
-    let scratch = root.join("scratchroot");
-    let cache_home = root.join("cachehome");
-    std::fs::create_dir_all(&scratch).unwrap();
-    std::fs::create_dir_all(&cache_home).unwrap();
+    let (scratch, cache_home) = footprint_roots(root);
 
     // The LIVE spawn's own well-formed container - via the crate's real path authority, not
     // a hand-encoded literal - must stay spared and counted only in "registered scratch
@@ -13284,18 +13126,7 @@ fn validate_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_neve
     std::fs::create_dir_all(&adhoc).unwrap();
     std::fs::write(adhoc.join("CACHEDIR.TAG"), vec![0u8; 300]).unwrap();
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["validate"],
-        &[
-            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
-        ],
-    );
-    assert!(
-        ok,
-        "validate must exit 0 even while flagging a footprint advisory; stderr:\n{err}"
-    );
+    let (out, err) = validate_footprint_advisories(root, &scratch, &cache_home);
 
     assert!(
         out.contains("footprint: registered scratch roots 20B"),
@@ -13341,13 +13172,8 @@ fn validate_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_neve
 #[test]
 fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_entries_through_the_binary(
 ) {
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     seed_store(root);
 
     // A PRIOR run's own unit, abandoned mid-flight (never reaches a terminal state, but is
@@ -13371,48 +13197,18 @@ fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_e
         ],
     );
 
-    let scratch = root.join("scratchroot");
-    let cache_home = root.join("cachehome");
-    std::fs::create_dir_all(&scratch).unwrap();
-    std::fs::create_dir_all(&cache_home).unwrap();
+    let (scratch, cache_home) = footprint_roots(root);
 
     // The DEAD unit's worktree and per-unit cache - out of the current run's live scope.
-    std::fs::create_dir_all(scratch.join("rigger-wt-unit-old")).unwrap();
-    std::fs::write(
-        scratch.join("rigger-wt-unit-old").join("payload.bin"),
-        [0u8; 400],
-    )
-    .unwrap();
-    std::fs::create_dir_all(scratch.join("cargo-target-unit-old")).unwrap();
-    std::fs::write(
-        scratch.join("cargo-target-unit-old").join("lib.rlib"),
-        [0u8; 300],
-    )
-    .unwrap();
+    seed_bytes(scratch.join("rigger-wt-unit-old").join("payload.bin"), 400);
+    seed_bytes(scratch.join("cargo-target-unit-old").join("lib.rlib"), 300);
 
     // The LIVE unit's worktree and per-unit cache - in flight in THIS run, so their bytes
     // must be counted in each category's TOTAL but never in its DEAD share.
-    std::fs::create_dir_all(scratch.join("rigger-wt-unit-new")).unwrap();
-    std::fs::write(
-        scratch.join("rigger-wt-unit-new").join("payload.bin"),
-        [0u8; 20],
-    )
-    .unwrap();
-    std::fs::create_dir_all(scratch.join("cargo-target-unit-new")).unwrap();
-    std::fs::write(
-        scratch.join("cargo-target-unit-new").join("lib.rlib"),
-        [0u8; 10],
-    )
-    .unwrap();
+    seed_bytes(scratch.join("rigger-wt-unit-new").join("payload.bin"), 20);
+    seed_bytes(scratch.join("cargo-target-unit-new").join("lib.rlib"), 10);
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["validate"],
-        &[
-            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
-        ],
-    );
+    let (out, err, ok) = validate_with_scratch_and_cache_home(root, &scratch, &cache_home);
     assert!(
         ok,
         "validate must exit 0 even while flagging footprint advisories; stderr:\n{err}"
@@ -13531,13 +13327,8 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
 /// prior unit would then fold as live and its leftovers would be spared.
 #[test]
 fn validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_abandoned_unit() {
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     seed_store(root);
 
     // Two runs recorded through the real courier: a PRIOR run whose `unit-old` never reached
@@ -13565,8 +13356,7 @@ fn validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_abandoned_un
     let scratch = root.join("scratchroot");
     let tmp = scratch.to_str().unwrap();
     for wt in ["rigger-wt-unit-old", "rigger-wt-unit-new"] {
-        std::fs::create_dir_all(scratch.join(wt)).unwrap();
-        std::fs::write(scratch.join(wt).join("payload.bin"), [0u8; 4096]).unwrap();
+        seed_bytes(scratch.join(wt).join("payload.bin"), 4096);
     }
     git_ok(root, &["branch", "rigger/u/unit-old"]);
     git_ok(root, &["branch", "rigger/u/unit-new"]);
@@ -13624,13 +13414,8 @@ fn validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_abandoned_un
 /// command that ignores the configured store - surviving inside the residue scan.
 #[test]
 fn validate_residue_scan_resolves_the_configured_server_not_the_local_sqlite_run() {
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     seed_store(root);
 
     // A LOCAL sqlite run whose `liveunit` is in-flight (non-terminal) - the exact shape that,
@@ -13650,12 +13435,7 @@ fn validate_residue_scan_resolves_the_configured_server_not_the_local_sqlite_run
     // The unit's deterministic worktree + local branch. Live => spared; not-live => residue.
     let scratch = root.join("scratchroot");
     let tmp = scratch.to_str().unwrap();
-    std::fs::create_dir_all(scratch.join("rigger-wt-liveunit")).unwrap();
-    std::fs::write(
-        scratch.join("rigger-wt-liveunit").join("payload.bin"),
-        [0u8; 4096],
-    )
-    .unwrap();
+    seed_bytes(scratch.join("rigger-wt-liveunit").join("payload.bin"), 4096);
     git_ok(root, &["branch", "rigger/u/liveunit"]);
 
     // CONTROL - nothing configured, so the single authority defaults to the LOCAL sqlite log.
@@ -13733,13 +13513,8 @@ fn validate_residue_scan_resolves_the_configured_server_not_the_local_sqlite_run
 /// running as root would bypass (root reads any file), silently defeating the guard under test.
 #[test]
 fn validate_residue_scan_surfaces_an_unreadable_store_conn_never_misreporting_live_worktrees() {
-    let dir = temp_git_project_with_commit();
+    let dir = committed_scaffold_project();
     let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    git_ok(root, &["add", "-A"]);
-    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
     // An empty LOCAL sqlite store: the store a silent degrade would wrongly read (zero live units),
     // so the regression path FLAGS the live leftovers below as residue.
     seed_store(root);
@@ -13750,12 +13525,7 @@ fn validate_residue_scan_surfaces_an_unreadable_store_conn_never_misreporting_li
     // silently fell back to an empty local store.
     let scratch = root.join("scratchroot");
     let tmp = scratch.to_str().unwrap();
-    std::fs::create_dir_all(scratch.join("rigger-wt-liveunit")).unwrap();
-    std::fs::write(
-        scratch.join("rigger-wt-liveunit").join("payload.bin"),
-        [0u8; 4096],
-    )
-    .unwrap();
+    seed_bytes(scratch.join("rigger-wt-liveunit").join("payload.bin"), 4096);
     git_ok(root, &["branch", "rigger/u/liveunit"]);
 
     // Make `.rigger/store.conn` PRESENT but UNREADABLE (a directory where the file goes): the
