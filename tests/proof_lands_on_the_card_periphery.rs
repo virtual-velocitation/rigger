@@ -321,6 +321,68 @@ fn reextract_file(
     apply_events(p, &mut events_for_file(&idx, path), next_position);
 }
 
+/// A real project root folded, file by file through the real extraction pipeline, onto ONE
+/// in-memory `Projector` - the position sequence continuing across every (re-)extraction exactly
+/// as a real multi-generation run appends them (see [`reextract_file`]).
+#[cfg(feature = "symbols")]
+struct Pipeline {
+    root: tempfile::TempDir,
+    p: rigger::contextgraph::sqlite::Projector,
+    next_position: u64,
+}
+
+#[cfg(feature = "symbols")]
+impl Pipeline {
+    /// A fresh root holding each `(rel, contents)` of `files`, nothing extracted yet.
+    fn holding(files: &[(&str, &str)]) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        for (rel, contents) in files {
+            root_write(&root, rel, contents);
+        }
+        Pipeline {
+            root,
+            p: rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap(),
+            next_position: 1,
+        }
+    }
+
+    /// Overwrite `rel` with `contents`, the way a real edit does.
+    fn write(&self, rel: &str, contents: &str) {
+        root_write(&self.root, rel, contents);
+    }
+
+    /// (Re-)extract each of `paths`, in order, alone.
+    fn extract(&mut self, paths: &[&str]) {
+        for path in paths {
+            reextract_file(&self.root, &self.p, path, &mut self.next_position);
+        }
+    }
+
+    /// The subgraph within two hops of `file`.
+    fn around(&self, file: &str) -> rigger::contextgraph::Graph {
+        use rigger::contextgraph::Projection;
+        self.p.subgraph(&[file.to_string()], 2).unwrap()
+    }
+
+    /// The card of `id`, read from the subgraph around `file`.
+    fn card(&self, file: &str, id: &str) -> rigger::contextgraph::query::Card {
+        rigger::contextgraph::query::card(&self.around(file), id)
+            .unwrap_or_else(|| panic!("{id} is a graph node"))
+    }
+}
+
+/// `card` is proven exactly once, its one piece of evidence `evidence` (`why` says why it must
+/// be).
+#[cfg(feature = "symbols")]
+fn assert_proven_once_by(card: &rigger::contextgraph::query::Card, evidence: &str, why: &str) {
+    assert_eq!(card.proven_by, 1, "{why}; card: {card:?}");
+    assert_eq!(
+        card.proof_evidence,
+        vec![evidence.to_string()],
+        "{why}; card: {card:?}"
+    );
+}
+
 /// Fixture for [`cross_file_proof_survives_a_real_reextraction_of_the_defining_file`]: `watch`
 /// (proven by a cross-file test) and `idle` (never referenced) - independent of both the
 /// implementer's own `product.rs`/`product_fn` fixture and this file's own `combat.rs`/`strike`
@@ -352,56 +414,35 @@ fn checks_watch() {
 #[cfg(feature = "symbols")]
 #[test]
 fn cross_file_proof_survives_a_real_reextraction_of_the_defining_file() {
-    use rigger::contextgraph::query::card;
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
-
-    let root = tempfile::tempdir().unwrap();
-    root_write(&root, "sentinel.rs", SENTINEL_V1_SRC);
-    root_write(&root, "tests/sentinel_periphery.rs", SENTINEL_TEST_SRC);
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut next_position = 1u64;
-    reextract_file(&root, &p, "sentinel.rs", &mut next_position);
-    reextract_file(&root, &p, "tests/sentinel_periphery.rs", &mut next_position);
-
-    let baseline = p.subgraph(&["sentinel.rs".to_string()], 2).unwrap();
-    let watch = card(&baseline, "sentinel.rs::watch").expect("sentinel.rs::watch is a graph node");
-    assert_eq!(
-        watch.proven_by, 1,
-        "sanity: the cross-file test proves watch before any re-extraction; card: {watch:?}"
-    );
-    assert_eq!(
-        watch.proof_evidence,
-        vec!["tests/sentinel_periphery.rs:3".to_string()]
+    let mut pl = Pipeline::holding(&[
+        ("sentinel.rs", SENTINEL_V1_SRC),
+        ("tests/sentinel_periphery.rs", SENTINEL_TEST_SRC),
+    ]);
+    pl.extract(&["sentinel.rs", "tests/sentinel_periphery.rs"]);
+    assert_proven_once_by(
+        &pl.card("sentinel.rs", "sentinel.rs::watch"),
+        "tests/sentinel_periphery.rs:3",
+        "sanity: the cross-file test proves watch before any re-extraction",
     );
 
     // sentinel.rs is edited (unrelated to watch) and re-extracts ALONE; the test file is
     // untouched and its batch is never re-applied here.
-    root_write(&root, "sentinel.rs", SENTINEL_V2_SRC);
-    reextract_file(&root, &p, "sentinel.rs", &mut next_position);
+    pl.write("sentinel.rs", SENTINEL_V2_SRC);
+    pl.extract(&["sentinel.rs"]);
 
-    let after = p.subgraph(&["sentinel.rs".to_string()], 2).unwrap();
-    let watch_after =
-        card(&after, "sentinel.rs::watch").expect("sentinel.rs::watch survives the re-extraction");
-    assert_eq!(
-        watch_after.proven_by, 1,
-        "re-extracting sentinel.rs must not silently drop the proof a DIFFERENT, untouched file \
-         already established; card: {watch_after:?}"
+    assert_proven_once_by(
+        &pl.card("sentinel.rs", "sentinel.rs::watch"),
+        "tests/sentinel_periphery.rs:3",
+        "re-extracting sentinel.rs must not silently drop the proof, or its evidence entry, a \
+         DIFFERENT, untouched file already established",
     );
     assert_eq!(
-        watch_after.proof_evidence,
-        vec!["tests/sentinel_periphery.rs:3".to_string()],
-        "the evidence entry itself must survive too; card: {watch_after:?}"
-    );
-    let idle_after = card(&after, "sentinel.rs::idle").expect("sentinel.rs::idle is a graph node");
-    assert_eq!(
-        idle_after.proven_by, 0,
+        pl.card("sentinel.rs", "sentinel.rs::idle").proven_by,
+        0,
         "idle is never referenced by any test"
     );
-    let alert_after = card(&after, "sentinel.rs::alert")
-        .expect("the newly added alert folded structurally alongside watch/idle");
-    assert_eq!(alert_after.proven_by, 0);
+    // The newly added alert folded structurally alongside watch/idle.
+    assert_eq!(pl.card("sentinel.rs", "sentinel.rs::alert").proven_by, 0);
 }
 
 #[cfg(feature = "symbols")]
@@ -643,38 +684,23 @@ const GONE_TEST_V2_SRC: &str = "// the test that proved vanish() was deleted\n";
 #[cfg(feature = "symbols")]
 #[test]
 fn a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline() {
-    use rigger::contextgraph::query::card;
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
-
-    let root = tempfile::tempdir().unwrap();
-    root_write(&root, "gone.rs", GONE_PRODUCT_SRC);
-    root_write(&root, "tests/gone_periphery.rs", GONE_TEST_V1_SRC);
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut next_position = 1u64;
-    reextract_file(&root, &p, "gone.rs", &mut next_position);
-    reextract_file(&root, &p, "tests/gone_periphery.rs", &mut next_position);
-
-    let baseline = p.subgraph(&["gone.rs".to_string()], 2).unwrap();
-    let vanish = card(&baseline, "gone.rs::vanish").expect("gone.rs::vanish is a graph node");
-    assert_eq!(
-        vanish.proven_by, 1,
-        "sanity: the test proves vanish before its reference is deleted; card: {vanish:?}"
-    );
-    assert_eq!(
-        vanish.proof_evidence,
-        vec!["tests/gone_periphery.rs:3".to_string()]
+    let mut pl = Pipeline::holding(&[
+        ("gone.rs", GONE_PRODUCT_SRC),
+        ("tests/gone_periphery.rs", GONE_TEST_V1_SRC),
+    ]);
+    pl.extract(&["gone.rs", "tests/gone_periphery.rs"]);
+    assert_proven_once_by(
+        &pl.card("gone.rs", "gone.rs::vanish"),
+        "tests/gone_periphery.rs:3",
+        "sanity: the test proves vanish before its reference is deleted",
     );
 
     // The test's ONLY reference is deleted (replaced with a plain comment); the test file
     // re-extracts ALONE, its evidence set now EMPTY.
-    root_write(&root, "tests/gone_periphery.rs", GONE_TEST_V2_SRC);
-    reextract_file(&root, &p, "tests/gone_periphery.rs", &mut next_position);
+    pl.write("tests/gone_periphery.rs", GONE_TEST_V2_SRC);
+    pl.extract(&["tests/gone_periphery.rs"]);
 
-    let after = p.subgraph(&["gone.rs".to_string()], 2).unwrap();
-    let vanish_after =
-        card(&after, "gone.rs::vanish").expect("gone.rs::vanish still exists as a graph node");
+    let vanish_after = pl.card("gone.rs", "gone.rs::vanish");
     assert_eq!(
         vanish_after.proven_by, 0,
         "a deleted test reference must retract its own stale proof, not strand it forever; card: \
@@ -717,20 +743,10 @@ fn checks_heard() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_no_residue() {
-    use rigger::contextgraph::query::card;
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
+    let mut pl = Pipeline::holding(&[("tests/blank_helper.rs", BLANK_TESTS_DIR_SRC)]);
+    pl.extract(&["tests/blank_helper.rs"]);
 
-    let root = tempfile::tempdir().unwrap();
-    root_write(&root, "tests/blank_helper.rs", BLANK_TESTS_DIR_SRC);
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut next_position = 1u64;
-    reextract_file(&root, &p, "tests/blank_helper.rs", &mut next_position);
-
-    let blank_only = p
-        .subgraph(&["tests/blank_helper.rs".to_string()], 2)
-        .unwrap();
+    let blank_only = pl.around("tests/blank_helper.rs");
     assert!(
         blank_only.nodes.is_empty() && blank_only.edges.is_empty(),
         "a reference-free tests/-dir file's first extraction is a lone empty-boundary sentinel - \
@@ -742,22 +758,16 @@ fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_
     // An unrelated product/test pair extracted afterward, in the SAME store, must prove normally -
     // the earlier no-op sentinel left no pending_proof residue or empty-named entity for anything
     // to (mis)inherit.
-    root_write(&root, "quiet.rs", QUIET_PRODUCT_SRC);
-    root_write(&root, "tests/quiet_check.rs", QUIET_TEST_SRC);
-    reextract_file(&root, &p, "quiet.rs", &mut next_position);
-    reextract_file(&root, &p, "tests/quiet_check.rs", &mut next_position);
+    pl.write("quiet.rs", QUIET_PRODUCT_SRC);
+    pl.write("tests/quiet_check.rs", QUIET_TEST_SRC);
+    pl.extract(&["quiet.rs", "tests/quiet_check.rs"]);
 
-    let g = p.subgraph(&["quiet.rs".to_string()], 2).unwrap();
-    let heard = card(&g, "quiet.rs::heard").expect("quiet.rs::heard is a graph node");
-    assert_eq!(
-        heard.proven_by, 1,
-        "an unrelated pair extracted after the empty sentinel proves normally; card: {heard:?}"
+    assert_proven_once_by(
+        &pl.card("quiet.rs", "quiet.rs::heard"),
+        "tests/quiet_check.rs:3",
+        "an unrelated pair extracted after the empty sentinel proves normally",
     );
-    assert_eq!(
-        heard.proof_evidence,
-        vec!["tests/quiet_check.rs:3".to_string()]
-    );
-    let quiet = card(&g, "quiet.rs::quiet").expect("quiet.rs::quiet is a graph node");
+    let quiet = pl.card("quiet.rs", "quiet.rs::quiet");
     assert_eq!(
         quiet.proven_by, 0,
         "quiet is never referenced by a test; card: {quiet:?}"
