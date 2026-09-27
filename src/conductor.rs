@@ -1131,7 +1131,7 @@ fn integrate_row(e: &Event) -> Option<(String, String, u32, Value)> {
 /// reporting a genuine "nothing new" on resume - indistinguishable, from git state alone,
 /// from a stage that never had anything to land at all. `run_tip` (the OLDER base this
 /// landing merged FROM) is carried so a resumed `integrate_and_emit` can recompute the
-/// files this landing touched via [`Worktree::committed_diff_names`] against it, since the
+/// files this landing touched via [`Worktree::diff_names`] (merge-base mode) against it, since the
 /// CURRENT base has already absorbed them.
 fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
     let mut pending: HashMap<String, (u32, String, String)> = HashMap::new();
@@ -3151,7 +3151,7 @@ struct RunCtx<'a> {
     /// so a crash between that real mutation and its durable after-record leaves git state
     /// alone unable to tell that apart from a stage that genuinely never had anything to
     /// contribute. `run_tip` lets the resumed call recompute the actual touched-files set via
-    /// [`Worktree::committed_diff_names`] against the OLDER base this landing merged from.
+    /// [`Worktree::diff_names`] (merge-base mode) against the OLDER base this landing merged from.
     pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
     /// Every durably-recorded `integrate-landed` row (spec 103, criterion 3 - RE-GATE WHAT
     /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded ONCE at run start
@@ -5036,12 +5036,12 @@ impl RunCtx<'_> {
         }
         let mut residue = dirty;
         if moved {
-            // Two-dot, never `committed_diff_names`' three-dot: `round_start_sha` is
+            // Two-dot, never the merge-base three-dot: `round_start_sha` is
             // THIS worktree's own prior tip, not a possibly-diverged base branch, and a
             // non-ancestor moved tip (residue that rewrote history rather than just
             // adding to it) must not have its named paths inflated by merge-base
             // anchoring (sdet-u103c6-committed-diff-names-triple-dot-non-ancestor).
-            residue.extend(w.diff_names_since(round_start_sha).unwrap_or_default());
+            residue.extend(w.diff_names(round_start_sha, crate::worktree::DiffMode::Direct).unwrap_or_default());
             residue.sort();
             residue.dedup();
         }
@@ -9080,7 +9080,7 @@ impl RunCtx<'_> {
                         // the true no-op short circuit.
                         match self.landed_sha_for(&st.name, attempt) {
                             Some((landed_pass, sha, pre_merge)) => {
-                                files = wt.committed_diff_names(&pre_merge)?;
+                                files = wt.diff_names(&pre_merge, crate::worktree::DiffMode::MergeBase)?;
                                 already_landed = Some((landed_pass, sha, pre_merge));
                             }
                             None => return Ok(Integration::default()),
@@ -9099,7 +9099,7 @@ impl RunCtx<'_> {
                     // Recompute the ACTUAL files this already-landed merge touched from the
                     // OLDER base it merged FROM (the current base has since absorbed them,
                     // which is exactly why `changed_since_base` read empty above).
-                    files = wt.committed_diff_names(&run_tip)?;
+                    files = wt.diff_names(&run_tip, crate::worktree::DiffMode::MergeBase)?;
                     // Row 5 fix, generalized to this sibling recovery sub-path (the SAME
                     // root cause: "row 4 closed" was treated as "fully integrated" without
                     // ever consulting row 3): `Worktree::land` already fast-forwarded the

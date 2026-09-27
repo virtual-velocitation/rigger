@@ -1,8 +1,8 @@
 //! Periphery (real public API, real git, cross-module) test for spec 103 criterion 6's
 //! ROUND 2 fix (diff base `db13597`, increment `f6dc0c5..c7bbfe8`):
-//! `Worktree::diff_names_since` (`src/worktree.rs`), wired into
+//! `Worktree::diff_names` in `DiffMode::Direct` (`src/worktree.rs`), wired into
 //! `RunCtx::guard_review_round_tree`'s residue-naming call in place of
-//! `Worktree::committed_diff_names`.
+//! `Worktree::diff_names` in `DiffMode::MergeBase`.
 //!
 //! WHY THIS EXISTS. The `sdet` review lens's own round-1 finding
 //! (`sdet-u103c6-committed-diff-names-triple-dot-non-ancestor`) named the exact gap: both of
@@ -11,7 +11,7 @@
 //! `a_lenses_only_panels_residue_is_restored_and_never_merged`) only ever move the branch tip
 //! FORWARD - a reviewer's own commit lands strictly ON TOP of `round_start_sha`, so
 //! `round_start_sha` stays an ancestor of the new tip. `guard_review_round_tree` named that
-//! residue via `Worktree::committed_diff_names` (triple-dot, merge-base-anchored) - the RIGHT
+//! residue via `Worktree::diff_names` in `DiffMode::MergeBase` (triple-dot, merge-base-anchored) - the RIGHT
 //! choice when the compared ref is a possibly-diverged BASE branch, but the WRONG one here,
 //! where the compared ref (`round_start_sha`) is this SAME worktree's own prior tip: a
 //! reviewer who AMENDS the tip commit in place (or force-pushes/rewrites it) rather than
@@ -20,7 +20,7 @@
 //! strictly BEFORE `round_start_sha`), silently losing any file `round_start_sha` itself
 //! added or changed relative to that merge-base: exactly the implementer's own real,
 //! already-reviewed work can vanish from the lesson's named residue with nothing to say so.
-//! Round 2 fixes this with a new two-dot `Worktree::diff_names_since` (a direct tree-to-tree
+//! Round 2 fixes this with a new two-dot `Worktree::diff_names` in `DiffMode::Direct` (a direct tree-to-tree
 //! comparison, ancestry-agnostic) used ONLY for this same-branch residue check. This drives
 //! the non-ancestor shape - never exercised by any existing test, implementer's or this
 //! suite's own round-1 test - through the real `rigger::conductor::run` entry point, a real
@@ -35,10 +35,10 @@
 //! ordinary SUCCESS path's residue-naming CONTENT, not which call site reaches the guard).
 //!
 //! Verified RED then GREEN by hand: reverting `guard_review_round_tree`'s residue line to
-//! call `w.committed_diff_names(round_start_sha)` (the pre-fix triple-dot call) makes
+//! call `w.diff_names(round_start_sha, DiffMode::MergeBase)` (the pre-fix triple-dot call) makes
 //! `a_non_ancestor_amend_names_the_true_diff_not_the_triple_dot_under_report` fail - the
 //! lesson stops naming `work.rs` because triple-dot anchors on the merge-base, strictly
-//! before `round_start_sha`, where `work.rs` never existed either. Restoring the `diff_names_since`
+//! before `round_start_sha`, where `work.rs` never existed either. Restoring the `DiffMode::Direct`
 //! call verbatim (`git diff` on `src/` clean) returns it to green.
 
 use rigger::conductor::{
@@ -156,7 +156,7 @@ impl AgentDriver for NonAncestorAmendDriver {
 /// ever tests the ancestor-forward shape) through the real `rigger::conductor::run` entry
 /// point, a real git repo, and a real `Worktree`. Proves the lesson names the TRUE diff
 /// between the judged sha and the amended tip - including `work.rs`, the implementer's own
-/// reviewed file the amend silently dropped - which a triple-dot (`committed_diff_names`)
+/// reviewed file the amend silently dropped - which a triple-dot (`DiffMode::MergeBase`)
 /// residue check would miss entirely, since it anchors on the merge-base strictly before
 /// `round_start_sha`, where `work.rs` never existed either.
 #[test]
@@ -264,8 +264,8 @@ fn a_non_ancestor_amend_names_the_true_diff_not_the_triple_dot_under_report() {
     assert!(
         lesson_text.contains("work.rs"),
         "the lesson must name work.rs - the implementer's OWN reviewed file the amend \
-         dropped - which only the two-dot diff_names_since sees (a triple-dot \
-         committed_diff_names call anchors on the merge-base strictly before \
+         dropped - which only the two-dot DiffMode::Direct diff sees (a triple-dot \
+         DiffMode::MergeBase call anchors on the merge-base strictly before \
          round_start_sha, where work.rs never existed either, and silently misses it): {lesson_text:?}"
     );
     assert!(
