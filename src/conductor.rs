@@ -14068,6 +14068,9 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
+    use crate::test_support::agent;
+    use crate::test_support::gate_def;
+    use crate::test_support::gate_def_inputs;
     use std::path::Path;
 
     // ---- FAILURE CLASS (spec 104 criterion 5): pure functions, moved here with the code
@@ -15809,13 +15812,6 @@ mod tests {
         }
     }
 
-    fn agent(id: &str) -> AgentDef {
-        AgentDef {
-            id: id.to_string(),
-            ..Default::default()
-        }
-    }
-
     /// An agent with a persona (the markdown body of its definition) - its role
     /// instructions, which the conductor must thread to the driver as the system
     /// prompt.
@@ -15824,25 +15820,6 @@ mod tests {
             id: id.to_string(),
             prompt: prompt.to_string(),
             ..Default::default()
-        }
-    }
-
-    fn gate_def(run: &str) -> config::Gate {
-        config::Gate {
-            run: run.to_string(),
-            kind: "core".to_string(),
-            inputs: Vec::new(),
-        }
-    }
-
-    /// A `core` gate over `run` scoped to the given blast-radius `inputs` globs (spec 12,
-    /// unit 3): the inner loop runs it only when its globs intersect the unit's grounded
-    /// blast radius.
-    fn gate_def_inputs(run: &str, inputs: &[&str]) -> config::Gate {
-        config::Gate {
-            run: run.to_string(),
-            kind: "core".to_string(),
-            inputs: inputs.iter().map(|s| s.to_string()).collect(),
         }
     }
 

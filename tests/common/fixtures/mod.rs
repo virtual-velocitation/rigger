@@ -11,10 +11,16 @@
 
 #![allow(dead_code, unused_imports)]
 
+mod config;
 mod events;
+pub use config::*;
 pub use events::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod canary;
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod conductor;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use canary::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use conductor::*;

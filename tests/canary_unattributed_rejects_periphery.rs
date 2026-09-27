@@ -26,10 +26,13 @@
 //! real wire round trip over four independently-varying items, not just a fixture typed
 //! to match it.
 
+mod common;
+
+use common::fixtures::cfg_for;
 use rigger::canary::{CanaryOutcome, STREAM, TIER_LENS};
 use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::{AgentDef, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
@@ -108,21 +111,6 @@ impl AgentDriver for UnattributedDriver {
     }
 }
 
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg(ids: &[&str]) -> Config {
-    let mut c = Config::default();
-    for id in ids {
-        c.agents.insert((*id).to_string(), agent(id));
-    }
-    c
-}
-
 fn panel() -> ReviewPanel {
     ReviewPanel {
         lenses: vec!["lens".to_string()],
@@ -156,7 +144,7 @@ fn item(id: &str, anchor: &str, planted: bool, verdict: &str, marker: &str) -> C
 /// read back through the actual store, not a hand-typed fixture.
 #[test]
 fn run_canary_scores_an_unattributed_correct_reject_and_project_canary_counts_only_it() {
-    let cfg = cfg(&["lens", "adj"]);
+    let cfg = cfg_for(&["lens", "adj"]);
     let panel = panel();
 
     let corpus = vec![

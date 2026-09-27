@@ -339,6 +339,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::agent as agent_def;
 
     // ---- instruction injection: the operator layer loader ----
 
@@ -1889,13 +1890,6 @@ agent: worker\n";
             cfg.validate().is_err(),
             "a stage review declaring only a tiers policy (no full adjudicator) must fail validation"
         );
-    }
-
-    fn agent_def(id: &str) -> AgentDef {
-        AgentDef {
-            id: id.to_string(),
-            ..Default::default()
-        }
     }
 
     #[test]

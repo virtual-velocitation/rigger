@@ -264,6 +264,10 @@
 //! documented recovery folds the mover in, never discards it), and the repo ends up clean -
 //! `land`'s own "the repo is untouched" half of its contract, checked at the whole-run level.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
 use rigger::config_store;
@@ -343,21 +347,6 @@ fn git_commit_paths(dir: &str, paths: &[&str], msg: &str) {
              {}",
             String::from_utf8_lossy(&out.stderr)
         );
-    }
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
     }
 }
 

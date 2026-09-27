@@ -30,15 +30,20 @@
 //! module and unreachable from here regardless). Neither `canary` nor `parallel` is feature-
 //! gated, so this test is compiled unconditionally and runs in both feature lanes.
 
+mod common;
+
 use std::collections::HashSet;
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
+use common::fixtures::cfg_for;
+use common::fixtures::item;
+use common::fixtures::panel_with_lenses;
 use rigger::canary::{CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
-use rigger::canary_store::{run_canary, CanaryItem};
+use rigger::canary_store::run_canary;
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
@@ -105,42 +110,6 @@ impl AgentDriver for RecordingDriver {
     }
 }
 
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg(ids: &[&str]) -> Config {
-    let mut c = Config::default();
-    for id in ids {
-        c.agents.insert((*id).to_string(), agent(id));
-    }
-    c
-}
-
-fn panel(lenses: &[&str]) -> ReviewPanel {
-    ReviewPanel {
-        lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
-        adversary: "adv".into(),
-        adjudicator: "adj".into(),
-        tiers: None,
-    }
-}
-
-fn item(id: &str, defect_class: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
-    CanaryItem {
-        id: id.into(),
-        defect_class: defect_class.into(),
-        planted,
-        anchor: format!("{id}.rs"),
-        expected_verdict: verdict.into(),
-        expected_tier: tier.into(),
-        review: format!("fn {id}() {{}}"),
-    }
-}
-
 /// Drives `run_canary` - the public entry the shipped `rigger canary` command calls - over a
 /// panel of five lenses, an adversary, and an adjudicator, and a three-item corpus, at the
 /// REAL production `--jobs` default (`canary_store::default_jobs()`, never a test-pinned
@@ -166,8 +135,8 @@ fn run_canary_fans_out_the_lens_tier_at_the_real_default_width_through_the_publi
     let lenses = ["lens-a", "lens-b", "lens-c", "lens-d", "lens-e"];
     let mut ids: Vec<&str> = lenses.to_vec();
     ids.extend(["adv", "adj"]);
-    let cfg = cfg(&ids);
-    let panel = panel(&lenses);
+    let cfg = cfg_for(&ids);
+    let panel = panel_with_lenses(&lenses);
 
     let corpus = vec![
         item("mid-lens", "off-by-one", true, "reject", "lens"),

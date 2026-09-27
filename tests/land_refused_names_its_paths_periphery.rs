@@ -14,6 +14,10 @@
 //! CONDUCTOR-SIDE seam: `Worktree::land -> integrate_and_emit -> run_wave -> run()`, driven
 //! through a real `AgentDriver` and a real git repo, never hand-seeded events.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, Stage};
 use rigger::contextgraph;
@@ -51,21 +55,6 @@ fn git_out(dir: &str, args: &[&str]) -> String {
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} in {dir}: {e}"));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
 }
 
 fn review_panel() -> config::ReviewPanel {

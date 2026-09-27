@@ -31,6 +31,10 @@
 //! differently-shaped failure), confirming the assertion is load-bearing; restoring the fix
 //! verbatim (`git diff` on `src/` clean) returns it to green.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{self, AgentDef, Config, Stage};
 use rigger::eventstore::sqlite::Store;
@@ -73,21 +77,6 @@ fn install_refusing_hook(repo_path: &str) {
     let hook = hooks.join("pre-commit");
     std::fs::write(&hook, "#!/bin/sh\necho 'hook: refusing' >&2\nexit 1\n").unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
-    }
 }
 
 fn review_panel() -> config::ReviewPanel {

@@ -44,6 +44,10 @@
 //! recording no post-merge-gate verdict and reporting `UnitIntegrated` with the same empty
 //! `commit` sentinel a pre-fix binary always reported for this shape.
 
+mod common;
+
+use common::fixtures::agent;
+use common::fixtures::gate_def;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, Stage};
 use rigger::contextgraph;
@@ -103,21 +107,6 @@ fn git_commit_all(dir: &str, msg: &str) {
             "git {args:?} in {dir} failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-    }
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn gate_def(run: &str) -> config::Gate {
-    config::Gate {
-        run: run.to_string(),
-        kind: "core".to_string(),
-        inputs: Vec::new(),
     }
 }
 

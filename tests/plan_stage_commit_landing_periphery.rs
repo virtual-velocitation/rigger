@@ -197,6 +197,7 @@
 
 mod common;
 
+use common::fixtures::agent;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
     META_COMPENSATE_TARGET, REVIEW_ONLY_NO_ARTIFACT, STREAM,
@@ -262,13 +263,6 @@ fn run_git(dir: &str, args: &[&str]) -> String {
         );
     }
     String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
 }
 
 /// Drives a `produces` (planner) stage that commits its own paths directly with its OWN git
