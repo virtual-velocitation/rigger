@@ -14463,6 +14463,10 @@ mutation: { run: \"echo mutation ok; true\", kind: core }\n\
 # crate's tests/boundary_audit.rs for the worked example). A red boundary gate is\n  \
 # non-negotiable: the adjudicator rejects, never balances it against other evidence.\n  \
 boundary: { run: \"echo boundary ok; true\", kind: core }\n\
+# The audit gate: DRY and YAGNI as a red gate. Replace with your project's own\n  \
+# duplication and dead-code check; if it keeps a generated catalog, regenerate it\n  \
+# before asserting so a unit is never red on a stale catalog alone.\n  \
+audit: { run: \"echo audit ok; true\", kind: core }\n\
 \n\
 stages:\n  \
 # The conductor creates one baseline implement unit per acceptance criterion (the\n  \
@@ -14493,7 +14497,7 @@ needs: [plan-critique]\n    \
 agent: rust-engineer\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
-gates: [build, test, lint, boundary]  # red -> green enforced around the change\n    \
+gates: [build, audit, test, lint, boundary]  # red -> green enforced around the change\n    \
 on_pass: merge          # land + reindex + record, per unit, once reviewed\n    \
 coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
 \n  \
@@ -14507,7 +14511,7 @@ checkin:\n    \
 needs: [implement]\n    \
 agent: rust-engineer\n    \
 max_retries: 2          # attempt bound: the sweep, one remediation round, the sweep again\n    \
-gates: [build, test, lint, boundary, mutation]\n    \
+gates: [build, audit, test, lint, boundary, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n";
 
@@ -19989,9 +19993,9 @@ mod tests {
         // checkin stage (spec 91) runs the mutation sweep once, after every implement unit
         // has integrated.
         assert_eq!(cfg.workflow.stages.len(), 4, "scaffold stage count");
-        // Five gates in the reusable library, including the checkin stage's `mutation` gate
-        // and the `boundary` gate both unit stages carry.
-        assert_eq!(cfg.workflow.gates.len(), 5, "scaffold gate count");
+        // Six gates in the reusable library, including the checkin stage's `mutation` gate
+        // and the `boundary` and `audit` gates both unit stages carry.
+        assert_eq!(cfg.workflow.gates.len(), 6, "scaffold gate count");
 
         // The scaffold exercises the per-unit shape: a producer, the plan-critique gate
         // between plan and implement, a fan-out implement stage that integrates on_pass:
@@ -20025,7 +20029,7 @@ mod tests {
         );
         assert_eq!(
             checkin.gates,
-            ["build", "test", "lint", "boundary", "mutation"],
+            ["build", "audit", "test", "lint", "boundary", "mutation"],
             "checkin re-verifies the whole gate suite, THEN sweeps mutants"
         );
         assert_eq!(checkin.on_pass, "merge");

@@ -173,6 +173,23 @@ gates:                      # the project's verification library, referenced by 
   # principle lint gains an exemption. Each rule's allowlist of today's offenders only
   # shrinks. The adjudicator treats a red boundary gate as non-negotiable.
   boundary: { run: "cargo test --test boundary_audit", kind: core }
+  # The audit gate (workspace split, step 0): DRY and YAGNI as a red gate. The simplification
+  # audit fails on any duplicate cluster left open, any dead-code ledger entry and any
+  # disposition that names no cluster. `docs/audit/*` is generated, so two units that each
+  # regenerate it on their own branch leave the merged tree's catalog stale even when both
+  # are clean: the gate therefore regenerates the catalog in its own worktree FIRST and only
+  # then asserts, so a landing is never red on drift alone. It runs before `test`, whose
+  # plain `cargo test` includes the audit's drift guards. A regenerated catalog the unit has
+  # not committed is named on its own line (the attempt checkpoint commits it), never
+  # reported as a failure.
+  audit:
+    run: >-
+      RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit > /dev/null 2>&1;
+      cargo test --test simplification_audit ||
+      { echo "error[audit]: the simplification audit is red - close each open duplicate cluster or record why it is not one in docs/audit/duplication-dispositions.json, delete each dead-code ledger entry, and fix each disposition that names no cluster; the failing assertion is above"; exit 1; };
+      if test -n "$(git status --porcelain -- docs/audit)"; then
+      echo "audit: docs/audit was regenerated for this tree and is not committed - commit the regenerated files with the change (drift alone never fails this gate)"; fi
+    kind: core
   # The check-in-stage mutation gate (spec 91): runs the diff-scoped `cargo mutants`
   # sweep ONCE, at the `checkin` stage below - after every implement unit has
   # integrated - rather than once per implementer round (spec 73's original per-round
@@ -379,7 +396,7 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, test, style, no-os-kill, boundary]
+    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
 
@@ -396,6 +413,6 @@ stages:
     needs: [implement]
     agent: rust-engineer
     max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, the sweep again (1 escalated on the first miss - run c6ccaf8e)
-    gates: [fmt, clippy, build, test, style, no-os-kill, boundary, mutation]
+    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary, mutation]
     on_pass: merge
     coverage: "mutation efficacy of the whole spec diff"
