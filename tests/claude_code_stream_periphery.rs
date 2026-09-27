@@ -904,6 +904,53 @@ fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
 }
 
 #[test]
+fn spawn_stop_grace_loop_actually_waits_out_the_injected_duration() {
+    // Pins the grace-period LOOP itself, not just its outer bound: a host whose deadline
+    // is computed BEHIND `now()` (never ahead of it), or whose `while now() < deadline`
+    // bound check never iterates at all, reaches `reap::end_child`'s SIGTERM the instant
+    // the child's input closes - before this fixture's own deliberate post-EOF sleep
+    // completes - so the fixture is killed mid-sleep and never writes its marker. Only a
+    // host that genuinely polls across the injected `stop_grace` window observes the
+    // fixture exiting ON ITS OWN and lets it finish, so the marker survives.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-silent-delayed-self-exit-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver {
+        bin,
+        // Comfortably longer than the fixture's own 0.15s post-EOF sleep, so a correct
+        // host's poll loop is certain to observe the natural exit within the grace
+        // window rather than racing it.
+        stop_grace: Duration::from_millis(600),
+        ..fx.driver()
+    };
+    let marker = fx.scratch_root.path().join("self-exit.marker");
+    let mut o = opts("u104-stop/implementer#1");
+    o.env = vec![(
+        "RIGGER_TEST_SELF_EXIT_MARKER".to_string(),
+        marker.to_string_lossy().into_owned(),
+    )];
+    let agent = AgentDef {
+        max_wall_clock: Some(1),
+        ..Default::default()
+    };
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&agent, "do the thing", &o, &emit)
+        .expect_err("a stream that never produces a result must not read as a success");
+    assert!(err.0.contains("stopped"), "{}", err.0);
+
+    assert!(
+        marker.exists(),
+        "the grace loop must actually WAIT for the fixture's own delayed self-exit \
+         (proving the deadline is computed ahead of `now()` and the loop's bound check \
+         truly iterates) rather than force-ending it before its post-EOF sleep completes"
+    );
+}
+
+#[test]
 fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing() {
     // The escalation half of THE STOP: a session that ignores its stdin closing entirely
     // (never exits on its own) must still be ended - through `reap::end_child`'s

@@ -1837,7 +1837,7 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1777 func
 
 ## 2. Duplication Catalog
 
-909 clusters (4350 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+909 clusters (4351 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1968,7 +1968,7 @@ mandatory sweep: Command::new call sites - 447 site(s), collected mechanically r
 - `src/conductor.rs:43830-43830` `Command::new`
 - `src/dash.rs:3882-3882` `Command::new`
 - `src/driver/claude_code.rs:188-188` `Command::new`
-- `src/driver/claude_code.rs:2027-2027` `Command::new`
+- `src/driver/claude_code.rs:2035-2035` `Command::new`
 - `src/driver/cli.rs:45-45` `Command::new`
 - `src/gate.rs:745-745` `Command::new`
 - `src/gate.rs:754-754` `Command::new`
@@ -2047,8 +2047,8 @@ mandatory sweep: Command::new call sites - 447 site(s), collected mechanically r
 - `tests/checkin_mutation_diff_base_periphery.rs:182-182` `Command::new`
 - `tests/checkin_mutation_diff_base_periphery.rs:227-227` `Command::new`
 - `tests/checkpoint_commit_hook_bypass_periphery.rs:56-56` `Command::new`
-- `tests/claude_code_stream_periphery.rs:986-986` `Command::new`
-- `tests/claude_code_stream_periphery.rs:1322-1322` `Command::new`
+- `tests/claude_code_stream_periphery.rs:1033-1033` `Command::new`
+- `tests/claude_code_stream_periphery.rs:1369-1369` `Command::new`
 - `tests/cli.rs:24-24` `Command::new`
 - `tests/cli.rs:50-50` `Command::new`
 - `tests/cli.rs:113-113` `Command::new`
@@ -2572,7 +2572,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:305-307` `review_round_start_key`
 - `src/conductor.rs:348-350` `compensation_queued_key`
 - `src/conductor.rs:1091-1093` `conflict_regenerate_key`
-- `src/driver/claude_code.rs:1043-1051` `stop_message`
+- `src/driver/claude_code.rs:1051-1059` `stop_message`
 - `src/spawn.rs:146-148` `spawn_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:70-72` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:73-75` `expected_postmerge_branch`
@@ -5775,7 +5775,7 @@ mandatory sweep: /proc-path string literals - 62 site(s), collected mechanically
 - `src/reap.rs:226-226` `"/proc/{pid}/status"`
 - `src/reap.rs:286-286` `"/proc"`
 - `src/reap.rs:363-363` `"/proc/{}/cwd"`
-- `tests/claude_code_stream_periphery.rs:1061-1061` `"/proc/{pid}/stat"`
+- `tests/claude_code_stream_periphery.rs:1108-1108` `"/proc/{pid}/stat"`
 - `tests/cli.rs:22970-22970` `"/proc"`
 - `tests/cli.rs:25190-25190` `"/proc/{pid}/stat"`
 - `tests/cli.rs:25191-25191` `"read /proc/{pid}/stat: {e}"`
@@ -5992,7 +5992,7 @@ mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functio
 - `src/main.rs:25667-25680` `pgid_of`
 - `src/reap.rs:214-221` `pid_starttime`
 - `src/reap.rs:225-231` `read_ppid`
-- `tests/claude_code_stream_periphery.rs:1060-1068` `is_running`
+- `tests/claude_code_stream_periphery.rs:1107-1115` `is_running`
 - `tests/cli.rs:25189-25202` `proc_pgid_of`
 - `tests/cli.rs:28313-28413` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
 - `tests/cli.rs:28492-28607` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
@@ -6282,7 +6282,7 @@ Proposed home: `a new shared module (sites span 5 files: src/driver/claude_code.
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1280-1287` `opts`
+- `src/driver/claude_code.rs:1288-1295` `opts`
 - `src/driver/replay.rs:395-402` `opts_for`
 - `tests/agent_fallback_model_config_periphery.rs:23-30` `opts`
 - `tests/claude_code_launch_wire_periphery.rs:95-102` `opts`
@@ -6294,8 +6294,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1561-1589` `classify_no_result_ignores_a_stopfailure_record_from_a_different_run`
-- `src/driver/claude_code.rs:1592-1611` `classify_no_result_still_honors_a_stopfailure_record_from_the_same_run`
+- `src/driver/claude_code.rs:1569-1597` `classify_no_result_ignores_a_stopfailure_record_from_a_different_run`
+- `src/driver/claude_code.rs:1600-1619` `classify_no_result_still_honors_a_stopfailure_record_from_the_same_run`
 
 #### `dup-0225` (exact, 2 sites)
 
@@ -6303,8 +6303,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1927-1933` `stream_path_mirrors_spawn_scratch_paths_layout`
-- `src/driver/claude_code.rs:1936-1942` `stream_path_omits_the_run_subdir_for_an_empty_run_id`
+- `src/driver/claude_code.rs:1935-1941` `stream_path_mirrors_spawn_scratch_paths_layout`
+- `src/driver/claude_code.rs:1944-1950` `stream_path_omits_the_run_subdir_for_an_empty_run_id`
 
 #### `dup-0226` (exact, 2 sites)
 
@@ -6312,8 +6312,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1945-1947` `stream_path_is_none_for_an_empty_spawn_id`
-- `src/driver/claude_code.rs:1950-1956` `stream_path_is_none_rather_than_relative_for_an_empty_scratch_root`
+- `src/driver/claude_code.rs:1953-1955` `stream_path_is_none_for_an_empty_spawn_id`
+- `src/driver/claude_code.rs:1958-1964` `stream_path_is_none_rather_than_relative_for_an_empty_scratch_root`
 
 #### `dup-0227` (near, 7 sites)
 
@@ -6321,7 +6321,7 @@ Proposed home: `a new shared module (sites span 6 files: src/driver/claude_code.
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:2026-2032` `sleeper_in`
+- `src/driver/claude_code.rs:2034-2040` `sleeper_in`
 - `src/reap.rs:736-742` `sleeper_in`
 - `src/reap.rs:746-753` `sigterm_ignorer_in`
 - `tests/mutation_scratch_reap_base_guard_periphery.rs:54-61` `sigterm_ignorer_in`
@@ -6335,7 +6335,7 @@ Proposed home: `a new shared module (sites span 8 files: src/driver/claude_code.
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:2035-2043` `wait_until`
+- `src/driver/claude_code.rs:2043-2051` `wait_until`
 - `src/gate.rs:1300-1308` `wait_until`
 - `src/reap.rs:762-770` `wait_until`
 - `tests/common/mod.rs:400-408` `wait_until`
@@ -6350,7 +6350,7 @@ Proposed home: `a new shared module (sites span 2 files: src/driver/claude_code.
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:2045-2055` `open_launch`
+- `src/driver/claude_code.rs:2053-2063` `open_launch`
 - `src/progress.rs:638-650` `open_event`
 
 #### `dup-0230` (near, 2 sites)
@@ -9313,17 +9313,18 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/claude_code_stream_periphery.rs:549-597` `spawn_reaps_the_child_on_a_mid_stream_read_error`
 - `tests/claude_code_stream_periphery.rs:656-711` `spawn_survives_a_read_error_that_arrives_after_the_result_line`
 
-#### `dup-0515` (near, 5 sites)
+#### `dup-0515` (near, 6 sites)
 
-Proposed home: `claude_code_stream_periphery::support (consolidate these 5 sites into one function in this file)`
+Proposed home: `claude_code_stream_periphery::support (consolidate these 6 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/claude_code_stream_periphery.rs:907-952` `spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing`
-- `tests/claude_code_stream_periphery.rs:955-1045` `a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_clock_stop`
-- `tests/claude_code_stream_periphery.rs:1071-1125` `spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree`
-- `tests/claude_code_stream_periphery.rs:1128-1213` `spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree`
-- `tests/claude_code_stream_periphery.rs:1216-1298` `spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe`
+- `tests/claude_code_stream_periphery.rs:907-951` `spawn_stop_grace_loop_actually_waits_out_the_injected_duration`
+- `tests/claude_code_stream_periphery.rs:954-999` `spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing`
+- `tests/claude_code_stream_periphery.rs:1002-1092` `a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_clock_stop`
+- `tests/claude_code_stream_periphery.rs:1118-1172` `spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree`
+- `tests/claude_code_stream_periphery.rs:1175-1260` `spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree`
+- `tests/claude_code_stream_periphery.rs:1263-1345` `spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe`
 
 #### `dup-0516` (exact, 3 sites)
 
@@ -13341,38 +13342,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 7842 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 7843 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/conductor.rs:20550-20639` `re_ingesting_re_extracts_a_changed_file_and_skips_unchanged_ones` - no duplicate found by reading
-- `src/conductor.rs:22283-22328` `the_code_neighborhood_byte_cap_elides_before_the_count_cap_is_reached` - no duplicate found by reading
-- `src/conductor.rs:22331-22361` `a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header` - caught: `dup-0078`
-- `src/conductor.rs:22364-22430` `lessons_prompt_injection_is_capped_under_budget_with_elision_note` - caught: `dup-0072`
-- `src/conductor.rs:23080-23090` `worktree_registered_on` - no duplicate found by reading
-- `src/conductor.rs:38097-38163` `a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green` - caught: `dup-0113`
-- `src/conductor.rs:45125-45223` `a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated` - caught: `dup-0127`
-- `src/driver/claude_code.rs:942-948` `push_bounded_tail` - no duplicate found by reading
-- `src/liveness.rs:1218-1232` `any_marker_fresh_is_false_once_every_marker_is_older_than_max_age` - caught: `dup-0305`
-- `src/main.rs:15973-15975` `ev` - caught: `dup-0002`
-- `src/metrics.rs:1536-1541` `started` - caught: `dup-0368`
-- `src/metrics.rs:2266-2286` `spawn_timing_never_pairs_a_cross_run_id_collision` - no duplicate found by reading
-- `src/metrics.rs:2703-2753` `upheld_finding_without_attribution_is_dropped_by_sentinel_and_counted_unfed` - no duplicate found by reading
-- `src/run_store.rs:573-604` `ensure_started_over_legacy_events_leaves_them_before_the_boundary` - no duplicate found by reading
-- `src/spec.rs:258-265` `multi_behavior_coordinators` - no duplicate found by reading
-- `src/spec.rs:1296-1307` `ownership_check_accepts_the_word_owner` - caught: `dup-0412`
-- `src/watch.rs:654-668` `the_four_named_responses_and_the_stall_directive_match_the_skills_own_pin_table` - no duplicate found by reading
-- `tests/batched_fold_cadence.rs:91-93` `subgraph` - caught: `dup-0159`
-- `tests/claude_code_stream_periphery.rs:86-98` `spawn_reads_the_recorded_stream_to_a_real_result` - no duplicate found by reading
-- `tests/cli.rs:9625-9673` `run_teardown_reclaims_run_level_scratch_at_a_definition_drift_halt` - caught: `dup-0548`
-- `tests/cli.rs:27992-28014` `workflow_reminder_prints_despite_env_naming_a_foreign_pid` - no duplicate found by reading
-- `tests/code_ingest_events.rs:1231-1288` `project_batches_lowers_a_whole_tree_into_per_file_code_batches_the_fold_ingests` - no duplicate found by reading
-- `tests/console_status_periphery.rs:26-33` `temp_project` - caught: `dup-0484`
-- `tests/reap_before_removal_audit.rs:761-774` `collect_rs_files` - caught: `dup-0714`
-- `tests/scratch_workdir_isolation_leak_guard_periphery.rs:85-118` `one_unit_cfg` - caught: `dup-0063`
-- `tests/simplification_audit.rs:1991-2025` `assemble_fresh_report` - no duplicate found by reading
-- `tests/simplification_audit.rs:8345-8364` `two_renamed_identical_functions_form_one_exact_cluster` - no duplicate found by reading
-- `tests/step_sheds_the_freshen.rs:129-159` `walk` - caught: `dup-0870`
-- `tests/subject_view_memory_rail_client.rs:21-30` `page_script` - caught: `dup-0448`
-- `tests/validate_advisories.rs:564-577` `validate_is_silent_on_the_scaffolded_gated_fanout_template` - no duplicate found by reading
+- `src/conductor.rs:37618-37676` `two_erroring_stages_both_leave_a_record` - no duplicate found by reading
+- `src/conductor.rs:44613-44664` `a_clean_decomposition_approves_and_releases_the_fan_out` - caught: `dup-0126`
+- `src/contextgraph/sqlite.rs:2136-2164` `callers_via_bare` - caught: `dup-0176`
+- `src/contextgraph/sqlite.rs:3638-3659` `a_rebuild_reproduces_byte_identical_community_rows_from_the_log` - no duplicate found by reading
+- `src/dash.rs:3667-3792` `serve_console_stream` - no duplicate found by reading
+- `src/distiller.rs:119-195` `distill` - no duplicate found by reading
+- `src/docs.rs:1853-1882` `per_operation_skills_carry_one_procedure_and_one_named_anti_move` - no duplicate found by reading
+- `src/driver/claude_code.rs:1424-1429` `stop_failure_command_shapes_the_exact_hook_invocation` - no duplicate found by reading
+- `src/main.rs:9306-9310` `graph_node_id` - no duplicate found by reading
+- `src/metrics.rs:1148-1151` `field_str` - no duplicate found by reading
+- `src/reap.rs:121-162` `processes_rooted_under` - no duplicate found by reading
+- `src/spawn_store.rs:25-27` `park` - no duplicate found by reading
+- `src/worktree.rs:2567-2574` `head_sha_of` - caught: `dup-0433`
+- `tests/cli.rs:602-760` `reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reused_ids` - no duplicate found by reading
+- `tests/cli.rs:13100-13132` `replay_an_uncovered_candidate_spawn_parks_and_still_prints_a_partial_column` - caught: `dup-0557`
+- `tests/common/mod.rs:400-408` `wait_until` - caught: `dup-0228`
+- `tests/dash_console_stream_periphery.rs:125-148` `serve_dash_with_provider` - no duplicate found by reading
+- `tests/dash_decisions_progressive_disclosure.rs:314-323` `page_script` - caught: `dup-0448`
+- `tests/metadata_card_periphery.rs:374-400` `the_card_param_takes_precedence_over_a_stray_seed_or_lens_param` - caught: `dup-0213`
+- `tests/reap_before_removal_audit.rs:689-715` `is_covered` - no duplicate found by reading
+- `tests/reset_derived_compaction_periphery.rs:3139-3260` `the_carry_forward_touches_only_the_survivors_of_the_types_the_caller_named` - no duplicate found by reading
+- `tests/reset_derived_live_writer_guard_periphery.rs:671-687` `force_live_with_runs_alone_is_inert` - no duplicate found by reading
+- `tests/simplification_audit.rs:5444-5476` `attribute_token_ranges` - no duplicate found by reading
+- `tests/simplification_audit.rs:8189-8195` `a_stream_shorter_than_the_window_is_one_whole_stream_shingle` - no duplicate found by reading
+- `tests/simplification_audit.rs:8816-8833` `bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn` - caught: `dup-0849`
+- `tests/spec_lint.rs:54-102` `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class` - caught: `dup-0868`
+- `tests/step_root_resolution_periphery.rs:234-241` `branch_exists` - caught: `dup-0429`
+- `tests/store_content_identity_periphery.rs:654-728` `the_store_owns_no_key_format_so_a_foreign_policy_guards_just_as_well` - no duplicate found by reading
+- `tests/store_content_identity_periphery.rs:1098-1131` `the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing` - no duplicate found by reading
+- `tests/worker_persona_label_periphery.rs:337-348` `internal_whitespace_is_normalized_before_the_sentence_is_cut` - caught: `dup-0907`
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph); that exclusion still applies unchanged. A later round's own second commit grew the scanned population from 7513 to 7517 functions, reshuffling the draw; every one of the functions above marked "no duplicate found by reading" was re-read by hand against its host file's surrounding context, exactly as this THOROUGHNESS check requires whenever the draw changes, and all are genuinely not duplicates - this redraw surfaced no new recall gap. Two standing shapes an earlier round's reading pass named, neither drawn this time but both still present and still correctly excluded, are restated here so neither is mistaken for a miss on a future draw: `apply` at `src/conductor.rs:38374-38376` (`grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grep_superset`) is a `Projection` test double's own required trait-impl body, the same port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) already excludes from clustering by design; and `gate_verdict_event` (`src/conductor.rs:37733-37742`) together with the `verdict` closure inside `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` (`src/conductor.rs:39138-39147`) do the identical job - find the recorded `GateVerdict` for a `"<unit>/gate:g#<attempt>"` replay key, panicking with the same message when none exists - differing only in whether the unit segment is the literal `"s"` or a parameter. A `let`-bound closure is not a `fn` item, so no change to this catalog's `fn`-only scanner (module doc, THE SCANNER) short of teaching it to see closures could catalog this pair as a cluster; named here, prominently, rather than silently, so a later refactor - or a scanner that learns to see closures - does not miss it.
 
@@ -13504,9 +13505,9 @@ METHODOLOGY: every one of the 26 was independently re-verified by hand (NOT take
 
 **`src/driver/claude_code.rs`**
 
-- **reconcile_on_start** (`src/driver/claude_code.rs:874`, `pub`, KG degree 12): `keep-pending`. reconcile_on_start (spec 104 criterion 6, STOP's supervisor start-up reconciliation half: 'on start the supervisor closes any SpawnLaunched left open as interrupted and reaps processes still rooted in that spawn's worktree before it relaunches') has no production caller yet, the SAME already-disclosed shape install_write_guard_hook's own entry above documents for criterion 4: `rigger run` still composes agents through cli::Driver (main.rs:3667), and no supervisor loop yet calls a claude_code::Driver method at start-up - that call site is spec 105's own composition-root swap, not this criterion's (spec 104's own Design, THE COMPOSITION ROOT paragraph: 'the swap that makes rigger run build claude_code::Driver is spec 105's first unit'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism criterion 6's own Done-when text specifies ('a supervisor start closes an open launch record and reaps the spawn's worktree before relaunching') - deleting it would delete the criterion's own start-up half before the supervisor loop that calls it once per boot lands. keep-pending, citing spec 104 criterion 6 (this criterion's own OWNS: 'stop and start-up reconciliation only') and spec 105 (the composition-root swap that will call it).
-- **install_write_guard_hook** (`src/driver/claude_code.rs:1169`, `pub`, KG degree 9): `keep-pending`. install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) has no production caller yet: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until criterion 2's stream reader completes `impl AgentDriver for claude_code::Driver` (this file's own module doc: 'until it lands ... rigger run ... keeps using cli::Driver'), and no unit yet builds a live spawn's --settings string from this criterion's own hook fragment plus criterion 5's StopFailure one (spec 104 Design's THE HOOKS paragraph: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism THE WRITE GUARD's own Done-when text specifies ('the host injects it as the PreToolUse hook for Edit|Write|NotebookEdit') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it (assembling opts.settings_json from both hook owners) lands, mirroring SpawnOpts.settings_json's own already-disclosed inert-until-wired state (spec 104 criterion 1's own accounting: 'no live driver reads these fields yet'). keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard command and its injection') and THE HOOKS, which names criterion 4 this hook family's sole owner.
-- **install_stop_failure_hooks** (`src/driver/claude_code.rs:1202`, `pub`, KG degree 6): `keep-pending`. install_stop_failure_hooks (spec 104 criterion 5, THE HOOKS' `StopFailure` family injection half: 'criterion 5's, command, record and injection both') has no production caller yet, for the identical reason install_write_guard_hook (criterion 4's own injection half, immediately below) does not: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until spec 105's composition- root swap builds a live spawn's --settings string from this criterion's own `StopFailure` family plus criterion 4's `PreToolUse` one (Design's THE HOOKS: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism Design specifies ('one entry per error category') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it lands, mirroring install_write_guard_hook's own already-disclosed inert-until-wired state one entry below. keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS: 'command, record and injection both') and THE HOOKS, which names criterion 5 the `StopFailure` family's sole owner.
+- **reconcile_on_start** (`src/driver/claude_code.rs:879`, `pub`, KG degree 12): `keep-pending`. reconcile_on_start (spec 104 criterion 6, STOP's supervisor start-up reconciliation half: 'on start the supervisor closes any SpawnLaunched left open as interrupted and reaps processes still rooted in that spawn's worktree before it relaunches') has no production caller yet, the SAME already-disclosed shape install_write_guard_hook's own entry above documents for criterion 4: `rigger run` still composes agents through cli::Driver (main.rs:3667), and no supervisor loop yet calls a claude_code::Driver method at start-up - that call site is spec 105's own composition-root swap, not this criterion's (spec 104's own Design, THE COMPOSITION ROOT paragraph: 'the swap that makes rigger run build claude_code::Driver is spec 105's first unit'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism criterion 6's own Done-when text specifies ('a supervisor start closes an open launch record and reaps the spawn's worktree before relaunching') - deleting it would delete the criterion's own start-up half before the supervisor loop that calls it once per boot lands. keep-pending, citing spec 104 criterion 6 (this criterion's own OWNS: 'stop and start-up reconciliation only') and spec 105 (the composition-root swap that will call it).
+- **install_write_guard_hook** (`src/driver/claude_code.rs:1177`, `pub`, KG degree 9): `keep-pending`. install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) has no production caller yet: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until criterion 2's stream reader completes `impl AgentDriver for claude_code::Driver` (this file's own module doc: 'until it lands ... rigger run ... keeps using cli::Driver'), and no unit yet builds a live spawn's --settings string from this criterion's own hook fragment plus criterion 5's StopFailure one (spec 104 Design's THE HOOKS paragraph: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism THE WRITE GUARD's own Done-when text specifies ('the host injects it as the PreToolUse hook for Edit|Write|NotebookEdit') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it (assembling opts.settings_json from both hook owners) lands, mirroring SpawnOpts.settings_json's own already-disclosed inert-until-wired state (spec 104 criterion 1's own accounting: 'no live driver reads these fields yet'). keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard command and its injection') and THE HOOKS, which names criterion 4 this hook family's sole owner.
+- **install_stop_failure_hooks** (`src/driver/claude_code.rs:1210`, `pub`, KG degree 6): `keep-pending`. install_stop_failure_hooks (spec 104 criterion 5, THE HOOKS' `StopFailure` family injection half: 'criterion 5's, command, record and injection both') has no production caller yet, for the identical reason install_write_guard_hook (criterion 4's own injection half, immediately below) does not: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until spec 105's composition- root swap builds a live spawn's --settings string from this criterion's own `StopFailure` family plus criterion 4's `PreToolUse` one (Design's THE HOOKS: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism Design specifies ('one entry per error category') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it lands, mirroring install_write_guard_hook's own already-disclosed inert-until-wired state one entry below. keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS: 'command, record and injection both') and THE HOOKS, which names criterion 5 the `StopFailure` family's sole owner.
 
 **`src/eventstore/sqlite.rs`**
 

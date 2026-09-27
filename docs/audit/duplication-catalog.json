@@ -19562,6 +19562,11 @@
     "sites": [
       {
         "file": "tests/claude_code_stream_periphery.rs",
+        "name": "spawn_stop_grace_loop_actually_waits_out_the_injected_duration",
+        "content_hash": "cf451b5f8fecc81e"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
         "name": "spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing",
         "content_hash": "5aabca4140b93100"
       },
@@ -19586,7 +19591,7 @@
         "content_hash": "d2b3eb016806d7a1"
       }
     ],
-    "proposed_home": "claude_code_stream_periphery::support (consolidate these 5 sites into one function in this file)",
+    "proposed_home": "claude_code_stream_periphery::support (consolidate these 6 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

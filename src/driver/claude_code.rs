@@ -381,14 +381,12 @@ impl Driver<'_> {
             } else {
                 let elapsed = last_activity.elapsed();
                 let bound = std::time::Duration::from_secs(max_wall_clock);
-                match bound.checked_sub(elapsed) {
-                    Some(remaining) if !remaining.is_zero() => remaining,
-                    _ => {
-                        // Already past the bound with no line since the last check -
-                        // expire without blocking on the channel at all.
-                        std::time::Duration::ZERO
-                    }
-                }
+                // `Some(0)` (elapsed lands exactly on the bound) and `None` (already past
+                // it) both mean "expire without blocking" - `unwrap_or_default` folds them
+                // into the same `Duration::ZERO` a guarded match once spelled out, with no
+                // redundant guard clause a mutation sweep would find equivalent (the
+                // guarded arm's `_` fallback already returned this same zero value).
+                bound.checked_sub(elapsed).unwrap_or_default()
             };
 
             let received = if recv_timeout.is_zero() {
@@ -700,9 +698,16 @@ impl Driver<'_> {
 
         // "waits a grace period" (self.stop_grace - 30s in production; an injected
         // shorter one in a test proving the full sequence): poll for the child exiting on
-        // its own, without blocking the full grace when it already has.
+        // its own, without blocking the full grace when it already has. Bounded by
+        // `saturating_duration_since` rather than a raw `now() < deadline` comparison: the
+        // exact tie between `now()` and a fixed `Instant` a prior addition computed is
+        // unobservable to any test, so a boundary-operator mutant there would be
+        // equivalent; this shape leaves no such operator for one to mutate.
         let deadline = std::time::Instant::now() + self.stop_grace;
-        while std::time::Instant::now() < deadline {
+        while !deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .is_zero()
+        {
             if matches!(reaper.child_mut().try_wait(), Ok(Some(_))) {
                 break;
             }
@@ -941,10 +946,13 @@ fn drain_child_stderr_tail(mut stderr: ChildStderr) -> Vec<u8> {
 /// no IO at all.
 fn push_bounded_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
     tail.extend_from_slice(chunk);
-    if tail.len() > STDERR_TAIL_CAP {
-        let excess = tail.len() - STDERR_TAIL_CAP;
-        tail.drain(..excess);
-    }
+    // `saturating_sub` rather than a guarded `>` comparison: at the exact boundary
+    // `tail.len() == STDERR_TAIL_CAP` a guard would skip the trim, but computing `excess`
+    // unconditionally already yields 0 there too (`drain(..0)` is a no-op) - the guard's
+    // two branches are byte-identical on every input, so this shape leaves no boundary
+    // operator for a mutation sweep to find equivalent.
+    let excess = tail.len().saturating_sub(STDERR_TAIL_CAP);
+    tail.drain(..excess);
 }
 
 impl AgentDriver for Driver<'_> {
