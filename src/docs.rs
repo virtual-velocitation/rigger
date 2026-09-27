@@ -619,246 +619,192 @@ pub fn render_planning_field_guide(_ctx: &DocsContext) -> String {
     PLANNING_FIELD_GUIDE_BODY.to_string()
 }
 
+/// The fixed shape every per-operation skill renders in: frontmatter naming it, its title,
+/// any `preamble` paragraphs, then its Procedure, Anti-move and See also sections - each
+/// paragraph written as its author wrote it, followed by a newline. The one place that shape
+/// lives, so each skill's own render carries only its content.
+fn render_operation_skill(
+    name: &str,
+    description: &str,
+    preamble: &[&str],
+    procedure: &[&str],
+    anti_move: &str,
+    see_also: &str,
+) -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n"
+    );
+    for paragraph in preamble {
+        let _ = writeln!(s, "{paragraph}");
+    }
+    let sections: [(&str, &[&str]); 3] = [
+        ("Procedure", procedure),
+        ("Anti-move", &[anti_move]),
+        ("See also", &[see_also]),
+    ];
+    for (heading, paragraphs) in sections {
+        let _ = writeln!(s, "## {heading}\n");
+        for paragraph in paragraphs {
+            let _ = writeln!(s, "{paragraph}");
+        }
+    }
+    s
+}
+
 /// Render the `rigger-reset-store` skill (spec 68, criterion 2): store hygiene for the
 /// three files under `.rigger/`. `ctx` is accepted only to match the registry's uniform
 /// signature; nothing here is drift-prone enough to interpolate from it.
 fn render_reset_store_skill(_ctx: &DocsContext) -> String {
-    let mut s = String::new();
-    s.push_str("---\n");
-    s.push_str("name: rigger-reset-store\n");
-    s.push_str(
-        "description: Store hygiene for rigger's own state - growing .rigger/ disk usage, \
+    render_operation_skill(
+        "rigger-reset-store",
+        "Store hygiene for rigger's own state - growing .rigger/ disk usage, \
          the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
-         Read this before running `rigger reset` or touching any store file by hand.\n",
-    );
-    s.push_str("---\n\n");
-    s.push_str("# rigger-reset-store\n\n");
-    let _ = writeln!(
-        s,
-        "rigger keeps three stores under `.rigger/`, and only one of them holds anything \
-         durable:\n"
-    );
-    let _ = writeln!(
-        s,
-        "- `events.db` - the event log. This IS the truth: every decision, finding, gate \
-         verdict, and run milestone rigger has ever recorded, in the order it happened. \
-         Nothing else derives it; it derives everything else."
-    );
-    let _ = writeln!(
-        s,
-        "- `graph.db` - the context graph. A REBUILDABLE projection folded from the event \
-         log: rigger-build-graph regenerates it from `events.db` alone, so losing it loses \
-         time, never truth."
-    );
-    let _ = writeln!(
-        s,
-        "- `progress.db` - live per-agent progress telemetry. Never replayed into a run's \
-         state; it is a side channel `rigger status` and the dashboard read to show what an \
-         agent is doing right now, not a record anything else depends on.\n"
-    );
-    let _ = writeln!(s, "## Procedure\n");
-    let _ = writeln!(
-        s,
-        "`rigger reset` with no flags is the MENU, not an error: it exits 0 and prints one \
-         line per prunable accumulation, each with a measured count and the flag that acts \
-         on it. It is read-only - safe to run any time just to look.\n"
-    );
-    let _ = writeln!(
-        s,
-        "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
-         `graph.db`. It works over ANY event-store backend (the graph is always a local \
-         file); rerun it any time, especially before a large run."
-    );
-    let _ = writeln!(
-        s,
-        "- `rigger reset --derived` compacts `events.db`: it keeps the LATEST event per \
-         replay key of each derived project-ingest type, deletes the superseded \
-         duplicates, and vacuums so the file shrinks on disk. Every other event - every \
-         decision, finding, lesson, gate verdict, the whole run history - survives \
-         byte-for-byte. Only the embedded sqlite backend can compact this way, and it \
-         refuses (unless overridden with `--force-live`) while a run is live against the \
-         store."
-    );
-    let _ = writeln!(
-        s,
-        "- The two flags compose: `rigger reset --runs --derived` sheds both \
-         accumulations in one pass.\n"
-    );
-    let _ = writeln!(s, "## Anti-move\n");
-    let _ = writeln!(
-        s,
+         Read this before running `rigger reset` or touching any store file by hand.",
+        &[
+            "rigger keeps three stores under `.rigger/`, and only one of them holds anything \
+             durable:\n",
+            "- `events.db` - the event log. This IS the truth: every decision, finding, gate \
+             verdict, and run milestone rigger has ever recorded, in the order it happened. \
+             Nothing else derives it; it derives everything else.",
+            "- `graph.db` - the context graph. A REBUILDABLE projection folded from the event \
+             log: rigger-build-graph regenerates it from `events.db` alone, so losing it loses \
+             time, never truth.",
+            "- `progress.db` - live per-agent progress telemetry. Never replayed into a run's \
+             state; it is a side channel `rigger status` and the dashboard read to show what an \
+             agent is doing right now, not a record anything else depends on.\n",
+        ],
+        &[
+            "`rigger reset` with no flags is the MENU, not an error: it exits 0 and prints one \
+             line per prunable accumulation, each with a measured count and the flag that acts \
+             on it. It is read-only - safe to run any time just to look.\n",
+            "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
+             `graph.db`. It works over ANY event-store backend (the graph is always a local \
+             file); rerun it any time, especially before a large run.",
+            "- `rigger reset --derived` compacts `events.db`: it keeps the LATEST event per \
+             replay key of each derived project-ingest type, deletes the superseded \
+             duplicates, and vacuums so the file shrinks on disk. Every other event - every \
+             decision, finding, lesson, gate verdict, the whole run history - survives \
+             byte-for-byte. Only the embedded sqlite backend can compact this way, and it \
+             refuses (unless overridden with `--force-live`) while a run is live against the \
+             store.",
+            "- The two flags compose: `rigger reset --runs --derived` sheds both \
+             accumulations in one pass.\n",
+        ],
         "Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any \
          tool outside `rigger reset`. The event log is append-only truth: a hand-edit or a \
          hand-deleted row can desync the graph from the log in ways `rigger reset \
          --derived`'s own key-preserving compaction is specifically built to avoid. A store \
          file that is genuinely corrupt is an incident to fix at its root, never a reason \
-         to reach for a database client.\n"
-    );
-    let _ = writeln!(s, "## See also\n");
-    let _ = writeln!(
-        s,
+         to reach for a database client.\n",
         "rigger-build-graph if `graph.db` needs regenerating rather than pruning; \
-         rigger-reindex if only the symbols index is stale.\n"
-    );
-    s
+         rigger-reindex if only the symbols index is stale.\n",
+    )
 }
 
 /// Render the `rigger-build-graph` skill (spec 68, criterion 2): the cold-build entry
 /// point for the context graph. `ctx` is accepted only to match the registry's uniform
 /// signature; nothing here is drift-prone enough to interpolate from it.
 fn render_build_graph_skill(_ctx: &DocsContext) -> String {
-    let mut s = String::new();
-    s.push_str("---\n");
-    s.push_str("name: rigger-build-graph\n");
-    s.push_str(
-        "description: Cold-build the context graph - empty `rigger graph --around`/`--show` \
+    render_operation_skill(
+        "rigger-build-graph",
+        "Cold-build the context graph - empty `rigger graph --around`/`--show` \
          lookups on a repo that already has source, or a first setup before any run exists. \
-         Read this before deleting a store file to force a re-ingest.\n",
-    );
-    s.push_str("---\n\n");
-    s.push_str("# rigger-build-graph\n\n");
-    let _ = writeln!(s, "## Procedure\n");
-    let _ = writeln!(
-        s,
-        "`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
-         no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
-         It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
-         REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
-         it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
-         standalone build and a run can never fold the same file under two different keys.\n"
-    );
-    let _ = writeln!(
-        s,
-        "Rerun it any time it is convenient - on a schedule, after pulling a large set of \
-         changes, or simply because a lookup came back empty and you want to check. It is \
-         always safe: nothing is deleted, only appended and incrementally refreshed.\n"
-    );
-    let _ = writeln!(s, "## Anti-move\n");
-    let _ = writeln!(
-        s,
+         Read this before deleting a store file to force a re-ingest.",
+        &[],
+        &[
+            "`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
+             no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
+             It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
+             REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
+             it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
+             standalone build and a run can never fold the same file under two different keys.\n",
+            "Rerun it any time it is convenient - on a schedule, after pulling a large set of \
+             changes, or simply because a lookup came back empty and you want to check. It is \
+             always safe: nothing is deleted, only appended and incrementally refreshed.\n",
+        ],
         "Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
          truth that no rebuild can get back, and deleting only the graph is unnecessary work \
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
-         rigger-reset-store if you specifically mean to prune, not rebuild.\n"
-    );
-    let _ = writeln!(s, "## See also\n");
-    let _ = writeln!(
-        s,
+         rigger-reset-store if you specifically mean to prune, not rebuild.\n",
         "rigger-reindex for a narrower staleness problem - one that is really about the \
          symbols grounding index, not the whole structural graph; rigger-reset-store for \
-         pruning `graph.db`'s dead-run accumulation rather than rebuilding it.\n"
-    );
-    s
+         pruning `graph.db`'s dead-run accumulation rather than rebuilding it.\n",
+    )
 }
 
 /// Render the `rigger-reindex` skill (spec 68, criterion 2): the targeted refresh for the
 /// symbols grounding index. `ctx` is accepted only to match the registry's uniform
 /// signature; nothing here is drift-prone enough to interpolate from it.
 fn render_reindex_skill(_ctx: &DocsContext) -> String {
-    let mut s = String::new();
-    s.push_str("---\n");
-    s.push_str("name: rigger-reindex\n");
-    s.push_str(
-        "description: Refresh the symbols grounding index - a `rigger graph`/`rigger ground` \
+    render_operation_skill(
+        "rigger-reindex",
+        "Refresh the symbols grounding index - a `rigger graph`/`rigger ground` \
          lookup that names an entity the current tree no longer holds, or the \
          index-staleness advisory from `rigger validate`. Read this before rebuilding the \
-         whole graph over an index-freshness problem.\n",
-    );
-    s.push_str("---\n\n");
-    s.push_str("# rigger-reindex\n\n");
-    let _ = writeln!(s, "## Procedure\n");
-    let _ = writeln!(
-        s,
-        "`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
-         the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
-         for an index that has drifted from files you just changed (a unit's own commit, a \
-         rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
-         store from the structural context graph, so it costs only the named files, never a \
-         walk of the whole tree.\n"
-    );
-    let _ = writeln!(
-        s,
-        "Name every file whose content changed since the index was last built; an unnamed \
-         file's stale entry is left exactly as it was.\n"
-    );
-    let _ = writeln!(s, "## Anti-move\n");
-    let _ = writeln!(
-        s,
+         whole graph over an index-freshness problem.",
+        &[],
+        &[
+            "`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+             the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
+             for an index that has drifted from files you just changed (a unit's own commit, a \
+             rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
+             store from the structural context graph, so it costs only the named files, never a \
+             walk of the whole tree.\n",
+            "Name every file whose content changed since the index was last built; an unnamed \
+             file's stale entry is left exactly as it was.\n",
+        ],
         "Do not reach for a whole-graph rebuild (see rigger-build-graph) or a store wipe to \
          fix a lookup that is really an index-freshness problem: naming the stale files and \
          reindexing exactly them is both cheaper and more targeted than rebuilding the whole \
          structural graph over a handful of drifted entries. Reserve a whole-graph rebuild \
          for when the graph itself is missing or empty, not for a symbols lookup that just \
-         needs the files it names re-parsed.\n"
-    );
-    let _ = writeln!(s, "## See also\n");
-    let _ = writeln!(
-        s,
+         needs the files it names re-parsed.\n",
         "rigger-build-graph for the whole-project structural graph; rigger-reset-store for \
-         the stores' own hygiene.\n"
-    );
-    s
+         the stores' own hygiene.\n",
+    )
 }
 
 /// Render the `rigger-resume-a-run` skill (spec 68, criterion 2): continuing a run after
 /// its driver died mid-flight. `ctx` is accepted only to match the registry's uniform
 /// signature; nothing here is drift-prone enough to interpolate from it.
 fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
-    let mut s = String::new();
-    s.push_str("---\n");
-    s.push_str("name: rigger-resume-a-run\n");
-    s.push_str(
-        "description: Continue interrupted work after a dead driver (spent quota, a crash, a \
+    render_operation_skill(
+        "rigger-resume-a-run",
+        "Continue interrupted work after a dead driver (spent quota, a crash, a \
          laptop that slept mid-run) or `rigger status` showing an agent 'in flight' with a \
-         stale heartbeat. Read this before relaunching a run or reaching for `--fresh`.\n",
-    );
-    s.push_str("---\n\n");
-    s.push_str("# rigger-resume-a-run\n\n");
-    let _ = writeln!(s, "## Procedure\n");
-    let _ = writeln!(
-        s,
-        "Diagnose first: `rigger status` (or the dashboard) shows each in-flight agent's \
-         last progress report and heartbeat age. A stale heartbeat with no recent store \
-         event means the DRIVER died mid-run (quota ran out, the process crashed, the \
-         machine slept) - it does not mean the run itself is broken; the event log already \
-         holds every decision and gate verdict the run made before the driver stopped.\n"
-    );
-    let _ = writeln!(
-        s,
-        "Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger run \
-         <spec>`, `rigger serve <spec>` / `rigger workflow <spec>`, or the native `/rigger \
-         <spec>` workflow with its `fresh` argument left unset. Because the run lives in the \
-         event log, not in the dead process, the conductor's own run-starting step adopts \
-         the existing run instead of minting a new one: it replays the log, rebuilds its \
-         in-memory state, and continues exactly where the dead driver left off. No unit \
-         restarts from zero and no work already recorded is lost.\n"
-    );
-    let _ = writeln!(
-        s,
-        "`--fresh` is for a DIFFERENT situation, not this one: a run wedged in a terminal \
-         state (for example a plan-critique escalation) on a spec that is otherwise \
-         UNCHANGED. It is a one-shot new-run boundary, never the default way to continue \
-         interrupted work.\n"
-    );
-    let _ = writeln!(s, "## Anti-move\n");
-    let _ = writeln!(
-        s,
+         stale heartbeat. Read this before relaunching a run or reaching for `--fresh`.",
+        &[],
+        &[
+            "Diagnose first: `rigger status` (or the dashboard) shows each in-flight agent's \
+             last progress report and heartbeat age. A stale heartbeat with no recent store \
+             event means the DRIVER died mid-run (quota ran out, the process crashed, the \
+             machine slept) - it does not mean the run itself is broken; the event log already \
+             holds every decision and gate verdict the run made before the driver stopped.\n",
+            "Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger run \
+             <spec>`, `rigger serve <spec>` / `rigger workflow <spec>`, or the native `/rigger \
+             <spec>` workflow with its `fresh` argument left unset. Because the run lives in the \
+             event log, not in the dead process, the conductor's own run-starting step adopts \
+             the existing run instead of minting a new one: it replays the log, rebuilds its \
+             in-memory state, and continues exactly where the dead driver left off. No unit \
+             restarts from zero and no work already recorded is lost.\n",
+            "`--fresh` is for a DIFFERENT situation, not this one: a run wedged in a terminal \
+             state (for example a plan-critique escalation) on a spec that is otherwise \
+             UNCHANGED. It is a one-shot new-run boundary, never the default way to continue \
+             interrupted work.\n",
+        ],
         "Never hand-drive `rigger step` yourself in a shell to \"help it along\" - the \
          driver owns stepping, and a hand step races it, which can double-spawn a unit or \
          wedge the frontier (see using-rigger). And do not reach for `--fresh` reflexively \
          just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \
-         nothing - reserve it for the genuinely wedged-terminal case above.\n"
-    );
-    let _ = writeln!(s, "## See also\n");
-    let _ = writeln!(
-        s,
+         nothing - reserve it for the genuinely wedged-terminal case above.\n",
         "rigger-handle-an-escalation for the run-level and unit-level terminal states \
-         `--fresh` genuinely exists for.\n"
-    );
-    s
+         `--fresh` genuinely exists for.\n",
+    )
 }
 
 /// Render the `rigger-handle-an-escalation` skill (spec 68, criterion 2): acting on a
@@ -867,55 +813,40 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
 /// the same code-derived fact `using-rigger` interpolates, so the two can never disagree
 /// on what the bound actually is.
 fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
-    let mut s = String::new();
-    s.push_str("---\n");
-    s.push_str("name: rigger-handle-an-escalation\n");
-    s.push_str(
-        "description: Act on a unit the loop handed back - `rigger status` (or the \
+    render_operation_skill(
+        "rigger-handle-an-escalation",
+        "Act on a unit the loop handed back - `rigger status` (or the \
          dashboard) names it `escalated (awaiting a human)` after it exhausted its \
          remediation attempts. Read this before touching the unit's branch or relaunching \
-         the run.\n",
-    );
-    s.push_str("---\n\n");
-    s.push_str("# rigger-handle-an-escalation\n\n");
-    let _ = writeln!(s, "## Procedure\n");
-    let _ = writeln!(
-        s,
-        "An escalated unit gave up at the remediation bound (`defaults.max_retries`, {max} \
-         by default) - the loop will not retry it on its own; it is waiting on a human \
-         decision. Read the recorded lesson for the CONCRETE final failure - via `rigger \
-         peers` scoped to the unit's files, or the dashboard - rather than guessing: the \
-         escalation lesson carries the actual failing gate or review reason, not a \
-         placeholder, and that reason is the bounded remedy you are about to apply.\n",
-        max = ctx.max_retries
-    );
-    let _ = writeln!(
-        s,
-        "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
-         branch rigger itself created and kept for this unit's committed work across every \
-         attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run \
-         --fresh <spec>` (or `rigger serve --fresh <spec>` / the native `/rigger <spec>` \
-         workflow with `fresh` set) - against the same, otherwise-unchanged spec: the \
-         conductor mints a new run boundary, and the loop picks the escalated unit back up \
-         with a clean remediation budget.\n"
-    );
-    let _ = writeln!(s, "## Anti-move\n");
-    let _ = writeln!(
-        s,
+         the run.",
+        &[],
+        &[
+            &format!(
+                "An escalated unit gave up at the remediation bound (`defaults.max_retries`, {max} \
+                 by default) - the loop will not retry it on its own; it is waiting on a human \
+                 decision. Read the recorded lesson for the CONCRETE final failure - via `rigger \
+                 peers` scoped to the unit's files, or the dashboard - rather than guessing: the \
+                 escalation lesson carries the actual failing gate or review reason, not a \
+                 placeholder, and that reason is the bounded remedy you are about to apply.\n",
+                max = ctx.max_retries
+            ),
+            "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
+             branch rigger itself created and kept for this unit's committed work across every \
+             attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run \
+             --fresh <spec>` (or `rigger serve --fresh <spec>` / the native `/rigger <spec>` \
+             workflow with `fresh` set) - against the same, otherwise-unchanged spec: the \
+             conductor mints a new run boundary, and the loop picks the escalated unit back up \
+             with a clean remediation budget.\n",
+        ],
         "Never hand-merge the unit's durable branch onto the run branch yourself - that \
          bypasses review and integration and forks the merged code away from what the event \
          log says happened. And never re-implement more than the remedy names: scope creep \
          here is work the next review has no record of and did not ask for. If the remedy \
          genuinely needs more than a bounded fix, that is a reason to amend the spec (see \
-         planning-a-spec), not to freelance on the branch.\n"
-    );
-    let _ = writeln!(s, "## See also\n");
-    let _ = writeln!(
-        s,
+         planning-a-spec), not to freelance on the branch.\n",
         "rigger-resume-a-run for the DIFFERENT case of a merely-interrupted run, where \
-         `--fresh` is the wrong move.\n"
-    );
-    s
+         `--fresh` is the wrong move.\n",
+    )
 }
 
 /// Render the `rigger-watch-a-run` skill (spec 69, criterion 1): the manual-look monitoring
@@ -934,166 +865,125 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
 fn render_watch_a_run_skill(ctx: &DocsContext) -> String {
     let [escalated, dead_driver, dash_not_serving, reject_recurrence, frontier_stall] =
         &ctx.watch_signals;
-    let mut s = String::new();
-    s.push_str("---\n");
-    s.push_str("name: rigger-watch-a-run\n");
-    s.push_str(
-        "description: Monitor a run you just launched, or one that has driven unattended a \
+    render_operation_skill(
+        "rigger-watch-a-run",
+        "Monitor a run you just launched, or one that has driven unattended a \
          while, for the five signals a run can be failing on even while every other view \
-         still looks healthy. Read this before walking away from a launched run.\n",
-    );
-    s.push_str("---\n\n");
-    s.push_str("# rigger-watch-a-run\n\n");
-    let _ = writeln!(s, "## Procedure\n");
-    let _ = writeln!(
-        s,
-        "On EVERY look, check all FIVE signals below, not just the one you already suspect - \
-         a run can read healthy on any single signal while another one is quietly failing, \
-         which is why liveness reads healthy in a stalled run (signal 5 exists for exactly \
-         that case):\n"
-    );
-    let _ = writeln!(
-        s,
-        "1. **{}** - a unit `rigger status` (or the dashboard) marks `escalated (awaiting a \
-         human)`. Respond with `{}`.",
-        escalated.name, escalated.response
-    );
-    let _ = writeln!(
-        s,
-        "2. **{}** VS LIVE AGENT PROCESSES - an in-flight agent's last heartbeat is stale but \
-         its worker process is actually gone, not merely slow (the driver quit, crashed, or \
-         the machine slept). Respond with `{}`.",
-        dead_driver.name, dead_driver.response
-    );
-    let _ = writeln!(
-        s,
-        "3. **{}** - the dashboard URL does not answer, `rigger watch` reports it not \
-         serving, or a browser just spins. Respond with `{}`.",
-        dash_not_serving.name, dash_not_serving.response
-    );
-    let _ = writeln!(
-        s,
-        "4. **{}** - a unit keeps failing the SAME finding rather than converging \
-         (reject-recurrence at or past the diagnose threshold). Respond with `{}`.",
-        reject_recurrence.name, reject_recurrence.response
-    );
-    let _ = writeln!(
-        s,
-        "5. **{}** - is the run actually consuming what it spawns? A spawn id surviving \
-         consecutive looks, an hours-old last run event under \"working\" agents, or a \
-         repeating wave is a STALL even though every signal above reads clean - this is why \
-         progress is its own signal, not a restatement of liveness. Respond: {}.\n",
-        frontier_stall.name, frontier_stall.response
-    );
-    let _ = writeln!(
-        s,
-        "FIRST instruction, every time: on launch, ARM `rigger watch` under the harness's \
-         background monitor - it polls store and status on its own (default every {}s, \
-         `--interval <s>` to change it) and folds these same five signals, plus a sixth \
-         store-integrity check of its own, into one printed line per anomaly. The manual look \
-         above is the FALLBACK for when nothing is armed, exercised at least once per \
-         remediation cycle even while `rigger watch` is running.\n",
-        ctx.watch_poll_interval_secs
-    );
-    let _ = writeln!(s, "## Anti-move\n");
-    let _ = writeln!(
-        s,
+         still looks healthy. Read this before walking away from a launched run.",
+        &[],
+        &[
+            "On EVERY look, check all FIVE signals below, not just the one you already suspect - \
+             a run can read healthy on any single signal while another one is quietly failing, \
+             which is why liveness reads healthy in a stalled run (signal 5 exists for exactly \
+             that case):\n",
+            &format!(
+                "1. **{}** - a unit `rigger status` (or the dashboard) marks `escalated (awaiting a \
+                 human)`. Respond with `{}`.",
+                escalated.name, escalated.response
+            ),
+            &format!(
+                "2. **{}** VS LIVE AGENT PROCESSES - an in-flight agent's last heartbeat is stale but \
+                 its worker process is actually gone, not merely slow (the driver quit, crashed, or \
+                 the machine slept). Respond with `{}`.",
+                dead_driver.name, dead_driver.response
+            ),
+            &format!(
+                "3. **{}** - the dashboard URL does not answer, `rigger watch` reports it not \
+                 serving, or a browser just spins. Respond with `{}`.",
+                dash_not_serving.name, dash_not_serving.response
+            ),
+            &format!(
+                "4. **{}** - a unit keeps failing the SAME finding rather than converging \
+                 (reject-recurrence at or past the diagnose threshold). Respond with `{}`.",
+                reject_recurrence.name, reject_recurrence.response
+            ),
+            &format!(
+                "5. **{}** - is the run actually consuming what it spawns? A spawn id surviving \
+                 consecutive looks, an hours-old last run event under \"working\" agents, or a \
+                 repeating wave is a STALL even though every signal above reads clean - this is why \
+                 progress is its own signal, not a restatement of liveness. Respond: {}.\n",
+                frontier_stall.name, frontier_stall.response
+            ),
+            &format!(
+                "FIRST instruction, every time: on launch, ARM `rigger watch` under the harness's \
+                 background monitor - it polls store and status on its own (default every {}s, \
+                 `--interval <s>` to change it) and folds these same five signals, plus a sixth \
+                 store-integrity check of its own, into one printed line per anomaly. The manual look \
+                 above is the FALLBACK for when nothing is armed, exercised at least once per \
+                 remediation cycle even while `rigger watch` is running.\n",
+                ctx.watch_poll_interval_secs
+            ),
+        ],
         "Do not make polling `git log` or `ps` by hand the PRIMARY view - a shell only shows \
          what a shell can see, and misses the signals the store and status already resolve \
          for you (escalation, reject-recurrence, frontier progress). And do not \
          hand-intervene in a run that is merely SLOW, not stuck: a long-running unit with \
          fresh heartbeats and advancing store events is working, not stalled, and \
-         hand-driving it only races the loop (see rigger-resume-a-run's own anti-move).\n"
-    );
-    let _ = writeln!(s, "## See also\n");
-    let _ = writeln!(
-        s,
-        "{}, {}, {}, and {} - the four response skills this protocol routes to by name; never \
-         invent a response beyond them.\n",
-        escalated.response,
+         hand-driving it only races the loop (see rigger-resume-a-run's own anti-move).\n",
+        &format!(
+            "{}, {}, {}, and {} - the four response skills this protocol routes to by name; never \
+             invent a response beyond them.\n",
+            escalated.response,
         dead_driver.response,
         dash_not_serving.response,
         reject_recurrence.response
-    );
-    s
+        ),
+    )
 }
 
 /// Render the `rigger-restore-the-dash` skill (spec 69, criterion 1): getting the run
 /// dashboard serving again. `ctx` is accepted only to match the registry's uniform
 /// signature; nothing here is drift-prone enough to interpolate from it.
 fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
-    let mut s = String::new();
-    s.push_str("---\n");
-    s.push_str("name: rigger-restore-the-dash\n");
-    s.push_str(
-        "description: Get the run dashboard serving again when its URL does not answer, \
+    render_operation_skill(
+        "rigger-restore-the-dash",
+        "Get the run dashboard serving again when its URL does not answer, \
          `rigger watch` reports it not serving, or a browser just spins. Read this before \
-         restarting the dash or touching its marker file by hand.\n",
-    );
-    s.push_str("---\n\n");
-    s.push_str("# rigger-restore-the-dash\n\n");
-    let _ = writeln!(s, "## Procedure\n");
-    let _ = writeln!(
-        s,
-        "The dash is a SINGLETON per project: at most one `rigger dash` serves a given \
-         project's fixed address at a time. A second `rigger dash` against an address a real \
-         rigger dash already answers on reports that address and exits 0 rather than binding \
-         a second one - so a not-serving dash is never \"already running somewhere else\", it \
-         is genuinely down.\n"
-    );
-    let _ = writeln!(
-        s,
-        "`rigger status`'s dashboard line is NOT yet a liveness check - it always prints \
-         whatever URL was last recorded, even when nothing answers there, so do not trust \
-         that line alone. `rigger watch --once` IS the accurate check: it verifies the \
-         recorded marker by actually probing its port, and prints a `dash liveness` line \
-         naming the dead PID when nothing answers there - trust that over a bare status \
-         line. `rigger run` and `rigger serve` never write that marker at all (only \
-         `rigger step` does) - for those two drivers `rigger watch` falls back to probing \
-         the recorded dash URL's OWN port directly, and its `dash liveness` line still \
-         fires, just without a pid to name.\n"
-    );
-    let _ = writeln!(
-        s,
-        "Restart with a plain `rigger dash` (no flags needed for the default address). The \
-         singleton bind then does the right thing either way: if the address is genuinely \
-         free it binds and serves; if a live rigger dash is already there after all, it \
-         reports that address and exits cleanly instead of fighting it.\n"
-    );
-    let _ = writeln!(
-        s,
-        "The HUNG-HOLDER case is the one that actually hangs a client instead of failing \
-         cleanly: the marker records a port whose process died, froze, or was suspended \
-         without releasing it, so a fresh probe against that port neither serves nor cleanly \
-         refuses - it just hangs, and so does anything waiting on it. The marker's own PID, \
-         not a fresh diagnosis, is what names the culprit: `rigger watch` reads it and \
-         prints that exact PID on its dash-liveness line. RESUME that \
-         process if it is merely stopped (a suspended terminal, a paused container), or KILL \
-         it if it is dead weight - THAT pid, the one the marker and `rigger watch`'s own \
-         line actually name - then restart with `rigger dash`. When NO marker was ever \
-         recorded (`rigger run` / `rigger serve`), `rigger watch`'s line names no pid at all \
-         - skip straight to restarting with `rigger dash`; its singleton bind never fights a \
-         genuinely-live dash, and a bind failure against a real non-dash holder is then a \
-         manual, outside-`rigger` situation, never one to guess a pid for.\n"
-    );
-    let _ = writeln!(s, "## Anti-move\n");
-    let _ = writeln!(
-        s,
+         restarting the dash or touching its marker file by hand.",
+        &[],
+        &[
+            "The dash is a SINGLETON per project: at most one `rigger dash` serves a given \
+             project's fixed address at a time. A second `rigger dash` against an address a real \
+             rigger dash already answers on reports that address and exits 0 rather than binding \
+             a second one - so a not-serving dash is never \"already running somewhere else\", it \
+             is genuinely down.\n",
+            "`rigger status`'s dashboard line is NOT yet a liveness check - it always prints \
+             whatever URL was last recorded, even when nothing answers there, so do not trust \
+             that line alone. `rigger watch --once` IS the accurate check: it verifies the \
+             recorded marker by actually probing its port, and prints a `dash liveness` line \
+             naming the dead PID when nothing answers there - trust that over a bare status \
+             line. `rigger run` and `rigger serve` never write that marker at all (only \
+             `rigger step` does) - for those two drivers `rigger watch` falls back to probing \
+             the recorded dash URL's OWN port directly, and its `dash liveness` line still \
+             fires, just without a pid to name.\n",
+            "Restart with a plain `rigger dash` (no flags needed for the default address). The \
+             singleton bind then does the right thing either way: if the address is genuinely \
+             free it binds and serves; if a live rigger dash is already there after all, it \
+             reports that address and exits cleanly instead of fighting it.\n",
+            "The HUNG-HOLDER case is the one that actually hangs a client instead of failing \
+             cleanly: the marker records a port whose process died, froze, or was suspended \
+             without releasing it, so a fresh probe against that port neither serves nor cleanly \
+             refuses - it just hangs, and so does anything waiting on it. The marker's own PID, \
+             not a fresh diagnosis, is what names the culprit: `rigger watch` reads it and \
+             prints that exact PID on its dash-liveness line. RESUME that \
+             process if it is merely stopped (a suspended terminal, a paused container), or KILL \
+             it if it is dead weight - THAT pid, the one the marker and `rigger watch`'s own \
+             line actually name - then restart with `rigger dash`. When NO marker was ever \
+             recorded (`rigger run` / `rigger serve`), `rigger watch`'s line names no pid at all \
+             - skip straight to restarting with `rigger dash`; its singleton bind never fights a \
+             genuinely-live dash, and a bind failure against a real non-dash holder is then a \
+             manual, outside-`rigger` situation, never one to guess a pid for.\n",
+        ],
         "Never hand-edit the dash marker file to \"fix\" it - it is a breadcrumb the step \
          path itself writes and overwrites, and a hand-edited value only makes the next real \
          dash's own self-heal harder to trust. And never kill a process by PORT-ADJACENT \
          GUESSWORK (\"kill whatever's near the dash port\") - resume or kill the EXACT pid \
          the marker and `rigger watch`'s own line name, never a guess, and never one you \
-         found some other way when the line names none at all.\n"
-    );
-    let _ = writeln!(s, "## See also\n");
-    let _ = writeln!(
-        s,
+         found some other way when the line names none at all.\n",
         "rigger-watch-a-run names dash liveness as one of its five signals, routing here by \
          name; rigger-diagnose-churn for the DIFFERENT case of a unit that keeps failing \
-         review, not a dead dashboard.\n"
-    );
-    s
+         review, not a dead dashboard.\n",
+    )
 }
 
 /// Render the `rigger-diagnose-churn` skill (spec 69, criterion 1): acting on a unit stuck
@@ -1104,75 +994,54 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
 /// injected channel every other drift-prone fact in this file uses rather than importing
 /// `crate::watch` directly.
 fn render_diagnose_churn_skill(ctx: &DocsContext) -> String {
-    let mut s = String::new();
-    s.push_str("---\n");
-    s.push_str("name: rigger-diagnose-churn\n");
-    s.push_str(
-        "description: Act on a unit whose blocker line shows `reject-recurrence #n/max \
+    render_operation_skill(
+        "rigger-diagnose-churn",
+        "Act on a unit whose blocker line shows `reject-recurrence #n/max \
          (remediating)` past roughly 3 attempts, or whose diffs are oscillating rather than \
          converging. Read this before blaming the model or the panel, or reaching for \
-         `max_retries`.\n",
-    );
-    s.push_str("---\n\n");
-    s.push_str("# rigger-diagnose-churn\n\n");
-    let _ = writeln!(s, "## Procedure\n");
-    let _ = writeln!(
-        s,
-        "By the time reject-recurrence reaches the diagnose threshold ({threshold}, the same \
-         bound `rigger watch`'s reject-recurrence-trend signal alerts on), do the FINDING \
-         AUDIT before reacting to the raw attempt count: read every blocking finding against \
-         the diffs it cites - each finding names a checkable fact, and the audit is comparing \
-         that fact against what the diff actually does, not trusting the finding's prose. A \
-         high attempt count on its own proves nothing about what actually went wrong.\n",
-        threshold = ctx.reject_recurrence_diagnose_threshold
-    );
-    let _ = writeln!(
-        s,
-        "SEPARATE infra-caused attempts before judging the rest: a finding about a deleted \
-         worktree, a thrashed shared build cache, or a quota-killed agent is an INFRA \
-         failure, not a semantic one - it inflates the attempt count without saying anything \
-         about whether the unit's actual approach is wrong. Fix infra in the binary via its \
-         own spec; never let it count toward, or be blamed as, review strictness.\n"
-    );
-    let _ = writeln!(
-        s,
-        "Once the infra noise is set aside, look at what remains: if the SURVIVING, \
-         factually-correct findings keep citing the SAME constraint against different, \
-         otherwise-reasonable diffs, the spec itself is self-contradictory - no \
-         implementation can satisfy a contradiction, so every attempt is individually correct \
-         to reject and the run will churn forever without a spec change. Fix it with the \
-         amendment protocol (`planning-a-spec`: amend Design and Global constraints only, \
-         commit when no step is mid-flight, then `rigger emit DecisionMade` naming the spec \
-         file so in-flight reviewers see it through the graph immediately).\n"
-    );
-    let _ = writeln!(
-        s,
-        "For any OTHER recurring pattern, match the SIGNATURE you found against \
-         `planning-a-spec`'s own \"Quick reference: churn signature -> planning defect\" \
-         table - it maps what a rejection loop looks like (twinned units, a bundled \
-         checkbox, an unresolved either/or, findings blaming process-local state, a \
-         paraphrased criterion) to the specific catalog class and its fix at spec time, so \
-         the diagnosis names the actual defect class rather than just \"it keeps failing\".\n"
-    );
-    let _ = writeln!(s, "## Anti-move\n");
-    let _ = writeln!(
-        s,
+         `max_retries`.",
+        &[],
+        &[
+            &format!(
+                "By the time reject-recurrence reaches the diagnose threshold ({threshold}, the same \
+                 bound `rigger watch`'s reject-recurrence-trend signal alerts on), do the FINDING \
+                 AUDIT before reacting to the raw attempt count: read every blocking finding against \
+                 the diffs it cites - each finding names a checkable fact, and the audit is comparing \
+                 that fact against what the diff actually does, not trusting the finding's prose. A \
+                 high attempt count on its own proves nothing about what actually went wrong.\n",
+                threshold = ctx.reject_recurrence_diagnose_threshold
+            ),
+            "SEPARATE infra-caused attempts before judging the rest: a finding about a deleted \
+             worktree, a thrashed shared build cache, or a quota-killed agent is an INFRA \
+             failure, not a semantic one - it inflates the attempt count without saying anything \
+             about whether the unit's actual approach is wrong. Fix infra in the binary via its \
+             own spec; never let it count toward, or be blamed as, review strictness.\n",
+            "Once the infra noise is set aside, look at what remains: if the SURVIVING, \
+             factually-correct findings keep citing the SAME constraint against different, \
+             otherwise-reasonable diffs, the spec itself is self-contradictory - no \
+             implementation can satisfy a contradiction, so every attempt is individually correct \
+             to reject and the run will churn forever without a spec change. Fix it with the \
+             amendment protocol (`planning-a-spec`: amend Design and Global constraints only, \
+             commit when no step is mid-flight, then `rigger emit DecisionMade` naming the spec \
+             file so in-flight reviewers see it through the graph immediately).\n",
+            "For any OTHER recurring pattern, match the SIGNATURE you found against \
+             `planning-a-spec`'s own \"Quick reference: churn signature -> planning defect\" \
+             table - it maps what a rejection loop looks like (twinned units, a bundled \
+             checkbox, an unresolved either/or, findings blaming process-local state, a \
+             paraphrased criterion) to the specific catalog class and its fix at spec time, so \
+             the diagnosis names the actual defect class rather than just \"it keeps failing\".\n",
+        ],
         "Never blame the model or the panel without having run the finding audit first - a \
          reviewer that is factually correct every single round is not the problem, even when \
          it rejects the same unit five times in a row. And do not reflexively raise \
          `defaults.max_retries` to buy another attempt: a bigger budget spent against the \
          SAME unaudited failure reproduces exactly the failure the audit exists to catch, \
-         just more expensively.\n"
-    );
-    let _ = writeln!(s, "## See also\n");
-    let _ = writeln!(
-        s,
+         just more expensively.\n",
         "planning-a-spec owns the churn-signature table and the spec-amendment protocol this \
          procedure applies; rigger-watch-a-run names reject-recurrence as one of its five \
          signals, routing here by name; rigger-handle-an-escalation for when a unit exhausts \
-         its remediation budget rather than merely churning.\n"
-    );
-    s
+         its remediation budget rather than merely churning.\n",
+    )
 }
 
 /// The line stamped onto EVERY registry skill's rendered content (spec 68, Design): an
