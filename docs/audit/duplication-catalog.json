@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2f977d5b796d",
+    "id": "dup-0dd9875ec72a",
     "classification": "semantic",
     "sites": [
       {
@@ -181,36 +181,6 @@
         "file": "tests/cli.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
       },
       {
         "file": "tests/cli.rs",
@@ -469,7 +439,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 89 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 83 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6269,7 +6239,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d818ca2d4c56",
+    "id": "dup-81eaedeb0807",
     "classification": "semantic",
     "sites": [
       {
@@ -6299,8 +6269,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "render_adversarial_sample",
-        "content_hash": "4bacd30be7f09bc4"
+        "name": "render_recall_gap_history",
+        "content_hash": "a6d99120f29d1d4d"
       },
       {
         "file": "tests/simplification_audit.rs",

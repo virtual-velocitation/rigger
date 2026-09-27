@@ -3941,6 +3941,15 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
         let _ = writeln!(out, "- closed before the redraw: {what}");
     }
     let _ = writeln!(out);
+    out.push_str(&render_recall_gap_history());
+    out
+}
+
+/// The adversarial-sample subsection's closing paragraph: the recall gaps and precision defect
+/// earlier reading passes surfaced, each named with the generalizable sweep (and its decision)
+/// that closed it.
+fn render_recall_gap_history() -> String {
+    let mut out = String::new();
     let _ = writeln!(
         out,
         "Two real recall gaps surfaced this way and were closed by widening the mechanical \
