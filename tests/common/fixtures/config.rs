@@ -83,3 +83,54 @@ pub fn mk_stage(name: &str, gate: &str) -> Stage {
         ..Default::default()
     }
 }
+
+/// A config of one bare [`agent`] per id in `agents`, one `core` gate per `(name, run)` in
+/// `gates`, and `stages`, each keyed by its own name.
+pub fn workflow_cfg(agents: &[&str], gates: &[(&str, &str)], stages: Vec<Stage>) -> Config {
+    let mut cfg = cfg_for(agents);
+    for (name, run) in gates {
+        cfg.workflow
+            .gates
+            .insert((*name).to_string(), gate_def(run));
+    }
+    for stage in stages {
+        cfg.workflow.stages.insert(stage.name.clone(), stage);
+    }
+    cfg
+}
+
+/// The `plan` stage: the `planner` agent produces the unit DAG.
+pub fn plan_stage() -> Stage {
+    Stage {
+        name: "plan".into(),
+        agent: "planner".into(),
+        produces: "dag".into(),
+        ..Default::default()
+    }
+}
+
+/// The `plan-critique` gate after `plan`: `adversary` (empty for none) reviews the DAG and
+/// `judge` adjudicates.
+pub fn critique_stage(adversary: &str) -> Stage {
+    Stage {
+        name: "plan-critique".into(),
+        needs: vec!["plan".into()],
+        adversary: adversary.into(),
+        adjudicator: "judge".into(),
+        ..Default::default()
+    }
+}
+
+/// A fan-out implement template `name` run by `worker` after `needs`, gated by `gates`, merging
+/// on pass.
+pub fn fan_out_stage(name: &str, needs: &[&str], gates: &[&str]) -> Stage {
+    Stage {
+        name: name.into(),
+        agent: "worker".into(),
+        strategy: "fan-out".into(),
+        needs: needs.iter().map(|s| (*s).to_string()).collect(),
+        gates: gates.iter().map(|s| (*s).to_string()).collect(),
+        on_pass: "merge".into(),
+        ..Default::default()
+    }
+}

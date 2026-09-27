@@ -39,48 +39,15 @@
 
 mod common;
 
-use common::fixtures::agent;
-use common::fixtures::gate_def;
-use common::fixtures::gate_def_inputs;
-use common::git::temp_git_project_with_commit;
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_WORKTREE_SHA, STREAM,
+use common::fixtures::{
+    assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg, ApproveEveryLaneDriver,
 };
-use rigger::config::{self, AgentDef, Config, Stage};
+use common::git::temp_git_project_with_commit;
+use rigger::conductor::{run, Deps, STREAM};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
-use serde_json::Value;
-use std::path::Path;
-
-/// The implementer writes real work on every lane; the sole adjudicator approves every lane
-/// it sees. Uniform across lanes (no lane-index branching), mirroring the implementer's own
-/// `Stub` driver, which the two lanes of a `speculation_width: 2` unit share identically -
-/// candidate 0 wins deterministically against an identical candidate 1.
-struct ApproveEveryLaneDriver;
-
-impl AgentDriver for ApproveEveryLaneDriver {
-    fn spawn(
-        &self,
-        _a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("feature.rs"), "REAL_WORK\n").unwrap();
-            return Ok(AgentResult::default());
-        }
-        if opts.id.contains("/adjudicator#") {
-            return Ok(AgentResult {
-                output: r#"{"verdict":"approve"}"#.into(),
-                resolved_model: String::new(),
-            });
-        }
-        Ok(AgentResult::default())
-    }
-}
 
 /// Drives the round-4 fix through the ONE `emit_speculation_winner_status` call site the
 /// implementer's own new test never reaches: the `on_pass: none` arm, which calls it directly
@@ -93,37 +60,7 @@ fn a_speculation_winner_with_no_merge_reviewed_sha_stays_the_round_start_sha_acr
 ) {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
-    let mut cfg = Config::default();
-    cfg.agents.insert("worker".into(), agent("worker"));
-    cfg.agents.insert("judge".into(), agent("judge"));
-    cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-    cfg.workflow.gates.insert(
-        "door".into(),
-        gate_def_inputs(
-            // Idempotent, like a real `regenerate:` command - the same pattern the
-            // implementer's own merge-arm test uses, kept here even though this arm never
-            // hits a post-merge re-gate, so the two sibling tests stay recognizably the
-            // same shape.
-            "[ -f regen.txt ] || (echo regenerated > regen.txt && git add regen.txt \
-             && git commit -q -m regen-commit)",
-            &["never-matches/**"],
-        ),
-    );
-    cfg.workflow.stages.insert(
-        "s".into(),
-        Stage {
-            name: "s".into(),
-            agent: "worker".into(),
-            gates: vec!["ok".into(), "door".into()],
-            on_pass: "none".into(),
-            speculation_width: 2,
-            review: config::ReviewPanel {
-                adjudicator: "judge".into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    );
+    let cfg = speculation_regen_door_cfg("none");
     let store = Store::open(":memory:").unwrap();
     let driver = ApproveEveryLaneDriver;
     let deps = Deps {
@@ -145,82 +82,7 @@ fn a_speculation_winner_with_no_merge_reviewed_sha_stays_the_round_start_sha_acr
 
     let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
 
-    // The ground truth: the sha `review_unit` ACTUALLY judged, captured durably BEFORE any
-    // tier ran and before the door gate's own regen commit ever landed.
-    let round_start = events
-        .iter()
-        .find(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains("\"status\":\"review-round-start\"")
-        })
-        .expect("review_unit must have durably stamped its round-start sha");
-    let round_start_sha = round_start
-        .meta
-        .get(META_WORKTREE_SHA)
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(
-        round_start_sha.len(),
-        40,
-        "premise: the durable round-start sha must be a real 40-hex sha: {round_start_sha:?}"
-    );
-
-    let verified = events
-        .iter()
-        .find(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
-        })
-        .expect("the speculation winner's deferred verified status must have been recorded");
-    let verified_sha = verified
-        .meta
-        .get(META_WORKTREE_SHA)
-        .cloned()
-        .unwrap_or_default();
-
-    // Non-vacuity: the door gate's post-review regen commit genuinely moved the candidate's
-    // tip past what the round reviewed, or this test cannot distinguish the fixed behavior
-    // from the pre-round-4 bug.
-    assert_ne!(
-        round_start_sha, verified_sha,
-        "premise: the door gate's post-review regen commit must have moved the candidate's \
-         tip strictly past round_start_sha, or this test proves nothing about the live-re-read \
-         bug: round_start={round_start_sha:?} verified={verified_sha:?}"
-    );
-
-    let reviewed = events
-        .iter()
-        .find(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed"#)
-        })
-        .expect("the speculation winner's deferred reviewed status must have been recorded");
-    let reviewed_sha = reviewed
-        .meta
-        .get(META_WORKTREE_SHA)
-        .cloned()
-        .unwrap_or_default();
-
-    // The actual fix, on the ONE call site the implementer's own test never reaches:
-    // `reviewed#{lane}` must carry the sha the round REVIEWED (round_start_sha), never a live
-    // read of `dir` taken after the exhaustive gate's own regen commit, even with no merge
-    // (no `integrate_and_emit`) ever in play on this arm.
-    assert_eq!(
-        reviewed_sha, round_start_sha,
-        "the speculation winner's deferred `reviewed#{{lane}}` stamp must carry THE sha \
-         review_unit's round actually judged (round_start_sha), not a live re-read of `dir` \
-         taken after the exhaustive gate's own post-review regen commit - even on the \
-         `on_pass: none` arm, which never calls integrate_and_emit at all: \
-         reviewed={reviewed_sha:?} round_start={round_start_sha:?} verified={verified_sha:?}"
-    );
-    // `verified#{lane}` legitimately keeps the post-gate sha (what the gates verified, never
-    // what the review judged) - unchanged by this fix, same invariant the implementer's own
-    // merge-arm test asserts.
-    assert_eq!(
-        verified_sha.len(),
-        40,
-        "the verified sha must be a real 40-hex sha: {verified_sha:?}"
-    );
+    assert_winner_reviewed_sha_is_round_start(&events);
 
     assert!(
         !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),

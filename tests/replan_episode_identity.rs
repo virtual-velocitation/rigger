@@ -97,10 +97,13 @@
 //! asserts: the two-episode criterion's earlier unit gone, its later unit alone serving
 //! that criterion, and both split siblings surviving together.
 
+mod common;
+use common::fixtures::{critique_stage, fan_out_stage, plan_stage, workflow_cfg};
+
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_SPAWN, STREAM, TYPE_UNIT_PROPOSED,
 };
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::config::{AgentDef, Config};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
@@ -236,67 +239,15 @@ impl AgentDriver for ReplanDriver {
 }
 
 fn two_episode_cfg() -> Config {
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "planner".into(),
-        AgentDef {
-            id: "planner".into(),
-            ..Default::default()
-        },
-    );
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.agents.insert(
-        "judge".into(),
-        AgentDef {
-            id: "judge".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        "ok".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan".into(),
-        Stage {
-            name: "plan".into(),
-            agent: "planner".into(),
-            produces: "dag".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan-critique".into(),
-        Stage {
-            name: "plan-critique".into(),
-            needs: vec!["plan".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement".into(),
-        Stage {
-            name: "implement".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            needs: vec!["plan-critique".into()],
-            gates: vec!["ok".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
-    cfg
+    workflow_cfg(
+        &["planner", "worker", "judge"],
+        &[("ok", "true")],
+        vec![
+            plan_stage(),
+            critique_stage(""),
+            fan_out_stage("implement", &["plan-critique"], &["ok"]),
+        ],
+    )
 }
 
 /// Spec 72 criterion 1 (cross-episode supersede): a REAL plan-critique reject feeds back
@@ -967,42 +918,11 @@ fn a_same_id_refine_survives_its_own_episodes_genuinely_new_unmatched_sibling_th
 /// `two_episode_cfg`, criterion 3's resume seam needs only ONE real planning episode, never
 /// a reject/re-plan cycle.
 fn resume_seam_cfg() -> Config {
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "planner".into(),
-        AgentDef {
-            id: "planner".into(),
-            ..Default::default()
-        },
-    );
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan".into(),
-        Stage {
-            name: "plan".into(),
-            agent: "planner".into(),
-            produces: "dag".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement".into(),
-        Stage {
-            name: "implement".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            needs: vec!["plan".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
-    cfg
+    workflow_cfg(
+        &["planner", "worker"],
+        &[],
+        vec![plan_stage(), fan_out_stage("implement", &["plan"], &[])],
+    )
 }
 
 /// A single planning episode's driver: the planner's ONE spawn proposes ONE new unit for

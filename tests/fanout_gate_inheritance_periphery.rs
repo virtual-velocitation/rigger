@@ -58,12 +58,13 @@
 //! criterion 3, not this unit's scope).
 
 mod common;
+use common::fixtures::{fan_out_stage, plan_stage, workflow_cfg};
 use common::git::temp_git_project_with_commit;
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::config::{AgentDef, Config};
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
@@ -74,57 +75,15 @@ use serde_json::{json, Value};
 /// gate `extra` (also always passes), never named on the template, so a proposal that adds
 /// it to `gates` proves UNION rather than merely inheriting a set of one.
 fn base_cfg(repo: &std::path::Path) -> Config {
-    let mut cfg = Config::default();
+    let mut cfg = workflow_cfg(
+        &["planner", "worker"],
+        &[("ok", "true"), ("extra", "true")],
+        vec![plan_stage(), fan_out_stage("implement", &["plan"], &["ok"])],
+    );
     // Spec 89 criterion 2 ruling item 2 (mirrored from the sibling periphery file): a
     // `Deps` driving a real repo must never reach the ambient `XDG_CACHE_HOME`/`HOME`
     // cache-home default.
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
-    for id in ["planner", "worker"] {
-        cfg.agents.insert(
-            id.into(),
-            AgentDef {
-                id: id.into(),
-                ..Default::default()
-            },
-        );
-    }
-    cfg.workflow.gates.insert(
-        "ok".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.gates.insert(
-        "extra".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan".into(),
-        Stage {
-            name: "plan".into(),
-            agent: "planner".into(),
-            produces: "dag".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement".into(),
-        Stage {
-            name: "implement".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            needs: vec!["plan".into()],
-            gates: vec!["ok".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
     cfg
 }
 

@@ -16,10 +16,9 @@
 
 mod common;
 
-use common::fixtures::agent;
-use common::fixtures::gate_def;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
+use common::fixtures::workflow_cfg;
 use common::git::git_stdout;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
@@ -33,16 +32,12 @@ use std::path::Path;
 use std::process::Command;
 
 fn base_cfg(repo_path: &str) -> Config {
-    let mut cfg = Config::default();
+    let mut cfg = workflow_cfg(&["worker", "lens", "judge"], &[("g", "exit 0")], vec![]);
     // Spec 89, criterion 2 relocated the scratch/worktree default off the fixture's own repo
     // tree onto a machine-wide cache root shared with every concurrently-running fixture and
     // agent on the machine; nesting it back inside this fixture's own unique repo tempdir
     // restores per-test isolation (mirrors every other periphery suite's identical fix).
     cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
-    cfg.agents.insert("worker".into(), agent("worker"));
-    cfg.agents.insert("lens".into(), agent("lens"));
-    cfg.agents.insert("judge".into(), agent("judge"));
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg
 }
 

@@ -150,6 +150,7 @@
 //! `STATUS_ADOPTION_RECORDED` mark (which the fix's own ordering only ever writes AFTER a
 //! successful `branch_tip`).
 
+use common::fixtures::{critique_stage, fan_out_stage, plan_stage, workflow_cfg};
 use common::git::git_answer;
 use common::git::init_repo;
 use std::path::Path;
@@ -163,7 +164,7 @@ use rigger::conductor::{
     TYPE_UNIT_PROPOSED,
 };
 use rigger::conductor::{META_COMPENSATED, META_CONTRADICTION};
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::config::{AgentDef, Config};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Error as StoreError, Event, EventStore, ExpectedRevision};
@@ -270,34 +271,12 @@ impl AgentDriver for ProposesSlugDriver {
 /// rung at its real ambient `XDG_CACHE_HOME`/`HOME` default (`common::isolated_workdir`'s own
 /// doc comment has the full why).
 fn baseline_only_cfg(gate_run: &str, max_retries: u32, repo: &Path) -> Config {
-    let mut cfg = Config::default();
+    let mut cfg = workflow_cfg(
+        &["worker"],
+        &[("gate", gate_run)],
+        vec![fan_out_stage("implement-template", &[], &["gate"])],
+    );
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        "gate".into(),
-        Gate {
-            run: gate_run.into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement-template".into(),
-        Stage {
-            name: "implement-template".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            gates: vec!["gate".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
     cfg.workflow.defaults.max_retries = max_retries;
     cfg
 }
@@ -312,55 +291,16 @@ fn baseline_only_cfg(gate_run: &str, max_retries: u32, repo: &Path) -> Config {
 ///
 /// `repo` (spec 89 criterion 2 ruling item 2): see [`baseline_only_cfg`]'s identical param.
 fn fresh_run_cfg(gate_run: &str, repo: &Path) -> Config {
-    let mut cfg = Config::default();
+    let mut cfg = workflow_cfg(
+        &["planner", "judge", "worker"],
+        &[("gate", gate_run)],
+        vec![
+            plan_stage(),
+            critique_stage(""),
+            fan_out_stage("implement-template", &["plan-critique"], &["gate"]),
+        ],
+    );
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
-    for id in ["planner", "judge", "worker"] {
-        cfg.agents.insert(
-            id.into(),
-            AgentDef {
-                id: id.into(),
-                ..Default::default()
-            },
-        );
-    }
-    cfg.workflow.gates.insert(
-        "gate".into(),
-        Gate {
-            run: gate_run.into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan".into(),
-        Stage {
-            name: "plan".into(),
-            agent: "planner".into(),
-            produces: "dag".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan-critique".into(),
-        Stage {
-            name: "plan-critique".into(),
-            needs: vec!["plan".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement-template".into(),
-        Stage {
-            name: "implement-template".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            needs: vec!["plan-critique".into()],
-            gates: vec!["gate".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
     cfg
 }
 

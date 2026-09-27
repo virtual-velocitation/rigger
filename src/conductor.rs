@@ -14020,6 +14020,10 @@ mod tests {
     use crate::test_support::git_ok;
     use crate::test_support::has_status_marker as has_status;
     use crate::test_support::temp_git_project_with_commit;
+    use crate::test_support::{
+        assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
+    };
+    use crate::test_support::{critique_stage, fan_out_stage, mk_stage, plan_stage, workflow_cfg};
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -16258,32 +16262,11 @@ mod tests {
     /// template) and a `planner`/`worker` agent pair, the shared scaffold of the
     /// supersede tests. The caller supplies the planner's UnitProposed emits.
     fn supersede_cfg() -> Config {
-        let mut cfg = Config::default();
-        cfg.agents.insert("planner".into(), agent("planner"));
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "plan".into(),
-            Stage {
-                name: "plan".into(),
-                agent: "planner".into(),
-                produces: "dag".into(),
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                strategy: "fan-out".into(),
-                needs: vec!["plan".into()],
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        cfg
+        workflow_cfg(
+            &["planner", "worker"],
+            &[("ok", "true")],
+            vec![plan_stage(), fan_out_stage("implement", &["plan"], &["ok"])],
+        )
     }
 
     #[test]
@@ -23444,27 +23427,11 @@ mod tests {
     /// Build a single implement+review stage `s` (worker implements, one lens, one
     /// adjudicator), returning the config. The adjudicator's canned verdict is `verdict`.
     fn sha_stamp_cfg() -> Config {
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lens".into()],
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        cfg
+        workflow_cfg(
+            &["worker", "lens", "judge"],
+            &[("ok", "true")],
+            vec![mk_stage("s", "ok")],
+        )
     }
 
     #[test]
@@ -23753,13 +23720,10 @@ mod tests {
     /// a git repo to integrate into). The Gap-18 tests below drive its reviewers to
     /// degenerate (empty) results and assert the respawn/halt behavior.
     fn degenerate_reviewer_cfg() -> Config {
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("sdet".into(), agent("sdet"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.stages.insert(
-            "u".into(),
-            Stage {
+        workflow_cfg(
+            &["worker", "sdet", "judge"],
+            &[],
+            vec![Stage {
                 name: "u".into(),
                 agent: "worker".into(),
                 on_pass: "none".into(),
@@ -23769,9 +23733,8 @@ mod tests {
                     ..Default::default()
                 },
                 ..Default::default()
-            },
-        );
-        cfg
+            }],
+        )
     }
 
     #[test]
@@ -35027,39 +34990,7 @@ mod tests {
         // actually reviewed.
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.gates.insert(
-            "door".into(),
-            gate_def_inputs(
-                // Idempotent, like a real `regenerate:` command (`RunCtx::
-                // catch_up_owed_regeneration`'s own doc comment: "re-running the
-                // regenerate command on an already-regenerated, unchanged tree is an
-                // established idempotent no-op") - the post-merge re-gate (spec 12, unit
-                // 5) re-runs every exhaustive-tier gate a second time against the MERGED
-                // tree, so a non-idempotent side effect would falsely fail there.
-                "[ -f regen.txt ] || (echo regenerated > regen.txt && git add regen.txt \
-                 && git commit -q -m regen-commit)",
-                &["never-matches/**"],
-            ),
-        );
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into(), "door".into()],
-                on_pass: "merge".into(),
-                speculation_width: 2,
-                review: crate::config::ReviewPanel {
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let cfg = speculation_regen_door_cfg("merge");
         let store = Store::open(":memory:").unwrap();
         let driver = Stub {
             write_file: Some("feature.rs".into()),
@@ -35101,79 +35032,7 @@ mod tests {
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
 
-        // The ground truth: the sha `review_unit` ACTUALLY judged, captured durably BEFORE
-        // any tier ran and before the door gate's own regen commit ever landed.
-        let round_start = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains(STATUS_REVIEW_ROUND_START)
-            })
-            .expect("review_unit must have durably stamped its round-start sha");
-        let round_start_sha = round_start
-            .meta
-            .get(META_WORKTREE_SHA)
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(
-            round_start_sha.len(),
-            40,
-            "premise: the durable round-start sha must be a real 40-hex sha: \
-             {round_start_sha:?}"
-        );
-
-        let verified = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
-            })
-            .expect("the speculation winner's deferred verified status must have been recorded");
-        let verified_sha = verified
-            .meta
-            .get(META_WORKTREE_SHA)
-            .cloned()
-            .unwrap_or_default();
-        let reviewed = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed"#)
-            })
-            .expect("the speculation winner's deferred reviewed status must have been recorded");
-        let reviewed_sha = reviewed
-            .meta
-            .get(META_WORKTREE_SHA)
-            .cloned()
-            .unwrap_or_default();
-
-        // Non-vacuity: the regen commit genuinely moved the tip past what the round
-        // reviewed, or this test cannot distinguish the fixed behavior from the bug.
-        assert_ne!(
-            round_start_sha, verified_sha,
-            "premise: the door gate's post-review regen commit must have moved the \
-             candidate's tip strictly past round_start_sha, or this test proves nothing \
-             about the live-re-read bug: round_start={round_start_sha:?} verified={verified_sha:?}"
-        );
-
-        // The actual fix: `reviewed#{lane}` must carry the sha the round REVIEWED
-        // (round_start_sha), never a live read of `dir` taken after the exhaustive gate's
-        // own regen commit and `integrate_and_emit`.
-        assert_eq!(
-            reviewed_sha, round_start_sha,
-            "the speculation winner's deferred `reviewed#{{lane}}` stamp must carry THE sha \
-             review_unit's round actually judged (round_start_sha), not a live re-read of \
-             `dir` taken after the exhaustive gate's own post-review regen commit and \
-             integrate_and_emit: reviewed={reviewed_sha:?} round_start={round_start_sha:?} \
-             verified={verified_sha:?}"
-        );
-        // `verified#{lane}` legitimately keeps the post-gate sha (what the gates verified,
-        // never what the review judged) - unchanged by this fix.
-        assert_eq!(
-            verified_sha.len(),
-            40,
-            "the verified sha must be a real 40-hex sha: {verified_sha:?}"
-        );
+        assert_winner_reviewed_sha_is_round_start(&events);
     }
 
     #[test]
@@ -37709,27 +37568,11 @@ mod tests {
     /// A single implement + review stage `s` (worker implements, one lens, one
     /// adjudicator, `on_pass: merge`) over gate `g`, for the content-address cache tests.
     fn content_cache_cfg() -> Config {
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["g".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lens".into()],
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        cfg
+        workflow_cfg(
+            &["worker", "lens", "judge"],
+            &[("g", "true")],
+            vec![mk_stage("s", "g")],
+        )
     }
 
     /// A driver for the content-address cache tests: the IMPLEMENTER writes `work.rs` with
@@ -43907,44 +43750,15 @@ mod tests {
     /// with an adversary + adjudicator (no lenses, per the spec), and `implement` fans
     /// out only after the gate releases. The caller supplies the driver.
     fn critique_cfg() -> Config {
-        let mut cfg = Config::default();
-        cfg.agents.insert("planner".into(), agent("planner"));
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("adversary".into(), agent("adversary"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "plan".into(),
-            Stage {
-                name: "plan".into(),
-                agent: "planner".into(),
-                produces: "dag".into(),
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "plan-critique".into(),
-            Stage {
-                name: "plan-critique".into(),
-                needs: vec!["plan".into()],
-                adversary: "adversary".into(),
-                adjudicator: "judge".into(),
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                strategy: "fan-out".into(),
-                needs: vec!["plan-critique".into()],
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        cfg
+        workflow_cfg(
+            &["planner", "worker", "adversary", "judge"],
+            &[("ok", "true")],
+            vec![
+                plan_stage(),
+                critique_stage("adversary"),
+                fan_out_stage("implement", &["plan-critique"], &["ok"]),
+            ],
+        )
     }
 
     /// A driver whose adjudicator DRAWS its verdict from the conductor's own rule-6

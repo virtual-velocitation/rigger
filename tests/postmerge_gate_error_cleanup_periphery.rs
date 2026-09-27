@@ -34,13 +34,14 @@
 //! calling any private helper.
 
 mod common;
+use common::fixtures::workflow_cfg;
 use common::git::git_ok;
 
 use std::path::Path;
 use std::process::Command;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::config::{AgentDef, Config, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Appended, Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
@@ -91,34 +92,18 @@ impl AgentDriver for WriteOneFileDriver {
 }
 
 fn base_config(repo: &Path) -> Config {
-    let mut cfg = Config::default();
-    cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        "g".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "unit-a".into(),
-        Stage {
+    let mut cfg = workflow_cfg(
+        &["worker"],
+        &[("g", "true")],
+        vec![Stage {
             name: "unit-a".into(),
             agent: "worker".into(),
             gates: vec!["g".into()],
             on_pass: "merge".into(),
-            needs: vec![],
             ..Default::default()
-        },
+        }],
     );
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
     cfg
 }
 
