@@ -28,11 +28,14 @@
 
 mod common;
 
-use common::repo::for_each_rs_file;
 use common::repo::repo_text;
 use common::repo::table_declares_key;
 use common::repo::table_lines;
 use std::path::PathBuf;
+
+#[path = "common/retired_feature.rs"]
+mod retired_feature;
+use retired_feature::assert_no_src_line_gates_on;
 
 /// The declaration line for dependency `dep` in `[header]`, if present.
 fn dependency_line(manifest: &str, header: &str, dep: &str) -> Option<String> {
@@ -158,23 +161,11 @@ fn kurrentdb_adapter_is_a_public_library_symbol_in_every_lane() {
 /// branches on it. Space-insensitive so it catches `feature="kurrentdb"` too.
 #[test]
 fn no_source_still_gates_on_the_retired_kurrentdb_feature() {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut offenders = Vec::new();
-    for_each_rs_file(&src, &mut |path, text| {
-        for (idx, line) in text.lines().enumerate() {
-            let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-            if squeezed.contains("cfg(feature=\"kurrentdb\"")
-                || squeezed.contains("cfg!(feature=\"kurrentdb\"")
-            {
-                offenders.push(format!("{}:{}", path.display(), idx + 1));
-            }
-        }
-    });
-    assert!(
-        offenders.is_empty(),
+    assert_no_src_line_gates_on(
+        &["cfg(feature=\"kurrentdb\"", "cfg!(feature=\"kurrentdb\""],
         "the `kurrentdb` cargo feature is retired (spec 47), so no source may still gate on it - \
          a `cfg(feature = \"kurrentdb\")` predicate on a now-undefined feature evaluates FALSE and \
-         silently compiles the guarded code out of every build. Offending lines: {offenders:?}"
+         silently compiles the guarded code out of every build.",
     );
 }
 
