@@ -1828,24 +1828,17 @@ fn map_entry_lines(e: &MapEntry) -> MapEntryLines {
     }
 }
 
-/// Deterministic pretty JSON for [`build_map`]'s output, LINE-FREE (spec 90 criterion 2):
-/// serializes through [`MapEntryWire`], never [`MapEntry`] directly, so the guarded file never
-/// carries a line number - a bare array, each field in declaration order (no `HashMap` anywhere
-/// in the shape, so `serde_json` emits the SAME bytes on every run over the same tree - the
-/// drift guard's whole premise).
-fn map_to_json(entries: &[MapEntry]) -> String {
-    let wire: Vec<MapEntryWire> = entries.iter().map(map_entry_wire).collect();
-    let mut s = serde_json::to_string_pretty(&wire).expect("MapEntryWire serializes");
-    s.push('\n');
-    s
-}
-
-/// Deterministic pretty JSON for [`MAP_LINES_PATH`] - the line spans [`map_to_json`] dropped.
-/// Never drift-guarded; written fresh every `RIGGER_AUDIT_WRITE=1` run alongside the guarded
-/// file.
-fn map_lines_to_json(entries: &[MapEntry]) -> String {
-    let wire: Vec<MapEntryLines> = entries.iter().map(map_entry_lines).collect();
-    let mut s = serde_json::to_string_pretty(&wire).expect("MapEntryLines serializes");
+/// Deterministic pretty JSON for one committed audit ledger: `items` projected through
+/// `to_wire` - a LINE-FREE wire shape (spec 90 criterion 2: [`MapEntryWire`],
+/// [`DupClusterWire`], [`DeadCodeCandidateWire`]) for a drift-guarded file, or the line-span
+/// shape ([`MapEntryLines`], [`DupClusterLines`], [`DeadCodeCandidateLines`]) for its
+/// unguarded `.lines` sibling, which is never drift-guarded and is written fresh on every
+/// `RIGGER_AUDIT_WRITE=1` run. A bare array, each field in declaration order, with a trailing
+/// newline: no `HashMap` anywhere in any of these shapes, so `serde_json` emits the SAME bytes
+/// on every run over the same tree - the drift guard's whole premise.
+fn ledger_json<T, W: Serialize>(items: &[T], to_wire: impl Fn(&T) -> W) -> String {
+    let wire: Vec<W> = items.iter().map(to_wire).collect();
+    let mut s = serde_json::to_string_pretty(&wire).expect("a ledger wire shape serializes");
     s.push('\n');
     s
 }
@@ -2104,7 +2097,7 @@ const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 /// Spec 90 criterion 2: the UNGUARDED sibling carrying [`CATALOG_PATH`]'s line spans, moved out
 /// of the guarded file so a pin bump or a sibling unit's own insertion elsewhere never perturbs
 /// this file's guarded bytes. Written only in `RIGGER_AUDIT_WRITE=1` mode; the drift guard never
-/// reads it back (see [`catalog_lines_to_json`]).
+/// reads it back (see [`ledger_json`]).
 const CATALOG_LINES_PATH: &str = "docs/audit/duplication-catalog.lines.json";
 
 /// The fixed seed for [`sample_indices`]'s adversarial draw - arbitrary but permanently fixed
@@ -3372,27 +3365,6 @@ fn dup_cluster_lines(c: &DupCluster) -> DupClusterLines {
             })
             .collect(),
     }
-}
-
-/// Deterministic pretty JSON for [`build_catalog`]'s output, LINE-FREE (spec 90 criterion 2):
-/// serializes through [`DupClusterWire`], never [`DupCluster`] directly, so the guarded file
-/// never carries a line number. Mirrors [`map_to_json`]'s own shape (a bare array, declaration
-/// field order, no `HashMap` anywhere in the shape).
-fn catalog_to_json(clusters: &[DupCluster]) -> String {
-    let wire: Vec<DupClusterWire> = clusters.iter().map(dup_cluster_wire).collect();
-    let mut s = serde_json::to_string_pretty(&wire).expect("DupClusterWire serializes");
-    s.push('\n');
-    s
-}
-
-/// Deterministic pretty JSON for [`CATALOG_LINES_PATH`] - the line spans [`catalog_to_json`]
-/// dropped. Never drift-guarded (spec 90 criterion 2 Design: "the guard NEVER compares"); written
-/// fresh every `RIGGER_AUDIT_WRITE=1` run alongside the guarded file.
-fn catalog_lines_to_json(clusters: &[DupCluster]) -> String {
-    let wire: Vec<DupClusterLines> = clusters.iter().map(dup_cluster_lines).collect();
-    let mut s = serde_json::to_string_pretty(&wire).expect("DupClusterLines serializes");
-    s.push('\n');
-    s
 }
 
 /// Spec 90 criterion 2: `lines` carries each cluster's site line spans in the SAME
@@ -6169,29 +6141,6 @@ fn dead_code_candidate_lines(c: &DeadCodeCandidate) -> DeadCodeCandidateLines {
     }
 }
 
-/// Deterministic pretty JSON for [`build_dead_code_candidates`]'s output, LINE-FREE (spec 90
-/// criterion 2): serializes through [`DeadCodeCandidateWire`], never [`DeadCodeCandidate`]
-/// directly - mirrors [`catalog_to_json`]'s own shape (a bare array, declared field order, no
-/// `HashMap` anywhere).
-fn dead_code_to_json(candidates: &[DeadCodeCandidate]) -> String {
-    let wire: Vec<DeadCodeCandidateWire> =
-        candidates.iter().map(dead_code_candidate_wire).collect();
-    let mut s = serde_json::to_string_pretty(&wire).expect("DeadCodeCandidateWire serializes");
-    s.push('\n');
-    s
-}
-
-/// Deterministic pretty JSON for [`DEAD_CODE_LINES_PATH`] - the line data [`dead_code_to_json`]
-/// dropped. Never drift-guarded; written fresh every `RIGGER_AUDIT_WRITE=1` run alongside the
-/// guarded file.
-fn dead_code_lines_to_json(candidates: &[DeadCodeCandidate]) -> String {
-    let wire: Vec<DeadCodeCandidateLines> =
-        candidates.iter().map(dead_code_candidate_lines).collect();
-    let mut s = serde_json::to_string_pretty(&wire).expect("DeadCodeCandidateLines serializes");
-    s.push('\n');
-    s
-}
-
 /// The real checked-out tree's whole-`src`-tree file-aware test-file set, memoized alongside
 /// [`real_files`] for the same reason ([`resolve_out_of_line_test_files`] re-scans every `src/`
 /// file's out-of-line mods, which is cheap, but no need to repeat it per test).
@@ -6289,88 +6238,41 @@ mod tests {
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 
-    #[test]
-    fn fnv1a_is_not_mistaken_for_the_fn_keyword() {
-        let src = "fn fnv1a_64(bytes: &[u8]) -> u64 {\n    0\n}\n";
+    /// Scan `src`, assert it holds exactly ONE function, and return that function.
+    fn scan_single(src: &str) -> ScannedFn {
         let fns = scan_str(src);
         assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].name, "fnv1a_64");
+        fns.into_iter().next().unwrap()
+    }
+
+    /// `src` scans to exactly one function, named `name`.
+    fn assert_single_fn_named(src: &str, name: &str) {
+        assert_eq!(scan_single(src).name, name);
+    }
+
+    /// `src` scans to exactly one function, whose body closes on line `end_line`.
+    fn assert_single_fn_ends_at(src: &str, end_line: usize) {
+        assert_eq!(scan_single(src).end_line, end_line);
+    }
+
+    rigger::test_cases! { assert_single_fn_named;
+        fnv1a_is_not_mistaken_for_the_fn_keyword: ("fn fnv1a_64(bytes: &[u8]) -> u64 {\n    0\n}\n", "fnv1a_64");
     }
 
     // -------------------------------------------------------------------------------------
     // Scanner: lexical states must not corrupt brace matching
     // -------------------------------------------------------------------------------------
 
-    #[test]
-    fn a_brace_inside_a_line_comment_is_ignored() {
-        let src = "fn a() {\n    // a stray { brace\n    let _ = 1;\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 4);
-    }
-
-    #[test]
-    fn a_brace_inside_a_block_comment_is_ignored() {
-        let src = "fn a() {\n    /* a { stray } brace */\n    let _ = 1;\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 4);
-    }
-
-    #[test]
-    fn nested_block_comments_are_handled() {
-        let src = "fn a() {\n    /* outer /* inner { */ still comment */\n    let _ = 1;\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 4);
-    }
-
-    #[test]
-    fn a_brace_inside_a_string_literal_is_ignored() {
-        let src = "fn a() {\n    let s = \"{ not a brace }\";\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 3);
-    }
-
-    #[test]
-    fn a_brace_inside_a_raw_string_with_hashes_is_ignored() {
-        let src = "fn a() {\n    let s = r#\"{ not \\\"real\\\" }\"#;\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 3);
-    }
-
-    #[test]
-    fn a_brace_inside_a_byte_string_is_ignored() {
-        let src = "fn a() {\n    let s = b\"{ not a brace }\";\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 3);
-    }
-
-    #[test]
-    fn a_brace_char_literal_is_not_mistaken_for_real_braces() {
-        let src = "fn a() {\n    let c = '{';\n    let d = '}';\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 4);
-    }
-
-    #[test]
-    fn a_lifetime_is_not_mistaken_for_a_char_literal() {
-        let src = "fn a<'x>(v: &'x str) -> &'x str {\n    v\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 3);
-    }
-
-    #[test]
-    fn an_escaped_quote_char_literal_does_not_confuse_the_scanner() {
-        let src = "fn a() {\n    let c = '\\'';\n    let _ = 1;\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].end_line, 4);
+    rigger::test_cases! { assert_single_fn_ends_at;
+        a_brace_inside_a_line_comment_is_ignored: ("fn a() {\n    // a stray { brace\n    let _ = 1;\n}\n", 4);
+        a_brace_inside_a_block_comment_is_ignored: ("fn a() {\n    /* a { stray } brace */\n    let _ = 1;\n}\n", 4);
+        nested_block_comments_are_handled: ("fn a() {\n    /* outer /* inner { */ still comment */\n    let _ = 1;\n}\n", 4);
+        a_brace_inside_a_string_literal_is_ignored: ("fn a() {\n    let s = \"{ not a brace }\";\n}\n", 3);
+        a_brace_inside_a_raw_string_with_hashes_is_ignored: ("fn a() {\n    let s = r#\"{ not \\\"real\\\" }\"#;\n}\n", 3);
+        a_brace_inside_a_byte_string_is_ignored: ("fn a() {\n    let s = b\"{ not a brace }\";\n}\n", 3);
+        a_brace_char_literal_is_not_mistaken_for_real_braces: ("fn a() {\n    let c = '{';\n    let d = '}';\n}\n", 4);
+        a_lifetime_is_not_mistaken_for_a_char_literal: ("fn a<'x>(v: &'x str) -> &'x str {\n    v\n}\n", 3);
+        an_escaped_quote_char_literal_does_not_confuse_the_scanner: ("fn a() {\n    let c = '\\'';\n    let _ = 1;\n}\n", 4);
     }
 
     // -------------------------------------------------------------------------------------
@@ -6384,12 +6286,8 @@ mod tests {
         assert!(fns.is_empty(), "{fns:?}");
     }
 
-    #[test]
-    fn a_trait_default_method_with_a_body_is_recorded() {
-        let src = "trait T {\n    fn spawn(&self) {\n        let _ = 1;\n    }\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].name, "spawn");
+    rigger::test_cases! { assert_single_fn_named;
+        a_trait_default_method_with_a_body_is_recorded: ("trait T {\n    fn spawn(&self) {\n        let _ = 1;\n    }\n}\n", "spawn");
     }
 
     #[test]
@@ -6537,10 +6435,14 @@ mod tests {
     // Scanner: spec 87 criterion 2 additions - visibility, body_start_line, out-of-line mods
     // -------------------------------------------------------------------------------------
 
-    #[test]
-    fn a_free_function_with_no_pub_keyword_is_private() {
-        let fns = scan_str("fn helper() {}\n");
-        assert_eq!(fns[0].visibility, "private");
+    /// The first function `src` scans to carries visibility `visibility`.
+    fn assert_first_fn_visibility(src: &str, visibility: &str) {
+        let fns = scan_str(src);
+        assert_eq!(fns[0].visibility, visibility);
+    }
+
+    rigger::test_cases! { assert_first_fn_visibility;
+        a_free_function_with_no_pub_keyword_is_private: ("fn helper() {}\n", "private");
     }
 
     #[test]
@@ -6550,16 +6452,9 @@ mod tests {
         assert_eq!(fns[0].name, "helper");
     }
 
-    #[test]
-    fn a_pub_crate_function_keeps_the_qualifier() {
-        let fns = scan_str("pub(crate) fn helper() {}\n");
-        assert_eq!(fns[0].visibility, "pub(crate)");
-    }
-
-    #[test]
-    fn a_pub_super_function_keeps_the_qualifier() {
-        let fns = scan_str("mod m {\n    pub(super) fn helper() {}\n}\n");
-        assert_eq!(fns[0].visibility, "pub(super)");
+    rigger::test_cases! { assert_first_fn_visibility;
+        a_pub_crate_function_keeps_the_qualifier: ("pub(crate) fn helper() {}\n", "pub(crate)");
+        a_pub_super_function_keeps_the_qualifier: ("mod m {\n    pub(super) fn helper() {}\n}\n", "pub(super)");
     }
 
     #[test]
@@ -6909,7 +6804,10 @@ mod tests {
             reason: "x".to_string(),
             content_hash: "hash-a".to_string(),
         }];
-        assert_eq!(map_to_json(&entries), map_to_json(&entries));
+        assert_eq!(
+            ledger_json(&entries, map_entry_wire),
+            ledger_json(&entries, map_entry_wire)
+        );
     }
 
     #[test]
@@ -7031,14 +6929,18 @@ mod tests {
     fn responsibility_map_json_matches_the_tree_or_is_rewritten() {
         let root = repo_root();
         let map = build_map(&root);
-        let json = map_to_json(&map);
+        let json = ledger_json(&map, map_entry_wire);
         let path = root.join(MAP_PATH);
         if std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1") {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).unwrap();
             }
             fs::write(&path, &json).unwrap();
-            fs::write(root.join(MAP_LINES_PATH), map_lines_to_json(&map)).unwrap();
+            fs::write(
+                root.join(MAP_LINES_PATH),
+                ledger_json(&map, map_entry_lines),
+            )
+            .unwrap();
             return;
         }
         let committed = fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -7058,7 +6960,7 @@ mod tests {
     #[test]
     fn the_real_committed_responsibility_map_carries_no_line_number_fields() {
         let map = build_map(&repo_root());
-        let json = map_to_json(&map);
+        let json = ledger_json(&map, map_entry_wire);
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         let arr = value.as_array().expect("a bare array");
         assert!(!arr.is_empty());
@@ -7099,7 +7001,7 @@ mod tests {
             "src/dash.rs",
             "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
         );
-        let base_json = map_to_json(&build_map(dir.path()));
+        let base_json = ledger_json(&build_map(dir.path()), map_entry_wire);
 
         write_fixture(
             dir.path(),
@@ -7107,7 +7009,7 @@ mod tests {
             "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
              fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
         );
-        let bumped_json = map_to_json(&build_map(dir.path()));
+        let bumped_json = ledger_json(&build_map(dir.path()), map_entry_wire);
 
         assert_eq!(
             base_json, bumped_json,
@@ -7146,7 +7048,8 @@ mod tests {
         write_fixture(base.path(), "src/conductor.rs", "fn one() {}\n");
         write_fixture(base.path(), "src/main.rs", "fn two() {}\n");
         write_fixture(base.path(), "src/dash.rs", "fn three() {}\n");
-        let base_entries = json_array_entries(&map_to_json(&build_map(base.path())));
+        let base_entries =
+            json_array_entries(&ledger_json(&build_map(base.path()), map_entry_wire));
 
         let branch_a = tempfile::tempdir().expect("branch A scratch dir");
         write_fixture(
@@ -7156,7 +7059,8 @@ mod tests {
         );
         write_fixture(branch_a.path(), "src/main.rs", "fn two() {}\n");
         write_fixture(branch_a.path(), "src/dash.rs", "fn three() {}\n");
-        let a_entries = json_array_entries(&map_to_json(&build_map(branch_a.path())));
+        let a_entries =
+            json_array_entries(&ledger_json(&build_map(branch_a.path()), map_entry_wire));
 
         let branch_b = tempfile::tempdir().expect("branch B scratch dir");
         write_fixture(branch_b.path(), "src/conductor.rs", "fn one() {}\n");
@@ -7166,7 +7070,8 @@ mod tests {
             "fn two() {}\n\nfn branch_b_only() {\n    let _ = 2;\n}\n",
         );
         write_fixture(branch_b.path(), "src/dash.rs", "fn three() {}\n");
-        let b_entries = json_array_entries(&map_to_json(&build_map(branch_b.path())));
+        let b_entries =
+            json_array_entries(&ledger_json(&build_map(branch_b.path()), map_entry_wire));
 
         assert_eq!(
             a_entries.len(),
@@ -7419,15 +7324,22 @@ mod tests {
         assert_eq!(let_tok.line, 3);
     }
 
-    #[test]
-    fn string_and_raw_string_literals_are_one_lit_token_each() {
-        let toks = tok(r####"fn a() { let s = "hi"; let r = r#"raw ) thing"#; }"####);
+    /// The `Lit` tokens `src` lexes to are exactly `want`, in order.
+    fn assert_lit_tokens(src: &str, want: &[&str]) {
+        let toks = tok(src);
         let lits: Vec<&str> = toks
             .iter()
             .filter(|t| t.kind == RawKind::Lit)
             .map(|t| t.text.as_str())
             .collect();
-        assert_eq!(lits, vec!["\"hi\"", "r#\"raw ) thing\"#"]);
+        assert_eq!(lits, want);
+    }
+
+    rigger::test_cases! { assert_lit_tokens;
+        string_and_raw_string_literals_are_one_lit_token_each: (
+            r####"fn a() { let s = "hi"; let r = r#"raw ) thing"#; }"####,
+            &["\"hi\"", "r#\"raw ) thing\"#"],
+        );
     }
 
     #[test]
@@ -7439,15 +7351,8 @@ mod tests {
         assert_eq!(ch.kind, RawKind::Lit);
     }
 
-    #[test]
-    fn number_literals_including_a_fraction_are_lit_tokens() {
-        let toks = tok("fn a() { let x = 1_000u32; let y = 1.5; }");
-        let lits: Vec<&str> = toks
-            .iter()
-            .filter(|t| t.kind == RawKind::Lit)
-            .map(|t| t.text.as_str())
-            .collect();
-        assert_eq!(lits, vec!["1_000u32", "1.5"]);
+    rigger::test_cases! { assert_lit_tokens;
+        number_literals_including_a_fraction_are_lit_tokens: ("fn a() { let x = 1_000u32; let y = 1.5; }", &["1_000u32", "1.5"]);
     }
 
     #[test]
@@ -7943,30 +7848,34 @@ mod tests {
         assert!(clusters[0].proposed_home.contains("widget"));
     }
 
-    /// A SECOND, DEEPER worked example from the same adversarial sample draw:
-    /// `spawn::SpawnResult::liveness_fault` reads MISSING from the mechanical catalog (its
-    /// extra `class` parameter and `serde_json::json!` meta field push its Jaccard similarity
-    /// to `ok`/`failed` just under threshold) even though `ok` and `failed` themselves DO
-    /// cluster mechanically - reading it revealed a real recall gap the parallel-constructor
-    /// sweep above exists to close.
-    #[test]
-    fn the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster()
-    {
+    /// The real catalog's cluster hosting `file::name` also contains both `companions`.
+    fn assert_real_cluster_of_holds(file: &str, name: &str, companions: [&str; 2]) {
         let clusters = real_catalog();
         let hosting = clusters
             .iter()
-            .find(|c| {
-                c.sites
-                    .iter()
-                    .any(|s| s.file == "src/spawn.rs" && s.name == "liveness_fault")
-            })
-            .expect("liveness_fault is findable in the real catalog");
+            .find(|c| c.sites.iter().any(|s| s.file == file && s.name == name))
+            .unwrap_or_else(|| panic!("{name} is findable in the real catalog"));
         let names: HashSet<&str> = hosting.sites.iter().map(|s| s.name.as_str()).collect();
+        let [first, second] = companions;
         assert!(
-            names.contains("ok") && names.contains("failed"),
-            "liveness_fault's cluster {:?} must also contain ok and failed, found: {:?}",
+            names.contains(first) && names.contains(second),
+            "{name}'s cluster {:?} must also contain {first} and {second}, found: {:?}",
             hosting.id,
             names
+        );
+    }
+
+    rigger::test_cases! { assert_real_cluster_of_holds;
+        /// A SECOND, DEEPER worked example from the same adversarial sample draw:
+        /// `spawn::SpawnResult::liveness_fault` reads MISSING from the mechanical catalog (its
+        /// extra `class` parameter and `serde_json::json!` meta field push its Jaccard similarity
+        /// to `ok`/`failed` just under threshold) even though `ok` and `failed` themselves DO
+        /// cluster mechanically - reading it revealed a real recall gap the parallel-constructor
+        /// sweep above exists to close.
+        the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster: (
+            "src/spawn.rs",
+            "liveness_fault",
+            ["ok", "failed"],
         );
     }
 
@@ -8149,27 +8058,15 @@ mod tests {
         assert_eq!(names, HashSet::from(["scan_file", "tokenize", "extract"]));
     }
 
-    /// The recall gap u85c1's architecture lens routed to this criterion by name across two
-    /// prior review rounds, verified closed on the REAL tree: `scan_file`, `tokenize` (this
-    /// file's own bespoke scanner/lexer) and `extract` (`src/grounder/symbols/extract.rs`, the
-    /// codebase's one canonical tree-sitter extractor) land in one cluster.
-    #[test]
-    fn the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster() {
-        let clusters = real_catalog();
-        let hosting = clusters
-            .iter()
-            .find(|c| {
-                c.sites
-                    .iter()
-                    .any(|s| s.file == "src/grounder/symbols/extract.rs" && s.name == "extract")
-            })
-            .expect("extract is findable in the real catalog");
-        let names: HashSet<&str> = hosting.sites.iter().map(|s| s.name.as_str()).collect();
-        assert!(
-            names.contains("scan_file") && names.contains("tokenize"),
-            "extract's cluster {:?} must also contain scan_file and tokenize, found: {:?}",
-            hosting.id,
-            names
+    rigger::test_cases! { assert_real_cluster_of_holds;
+        /// The recall gap u85c1's architecture lens routed to this criterion by name across two
+        /// prior review rounds, verified closed on the REAL tree: `scan_file`, `tokenize` (this
+        /// file's own bespoke scanner/lexer) and `extract` (`src/grounder/symbols/extract.rs`, the
+        /// codebase's one canonical tree-sitter extractor) land in one cluster.
+        the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster: (
+            "src/grounder/symbols/extract.rs",
+            "extract",
+            ["scan_file", "tokenize"],
         );
     }
 
@@ -8206,8 +8103,12 @@ mod tests {
         assert_eq!(mech.sites[0].file, "src/a.rs");
     }
 
-    #[test]
-    fn catalog_to_json_round_trips_through_deserialize() {
+    /// A one-cluster catalog written through `to_wire` ends in a newline, round-trips back to
+    /// exactly `to_wire` of that cluster, and never carries any of the `absent` keys.
+    fn assert_catalog_ledger_round_trips<W>(to_wire: fn(&DupCluster) -> W, absent: [&str; 2])
+    where
+        W: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+    {
         let clusters = vec![DupCluster {
             id: "dup-0001".to_string(),
             classification: "exact".to_string(),
@@ -8221,40 +8122,26 @@ mod tests {
             proposed_home: "a::support".to_string(),
             note: "n".to_string(),
         }];
-        let json = catalog_to_json(&clusters);
+        let json = ledger_json(&clusters, to_wire);
         assert!(json.ends_with('\n'));
-        // Spec 90 criterion 2: the wire shape is LINE-FREE - it round-trips through
-        // `DupClusterWire`, not the full `DupCluster` (whose `start_line`/`end_line` are no
-        // longer present in `json` at all).
-        let back: Vec<DupClusterWire> = serde_json::from_str(&json).expect("round trips");
-        assert_eq!(back, vec![dup_cluster_wire(&clusters[0])]);
-        assert!(!json.contains("start_line"));
-        assert!(!json.contains("end_line"));
+        let back: Vec<W> = serde_json::from_str(&json).expect("round trips");
+        assert_eq!(back, vec![to_wire(&clusters[0])]);
+        for key in absent {
+            assert!(!json.contains(key));
+        }
     }
 
-    #[test]
-    fn catalog_lines_to_json_round_trips_and_carries_only_the_line_spans() {
-        let clusters = vec![DupCluster {
-            id: "dup-0001".to_string(),
-            classification: "exact".to_string(),
-            sites: vec![DupSite {
-                file: "src/a.rs".to_string(),
-                start_line: 1,
-                end_line: 3,
-                name: "a".to_string(),
-                content_hash: "deadbeefcafef00d".to_string(),
-            }],
-            proposed_home: "a::support".to_string(),
-            note: "n".to_string(),
-        }];
-        let json = catalog_lines_to_json(&clusters);
-        assert!(json.ends_with('\n'));
-        let back: Vec<DupClusterLines> = serde_json::from_str(&json).expect("round trips");
-        assert_eq!(back, vec![dup_cluster_lines(&clusters[0])]);
-        // The unguarded sibling carries the identity (line-free) AND the lines - never the
-        // content_hash, which belongs solely to the guarded file.
-        assert!(!json.contains("content_hash"));
-        assert!(!json.contains("proposed_home"));
+    rigger::test_cases! { assert_catalog_ledger_round_trips;
+        /// Spec 90 criterion 2: the wire shape is LINE-FREE - it round-trips through
+        /// `DupClusterWire`, not the full `DupCluster` (whose `start_line`/`end_line` are no
+        /// longer present in the json at all).
+        catalog_to_json_round_trips_through_deserialize: (dup_cluster_wire, ["start_line", "end_line"]);
+        /// The unguarded sibling carries the identity (line-free) AND the lines - never the
+        /// content_hash, which belongs solely to the guarded file.
+        catalog_lines_to_json_round_trips_and_carries_only_the_line_spans: (
+            dup_cluster_lines,
+            ["content_hash", "proposed_home"],
+        );
     }
 
     #[test]
@@ -8293,11 +8180,16 @@ mod tests {
         assert!(updated.contains("section three body"));
     }
 
-    #[test]
-    #[should_panic(expected = "missing criterion 1's placeholder contract")]
-    fn replace_section_2_panics_loudly_when_the_heading_is_entirely_absent() {
-        replace_section_2(
-            "# Title\n\nno sections here\n",
+    /// `replace` over a document with no section headings at all panics (each caller pins
+    /// the loud message with `should_panic`), never silently appending `section`.
+    fn replace_into_a_headingless_document(replace: fn(&str, &str) -> String, section: &str) {
+        replace("# Title\n\nno sections here\n", section);
+    }
+
+    rigger::test_cases! { replace_into_a_headingless_document;
+        #[should_panic(expected = "missing criterion 1's placeholder contract")]
+        replace_section_2_panics_loudly_when_the_heading_is_entirely_absent: (
+            replace_section_2,
             "## 2. Duplication Catalog\n\nx\n",
         );
     }
@@ -8306,11 +8198,19 @@ mod tests {
     // The adversarial sample
     // -------------------------------------------------------------------------------------
 
-    #[test]
-    fn sample_indices_is_deterministic_for_a_fixed_seed() {
-        let a = sample_indices(1000, 30, 42);
-        let b = sample_indices(1000, 30, 42);
-        assert_eq!(a, b);
+    /// Two 30-of-1000 draws are identical exactly when their seeds are.
+    fn assert_draws_match_iff_seeds_do(seed_a: u64, seed_b: u64) {
+        let a = sample_indices(1000, 30, seed_a);
+        let b = sample_indices(1000, 30, seed_b);
+        if seed_a == seed_b {
+            assert_eq!(a, b);
+        } else {
+            assert_ne!(a, b);
+        }
+    }
+
+    rigger::test_cases! { assert_draws_match_iff_seeds_do;
+        sample_indices_is_deterministic_for_a_fixed_seed: (42, 42);
     }
 
     #[test]
@@ -8336,11 +8236,8 @@ mod tests {
         assert!(sample_indices(0, 30, 7).is_empty());
     }
 
-    #[test]
-    fn different_seeds_produce_different_draws() {
-        let a = sample_indices(1000, 30, 1);
-        let b = sample_indices(1000, 30, 2);
-        assert_ne!(a, b);
+    rigger::test_cases! { assert_draws_match_iff_seeds_do;
+        different_seeds_produce_different_draws: (1, 2);
     }
 
     // -------------------------------------------------------------------------------------
@@ -8433,7 +8330,7 @@ mod tests {
     fn duplication_catalog_json_matches_the_tree_or_is_rewritten() {
         let root = repo_root();
         let clusters = real_catalog();
-        let json = catalog_to_json(clusters);
+        let json = ledger_json(clusters, dup_cluster_wire);
         let path = root.join(CATALOG_PATH);
         if std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1") {
             if let Some(parent) = path.parent() {
@@ -8442,7 +8339,7 @@ mod tests {
             fs::write(&path, &json).unwrap();
             fs::write(
                 root.join(CATALOG_LINES_PATH),
-                catalog_lines_to_json(clusters),
+                ledger_json(clusters, dup_cluster_lines),
             )
             .unwrap();
             return;
@@ -8473,7 +8370,7 @@ mod tests {
     #[test]
     fn the_real_committed_catalog_carries_no_line_number_fields() {
         let clusters = real_catalog();
-        let json = catalog_to_json(clusters);
+        let json = ledger_json(clusters, dup_cluster_wire);
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         let arr = value.as_array().expect("a bare array");
         assert!(!arr.is_empty());
@@ -8519,7 +8416,7 @@ mod tests {
             "src/z.rs",
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
         );
-        let base_json = catalog_to_json(&build_catalog(&scan_tree(dir.path())));
+        let base_json = ledger_json(&build_catalog(&scan_tree(dir.path())), dup_cluster_wire);
 
         write_fixture(
             dir.path(),
@@ -8527,7 +8424,7 @@ mod tests {
             "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
              fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
         );
-        let bumped_json = catalog_to_json(&build_catalog(&scan_tree(dir.path())));
+        let bumped_json = ledger_json(&build_catalog(&scan_tree(dir.path())), dup_cluster_wire);
 
         assert_eq!(
             base_json, bumped_json,
@@ -8557,7 +8454,7 @@ mod tests {
             "src/z.rs",
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
         );
-        let base_json = catalog_to_json(&build_catalog(&scan_tree(base.path())));
+        let base_json = ledger_json(&build_catalog(&scan_tree(base.path())), dup_cluster_wire);
 
         let branch_a = tempfile::tempdir().expect("branch A scratch dir");
         write_fixture(
@@ -8571,7 +8468,10 @@ mod tests {
             "src/z.rs",
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
         );
-        let a_json = catalog_to_json(&build_catalog(&scan_tree(branch_a.path())));
+        let a_json = ledger_json(
+            &build_catalog(&scan_tree(branch_a.path())),
+            dup_cluster_wire,
+        );
 
         let branch_b = tempfile::tempdir().expect("branch B scratch dir");
         write_fixture(
@@ -8585,7 +8485,10 @@ mod tests {
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n\n\
              fn branch_b_only(y: i64) -> i64 {\n    y / 2 + 11\n}\n",
         );
-        let b_json = catalog_to_json(&build_catalog(&scan_tree(branch_b.path())));
+        let b_json = ledger_json(
+            &build_catalog(&scan_tree(branch_b.path())),
+            dup_cluster_wire,
+        );
 
         assert_eq!(
             base_json, a_json,
@@ -9062,12 +8965,11 @@ mod tests {
         );
     }
 
-    /// CLAIM-4 equivalent for section 4.3 (mirrors
-    /// `report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`),
-    /// over a synthetic ledger (see `assert_dead_code_render_cites_the_unguarded_lines_value`).
-    #[test]
-    fn report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
-        assert_dead_code_render_cites_the_unguarded_lines_value(
+    rigger::test_cases! { assert_dead_code_render_cites_the_unguarded_lines_value;
+        /// CLAIM-4 equivalent for section 4.3 (mirrors
+        /// `report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`),
+        /// over a synthetic ledger (see `assert_dead_code_render_cites_the_unguarded_lines_value`).
+        report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them: (
             render_dead_code_full_list,
             |c, line| format!("`{}:{}`", c.file, line),
         );
@@ -9152,11 +9054,10 @@ mod tests {
         assert_eq!(updated, "# Title\n\n## 6. Prioritized Plan\n\nnew body\n");
     }
 
-    #[test]
-    #[should_panic(expected = "missing criterion 1's placeholder contract")]
-    fn replace_section_6_panics_loudly_when_the_heading_is_entirely_absent() {
-        replace_section_6(
-            "# Title\n\nno sections here\n",
+    rigger::test_cases! { replace_into_a_headingless_document;
+        #[should_panic(expected = "missing criterion 1's placeholder contract")]
+        replace_section_6_panics_loudly_when_the_heading_is_entirely_absent: (
+            replace_section_6,
             "## 6. Prioritized Plan\n\nx\n",
         );
     }
@@ -9317,13 +9218,12 @@ mod tests {
         );
     }
 
-    /// CLAIM-4 equivalent for section 6 item 0 (mirrors
-    /// `report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
-    /// same shared machinery, applied to `render_dead_code_deletion_list` instead (see
-    /// `assert_dead_code_render_cites_the_unguarded_lines_value`).
-    #[test]
-    fn report_section_6_item_0_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
-        assert_dead_code_render_cites_the_unguarded_lines_value(
+    rigger::test_cases! { assert_dead_code_render_cites_the_unguarded_lines_value;
+        /// CLAIM-4 equivalent for section 6 item 0 (mirrors
+        /// `report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
+        /// same shared machinery, applied to `render_dead_code_deletion_list` instead (see
+        /// `assert_dead_code_render_cites_the_unguarded_lines_value`).
+        report_section_6_item_0_cites_file_line_exactly_as_the_unguarded_lines_file_records_them: (
             render_dead_code_deletion_list,
             |c, line| format!("`{}` (line {})", c.name, line),
         );
@@ -10376,7 +10276,7 @@ mod tests {
     fn dead_code_json_matches_the_tree_or_is_rewritten() {
         let root = repo_root();
         let candidates = real_dead_code_candidates();
-        let json = dead_code_to_json(candidates);
+        let json = ledger_json(candidates, dead_code_candidate_wire);
         let path = root.join(DEAD_CODE_PATH);
         if std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1") {
             if let Some(parent) = path.parent() {
@@ -10385,7 +10285,7 @@ mod tests {
             fs::write(&path, &json).unwrap();
             fs::write(
                 root.join(DEAD_CODE_LINES_PATH),
-                dead_code_lines_to_json(candidates),
+                ledger_json(candidates, dead_code_candidate_lines),
             )
             .unwrap();
             return;
@@ -10408,7 +10308,7 @@ mod tests {
     /// any `ambiguous_with` citation is `file#hash`-shaped, never `file:line`.
     #[test]
     fn the_dead_code_json_carries_no_line_number_fields() {
-        let json = dead_code_to_json(&dead_code_fixture());
+        let json = ledger_json(&dead_code_fixture(), dead_code_candidate_wire);
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         let arr = value.as_array().expect("a bare array");
         assert!(!arr.is_empty());
@@ -10482,7 +10382,7 @@ mod tests {
             "src/z.rs",
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
         );
-        let base_json = dead_code_to_json(&candidates_for(dir.path()));
+        let base_json = ledger_json(&candidates_for(dir.path()), dead_code_candidate_wire);
 
         write_fixture(
             dir.path(),
@@ -10490,7 +10390,7 @@ mod tests {
             "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
              fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
         );
-        let bumped_json = dead_code_to_json(&candidates_for(dir.path()));
+        let bumped_json = ledger_json(&candidates_for(dir.path()), dead_code_candidate_wire);
 
         assert_eq!(
             base_json, bumped_json,
@@ -10520,7 +10420,10 @@ mod tests {
             "src/z.rs",
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
         );
-        let base_entries = json_array_entries(&dead_code_to_json(&candidates_for(base.path())));
+        let base_entries = json_array_entries(&ledger_json(
+            &candidates_for(base.path()),
+            dead_code_candidate_wire,
+        ));
 
         let branch_a = tempfile::tempdir().expect("branch A scratch dir");
         write_fixture(
@@ -10534,7 +10437,10 @@ mod tests {
             "src/z.rs",
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
         );
-        let a_entries = json_array_entries(&dead_code_to_json(&candidates_for(branch_a.path())));
+        let a_entries = json_array_entries(&ledger_json(
+            &candidates_for(branch_a.path()),
+            dead_code_candidate_wire,
+        ));
 
         let branch_b = tempfile::tempdir().expect("branch B scratch dir");
         write_fixture(
@@ -10548,7 +10454,10 @@ mod tests {
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n\n\
              fn branch_b_only(y: i64) -> i64 {\n    y / 2 + 11\n}\n",
         );
-        let b_entries = json_array_entries(&dead_code_to_json(&candidates_for(branch_b.path())));
+        let b_entries = json_array_entries(&ledger_json(
+            &candidates_for(branch_b.path()),
+            dead_code_candidate_wire,
+        ));
 
         assert_eq!(
             a_entries.len(),
