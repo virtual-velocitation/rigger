@@ -10323,6 +10323,32 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------------------
+    // THE EMPTY-LEDGER GATE
+    // -------------------------------------------------------------------------------------
+
+    /// Section 4.2's rule made a gate: a fixture ledger with entries fails, and the failure
+    /// names every entry by `name` and `file:line`, so the reader knows exactly what to delete.
+    #[test]
+    #[should_panic(expected = "twin (src/a.rs:1)")]
+    fn a_non_empty_ledger_fails_the_gate_naming_each_entry() {
+        let candidates = dead_code_fixture();
+        let message = std::panic::catch_unwind(|| assert_dead_code_ledger_empty(&candidates))
+            .expect_err("a ledger with entries must fail the gate");
+        let message = message
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(message.contains("twin (src/b.rs:2)"), "{message}");
+        panic!("{message}");
+    }
+
+    /// The real workspace's ledger is empty: every production fn has a production caller.
+    #[test]
+    fn the_real_dead_code_ledger_is_empty() {
+        assert_dead_code_ledger_empty(real_dead_code_candidates());
+    }
+
+    // -------------------------------------------------------------------------------------
     // THE DRIFT GUARD for `docs/audit/dead-code.json`
     // -------------------------------------------------------------------------------------
 
