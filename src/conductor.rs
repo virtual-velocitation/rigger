@@ -21645,14 +21645,17 @@ mod tests {
         cfg
     }
 
-    /// A driver whose `judge` approves and whose `lens` returns a substantive (non-degenerate)
-    /// review, so it does not trip the Gap-18 respawn loop.
-    fn approving_panel_stub() -> Stub {
+    /// A driver whose `judge` approves and under which every one of `reviewers` returns a
+    /// substantive (non-degenerate) review, so none trips the Gap-18 respawn loop, and commits
+    /// NOTHING.
+    fn approving_panel_stub(reviewers: &[&str]) -> Stub {
+        let mut outputs =
+            HashMap::from([("judge".to_string(), r#"{"verdict":"approve"}"#.to_string())]);
+        for r in reviewers {
+            outputs.insert(r.to_string(), "reviewed: no blocker".to_string());
+        }
         Stub {
-            output_by_agent: HashMap::from([
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-                ("lens".to_string(), "reviewed: no blocker".to_string()),
-            ]),
+            output_by_agent: outputs,
             ..Stub::new()
         }
     }
@@ -21695,7 +21698,7 @@ mod tests {
         // The prior window implemented unit `s` and committed it on the deterministic
         // branch, reaching `verified` (gates passed) but not yet approved+merged. The
         // adjudicator approves; the unit must integrate via review, not implement.
-        let driver = approving_panel_stub();
+        let driver = approving_panel_stub(&["lens"]);
         assert_resume_integrates_s(
             vec![
                 unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "green")),
@@ -23536,7 +23539,7 @@ mod tests {
         // The resumed attempt's review is approved, so the unit integrates this window.
         let driver = Stub {
             write_file: Some("feature.rs".into()),
-            ..approving_panel_stub()
+            ..approving_panel_stub(&["lens"])
         };
         let deps = Deps {
             repo: repo_path,
@@ -27842,35 +27845,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_newly_escalated_unit_stamps_an_attention_entry() {
-        // Spec 69, criterion 5, signal 1 (unit ESCALATED): the step during which a unit
-        // exhausts remediation and goes terminal without integrating must surface it on
-        // the wire, naming the unit - not just fold it into `units[..].status`, which an
-        // orchestrator would have to poll every unit to notice.
-        let rs = crashing_spawn_run();
-        // The default remediation bound (MAX_RETRIES=3) means the escalating attempt is
-        // ALSO the unit's third failure - a recurrence - so both entries fire together;
-        // that co-occurrence is correct, not a double-report of the same signal.
-        assert_eq!(
-            rs.attention,
-            vec![
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_ESCALATED,
-                    "s",
-                    "escalated after exhausting remediation",
-                ),
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                    "s",
-                    "3 attempts",
-                ),
-            ],
-            "an escalated unit must stamp an `escalated` entry naming it, in deterministic \
-             kind order ahead of the co-occurring recurrence"
-        );
-    }
-
     /// A stage `name` run by agent `a`, gated by `ok`, needing `needs`.
     fn gated_by_ok(name: &str, needs: &[&str]) -> Stage {
         Stage {
@@ -27899,30 +27873,53 @@ mod tests {
         run_logged(&cfg, &Stub::new()).0
     }
 
-    #[test]
-    fn a_budget_halt_stamps_an_attention_entry() {
-        // Spec 69, criterion 5, signal 2 (run HALTED with reason): mirrors `budget_halt`
-        // exactly (same reason string), but on the generic `attention` channel a driver
-        // can render without a field-by-field halt/escalated/attention triage.
-        let rs = budget_of_one_over_two_units();
-        // A budget of 1 is ALSO its own final tenth (1 - 1/10 = 1, floored): the one
-        // admitted spawn crosses both signals in the same call, deterministically ordered
-        // (`halted` before `budget-final-tenth`) - a genuine co-occurrence, not a
-        // duplicate report of one signal.
-        assert_eq!(
-            rs.attention,
+    /// The run `rs` stamped exactly the `expected` attention entries, in deterministic kind order
+    /// (`why`).
+    fn assert_attention(rs: RunState, expected: Vec<ledger::AttentionEntry>, why: &str) {
+        assert_eq!(rs.attention, expected, "{why}");
+    }
+
+    crate::test_cases! {
+        /// Spec 69, criterion 5, signal 1 (unit ESCALATED): the step during which a unit exhausts
+        /// remediation and goes terminal without integrating must surface it on the wire, naming
+        /// the unit - not just fold it into `units[..].status`, which an orchestrator would have to
+        /// poll every unit to notice. The default remediation bound (MAX_RETRIES=3) means the
+        /// escalating attempt is ALSO the unit's third failure - a recurrence - so both entries
+        /// fire together; that co-occurrence is correct, not a double-report of the same signal.
+        a_newly_escalated_unit_stamps_an_attention_entry: assert_attention(
+            crashing_spawn_run(),
+            vec![
+                ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_ESCALATED,
+                    "s",
+                    "escalated after exhausting remediation",
+                ),
+                ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                    "s",
+                    "3 attempts",
+                ),
+            ],
+            "an escalated unit must stamp an `escalated` entry naming it, in deterministic \
+             kind order ahead of the co-occurring recurrence",
+        );
+        /// Spec 69, criterion 5, signal 2 (run HALTED with reason): mirrors `budget_halt` exactly
+        /// (same reason string), but on the generic `attention` channel a driver can render
+        /// without a field-by-field halt/escalated/attention triage. A budget of 1 is ALSO its own
+        /// final tenth (1 - 1/10 = 1, floored): the one admitted spawn crosses both signals in the
+        /// same call, deterministically ordered (`halted` before `budget-final-tenth`) - a genuine
+        /// co-occurrence, not a duplicate report of one signal.
+        a_budget_halt_stamps_an_attention_entry: assert_attention(
+            budget_of_one_over_two_units(),
             vec![
                 ledger::AttentionEntry::run_scoped(
                     ledger::ATTENTION_HALTED,
                     "budget exhausted: 1/1 spawns",
                 ),
-                ledger::AttentionEntry::run_scoped(
-                    ledger::ATTENTION_BUDGET_FINAL_TENTH,
-                    "1/1 spawns",
-                ),
+                ledger::AttentionEntry::run_scoped(ledger::ATTENTION_BUDGET_FINAL_TENTH, "1/1 spawns"),
             ],
             "a budget halt must stamp a run-scoped `halted` entry carrying the same reason \
-             as `budget_halt`"
+             as `budget_halt`",
         );
     }
 
@@ -28960,39 +28957,44 @@ mod tests {
         );
     }
 
+    /// Run the one gated stage `s` (run by `def`, `stage` overriding the rest) in a fresh repo;
+    /// returns the driver, which recorded the SpawnOpts the conductor passed.
+    fn spawned_in_a_repo(def: AgentDef, stage: Stage) -> Stub {
+        let repo = init_repo();
+        let mut cfg = Config::default();
+        let stage = Stage {
+            name: "s".into(),
+            agent: def.id.clone(),
+            gates: vec!["ok".into()],
+            ..stage
+        };
+        cfg.agents.insert(def.id.clone(), def);
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert("s".into(), stage);
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run(&cfg, &deps).unwrap();
+        drop(deps);
+        driver
+    }
+
     #[test]
     fn isolation_none_agent_gets_no_worktree_even_with_a_repo() {
         // An agent declaring `isolation: none` runs in the current dir (no
         // worktree) even when a repo is configured (§3.1, §6). The Stub records the
         // SpawnOpts the conductor passed; isolation must be false.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert(
-            "rev".into(),
+        let driver = spawned_in_a_repo(
             AgentDef {
                 id: "rev".into(),
                 isolation: "none".into(),
                 ..Default::default()
             },
+            Stage::default(),
         );
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "rev".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path,
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        run(&cfg, &deps).unwrap();
         let opts = driver.opts_by_agent.lock().unwrap();
         let (isolation, _parallel) = opts.get("rev").copied().unwrap();
         assert!(
@@ -29005,27 +29007,7 @@ mod tests {
     fn spawn_opts_isolation_is_set_for_a_worktree_agent() {
         // An isolated (default) agent in a repo runs in a worktree, so SpawnOpts
         // carries isolation = true (§6).
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path,
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        run(&cfg, &deps).unwrap();
+        let driver = spawned_in_a_repo(agent("a"), Stage::default());
         let opts = driver.opts_by_agent.lock().unwrap();
         let (isolation, parallel) = opts.get("a").copied().unwrap();
         assert!(isolation, "a worktree-isolated agent must report isolation");
@@ -29039,34 +29021,75 @@ mod tests {
         // the actual WORK and the thin driver narrates it - not just `<unit>:<stage>`. The
         // title is trimmed of surrounding whitespace so a stray newline never bleeds into
         // the one-line narration.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
+        let driver = spawned_in_a_repo(
+            agent("a"),
             Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
                 coverage: "  the blocker line is surfaced on both status and the dashboard  "
                     .into(),
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path,
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        run(&cfg, &deps).unwrap();
         assert_eq!(
             driver.title_for("a").as_deref(),
             Some("the blocker line is surfaced on both status and the dashboard"),
             "the implementer's SpawnOpts.title is its unit criterion (coverage), trimmed"
         );
+    }
+
+    /// Run `stage` (repo-less: the adjudicator approves and `on_pass: none` stops before
+    /// integrate, so no git repo is needed - `reviewed` still emits) under a `judge` that
+    /// approves and `lenses`/`adversary` that each return a substantive result so the Gap-18
+    /// respawn loop never trips; `worker` implements when the stage names an agent. Returns the
+    /// driver, which recorded every spawn's SpawnOpts.
+    fn roster_run(stage: Stage, lenses: &[&str], adversary: &str) -> Stub {
+        let mut cfg = Config::default();
+        let reviewers: Vec<&str> = lenses
+            .iter()
+            .copied()
+            .chain([adversary])
+            .filter(|a| !a.is_empty())
+            .collect();
+        for a in reviewers
+            .iter()
+            .copied()
+            .chain(["judge"])
+            .chain((!stage.agent.is_empty()).then_some(stage.agent.as_str()))
+        {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            stage.name.clone(),
+            Stage {
+                on_pass: "none".into(),
+                ..stage
+            },
+        );
+        let driver = approving_panel_stub(&reviewers);
+        let store = Store::open(":memory:").unwrap();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        run(&cfg, &deps).unwrap();
+        drop(deps);
+        driver
+    }
+
+    /// A per-unit stage `s` implemented by `worker` and reviewed by `lenses` + `adversary` (none
+    /// when empty) + the `judge`, run through [`roster_run`].
+    fn per_unit_roster_run(lenses: &[&str], adversary: &str) -> Stub {
+        roster_run(
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: lenses.iter().map(|l| l.to_string()).collect(),
+                    adversary: adversary.into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            lenses,
+            adversary,
+        )
     }
 
     /// REVIEW TIERS NAME THEIR TARGETS (spec 67, criterion 4): the adversary's spawn is
@@ -29075,40 +29098,7 @@ mod tests {
     /// never a guess.
     #[test]
     fn the_adversarys_spawn_is_stamped_with_the_units_lens_roster() {
-        let store = Store::open(":memory:").unwrap();
-        let mut cfg = Config::default();
-        for a in ["worker", "lensA", "lensB", "adversary", "judge"] {
-            cfg.agents.insert(a.into(), agent(a));
-        }
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                // Repo-less: the adjudicator approves and `on_pass: none` stops before
-                // integrate, so no git repo is needed - `reviewed` still emits.
-                on_pass: "none".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lensA".into(), "lensB".into()],
-                    adversary: "adversary".into(),
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        let driver = Stub {
-            output_by_agent: HashMap::from([
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-                // A substantive result for each so the Gap-18 respawn loop never trips.
-                ("lensA".to_string(), "reviewed: no blocker".to_string()),
-                ("lensB".to_string(), "reviewed: no blocker".to_string()),
-                ("adversary".to_string(), "reviewed: no blocker".to_string()),
-            ]),
-            ..Stub::new()
-        };
-        let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        let driver = per_unit_roster_run(&["lensA", "lensB"], "adversary");
         assert_eq!(
             driver.reviews_for("adversary"),
             Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),
@@ -29121,37 +29111,7 @@ mod tests {
     /// literal `"adversary"` attribution token, not the agent id or a title-cased form.
     #[test]
     fn the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary() {
-        let store = Store::open(":memory:").unwrap();
-        let mut cfg = Config::default();
-        for a in ["worker", "lensA", "lensB", "adversary", "judge"] {
-            cfg.agents.insert(a.into(), agent(a));
-        }
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                on_pass: "none".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lensA".into(), "lensB".into()],
-                    adversary: "adversary".into(),
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        let driver = Stub {
-            output_by_agent: HashMap::from([
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-                ("lensA".to_string(), "reviewed: no blocker".to_string()),
-                ("lensB".to_string(), "reviewed: no blocker".to_string()),
-                ("adversary".to_string(), "reviewed: no blocker".to_string()),
-            ]),
-            ..Stub::new()
-        };
-        let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        let driver = per_unit_roster_run(&["lensA", "lensB"], "adversary");
         assert_eq!(
             driver.reviews_for("judge"),
             Some(vec![
@@ -29167,34 +29127,7 @@ mod tests {
     /// never invent an `"adversary"` entry in the adjudicator's roster.
     #[test]
     fn a_panel_with_no_adversary_never_fabricates_one_in_the_adjudicators_roster() {
-        let store = Store::open(":memory:").unwrap();
-        let mut cfg = Config::default();
-        for a in ["worker", "lensA", "judge"] {
-            cfg.agents.insert(a.into(), agent(a));
-        }
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                on_pass: "none".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lensA".into()],
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        let driver = Stub {
-            output_by_agent: HashMap::from([
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-                ("lensA".to_string(), "reviewed: no blocker".to_string()),
-            ]),
-            ..Stub::new()
-        };
-        let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        let driver = per_unit_roster_run(&["lensA"], "");
         assert!(
             !driver.spawned("adversary"),
             "a panel with no adversary configured must spawn none"
@@ -29293,37 +29226,19 @@ mod tests {
     #[test]
     fn the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster(
     ) {
-        let mut cfg = Config::default();
-        for a in ["lensA", "lensB", "adversary", "judge"] {
-            cfg.agents.insert(a.into(), agent(a));
-        }
-        cfg.workflow.stages.insert(
-            "review".into(),
+        // No `agent` + a populated `agents` lens list routes this to the STANDALONE fan-out
+        // review path (`is_fan_out`), never `review_unit`.
+        let driver = roster_run(
             Stage {
                 name: "review".into(),
-                // No `agent` + a populated `agents` lens list routes this to the
-                // STANDALONE fan-out review path (`is_fan_out`), never `review_unit`.
                 agents: vec!["lensA".into(), "lensB".into()],
                 adversary: "adversary".into(),
                 adjudicator: "judge".into(),
-                // Repo-less: the adjudicator approves and `on_pass: none` stops before
-                // integrate, so no git repo is needed - `reviewed` still emits.
-                on_pass: "none".into(),
                 ..Default::default()
             },
+            &["lensA", "lensB"],
+            "adversary",
         );
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output_by_agent: HashMap::from([
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-                ("lensA".to_string(), "reviewed: no blocker".to_string()),
-                ("lensB".to_string(), "reviewed: no blocker".to_string()),
-                ("adversary".to_string(), "reviewed: no blocker".to_string()),
-            ]),
-            ..Stub::new()
-        };
-        let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
         assert_eq!(
             driver.reviews_for("adversary"),
             Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),
@@ -30055,6 +29970,87 @@ mod tests {
         );
     }
 
+    /// A stage `unit` implemented by `worker`, gated by a passing `ok`, merged on pass and
+    /// reviewed by `lenses` + `adversary` (none when empty) + the `judge` adjudicator.
+    fn judged_unit_cfg(unit: &str, lenses: &[&str], adversary: &str) -> Config {
+        let mut cfg = Config::default();
+        for a in ["worker", adversary, "judge"].iter().chain(lenses) {
+            if !a.is_empty() {
+                cfg.agents.insert(a.to_string(), agent(a));
+            }
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            unit.into(),
+            Stage {
+                name: unit.into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: lenses.iter().map(|l| l.to_string()).collect(),
+                    adversary: adversary.into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    /// A driver whose implementer writes `work`, whose every reviewer says `output`, and whose
+    /// `parked` spawn parks (its id is never recorded, so it parks identically on every call -
+    /// matching the real replay driver's idempotent re-park of an unanswered id).
+    fn parking_stub(work: &str, output: &str, parked: String) -> Stub {
+        let mut stub = Stub::new();
+        stub.write_file = Some(work.into());
+        stub.output = output.into();
+        stub.park_spawn_ids = [parked].into_iter().collect();
+        stub
+    }
+
+    /// A [`parking_stub`] writing `work.rs` whose adjudicator spawn on `unit` parks.
+    fn parked_judge_stub(unit: &str) -> Stub {
+        parking_stub(
+            "work.rs",
+            "reviewed it",
+            spawn_id(unit, ROLE_ADJUDICATOR, 0),
+        )
+    }
+
+    /// The tip of unit `unit`'s durable branch in `repo`, which must still resolve (a deleted
+    /// branch fails `git rev-parse` with empty stdout).
+    fn unit_branch_tip(repo: &str, unit: &str) -> String {
+        let tip = run_git(repo, &["rev-parse", &unit_branch(unit)]);
+        let tip = String::from_utf8_lossy(&tip.stdout).trim().to_string();
+        assert!(
+            !tip.is_empty(),
+            "unit {unit}'s durable branch must survive (git rev-parse must resolve it)"
+        );
+        tip
+    }
+
+    /// Unit `unit`'s worktree in `repo` is on disk (`what` names why it must be), a REGISTERED
+    /// git worktree - not just a leftover dir - and checked out at `tip`, the unit branch's
+    /// handed-out tip: the implementer's own commit, never rewound or re-created out from under
+    /// the parked agent. Returns the worktree dir.
+    fn assert_unit_worktree_at(repo: &str, unit: &str, tip: &str, what: &str) -> String {
+        let scratch = crate::worktree::scratch_root_from_env(repo, "");
+        let worktree = unit_worktree_dir(&scratch, unit);
+        assert!(Path::new(&worktree).exists(), "{what}: {worktree}");
+        assert!(
+            worktree_registered_on(repo, &unit_branch(unit)),
+            "the worktree must stay a REGISTERED git worktree, not just a leftover dir: {worktree}"
+        );
+        assert_eq!(
+            worktree::head_sha_of(&worktree),
+            tip,
+            "the worktree must be checked out at the unit branch's handed-out tip"
+        );
+        worktree
+    }
+
     #[test]
     fn a_parked_review_spawn_keeps_the_unit_worktree_registered_and_its_cache() {
         // Spec 64, criterion 1 (the split this criterion OWNS): a stage that PARKS a
@@ -30069,56 +30065,31 @@ mod tests {
         // that was never created.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lens".into()],
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("work.rs".into()),
-            output: "reviewed it".into(),
-            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
-                .into_iter()
-                .collect(),
-            ..Stub::new()
-        };
+        let driver = parked_judge_stub("solo");
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         // The park propagates out of `run` as a clean step-end (matches every other
         // parked-driver test in this module), not an error.
-        run(&cfg, &deps).unwrap();
+        run(&judged_unit_cfg("solo", &["lens"], ""), &deps).unwrap();
 
         assert!(
             driver.spawned("judge"),
             "the adjudicator must actually have been spawned (and parked), or this test proves nothing"
         );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let worktree = unit_worktree_dir(&scratch, "solo");
+        // The durable branch is untouched by a park (only a successful integrate deletes it):
+        // a parked unit's checkpoint must survive.
+        let tip = unit_branch_tip(&repo_path, "solo");
+        let worktree = assert_unit_worktree_at(
+            &repo_path,
+            "solo",
+            &tip,
+            "a parked stage must KEEP its unit worktree on disk, not remove it",
+        );
         let cache = crate::worktree::unit_cache_sibling(&worktree).unwrap();
         assert_eq!(
             runner.targets(),
@@ -30127,35 +30098,8 @@ mod tests {
             runner.targets()
         );
         assert!(
-            std::path::Path::new(&worktree).exists(),
-            "a parked stage must KEEP its unit worktree on disk, not remove it: {worktree}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &unit_branch("solo")),
-            "a parked stage's worktree must stay REGISTERED with git (not just a leftover dir): {worktree}"
-        );
-        assert!(
-            std::path::Path::new(&cache).exists(),
+            Path::new(&cache).exists(),
             "a parked stage must KEEP its cargo-target-<slug> cache sibling: {cache}"
-        );
-        // Checked out at the handed-out tip: the worktree's HEAD is exactly the unit
-        // branch's tip - nothing rewound or re-created it out from under the parked agent.
-        let branch_tip = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
-        let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
-            .trim()
-            .to_string();
-        // The durable branch is untouched by a park (only a successful integrate
-        // deletes it): a parked unit's checkpoint must survive - proven here by the
-        // `git rev-parse` above actually resolving a sha (a deleted branch fails it
-        // with empty stdout).
-        assert!(
-            !branch_tip.is_empty(),
-            "a parked unit's durable branch must survive (git rev-parse must resolve it)"
-        );
-        assert_eq!(
-            worktree::head_sha_of(&worktree),
-            branch_tip,
-            "the kept worktree must be checked out at the unit branch's handed-out tip"
         );
     }
 
@@ -30173,44 +30117,15 @@ mod tests {
         // worktree once - `review_unit` must have put it back before handing it out.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["g".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("work.rs".into()),
-            output: "reviewed it".into(),
-            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
-                .into_iter()
-                .collect(),
-            ..Stub::new()
-        };
+        let driver = parked_judge_stub("solo");
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run(&judged_unit_cfg("solo", &[], ""), &deps).unwrap();
 
         assert!(
             driver.spawned("judge"),
@@ -30218,34 +30133,16 @@ mod tests {
         );
         assert_eq!(
             runner.calls(),
-            vec!["g".to_string()],
+            vec!["ok".to_string()],
             "the gate must really have run (and deleted the worktree as its side effect), or this test proves nothing: {:?}",
             runner.calls()
         );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let worktree = unit_worktree_dir(&scratch, "solo");
-        assert!(
-            std::path::Path::new(&worktree).exists(),
-            "review_unit must restore the worktree the gate deleted, before handing it to the parked adjudicator: {worktree}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &unit_branch("solo")),
-            "the restored worktree must be a REGISTERED git worktree, not just a leftover dir: {worktree}"
-        );
-        let branch_tip = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
-        let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
-            .trim()
-            .to_string();
-        assert!(
-            !branch_tip.is_empty(),
-            "the unit's durable branch must survive the gate's deletion (git rev-parse must resolve it)"
-        );
-        assert_eq!(
-            worktree::head_sha_of(&worktree),
-            branch_tip,
-            "the restored worktree must be checked out at the unit branch's handed-out tip - \
-             the implementer's own commit, not a fresh branch off some other HEAD"
+        let tip = unit_branch_tip(&repo_path, "solo");
+        assert_unit_worktree_at(
+            &repo_path,
+            "solo",
+            &tip,
+            "review_unit must restore the worktree the gate deleted, before handing it to the parked adjudicator",
         );
     }
 
@@ -30265,87 +30162,45 @@ mod tests {
         // in this process caused or witnessed.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["g".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let cfg = judged_unit_cfg("solo", &[], "");
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("work.rs".into()),
-            output: "reviewed it".into(),
-            park_spawn_ids: [spawn_id("solo", ROLE_ADJUDICATOR, 0)]
-                .into_iter()
-                .collect(),
-            ..Stub::new()
-        };
+        let driver = parked_judge_stub("solo");
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
-        // FIRST process: the adjudicator parks (its id is never recorded, so `Stub` parks
-        // it identically on every call - the SAME id `park_spawn_ids` names, matching the
-        // real replay driver's own idempotent re-park of an unanswered id).
+        // FIRST process: the adjudicator parks.
         run(&cfg, &deps).unwrap();
-
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
         let worktree = unit_worktree_dir(&scratch, "solo");
         assert!(
-            std::path::Path::new(&worktree).exists(),
+            Path::new(&worktree).exists(),
             "premise: a parked stage keeps its worktree (criterion 1) - the first process must leave it on disk: {worktree}"
         );
-        let branch_tip_before = run_git(&repo_path, &["rev-parse", &unit_branch("solo")]);
-        let branch_tip_before = String::from_utf8_lossy(&branch_tip_before.stdout)
-            .trim()
-            .to_string();
+        let tip_before = unit_branch_tip(&repo_path, "solo");
 
         // OUT-OF-BAND DELETION: something outside any conductor process - not this run,
         // not a gate - removes the worktree dir wholesale, exactly as the historical
         // sightings describe (dir gone, `.git/worktrees` admin entry gone too).
         std::fs::remove_dir_all(&worktree).unwrap();
         assert!(
-            !std::path::Path::new(&worktree).exists(),
+            !Path::new(&worktree).exists(),
             "premise: the out-of-band deletion must actually remove it, or this test proves nothing"
         );
 
         // SECOND process (the conductor's next hand-off): the adjudicator's id is STILL
         // unrecorded, so the unit is STILL not terminal and re-enters `run_stage`, which
         // re-asserts the worktree via the SAME deterministic adopt-or-create machinery
-        // BEFORE reaching the (still-parking) adjudicator spawn again.
+        // BEFORE reaching the (still-parking) adjudicator spawn again. The restored worktree
+        // is checked out at the SAME tip the first process handed out.
         run(&cfg, &deps).unwrap();
-
-        assert!(
-            std::path::Path::new(&worktree).exists(),
-            "the conductor's next hand-off must restore the worktree an out-of-band actor deleted: {worktree}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &unit_branch("solo")),
-            "the restored worktree must be a REGISTERED git worktree, not just a leftover dir: {worktree}"
-        );
-        assert_eq!(
-            worktree::head_sha_of(&worktree),
-            branch_tip_before,
-            "the restored worktree must be checked out at the SAME unit branch tip the first \
-             process handed out - the implementer's own commit is never lost or rewound"
+        assert_unit_worktree_at(
+            &repo_path,
+            "solo",
+            &tip_before,
+            "the conductor's next hand-off must restore the worktree an out-of-band actor deleted",
         );
     }
 
@@ -30633,37 +30488,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored() {
-        // Mirrors `reviewed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_
-        // is_restored` above for the REJECT arm (`failed_sha` at the review-reject
-        // `UnitFailed`, adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion's
-        // second sibling site): the same empty-sha bug survives on a reject exactly as on
-        // an approve, and the fold this field feeds (spec 11 unit 1's flip-flop detection)
-        // needs it real on EITHER verdict.
+    /// Whether `e` carries a real 40-hex worktree sha.
+    fn has_real_worktree_sha(e: &Event) -> bool {
+        e.meta
+            .get(META_WORKTREE_SHA)
+            .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// Run `cfg` in a fresh repo under an implementer that writes `work` and a `judge` that
+    /// REJECTS while deleting its own worktree as a side effect; returns the log.
+    fn rejecting_deleting_judge_log(cfg: &Config, work: &str) -> Vec<Event> {
         let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
         let store = Store::open(":memory:").unwrap();
         let driver = Stub {
-            write_file: Some("work.rs".into()),
+            write_file: Some(work.into()),
             output_by_agent: HashMap::from([(
                 "judge".to_string(),
                 r#"{"verdict":"reject"}"#.to_string(),
@@ -30672,30 +30510,109 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
-            repo: repo_path.clone(),
+            repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
-
+        run(cfg, &deps).unwrap();
         assert!(
             driver.spawned("judge"),
             "premise: the adjudicator must have run, or this test proves nothing"
         );
+        store.read_stream(STREAM, 0, Direction::Forward).unwrap()
+    }
 
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let reject_with_sha = events.iter().find(|e| {
-            e.type_ == ledger::TYPE_UNIT_FAILED
-                && e.meta
-                    .get(META_WORKTREE_SHA)
-                    .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
-        });
+    #[test]
+    fn failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored() {
+        // Mirrors `reviewed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_
+        // is_restored` above for the REJECT arm (`failed_sha` at the review-reject
+        // `UnitFailed`, adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion's
+        // second sibling site): the same empty-sha bug survives on a reject exactly as on
+        // an approve, and the fold this field feeds (spec 11 unit 1's flip-flop detection)
+        // needs it real on EITHER verdict.
+        let events = rejecting_deleting_judge_log(&judged_unit_cfg("solo", &[], ""), "work.rs");
         assert!(
-            reject_with_sha.is_some(),
+            events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_FAILED && has_real_worktree_sha(e)),
             "a review-reject UnitFailed must carry a real 40-hex worktree sha even when the \
              adjudicator's own spawn deleted the tree as its side effect - it must be \
              stamped AFTER a re-assert restores it, not a snapshot taken during the \
              deletion window"
         );
+    }
+
+    /// The worktree sha stamped on unit status `status`'s first `UnitStatus` in `events`, or
+    /// empty when none carries one.
+    fn status_sha(events: &[Event], status: &str) -> String {
+        events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data)
+                        .contains(&format!("\"status\":\"{status}\""))
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default()
+    }
+
+    /// A reviewer's `residue` in the run's `events` was named in a lesson - never silently
+    /// discarded or adopted as a new baseline - while in `repo` the implementer's real,
+    /// reviewed `work` still landed and the residue NEVER reached integration: the round
+    /// restored the unit to the sha it judged before merging.
+    fn assert_residue_named_and_never_merged(
+        events: &[Event],
+        repo: &str,
+        work: &str,
+        residue: &str,
+    ) {
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect("the residue must be named in a lesson, never silently discarded");
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains(residue),
+            "the lesson must name the residue path {residue}: {:?}",
+            String::from_utf8_lossy(&lesson.data)
+        );
+        assert!(
+            Path::new(repo).join(work).exists(),
+            "the implementer's real, reviewed work must still land"
+        );
+        assert!(
+            !Path::new(repo).join(residue).exists(),
+            "a reviewer's own residue {residue} must NEVER reach integration - the round \
+             restores the unit to the sha it judged before merging"
+        );
+    }
+
+    /// Run an approving review round on `solo` in a fresh repo whose `judge` breaks protocol and
+    /// leaves residue in the unit's own worktree - `residue(stub)` shapes it - and return the
+    /// repo, its path and the log.
+    fn approving_round_with_residue(
+        residue: impl FnOnce(Stub) -> Stub,
+    ) -> (tempfile::TempDir, String, Vec<Event>) {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let driver = residue(Stub {
+            write_file: Some("work.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        });
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        run(&judged_unit_cfg("solo", &[], ""), &deps).unwrap();
+        assert!(
+            driver.spawned("judge"),
+            "premise: the adjudicator must have run, or this test proves nothing"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        (repo, repo_path, events)
     }
 
     #[test]
@@ -30708,105 +30625,37 @@ mod tests {
         // in a lesson, the worktree is restored to the sha the round actually judged, and
         // the `reviewed` stamp carries THAT sha - never a later read that could pick up
         // the residue.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("work.rs".into()),
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"approve"}"#.to_string(),
-            )]),
+        let (_repo, repo_path, events) = approving_round_with_residue(|stub| Stub {
             write_file_by_agent: HashMap::from([(
                 "judge".to_string(),
                 "reviewer-residue.txt".to_string(),
             )]),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        run(&cfg, &deps).unwrap();
-
-        assert!(
-            driver.spawned("judge"),
-            "premise: the adjudicator must have run, or this test proves nothing"
-        );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let verified_sha = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
-            })
-            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
-            .unwrap_or_default();
+            ..stub
+        });
+        let verified_sha = status_sha(&events, "verified");
         assert_eq!(
             verified_sha.len(),
             40,
             "premise: the verified stamp must carry a real sha - the sha the review round \
              actually judged, before the adjudicator's own residue: {verified_sha:?}"
         );
-
-        let reviewed_sha = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
-            })
-            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
-            .unwrap_or_default();
+        let reviewed_sha = status_sha(&events, "reviewed");
         assert_eq!(
             reviewed_sha, verified_sha,
             "the `reviewed` stamp must carry the sha the round actually JUDGED, never a \
              later read that could pick up the adjudicator's own dirty residue: \
              reviewed={reviewed_sha:?} verified={verified_sha:?}"
         );
-
-        let lesson = events
-            .iter()
-            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-            .expect("the residue must be named in a lesson, never silently discarded");
         assert!(
-            String::from_utf8_lossy(&lesson.data).contains("reviewer-residue.txt"),
-            "the lesson must name the residue path: {:?}",
-            String::from_utf8_lossy(&lesson.data)
-        );
-
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            !has_type(&events, ledger::TYPE_UNIT_FAILED),
             "the residue must charge NO remediation attempt - the round's own verdict \
              (approve) is the only outcome ever recorded, never an extra UnitFailed"
         );
-
-        assert!(
-            Path::new(&repo_path).join("work.rs").exists(),
-            "the implementer's real, reviewed work must still land"
-        );
-        assert!(
-            !Path::new(&repo_path).join("reviewer-residue.txt").exists(),
-            "the adjudicator's own residue must NEVER reach integration - the round \
-             restores the worktree to the sha it judged before merging"
+        assert_residue_named_and_never_merged(
+            &events,
+            &repo_path,
+            "work.rs",
+            "reviewer-residue.txt",
         );
     }
 
@@ -30817,75 +30666,23 @@ mod tests {
         // adjudicator to add a real commit on top of the reviewed tip while still
         // approving, and proves the round restores the branch to the sha it judged before
         // integration ever runs - so the adjudicator's own extra commit never merges.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("work.rs".into()),
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"approve"}"#.to_string(),
-            )]),
+        let (_repo, repo_path, events) = approving_round_with_residue(|stub| Stub {
             commits_by_agent: HashMap::from([(
                 "judge".to_string(),
                 vec![("tip-moved-residue.rs".to_string(), "junk\n".to_string())],
             )]),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        run(&cfg, &deps).unwrap();
-
+            ..stub
+        });
         assert!(
-            driver.spawned("judge"),
-            "premise: the adjudicator must have run, or this test proves nothing"
-        );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let lesson = events
-            .iter()
-            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-            .expect("the moved tip must be named in a lesson, never silently discarded");
-        assert!(
-            String::from_utf8_lossy(&lesson.data).contains("tip-moved-residue.rs"),
-            "the lesson must name the committed residue path: {:?}",
-            String::from_utf8_lossy(&lesson.data)
-        );
-
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            !has_type(&events, ledger::TYPE_UNIT_FAILED),
             "a moved tip charges NO remediation attempt - infrastructure hygiene, not a \
              gate failure or a review verdict"
         );
-
-        assert!(
-            Path::new(&repo_path).join("work.rs").exists(),
-            "the implementer's real, reviewed work must still land"
-        );
-        assert!(
-            !Path::new(&repo_path).join("tip-moved-residue.rs").exists(),
-            "the adjudicator's own extra commit must NEVER reach integration - the round \
-             resets the branch to the sha it judged before merging"
+        assert_residue_named_and_never_merged(
+            &events,
+            &repo_path,
+            "work.rs",
+            "tip-moved-residue.rs",
         );
     }
 
@@ -31022,6 +30819,75 @@ mod tests {
         );
     }
 
+    /// A driver whose implementer writes `feature.rs`, whose reviewers say "reviewed the diff",
+    /// whose `residue_by` reviewer COMMITS `residue` onto the unit branch (returning Ok), and whose
+    /// `parked` spawn parks - window 1 of a review round that unwinds with the residue still on
+    /// the branch, unrestored.
+    fn residue_then_park_stub(residue_by: &str, residue: &str, parked: String) -> Stub {
+        Stub {
+            commits_by_agent: HashMap::from([(
+                residue_by.to_string(),
+                vec![(residue.to_string(), "leftover\n".to_string())],
+            )]),
+            ..parking_stub("feature.rs", "reviewed the diff", parked)
+        }
+    }
+
+    /// Run `cfg` in `repo` over `store` under `first` (window 1), read the residue-laden tip it
+    /// left on unit `unit`'s branch, then resume in a SECOND, separate process under `second`
+    /// (this Stub-based harness re-spawns every reviewer tier fresh each entry - only the
+    /// IMPLEMENTER is skipped on resume - so, with `second` committing nothing, any residue at
+    /// its entry is window 1's own); returns the resumed run state, the log and that residue tip.
+    fn park_then_resume(
+        cfg: &Config,
+        repo: &str,
+        unit: &str,
+        first: &Stub,
+        second: &Stub,
+    ) -> (RunState, Vec<Event>, String) {
+        let store = Store::open(":memory:").unwrap();
+        let window = |driver: &Stub| {
+            let deps = Deps {
+                repo: repo.to_string(),
+                ..stub_deps(&store, driver, Vec::new())
+            };
+            run(cfg, &deps).unwrap()
+        };
+        window(first);
+        let residue_tip = unit_branch_tip(repo, unit);
+        let rs = window(second);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        (rs, events, residue_tip)
+    }
+
+    /// The resumed round's log carries a real verified sha distinct from `residue_tip` (or this
+    /// cannot tell a log-derived read from a live re-read), and exactly ONE round-start mark -
+    /// stamped on window 1's first entry, window 2's re-entry READING it back (`why`). Returns
+    /// the verified sha.
+    fn assert_one_log_derived_round_start(
+        events: &[Event],
+        residue_tip: &str,
+        why: &str,
+    ) -> String {
+        let verified_sha = status_sha(events, "verified");
+        assert_eq!(verified_sha.len(), 40, "premise: {verified_sha:?}");
+        assert_ne!(
+            verified_sha, residue_tip,
+            "the true round-start sha must differ from the residue-laden tip, or this test \
+             cannot distinguish a log-derived read from a live re-read"
+        );
+        assert_eq!(
+            count_carrying(
+                events,
+                ledger::TYPE_UNIT_STATUS,
+                "\"status\":\"review-round-start\""
+            ),
+            1,
+            "{why}"
+        );
+        verified_sha
+    }
+
     #[test]
     fn a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park()
     {
@@ -31038,139 +30904,49 @@ mod tests {
         // the residue-laden tip the first window's parked round left behind and silently
         // adopt it as the round's own new baseline - exactly the failure this criterion
         // exists to prevent.
+        //
+        // WINDOW 1: TIER 1 (lens) breaks protocol and COMMITS residue, returning Ok; TIER 2
+        // (adversary) PARKS before the guard on tier 1's own `Ok` ever runs (that guard sits
+        // on the SUCCESS path, strictly after a LATER tier resolves). WINDOW 2: the lens runs
+        // again but commits nothing; the adversary now resolves normally and the adjudicator
+        // approves.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("adv".into(), agent("adv"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lens".into()],
-                    adversary: "adv".into(),
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+        let first = residue_then_park_stub(
+            "lens",
+            "lens-residue.rs",
+            spawn_id("solo", ROLE_ADVERSARY, 0),
         );
-        let store = Store::open(":memory:").unwrap();
-
-        // WINDOW 1: TIER 1 (lens) breaks protocol and COMMITS residue, returning Ok; TIER 2
-        // (adversary) PARKS before the guard on tier 1's own `Ok` ever runs (that guard
-        // sits on the SUCCESS path, strictly after a LATER tier resolves) - so the round
-        // unwinds with the lens's residue still on the branch, unrestored.
-        let driver1 = Stub {
-            write_file: Some("feature.rs".into()),
-            output: "reviewed the diff".into(),
-            commits_by_agent: HashMap::from([(
-                "lens".to_string(),
-                vec![("lens-residue.rs".to_string(), "leftover\n".to_string())],
-            )]),
-            park_spawn_ids: [spawn_id("solo", ROLE_ADVERSARY, 0)].into_iter().collect(),
-            ..Stub::new()
-        };
-        let deps1 = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver1, Vec::new())
-        };
-        run(&cfg, &deps1).unwrap();
-
+        let second = approving_panel_stub(&["lens", "adv"]);
+        let (_rs, events, residue_tip) = park_then_resume(
+            &judged_unit_cfg("solo", &["lens"], "adv"),
+            &repo_path,
+            "solo",
+            &first,
+            &second,
+        );
         assert!(
-            driver1.spawned("lens") && driver1.spawned("adv"),
+            first.spawned("lens") && first.spawned("adv"),
             "premise: both the residue-committing lens and the parking adversary must \
-             actually have run this window, or this test proves nothing"
+             actually have run in window 1, or this test proves nothing"
         );
         assert!(
-            !driver1.spawned("judge"),
+            !first.spawned("judge"),
             "premise: the adjudicator must never be reached while the adversary is still \
              parked"
         );
-
-        let branch = unit_branch("solo");
-        let residue_tip = run_git(&repo_path, &["rev-parse", &branch]);
-        assert!(residue_tip.status.success());
-        let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
-            .trim()
-            .to_string();
-
-        // WINDOW 2: a SECOND, separate process (a fresh driver, this Stub-based harness
-        // re-spawns every reviewer tier fresh each entry into `review_unit` - only the
-        // IMPLEMENTER is skipped on resume). The lens runs again but commits NOTHING this
-        // time (no `commits_by_agent` on this driver), so the residue present at this
-        // entry is entirely window 1's own commit; the adversary now resolves normally and
-        // the adjudicator approves.
-        let driver2 = Stub {
-            output_by_agent: HashMap::from([
-                ("lens".to_string(), "reviewed: no blocker".to_string()),
-                ("adv".to_string(), "reviewed: no blocker".to_string()),
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-            ]),
-            ..Stub::new()
-        };
-        let deps2 = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver2, Vec::new())
-        };
-        run(&cfg, &deps2).unwrap();
-
         assert!(
-            driver2.spawned("lens") && driver2.spawned("adv") && driver2.spawned("judge"),
+            second.spawned("lens") && second.spawned("adv") && second.spawned("judge"),
             "premise: the resumed window must actually finish the round, or this test \
              proves nothing"
         );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let verified_sha = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
-            })
-            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
-            .unwrap_or_default();
-        assert_eq!(
-            verified_sha.len(),
-            40,
-            "premise: the verified stamp (window 1's real round-start) must carry a real \
-             sha: {verified_sha:?}"
-        );
-        assert_ne!(
-            verified_sha, residue_tip,
-            "premise: the true round-start sha must differ from the residue-laden tip, or \
-             this test cannot distinguish a log-derived read from a live re-read"
-        );
-
-        let round_start_marks = events
-            .iter()
-            .filter(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data)
-                        .contains("\"status\":\"review-round-start\"")
-            })
-            .count();
-        assert_eq!(
-            round_start_marks, 1,
+        let verified_sha = assert_one_log_derived_round_start(
+            &events,
+            &residue_tip,
             "the round-start mark must be stamped exactly once, on window 1's first entry \
-             - window 2's re-entry must READ it back, never emit a second one"
+             - window 2's re-entry must READ it back, never emit a second one",
         );
-
-        let reviewed_sha = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
-            })
-            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
-            .unwrap_or_default();
+        let reviewed_sha = status_sha(&events, "reviewed");
         assert_eq!(
             reviewed_sha, verified_sha,
             "the resumed round must judge against WINDOW 1's real round-start sha, \
@@ -31178,34 +30954,12 @@ mod tests {
              window left on the branch: reviewed={reviewed_sha:?} verified={verified_sha:?} \
              residue_tip={residue_tip:?}"
         );
-
-        let lesson = events
-            .iter()
-            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-            .expect(
-                "the lens's window-1 residue must be named in a lesson once the resumed \
-                 round finishes - never silently adopted as the new baseline",
-            );
         assert!(
-            String::from_utf8_lossy(&lesson.data).contains("lens-residue.rs"),
-            "the lesson must name the residue the lens committed: {:?}",
-            String::from_utf8_lossy(&lesson.data)
-        );
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            !has_type(&events, ledger::TYPE_UNIT_FAILED),
             "reviewer residue hygiene across a cross-call resume charges NO remediation \
              attempt"
         );
-
-        assert!(
-            Path::new(&repo_path).join("feature.rs").exists(),
-            "the implementer's real, reviewed work must still land"
-        );
-        assert!(
-            !Path::new(&repo_path).join("lens-residue.rs").exists(),
-            "the lens's own residue must NEVER reach integration, even after surviving a \
-             cross-call resume"
-        );
+        assert_residue_named_and_never_merged(&events, &repo_path, "feature.rs", "lens-residue.rs");
     }
 
     #[test]
@@ -31225,163 +30979,50 @@ mod tests {
         // and silently adopt it as the round's own new baseline.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.agents.insert("b".into(), agent("b"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "solo".into(),
-            Stage {
-                name: "solo".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["a".into(), "b".into()],
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+        let first =
+            residue_then_park_stub("a", "a-residue.rs", spawn_id("solo", &lens_role("b"), 0));
+        let second = approving_panel_stub(&["a", "b"]);
+        let (_rs, events, residue_tip) = park_then_resume(
+            &judged_unit_cfg("solo", &["a", "b"], ""),
+            &repo_path,
+            "solo",
+            &first,
+            &second,
         );
-        let store = Store::open(":memory:").unwrap();
-
-        // WINDOW 1: "a" and "b" run in the SAME concurrent chunk. "a" commits residue and
-        // returns Ok; "b" parks. Neither the adversary nor the adjudicator is ever reached
-        // this window - the lens tier itself is what errors (parked).
-        let driver1 = Stub {
-            write_file: Some("feature.rs".into()),
-            output: "reviewed the diff".into(),
-            commits_by_agent: HashMap::from([(
-                "a".to_string(),
-                vec![("a-residue.rs".to_string(), "leftover\n".to_string())],
-            )]),
-            park_spawn_ids: [spawn_id("solo", &lens_role("b"), 0)].into_iter().collect(),
-            ..Stub::new()
-        };
-        let deps1 = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver1, Vec::new())
-        };
-        run(&cfg, &deps1).unwrap();
-
         assert!(
-            driver1.spawned("a") && driver1.spawned("b"),
+            first.spawned("a") && first.spawned("b"),
             "premise: both the residue-committing lens and its parked co-chunked sibling \
-             must actually have run this window, or this test proves nothing"
+             must actually have run in window 1, or this test proves nothing"
         );
         assert!(
-            !driver1.spawned("judge"),
+            !first.spawned("judge"),
             "premise: the adjudicator must never be reached while a same-chunk sibling is \
              still parked"
         );
-
-        let branch = unit_branch("solo");
-        let residue_tip = run_git(&repo_path, &["rev-parse", &branch]);
-        assert!(residue_tip.status.success());
-        let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
-            .trim()
-            .to_string();
-
-        // WINDOW 2: a SECOND, separate process (this Stub-based harness re-spawns every
-        // reviewer tier fresh each entry - only the IMPLEMENTER is skipped on resume). "a"
-        // runs again but commits NOTHING this time (no `commits_by_agent` on this driver),
-        // so the residue present at this entry is entirely window 1's own commit; "b" now
-        // resolves normally and the adjudicator approves.
-        let driver2 = Stub {
-            output_by_agent: HashMap::from([
-                ("a".to_string(), "reviewed: no blocker".to_string()),
-                ("b".to_string(), "reviewed: no blocker".to_string()),
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-            ]),
-            ..Stub::new()
-        };
-        let deps2 = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver2, Vec::new())
-        };
-        run(&cfg, &deps2).unwrap();
-
         assert!(
-            driver2.spawned("a") && driver2.spawned("b") && driver2.spawned("judge"),
+            second.spawned("a") && second.spawned("b") && second.spawned("judge"),
             "premise: the resumed window must actually finish the round, or this test \
              proves nothing"
         );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let verified_sha = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
-            })
-            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
-            .unwrap_or_default();
-        assert_eq!(verified_sha.len(), 40, "premise: {verified_sha:?}");
-        assert_ne!(
-            verified_sha, residue_tip,
-            "premise: the true round-start sha must differ from the residue-laden tip, or \
-             this test cannot distinguish a log-derived read from a live re-read"
-        );
-
-        let round_start_marks = events
-            .iter()
-            .filter(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data)
-                        .contains("\"status\":\"review-round-start\"")
-            })
-            .count();
-        assert_eq!(
-            round_start_marks, 1,
+        let verified_sha = assert_one_log_derived_round_start(
+            &events,
+            &residue_tip,
             "the round-start mark must be stamped exactly once, on window 1's first entry \
-             (BEFORE either lens ran) - window 2's re-entry must READ it back"
+             (BEFORE either lens ran) - window 2's re-entry must READ it back",
         );
-
-        let reviewed_sha = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
-            })
-            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
-            .unwrap_or_default();
+        let reviewed_sha = status_sha(&events, "reviewed");
         assert_eq!(
             reviewed_sha, verified_sha,
             "the resumed round must judge against WINDOW 1's real round-start sha - never \
              a live re-read of the residue \"a\" left on the branch before \"b\" parked: \
              reviewed={reviewed_sha:?} verified={verified_sha:?} residue_tip={residue_tip:?}"
         );
-
-        let lesson = events
-            .iter()
-            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-            .expect(
-                "\"a\"'s window-1 residue must be named in a lesson once the resumed round \
-                 finishes - never silently adopted as the new baseline",
-            );
         assert!(
-            String::from_utf8_lossy(&lesson.data).contains("a-residue.rs"),
-            "the lesson must name the residue \"a\" committed: {:?}",
-            String::from_utf8_lossy(&lesson.data)
-        );
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            !has_type(&events, ledger::TYPE_UNIT_FAILED),
             "reviewer residue hygiene across a same-chunk sibling park charges NO \
              remediation attempt"
         );
-
-        assert!(
-            Path::new(&repo_path).join("feature.rs").exists(),
-            "the implementer's real, reviewed work must still land"
-        );
-        assert!(
-            !Path::new(&repo_path).join("a-residue.rs").exists(),
-            "\"a\"'s own residue must NEVER reach integration, even after surviving a \
-             same-chunk sibling park across a resume"
-        );
+        assert_residue_named_and_never_merged(&events, &repo_path, "feature.rs", "a-residue.rs");
     }
 
     #[test]
@@ -31396,91 +31037,40 @@ mod tests {
         // Lane 0's lens commits residue and returns Ok; lane 0's adjudicator PARKS. A
         // second, separate process resumes: the adjudicator now approves. A live re-read
         // at that second entry would adopt the lens's residue as lane 0's new baseline.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                speculation_width: 2,
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lens".into()],
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
-
+        //
         // WINDOW 1: both candidates implement and gate green (phase A). Phase B evaluates
         // lane 0 first: its lens commits residue and returns Ok, then its adjudicator
         // PARKS - `review_unit`'s `?` propagates the parked error straight out of
         // `run_speculation` (its own doc comment: no candidate worktree is torn down on
         // ANY error from `review_unit`), so lane 1 is never even reached this window.
-        let driver1 = Stub {
-            write_file: Some("feature.rs".into()),
-            output: "reviewed the diff".into(),
-            commits_by_agent: HashMap::from([(
-                "lens".to_string(),
-                vec![("lens-residue.rs".to_string(), "leftover\n".to_string())],
-            )]),
-            park_spawn_ids: [spawn_id("s", ROLE_ADJUDICATOR, 0)].into_iter().collect(),
-            ..Stub::new()
-        };
-        let deps1 = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver1, Vec::new())
-        };
-        run(&cfg, &deps1).unwrap();
-
-        assert!(
-            driver1.spawned("lens") && driver1.spawned("judge"),
-            "premise: both lane 0's residue-committing lens and its parked adjudicator \
-             must actually have run this window, or this test proves nothing"
-        );
-
         // Lane 0 is special-cased by `speculation_lane_worktree` to reuse the SAME branch
         // and dir a single-lane unit would (`unit_branch`/`unit_worktree_dir` on the bare
-        // unit name) - only lane > 0 gets a `-spec{lane}` suffix. Using lane 0 as the
-        // winner below lets this premise check reuse the exact same helpers the
-        // single-lane test above does.
-        let branch = unit_branch("s");
-        let residue_tip = run_git(&repo_path, &["rev-parse", &branch]);
-        assert!(residue_tip.status.success());
-        let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
-            .trim()
-            .to_string();
-
-        // WINDOW 2: a SECOND, separate process (this Stub-based harness re-spawns every
-        // tier fresh each entry, including both candidates' implementers again in phase
-        // A - harmless here, since neither candidate's worktree has any new content to
-        // write). Lane 0's lens runs again but commits NOTHING this time (no
-        // `commits_by_agent` on this driver), so the residue present at lane 0's review
-        // entry is entirely window 1's own commit; the adjudicator now approves.
-        let driver2 = Stub {
-            output_by_agent: HashMap::from([
-                ("lens".to_string(), "reviewed: no blocker".to_string()),
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-            ]),
-            ..Stub::new()
-        };
-        let deps2 = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver2, Vec::new())
-        };
-        let rs = run(&cfg, &deps2).unwrap();
-
+        // unit name) - only lane > 0 gets a `-spec{lane}` suffix - so the residue tip reads
+        // off the bare unit branch. WINDOW 2 (which also re-spawns both candidates'
+        // implementers in phase A - harmless, neither worktree has new content to write):
+        // lane 0's lens commits nothing and the adjudicator approves.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let first = residue_then_park_stub(
+            "lens",
+            "lens-residue.rs",
+            spawn_id("s", ROLE_ADJUDICATOR, 0),
+        );
+        let second = approving_panel_stub(&["lens"]);
+        let (rs, events, residue_tip) = park_then_resume(
+            &speculating_judged_cfg(&["lens"]),
+            &repo_path,
+            "s",
+            &first,
+            &second,
+        );
         assert!(
-            driver2.spawned("lens") && driver2.spawned("judge"),
+            first.spawned("lens") && first.spawned("judge"),
+            "premise: both lane 0's residue-committing lens and its parked adjudicator \
+             must actually have run in window 1, or this test proves nothing"
+        );
+        assert!(
+            second.spawned("lens") && second.spawned("judge"),
             "premise: the resumed window must actually finish lane 0's round"
         );
         assert_eq!(
@@ -31488,64 +31078,17 @@ mod tests {
             ledger::Status::Integrated,
             "lane 0 must win and integrate once the resumed round approves it"
         );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let round_start_marks = events
-            .iter()
-            .filter(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data)
-                        .contains("\"status\":\"review-round-start\"")
-            })
-            .count();
-        assert_eq!(
-            round_start_marks, 1,
-            "lane 0's round-start mark must be stamped exactly once, on window 1's first \
-             entry - window 2's re-entry must READ it back, never emit a second one"
-        );
-
         // Lane 0's deferred `verified`/`reviewed` are both emitted only once it WINS
         // (`emit_speculation_winner_status`), strictly after this resumed `review_unit`
         // call returns - so both carry the SAME sha, and it must be the log-derived
         // round-start sha, never the residue-laden tip the parked window left behind.
-        let verified_sha = events
-            .iter()
-            .find(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
-            })
-            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
-            .unwrap_or_default();
-        assert_eq!(verified_sha.len(), 40, "premise: {verified_sha:?}");
-        assert_ne!(
-            verified_sha, residue_tip,
-            "the winner's stamped sha must be lane 0's TRUE round-start, log-derived - \
-             never a live re-read of the lens's residue-laden tip: \
-             verified={verified_sha:?} residue_tip={residue_tip:?}"
+        assert_one_log_derived_round_start(
+            &events,
+            &residue_tip,
+            "lane 0's round-start mark must be stamped exactly once, on window 1's first \
+             entry - window 2's re-entry must READ it back, never emit a second one",
         );
-
-        let lesson = events
-            .iter()
-            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-            .expect(
-                "lane 0's window-1 lens residue must be named in a lesson once the resumed \
-                 round finishes - never silently adopted as the winner's new baseline",
-            );
-        assert!(
-            String::from_utf8_lossy(&lesson.data).contains("lens-residue.rs"),
-            "the lesson must name the residue the lens committed: {:?}",
-            String::from_utf8_lossy(&lesson.data)
-        );
-
-        assert!(
-            Path::new(&repo_path).join("feature.rs").exists(),
-            "the winning candidate's real, reviewed work must still land"
-        );
-        assert!(
-            !Path::new(&repo_path).join("lens-residue.rs").exists(),
-            "the lens's own residue must NEVER reach integration, even after surviving a \
-             cross-call resume through the speculation path"
-        );
+        assert_residue_named_and_never_merged(&events, &repo_path, "feature.rs", "lens-residue.rs");
     }
 
     #[test]
@@ -32362,6 +31905,13 @@ mod tests {
         );
     }
 
+    /// [`judged_unit_cfg`] for unit `s` racing two speculation lanes.
+    fn speculating_judged_cfg(lenses: &[&str]) -> Config {
+        let mut cfg = judged_unit_cfg("s", lenses, "");
+        cfg.workflow.stages.get_mut("s").unwrap().speculation_width = 2;
+        cfg
+    }
+
     #[test]
     fn speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored()
     {
@@ -32372,58 +31922,13 @@ mod tests {
         // `record_speculation_reject`'s `worktree_sha` was read with no re-assert between
         // the adjudicator's own spawn (which here deletes the tree as its side effect while
         // still rejecting) and this read.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                speculation_width: 2,
-                review: crate::config::ReviewPanel {
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("feature.rs".into()),
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"reject"}"#.to_string(),
-            )]),
-            delete_dir_by_agent: ["judge".to_string()].into_iter().collect(),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        run(&cfg, &deps).unwrap();
-
+        let events = rejecting_deleting_judge_log(&speculating_judged_cfg(&[]), "feature.rs");
         assert!(
-            driver.spawned("judge"),
-            "premise: the adjudicator must have run, or this test proves nothing"
-        );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let reject_with_sha = events.iter().find(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(STATUS_SPECULATION_REJECTED)
-                && e.meta
-                    .get(META_WORKTREE_SHA)
-                    .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
-        });
-        assert!(
-            reject_with_sha.is_some(),
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains(STATUS_SPECULATION_REJECTED)
+                    && has_real_worktree_sha(e)
+            }),
             "a speculation-candidate review-reject must carry a real 40-hex worktree sha even \
              when the adjudicator's own spawn deleted the tree as its side effect - it must \
              be stamped AFTER a re-assert restores it, not a snapshot taken during the \
@@ -33218,6 +32723,75 @@ mod tests {
         );
     }
 
+    /// The spawn ids of standalone review stage `review`'s attempt-0 lenses `ids`.
+    fn review_lens_ids<C: FromIterator<String>>(ids: &[&str]) -> C {
+        ids.iter()
+            .map(|id| spawn_id("review", &lens_role(id), 0))
+            .collect()
+    }
+
+    /// Run a standalone review stage `review` over `lenses` (plus `adversary` when non-empty,
+    /// under a spawn `budget` when set) in a fresh repo under `driver`; returns the run's
+    /// outcome, the repo and the store.
+    fn standalone_review_run(
+        lenses: &[&str],
+        adversary: &str,
+        budget: Option<u32>,
+        driver: &Stub,
+    ) -> (Result<RunState, Error>, tempfile::TempDir, Store) {
+        let repo = init_repo();
+        let mut cfg = Config::default();
+        for a in lenses.iter().chain([adversary].iter()) {
+            if !a.is_empty() {
+                cfg.agents.insert(a.to_string(), agent(a));
+            }
+        }
+        if let Some(budget) = budget {
+            cfg.workflow.defaults.budget = budget;
+        }
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: lenses.iter().map(|l| l.to_string()).collect(),
+                adversary: adversary.into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, driver, Vec::new())
+        };
+        let outcome = run(&cfg, &deps);
+        drop(deps);
+        (outcome, repo, store)
+    }
+
+    /// The standalone review stage's throwaway `rigger-review-*` worktree in `repo` is still on
+    /// disk (`why`) and still REGISTERED with git.
+    fn assert_review_worktree_kept(repo: &tempfile::TempDir, why: &str) {
+        let repo_path = repo.path().to_str().unwrap();
+        let scratch = crate::worktree::scratch_root_from_env(repo_path, "");
+        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
+        assert!(Path::new(&dir).exists(), "{why}: {dir}");
+        assert!(
+            worktree_registered_on(repo_path, &branch),
+            "the kept review worktree must stay REGISTERED with git: {dir}"
+        );
+    }
+
+    /// The run `outcome` halted loudly (`why`) with an error naming a genuine mid-spawn crash
+    /// (`crash_why`), never masked by a sibling's park or budget refusal.
+    fn assert_genuine_crash_halts(outcome: Result<RunState, Error>, why: &str, crash_why: &str) {
+        let err = outcome.err().expect(why);
+        assert!(
+            err.0.contains("simulated mid-spawn crash"),
+            "{crash_why}: {}",
+            err.0
+        );
+    }
+
     #[test]
     fn a_parked_lens_keeps_the_standalone_review_stages_worktree() {
         // Spec 64, criterion 1 (Design bullet 2 / decision
@@ -33226,45 +32800,19 @@ mod tests {
         // `rigger-review-*` worktree too - `run_fan_out_stage` removed it (and its throwaway
         // branch) UNCONDITIONALLY on every exit before this fix, including a parked
         // reviewer, the identical defect class for the review-worktree kind.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.workflow.stages.insert(
-            "review".into(),
-            Stage {
-                name: "review".into(),
-                agents: vec!["lens".into()],
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
         let driver = Stub {
-            park_spawn_ids: [spawn_id("review", &lens_role("lens"), 0)]
-                .into_iter()
-                .collect(),
+            park_spawn_ids: review_lens_ids(&["lens"]),
             ..Stub::new()
         };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        run(&cfg, &deps).unwrap();
-
+        let (outcome, repo, _store) = standalone_review_run(&["lens"], "", None, &driver);
+        outcome.unwrap();
         assert!(
             driver.spawned("lens"),
             "the lens must actually have been spawned (and parked), or this test proves nothing"
         );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
-        assert!(
-            std::path::Path::new(&dir).exists(),
-            "a parked standalone-review stage must KEEP its throwaway review worktree: {dir}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &branch),
-            "the kept review worktree must stay REGISTERED with git: {dir}"
+        assert_review_worktree_kept(
+            &repo,
+            "a parked standalone-review stage must KEEP its throwaway review worktree",
         );
     }
 
@@ -33294,48 +32842,20 @@ mod tests {
         // the propagated Result still prefers a GENUINE error over a park within the
         // chunk so (2) reaches `run_wave`'s dedicated halt arms
         // (carries_marker(.., DEGENERATE_MARKER)/carries_marker(.., MISMATCH_MARKER)/catch-all) undisturbed.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.agents.insert("b".into(), agent("b"));
-        cfg.workflow.stages.insert(
-            "review".into(),
-            Stage {
-                name: "review".into(),
-                agents: vec!["a".into(), "b".into()],
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
         let driver = Stub {
-            fail_spawn_ids: [spawn_id("review", &lens_role("a"), 0)]
-                .into_iter()
-                .collect(),
-            park_spawn_ids: [spawn_id("review", &lens_role("b"), 0)]
-                .into_iter()
-                .collect(),
+            fail_spawn_ids: review_lens_ids(&["a"]),
+            park_spawn_ids: review_lens_ids(&["b"]),
             ..Stub::new()
         };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
+        let (outcome, repo, _store) = standalone_review_run(&["a", "b"], "", None, &driver);
         // Requirement (2): the genuine crash still propagates and halts the run - it must
         // NOT be silently swallowed by "b"'s park in the same chunk.
-        let err = match run(&cfg, &deps) {
-            Ok(_) => panic!(
-                "\"a\"'s genuine terminal crash must still halt the run loudly, not be masked \
-                 by \"b\"'s park in the same concurrent chunk"
-            ),
-            Err(e) => e,
-        };
-        assert!(
-            err.0.contains("simulated mid-spawn crash"),
-            "the propagated error must be \"a\"'s genuine crash, not \"b\"'s park: {}",
-            err.0
+        assert_genuine_crash_halts(
+            outcome,
+            "\"a\"'s genuine terminal crash must still halt the run loudly, not be masked \
+             by \"b\"'s park in the same concurrent chunk",
+            "the propagated error must be \"a\"'s genuine crash, not \"b\"'s park",
         );
-
         assert!(
             driver.spawned("a"),
             "the crashing lens must actually have run, or this test proves nothing about masking"
@@ -33344,20 +32864,13 @@ mod tests {
             driver.spawned("b"),
             "the parking lens must actually have run (and parked), or this test proves nothing"
         );
-
         // Requirement (1): the shared review worktree survives anyway, because "b"
         // genuinely parked - answered by the independent `any_parked` signal, not by
         // which single Result `run_review_agents_concurrently` returned.
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
-        assert!(
-            std::path::Path::new(&dir).exists(),
+        assert_review_worktree_kept(
+            &repo,
             "a PARKED sibling must keep the shared review worktree even when a LOWER-indexed \
-             lens in the SAME concurrent chunk crashed terminally: {dir}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &branch),
-            "the kept review worktree must stay REGISTERED with git: {dir}"
+             lens in the SAME concurrent chunk crashed terminally",
         );
     }
 
@@ -33376,38 +32889,15 @@ mod tests {
         // `carries_marker(.., DEGENERATE_MARKER)` arm (not swallowed by "b"'s park), AND the shared
         // review worktree survives anyway (the independent `any_parked` signal), exactly
         // like the crash-shaped sibling test above.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.agents.insert("b".into(), agent("b"));
-        cfg.workflow.stages.insert(
-            "review".into(),
-            Stage {
-                name: "review".into(),
-                agents: vec!["a".into(), "b".into()],
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
         let driver = Stub {
-            park_spawn_ids: [spawn_id("review", &lens_role("b"), 0)]
-                .into_iter()
-                .collect(),
+            park_spawn_ids: review_lens_ids(&["b"]),
             ..Stub::new()
         };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-
-        let err = match run(&cfg, &deps) {
-            Ok(_) => panic!(
-                "\"a\"'s exhausted degenerate-reviewer HALT must still halt the run loudly, \
-                 not be masked by \"b\"'s park in the same concurrent chunk"
-            ),
-            Err(e) => e,
-        };
+        let (outcome, repo, store) = standalone_review_run(&["a", "b"], "", None, &driver);
+        let err = outcome.err().expect(
+            "\"a\"'s exhausted degenerate-reviewer HALT must still halt the run loudly, \
+             not be masked by \"b\"'s park in the same concurrent chunk",
+        );
         assert!(
             err.0.contains("\"review\"") && err.0.contains("\"a\"") && err.0.contains("lens"),
             "the propagated error must name the dead reviewer (stage, tier, agent): {}",
@@ -33418,7 +32908,6 @@ mod tests {
             "the operator-facing halt must not carry the internal sentinel marker: {:?}",
             err.0
         );
-
         assert_eq!(
             occurrences(&driver.call_order, "a"),
             (REVIEWER_RESPAWN_BOUND + 1) as usize,
@@ -33428,26 +32917,18 @@ mod tests {
             driver.spawned("b"),
             "the parking lens must actually have run (and parked), or this test proves nothing"
         );
-
         // No UnitFailed: a degenerate-reviewer HALT is an infrastructure fault (Gap 18),
         // not a unit failure, exactly as it is for the non-concurrent case - the park
         // sibling must not change that.
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            !has_type(&events, ledger::TYPE_UNIT_FAILED),
             "a degenerate-reviewer halt must not charge the unit an attempt (no UnitFailed)"
         );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
-        assert!(
-            std::path::Path::new(&dir).exists(),
+        assert_review_worktree_kept(
+            &repo,
             "a PARKED sibling must keep the shared review worktree even when a co-chunked \
-             lens exhausted into a degenerate-reviewer HALT: {dir}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &branch),
-            "the kept review worktree must stay REGISTERED with git: {dir}"
+             lens exhausted into a degenerate-reviewer HALT",
         );
     }
 
@@ -33467,49 +32948,17 @@ mod tests {
         // (index 0) and "z" (index 2) PARK, "y" (index 1, neither first nor last) hits a
         // genuine terminal crash. The swap must move "y"'s error from position 1 to the
         // front, not just leave a position-0 error alone.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        for id in ["x", "y", "z"] {
-            cfg.agents.insert(id.into(), agent(id));
-        }
-        cfg.workflow.stages.insert(
-            "review".into(),
-            Stage {
-                name: "review".into(),
-                agents: vec!["x".into(), "y".into(), "z".into()],
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
         let driver = Stub {
-            fail_spawn_ids: [spawn_id("review", &lens_role("y"), 0)]
-                .into_iter()
-                .collect(),
-            park_spawn_ids: [
-                spawn_id("review", &lens_role("x"), 0),
-                spawn_id("review", &lens_role("z"), 0),
-            ]
-            .into_iter()
-            .collect(),
+            fail_spawn_ids: review_lens_ids(&["y"]),
+            park_spawn_ids: review_lens_ids(&["x", "z"]),
             ..Stub::new()
         };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-
-        let err = match run(&cfg, &deps) {
-            Ok(_) => panic!(
-                "\"y\"'s genuine terminal crash (at chunk index 1, neither first nor last) \
-                 must still halt the run loudly, not be masked by its parked siblings"
-            ),
-            Err(e) => e,
-        };
-        assert!(
-            err.0.contains("simulated mid-spawn crash"),
-            "the propagated error must be \"y\"'s genuine crash, not a sibling's park: {}",
-            err.0
+        let (outcome, repo, _store) = standalone_review_run(&["x", "y", "z"], "", None, &driver);
+        assert_genuine_crash_halts(
+            outcome,
+            "\"y\"'s genuine terminal crash (at chunk index 1, neither first nor last) \
+             must still halt the run loudly, not be masked by its parked siblings",
+            "the propagated error must be \"y\"'s genuine crash, not a sibling's park",
         );
         for id in ["x", "y", "z"] {
             assert!(
@@ -33518,18 +32967,11 @@ mod tests {
                  3-way mixed chunk"
             );
         }
-
         // The shared review worktree survives anyway - "x" and "z" genuinely parked.
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
-        assert!(
-            std::path::Path::new(&dir).exists(),
+        assert_review_worktree_kept(
+            &repo,
             "PARKED siblings must keep the shared review worktree even when the NON-ZERO-\
-             INDEXED lens in the same chunk crashed terminally: {dir}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &branch),
-            "the kept review worktree must stay REGISTERED with git: {dir}"
+             INDEXED lens in the same chunk crashed terminally",
         );
     }
 
@@ -33555,65 +32997,28 @@ mod tests {
         // by the shared atomic budget counter - regardless of which one wins the race, the
         // outcome (one crash, one budget-refusal) is the same, so this test needs no
         // control over thread scheduling to be deterministic.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.agents.insert("b".into(), agent("b"));
-        cfg.workflow.defaults.budget = 1;
-        cfg.workflow.stages.insert(
-            "review".into(),
-            Stage {
-                name: "review".into(),
-                agents: vec!["a".into(), "b".into()],
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
         let driver = Stub {
-            fail_spawn_ids: [
-                spawn_id("review", &lens_role("a"), 0),
-                spawn_id("review", &lens_role("b"), 0),
-            ]
-            .into_iter()
-            .collect(),
+            fail_spawn_ids: review_lens_ids(&["a", "b"]),
             ..Stub::new()
         };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-
+        let (outcome, repo, _store) = standalone_review_run(&["a", "b"], "", Some(1), &driver);
         // Exactly one of the two lenses is admitted by the budget and genuinely crashes;
         // the swap-exclusion predicate must not let the OTHER's budget-refusal win the
         // propagated Result over the genuine crash.
-        let err = match run(&cfg, &deps) {
-            Ok(_) => panic!(
-                "the admitted lens's genuine terminal crash must still halt the run loudly, \
-                 not be masked by its sibling's budget refusal in the same concurrent chunk"
-            ),
-            Err(e) => e,
-        };
-        assert!(
-            err.0.contains("simulated mid-spawn crash"),
+        assert_genuine_crash_halts(
+            outcome,
+            "the admitted lens's genuine terminal crash must still halt the run loudly, \
+             not be masked by its sibling's budget refusal in the same concurrent chunk",
             "the propagated error must be the admitted lens's genuine crash, not the \
-             refused sibling's budget-refusal sentinel: {}",
-            err.0
+             refused sibling's budget-refusal sentinel",
         );
-
         // The shared review worktree survives anyway - the OTHER lens was genuinely
         // budget-refused, the SAME worktree-preserving disposition as a park (spec 64 c1):
         // the `any_parked` scan's `carries_marker(.., BUDGET_MARKER)` arm must have caught it.
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
-        assert!(
-            std::path::Path::new(&dir).exists(),
+        assert_review_worktree_kept(
+            &repo,
             "a BUDGET-REFUSED sibling must keep the shared review worktree even when the \
-             lens that raced ahead of it crashed terminally: {dir}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &branch),
-            "the kept review worktree must stay REGISTERED with git: {dir}"
+             lens that raced ahead of it crashed terminally",
         );
     }
 
@@ -33631,33 +33036,12 @@ mod tests {
         // proving nothing about THIS call site's guard), so the adversary's spawn is a
         // genuinely NEW, over-budget spawn `reserve_spawn` refuses deterministically (one
         // spawn attempted at a time here - no race, unlike two concurrent lenses would be).
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.workflow.defaults.budget = 1;
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("adv".into(), agent("adv"));
-        cfg.workflow.stages.insert(
-            "review".into(),
-            Stage {
-                name: "review".into(),
-                agents: vec!["lens".into()],
-                adversary: "adv".into(),
-                ..Default::default()
-            },
-        );
-        let store = Store::open(":memory:").unwrap();
         let driver = Stub {
             output: "reviewed the diff".into(),
             ..Stub::new()
         };
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        run(&cfg, &deps)
-            .expect("a budget-refused review spawn halts the run cleanly, it does not error");
-
+        let (outcome, repo, _store) = standalone_review_run(&["lens"], "adv", Some(1), &driver);
+        outcome.expect("a budget-refused review spawn halts the run cleanly, it does not error");
         assert!(
             driver.spawned("lens"),
             "the lens must actually spend the budget, or this test proves nothing"
@@ -33667,17 +33051,10 @@ mod tests {
             "the over-budget adversary must be refused before it ever spawns, or this proves \
              nothing about the refusal arm"
         );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
-        assert!(
-            std::path::Path::new(&dir).exists(),
+        assert_review_worktree_kept(
+            &repo,
             "a budget-refused standalone-review spawn must KEEP its throwaway review \
-             worktree exactly like a parked one: {dir}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &branch),
-            "the kept review worktree must stay REGISTERED with git: {dir}"
+             worktree exactly like a parked one",
         );
     }
 
@@ -34756,26 +34133,17 @@ mod tests {
         );
     }
 
-    /// A stage named `name` that needs `needs`.
-    fn needing(name: &str, needs: &[&str]) -> Stage {
-        Stage {
-            name: name.into(),
-            needs: needs.iter().map(|n| n.to_string()).collect(),
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn validate_acyclic_detects_a_cycle() {
         // Item 10: the function formerly named `topo_sort` computed an order nobody
         // consumed; it is now `validate_acyclic`, a pure cycle check whose name matches
         // its behavior. It returns Ok for an acyclic DAG and Err for a cycle.
-        let acyclic = stage_map([needing("a", &[]), needing("b", &["a"])]);
+        let acyclic = stage_map([gated_by_ok("a", &[]), gated_by_ok("b", &["a"])]);
         assert!(
             validate_acyclic(&acyclic).is_ok(),
             "an acyclic DAG must validate"
         );
-        let cyclic = stage_map([needing("x", &["y"]), needing("y", &["x"])]);
+        let cyclic = stage_map([gated_by_ok("x", &["y"]), gated_by_ok("y", &["x"])]);
         assert!(
             validate_acyclic(&cyclic).is_err(),
             "a dependency cycle must be rejected"
