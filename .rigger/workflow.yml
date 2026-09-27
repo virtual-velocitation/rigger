@@ -190,6 +190,13 @@ gates:                      # the project's verification library, referenced by 
       if test -n "$(git status --porcelain -- docs/audit)"; then
       echo "audit: docs/audit was regenerated for this tree and is not committed - commit the regenerated files with the change (drift alone never fails this gate)"; fi
     kind: core
+  # The red-before-green gate (workspace split, step 0): TDD made mechanical. The unit
+  # branch's first commit that touches `src/` or `crates/<name>/src/` must be preceded by, or
+  # itself carry, a test change (a `tests` file, an added `#[test]`/`#[cfg(test)]` item, or a
+  # hunk inside the file's trailing test module). The logic lives in
+  # `.rigger/gates/red-before-green.sh`; `tests/principle_gates_wiring.rs` drives it on
+  # fixture repositories. The reviewer lens checks the same order.
+  red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
   # The check-in-stage mutation gate (spec 91): runs the diff-scoped `cargo mutants`
   # sweep ONCE, at the `checkin` stage below - after every implement unit has
   # integrated - rather than once per implementer round (spec 73's original per-round
@@ -396,7 +403,7 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary]
+    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary, red-before-green]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
 

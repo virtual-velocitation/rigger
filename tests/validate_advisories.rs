@@ -428,16 +428,17 @@ rigger::test_cases! {
 // (d) NO UNGATED FAN-OUT TEMPLATE (spec 103, criterion 2)
 // ---------------------------------------------------------------------------------------
 
-/// Strip the scaffolded `implement` template's `gates: [build, audit, test, lint, boundary]` down to
-/// `gates: []` in the REAL persisted `.rigger/workflow.yml` `rigger init` just wrote - the
-/// exact on-disk edit an author makes to (deliberately or accidentally) declare a gate-less
-/// fan-out template. Matches on the closing `]` immediately after `boundary` so it can only
-/// ever hit the `implement` stage's own gate list, never `checkin`'s
-/// `gates: [build, audit, test, lint, boundary, mutation]` (`boundary` there is followed by `,`).
+/// Strip the scaffolded `implement` template's gate list
+/// (`gates: [build, audit, test, lint, boundary, red-before-green]`) down to `gates: []` in the
+/// REAL persisted `.rigger/workflow.yml` `rigger init` just wrote - the exact on-disk edit an
+/// author makes to (deliberately or accidentally) declare a gate-less fan-out template. Matches
+/// on the closing `]` immediately after `red-before-green`, which only the `implement` stage's
+/// own gate list carries, never `checkin`'s `gates: [build, audit, test, lint, boundary,
+/// mutation]`.
 fn strip_implement_gates(root: &Path) {
     let path = root.join(".rigger").join("workflow.yml");
     let raw = std::fs::read_to_string(&path).expect("read the scaffolded workflow");
-    let needle = "gates: [build, audit, test, lint, boundary]";
+    let needle = "gates: [build, audit, test, lint, boundary, red-before-green]";
     assert!(
         raw.contains(needle),
         "fixture bug: the scaffolded workflow's `implement` gate list has drifted from what \

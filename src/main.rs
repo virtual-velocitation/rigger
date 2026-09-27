@@ -14467,6 +14467,10 @@ boundary: { run: \"echo boundary ok; true\", kind: core }\n\
 # duplication and dead-code check; if it keeps a generated catalog, regenerate it\n  \
 # before asserting so a unit is never red on a stale catalog alone.\n  \
 audit: { run: \"echo audit ok; true\", kind: core }\n\
+# The red-before-green gate: TDD made mechanical. Replace with a check that a\n  \
+# unit's first source commit is preceded by (or carries) a test change (see this\n  \
+# crate's .rigger/gates/red-before-green.sh for the worked example).\n  \
+red-before-green: { run: \"echo red-before-green ok; true\", kind: core }\n\
 \n\
 stages:\n  \
 # The conductor creates one baseline implement unit per acceptance criterion (the\n  \
@@ -14497,7 +14501,7 @@ needs: [plan-critique]\n    \
 agent: rust-engineer\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
-gates: [build, audit, test, lint, boundary]  # red -> green enforced around the change\n    \
+gates: [build, audit, test, lint, boundary, red-before-green]  # red -> green enforced around the change\n    \
 on_pass: merge          # land + reindex + record, per unit, once reviewed\n    \
 coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
 \n  \
@@ -19993,9 +19997,10 @@ mod tests {
         // checkin stage (spec 91) runs the mutation sweep once, after every implement unit
         // has integrated.
         assert_eq!(cfg.workflow.stages.len(), 4, "scaffold stage count");
-        // Six gates in the reusable library, including the checkin stage's `mutation` gate
-        // and the `boundary` and `audit` gates both unit stages carry.
-        assert_eq!(cfg.workflow.gates.len(), 6, "scaffold gate count");
+        // Seven gates in the reusable library, including the checkin stage's `mutation` gate,
+        // the `boundary` and `audit` gates both unit stages carry and the implement stage's
+        // `red-before-green` gate.
+        assert_eq!(cfg.workflow.gates.len(), 7, "scaffold gate count");
 
         // The scaffold exercises the per-unit shape: a producer, the plan-critique gate
         // between plan and implement, a fan-out implement stage that integrates on_pass:

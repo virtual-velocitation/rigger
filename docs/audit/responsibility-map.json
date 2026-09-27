@@ -10197,7 +10197,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9a95f581308166c5"
+    "content_hash": "7e75960ef2465ddf"
   },
   {
     "file": "src/main.rs",

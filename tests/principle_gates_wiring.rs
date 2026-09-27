@@ -228,18 +228,49 @@ fn run_red_before_green(repo: &Path) -> (bool, String) {
 
 const LIB_WITH_G: &str = "pub fn f() -> u8 {\n    1\n}\n\npub fn g() -> u8 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n";
 
-#[test]
-fn red_before_green_passes_a_test_commit_before_the_source_commit() {
+/// A fixture test file, committed on its own as the red half.
+const TEST_FILE: &str = "#[test]\nfn g_is_two() {}\n";
+
+/// The gate passes a unit branch that `commits` (each `(path, content, message)`, in order)
+/// build on the fixture base.
+fn red_before_green_passes(commits: &[(&str, &str, &str)]) {
     let dir = unit_branch_repo();
-    commit_file(
-        dir.path(),
-        "tests/g.rs",
-        "#[test]\nfn g_is_two() {}\n",
-        "red",
-    );
-    commit_file(dir.path(), "src/lib.rs", LIB_WITH_G, "green");
+    for (rel, content, msg) in commits {
+        commit_file(dir.path(), rel, content, msg);
+    }
     let (passed, out) = run_red_before_green(dir.path());
     assert!(passed, "{out}");
+}
+
+rigger::test_cases! {
+    /// A test commit, then the source commit it drives.
+    red_before_green_passes_a_test_commit_before_the_source_commit: red_before_green_passes(&[
+        ("tests/g.rs", TEST_FILE, "red"),
+        ("src/lib.rs", LIB_WITH_G, "green"),
+    ]);
+    /// One commit whose source change adds its own `#[test]`.
+    red_before_green_passes_one_commit_that_carries_its_own_test: red_before_green_passes(&[(
+        "src/lib.rs",
+        &LIB_WITH_G.replace(
+            "        assert_eq!(super::f(), 1);\n    }\n",
+            "        assert_eq!(super::f(), 1);\n    }\n\n    #[test]\n    fn g_is_two() {\n        \
+             assert_eq!(super::g(), 2);\n    }\n",
+        ),
+        "test and code together",
+    )]);
+    /// One commit whose source change also edits a test inside the trailing test module.
+    red_before_green_counts_an_edit_inside_the_trailing_test_module_as_a_test:
+        red_before_green_passes(&[(
+            "src/lib.rs",
+            &LIB_WITH_G.replace("assert_eq!(super::f(), 1);", "assert_eq!(super::f(), 1, \"f\");"),
+            "code with a changed test",
+        )]);
+    /// A branch that never touches source.
+    red_before_green_passes_a_branch_with_no_source_commit: red_before_green_passes(&[(
+        "docs/note.md",
+        "a note\n",
+        "docs only",
+    )]);
 }
 
 #[test]
@@ -247,12 +278,7 @@ fn red_before_green_fails_a_source_commit_no_test_commit_precedes_naming_it() {
     let dir = unit_branch_repo();
     commit_file(dir.path(), "src/lib.rs", LIB_WITH_G, "green first");
     let sha = git_out(dir.path(), &["rev-parse", "--short", "HEAD"]);
-    commit_file(
-        dir.path(),
-        "tests/g.rs",
-        "#[test]\nfn g_is_two() {}\n",
-        "red after",
-    );
+    commit_file(dir.path(), "tests/g.rs", TEST_FILE, "red after");
     let (passed, out) = run_red_before_green(dir.path());
     assert!(!passed, "{out}");
     assert!(
@@ -261,46 +287,4 @@ fn red_before_green_fails_a_source_commit_no_test_commit_precedes_naming_it() {
             && out.contains("green first"),
         "the failure must name the offending commit: {out}"
     );
-}
-
-#[test]
-fn red_before_green_passes_one_commit_that_carries_its_own_test() {
-    let dir = unit_branch_repo();
-    let with_test = LIB_WITH_G.replace(
-        "        assert_eq!(super::f(), 1);\n    }\n",
-        "        assert_eq!(super::f(), 1);\n    }\n\n    #[test]\n    fn g_is_two() {\n        assert_eq!(super::g(), 2);\n    }\n",
-    );
-    commit_file(
-        dir.path(),
-        "src/lib.rs",
-        &with_test,
-        "test and code together",
-    );
-    let (passed, out) = run_red_before_green(dir.path());
-    assert!(passed, "{out}");
-}
-
-#[test]
-fn red_before_green_counts_an_edit_inside_the_trailing_test_module_as_a_test() {
-    let dir = unit_branch_repo();
-    let edited = LIB_WITH_G.replace(
-        "assert_eq!(super::f(), 1);",
-        "assert_eq!(super::f(), 1, \"f\");",
-    );
-    commit_file(
-        dir.path(),
-        "src/lib.rs",
-        &edited,
-        "code with a changed test",
-    );
-    let (passed, out) = run_red_before_green(dir.path());
-    assert!(passed, "{out}");
-}
-
-#[test]
-fn red_before_green_passes_a_branch_with_no_source_commit() {
-    let dir = unit_branch_repo();
-    commit_file(dir.path(), "docs/note.md", "a note\n", "docs only");
-    let (passed, out) = run_red_before_green(dir.path());
-    assert!(passed, "{out}");
 }
