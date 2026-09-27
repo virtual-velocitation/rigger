@@ -1421,7 +1421,7 @@ pub struct NeighborhoodNode {
     /// The SHARED-MEMBERSHIP marker (spec 54 c3): true when this node realizes MORE THAN ONE derived
     /// concept, so a [`Lens::Concepts`] drill flags it. `false` (and omitted from the JSON) for a
     /// single-concept or membership-less node and for every non-concepts view.
-    #[serde(skip_serializing_if = "is_not_shared", default)]
+    #[serde(skip_serializing_if = "crate::contextgraph::is_false", default)]
     pub shared: bool,
 }
 
@@ -1438,22 +1438,8 @@ pub struct NeighborhoodEdge {
     /// points at a node whose layer is NOT deeper than its source - a recursion / mutual call the
     /// walk marked rather than followed a second time. Always `false` for a neighborhood / drill
     /// edge (and omitted from the JSON), so those views are byte-identical.
-    #[serde(skip_serializing_if = "is_not_back", default)]
+    #[serde(skip_serializing_if = "crate::contextgraph::is_false", default)]
     pub back: bool,
-}
-
-/// Serde `skip_serializing_if` predicate for [`NeighborhoodEdge::back`]: keep the recursion marker
-/// off the wire for the common forward edge, so a plain neighborhood / drill edge (which is never a
-/// back edge) serializes byte-identically to before the call views existed.
-fn is_not_back(back: &bool) -> bool {
-    !*back
-}
-
-/// Serde `skip_serializing_if` predicate for [`NeighborhoodNode::shared`]: keep the shared-membership
-/// marker off the wire for the common single-concept / membership-less node, so a plain neighborhood /
-/// drill / call node serializes byte-identically to before the concepts lens existed.
-fn is_not_shared(shared: &bool) -> bool {
-    !*shared
 }
 
 /// The `/api/graph` body (spec 30 c5): the seeded neighborhood of a selected node as

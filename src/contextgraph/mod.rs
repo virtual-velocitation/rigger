@@ -599,10 +599,11 @@ fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
-/// Serde `skip_serializing_if` predicate: keep the `fresh` boundary marker off the wire for the
-/// common non-boundary event, so only the FIRST event of each extraction batch serializes it and
-/// every other code event's payload is byte-identical to a pre-criterion-3 log.
-fn is_false(b: &bool) -> bool {
+/// Serde `skip_serializing_if` predicate: keep a flag off the wire while it is false, so a payload
+/// that never sets it serializes byte-identically to one from before the flag existed - the
+/// `fresh` extraction-batch boundary marker (only the FIRST event of each batch serializes it),
+/// and the neighborhood view's `back` recursion marker and `shared` concept-membership marker.
+pub(crate) fn is_false(b: &bool) -> bool {
     !*b
 }
 
