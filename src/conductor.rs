@@ -15589,44 +15589,30 @@ mod tests {
 
         /// Every prompt the named agent was spawned with, in spawn order.
         fn prompts_for(&self, agent_id: &str) -> Vec<String> {
-            self.prompts_by_agent
-                .lock()
-                .unwrap()
-                .get(agent_id)
-                .cloned()
-                .unwrap_or_default()
+            cached(&self.prompts_by_agent, agent_id).unwrap_or_default()
         }
 
         /// Every working dir (cwd) the named agent was spawned with, in spawn order.
         fn dirs_for(&self, agent_id: &str) -> Vec<String> {
-            self.dirs_by_agent
-                .lock()
-                .unwrap()
-                .get(agent_id)
-                .cloned()
-                .unwrap_or_default()
+            cached(&self.dirs_by_agent, agent_id).unwrap_or_default()
         }
 
         /// The persona (system prompt) the conductor threaded to the driver for the
         /// named agent, or None if it was never spawned.
         fn system_prompt_for(&self, agent_id: &str) -> Option<String> {
-            self.system_prompt_by_agent
-                .lock()
-                .unwrap()
-                .get(agent_id)
-                .cloned()
+            cached(&self.system_prompt_by_agent, agent_id)
         }
 
         /// The live work-line title (unit criterion) the conductor threaded to the driver
         /// for the named agent, or None if it was never spawned.
         fn title_for(&self, agent_id: &str) -> Option<String> {
-            self.titles_by_agent.lock().unwrap().get(agent_id).cloned()
+            cached(&self.titles_by_agent, agent_id)
         }
 
         /// The routed review roster (spec 67, criterion 4) the conductor threaded to the
         /// driver for the named agent, or None if it was never spawned.
         fn reviews_for(&self, agent_id: &str) -> Option<Vec<String>> {
-            self.reviews_by_agent.lock().unwrap().get(agent_id).cloned()
+            cached(&self.reviews_by_agent, agent_id)
         }
 
         /// Every spawn's deterministic id, in spawn order (Gap-18 tests assert the exact
