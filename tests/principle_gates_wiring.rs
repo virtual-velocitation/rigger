@@ -6,7 +6,7 @@
 
 mod common;
 use common::cli::{run_rigger, temp_project};
-use common::git::{git_commit_all, init_repo};
+use common::git::{git_commit_all, git_ok, git_out, init_repo};
 use common::repo::repo_root;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -36,6 +36,12 @@ const PRINCIPLE_GATES: &[PrincipleGate] = &[
         stages: &["implement", "checkin"],
         repo_command: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit",
         precedes: &["test"],
+    },
+    PrincipleGate {
+        id: "red-before-green",
+        stages: &["implement"],
+        repo_command: "sh .rigger/gates/red-before-green.sh",
+        precedes: &[],
     },
 ];
 
@@ -175,4 +181,126 @@ fn the_audit_gate_fails_red_assertions_with_its_own_diagnostic() {
     assert!(!passed, "{out}");
     assert!(out.contains("clusters with no disposition"), "{out}");
     assert!(out.contains("error[audit]:"), "{out}");
+}
+
+/// A fixture repository whose `rigger-run` branch holds one committed source file with a
+/// trailing test module, checked out on a fresh unit branch.
+fn unit_branch_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    init_repo(repo);
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n",
+    )
+    .unwrap();
+    git_commit_all(repo, "base");
+    git_ok(repo, &["branch", "rigger-run"]);
+    git_ok(repo, &["checkout", "-q", "-b", "unit"]);
+    dir
+}
+
+/// Write `content` to `rel` in `repo` and commit it as `msg`.
+fn commit_file(repo: &Path, rel: &str, content: &str, msg: &str) {
+    let path = repo.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+    git_commit_all(repo, msg);
+}
+
+/// The shipped red-before-green gate script run on `repo`'s unit branch against `rigger-run`.
+/// Returns (passed, output).
+fn run_red_before_green(repo: &Path) -> (bool, String) {
+    let script = repo_root().join(".rigger/gates/red-before-green.sh");
+    let out = Command::new("sh")
+        .arg(script)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
+
+const LIB_WITH_G: &str = "pub fn f() -> u8 {\n    1\n}\n\npub fn g() -> u8 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n";
+
+#[test]
+fn red_before_green_passes_a_test_commit_before_the_source_commit() {
+    let dir = unit_branch_repo();
+    commit_file(
+        dir.path(),
+        "tests/g.rs",
+        "#[test]\nfn g_is_two() {}\n",
+        "red",
+    );
+    commit_file(dir.path(), "src/lib.rs", LIB_WITH_G, "green");
+    let (passed, out) = run_red_before_green(dir.path());
+    assert!(passed, "{out}");
+}
+
+#[test]
+fn red_before_green_fails_a_source_commit_no_test_commit_precedes_naming_it() {
+    let dir = unit_branch_repo();
+    commit_file(dir.path(), "src/lib.rs", LIB_WITH_G, "green first");
+    let sha = git_out(dir.path(), &["rev-parse", "--short", "HEAD"]);
+    commit_file(
+        dir.path(),
+        "tests/g.rs",
+        "#[test]\nfn g_is_two() {}\n",
+        "red after",
+    );
+    let (passed, out) = run_red_before_green(dir.path());
+    assert!(!passed, "{out}");
+    assert!(
+        out.contains("error[red-before-green]")
+            && out.contains(&sha)
+            && out.contains("green first"),
+        "the failure must name the offending commit: {out}"
+    );
+}
+
+#[test]
+fn red_before_green_passes_one_commit_that_carries_its_own_test() {
+    let dir = unit_branch_repo();
+    let with_test = LIB_WITH_G.replace(
+        "        assert_eq!(super::f(), 1);\n    }\n",
+        "        assert_eq!(super::f(), 1);\n    }\n\n    #[test]\n    fn g_is_two() {\n        assert_eq!(super::g(), 2);\n    }\n",
+    );
+    commit_file(
+        dir.path(),
+        "src/lib.rs",
+        &with_test,
+        "test and code together",
+    );
+    let (passed, out) = run_red_before_green(dir.path());
+    assert!(passed, "{out}");
+}
+
+#[test]
+fn red_before_green_counts_an_edit_inside_the_trailing_test_module_as_a_test() {
+    let dir = unit_branch_repo();
+    let edited = LIB_WITH_G.replace(
+        "assert_eq!(super::f(), 1);",
+        "assert_eq!(super::f(), 1, \"f\");",
+    );
+    commit_file(
+        dir.path(),
+        "src/lib.rs",
+        &edited,
+        "code with a changed test",
+    );
+    let (passed, out) = run_red_before_green(dir.path());
+    assert!(passed, "{out}");
+}
+
+#[test]
+fn red_before_green_passes_a_branch_with_no_source_commit() {
+    let dir = unit_branch_repo();
+    commit_file(dir.path(), "docs/note.md", "a note\n", "docs only");
+    let (passed, out) = run_red_before_green(dir.path());
+    assert!(passed, "{out}");
 }
