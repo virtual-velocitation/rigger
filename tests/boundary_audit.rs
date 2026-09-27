@@ -498,28 +498,21 @@ fn no_source_file_exceeds_the_line_limit() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Rule 4: the principle lints only lose exemptions
+// Rule 4: the principle lints carry no exemption
 // ---------------------------------------------------------------------------------------------
 
-/// The lints the root manifest's `[workspace.lints.clippy]` denies, each with the number of
-/// items still exempted by a per-item `#[expect(clippy::<lint>)] // lesson: <id>` marker. A
-/// count may only fall: `expect` fails the build the moment its item complies, and this pin
-/// fails the suite the moment a new exemption appears.
-const LINT_EXEMPTION_PINS: &[(&str, usize)] = &[
-    ("too_many_lines", 108),
-    ("cognitive_complexity", 9),
-    ("large_enum_variant", 0),
-    ("module_inception", 0),
-];
+/// The lints the root manifest's `[workspace.lints.clippy]` denies. Clippy is their gate; this
+/// rule only keeps an item from opting out of one with an `allow` or `expect` attribute.
+const PRINCIPLE_LINTS: &[&str] = &["large_enum_variant", "module_inception"];
 
-/// Per denied lint: the `expect` markers (each must name its lesson) and any `allow` of it,
-/// over every `.rs` file under `root`'s `src/`, `crates/` and `tests/`.
-fn lint_exemptions(root: &Path) -> BTreeMap<&'static str, (usize, Vec<String>)> {
+/// Every `allow`/`expect` of a [`PRINCIPLE_LINTS`] lint over every `.rs` file under `root`'s
+/// `src/`, `crates/` and `tests/`, as `file:line: lint`.
+fn lint_exemptions(root: &Path) -> Vec<String> {
     let mut files = Vec::new();
     for dir in ["src", "crates", "tests"] {
         collect_rs_files(&root.join(dir), &mut files);
     }
-    let mut out: BTreeMap<&'static str, (usize, Vec<String>)> = BTreeMap::new();
+    let mut out = Vec::new();
     for path in files {
         let text = fs::read_to_string(&path).unwrap_or_default();
         let rel = path
@@ -528,21 +521,12 @@ fn lint_exemptions(root: &Path) -> BTreeMap<&'static str, (usize, Vec<String>)> 
             .display()
             .to_string();
         for (i, line) in text.lines().enumerate() {
-            for &(lint, _) in LINT_EXEMPTION_PINS {
-                let entry = out.entry(lint).or_default();
-                if line.contains(&format!("#[expect(clippy::{lint})]")) {
-                    entry.0 += 1;
-                    if !line.contains("// lesson: ") {
-                        entry
-                            .1
-                            .push(format!("{rel}:{}: marker names no lesson", i + 1));
-                    }
-                }
-                if line.contains(&format!("allow(clippy::{lint})")) {
-                    entry.1.push(format!(
-                        "{rel}:{}: `allow` hides the lint; use `expect`",
-                        i + 1
-                    ));
+            for lint in PRINCIPLE_LINTS {
+                if ["allow", "expect"]
+                    .iter()
+                    .any(|attr| line.contains(&format!("{attr}(clippy::{lint})")))
+                {
+                    out.push(format!("{rel}:{}: exempts `{lint}`; fix the item", i + 1));
                 }
             }
         }
@@ -551,22 +535,7 @@ fn lint_exemptions(root: &Path) -> BTreeMap<&'static str, (usize, Vec<String>)> 
 }
 
 #[test]
-fn principle_lint_exemptions_only_fall() {
-    let found = lint_exemptions(&repo_root());
-    let mut problems = Vec::new();
-    for &(lint, pin) in LINT_EXEMPTION_PINS {
-        let (count, bad) = found.get(lint).cloned().unwrap_or_default();
-        if count > pin {
-            problems.push(format!(
-                "{count} `{lint}` exemptions exceed the pin {pin}: fix the new item instead"
-            ));
-        }
-        if count < pin {
-            problems.push(format!(
-                "`{lint}` exemptions fell to {count}: lower its pin from {pin} to {count}"
-            ));
-        }
-        problems.extend(bad);
-    }
+fn principle_lints_carry_no_exemption() {
+    let problems = lint_exemptions(&repo_root());
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

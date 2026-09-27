@@ -1003,7 +1003,6 @@ fn row_to_edge(r: &rusqlite::Row) -> rusqlite::Result<Edge> {
     })
 }
 
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
     // The edge's bi-temporal valid-time is when the fact became true (the event's
     // caller-supplied valid_from), not the ingest time.
@@ -3560,7 +3559,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_concept_rerun_supersedes_only_its_grain_through_the_real_derivation_pipeline() {
         // Spec 54 RE-RUN SUPERSESSION (this unit OWNS the concept lifecycle claim; the community
         // sibling `a_fresh_rerun_supersedes_only_its_own_resolution_grain` proves the mirror over
@@ -4210,7 +4208,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn design_intent_link_events_fold_into_the_five_design_intent_edges() {
         // Criterion 2 (spec 29b): a design-intent extraction pass EMITS DocLinkExtracted events
         // (one per link) that the ALWAYS-compiled fold turns into the five typed design-intent
@@ -4337,7 +4334,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges() {
         // Spec 92 criterion 2 (THE WHOLE PRODUCT IS COVERED): the workflow-definition
         // extraction pass reuses this SAME DocConceptExtracted/DocLinkExtracted fold (never a
@@ -5516,7 +5512,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called()
     {
         // Spec 52 criterion 3: the UP traversal. From a seed DEFINITION, `calls(Up)` returns the

@@ -1330,7 +1330,6 @@ fn validate_spec_lets_an_affirmative_owns_win_over_an_unrelated_denial_elsewhere
 /// before it can land, the same way the F4 defect should have been caught five rounds ago
 /// instead of by hand.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn spec_lint_self_clean_over_the_committed_corpus() {
     let specs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("specs");
     let mut entries: Vec<_> = std::fs::read_dir(&specs_dir)

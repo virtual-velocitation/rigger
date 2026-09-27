@@ -273,7 +273,6 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
 // ============================================================================================
 
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavior() {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();

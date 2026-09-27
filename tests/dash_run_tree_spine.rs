@@ -147,7 +147,6 @@ fn child<'a>(node: &'a Value, label: &str) -> &'a Value {
 /// AND the `TreeNode` serialization survive the wire the browser actually reads, not just the
 /// in-process builder the inside-out test exercises.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn run_tree_spine_crosses_the_http_state_boundary() {
     let a_impl = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
     let b_impl = common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "impl B");

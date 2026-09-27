@@ -3018,7 +3018,6 @@ impl Response {
 /// `run_branch`/`base` name the release target for the ready-to-release handoff (spec 38,
 /// criterion 3) the `/api/state` body carries on a done run.
 #[allow(clippy::too_many_arguments)]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 pub fn route(
     method: &str,
     target: &str,
@@ -3334,7 +3333,6 @@ where
 /// absent, the dash's own local project. `/api/instances` is served from the separate
 /// `instances_provider` (the registry landing) and needs no store read at all.
 #[allow(clippy::too_many_arguments)]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn handle_conn<F, G, H, I>(
     stream: TcpStream,
     provider: &Arc<F>,
@@ -5422,8 +5420,6 @@ mod tests {
     /// line, and every node carries its live status. This is the criterion-3 OWNED
     /// projection; the tree HTML is rendered client-side in dash.html (the render boundary).
     #[test]
-    #[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn run_tree_projects_the_spine_with_collapse_expand_and_driver_lines() {
         use crate::spawn::{
             lens_role, SpawnRequest, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
@@ -6004,8 +6000,6 @@ mod tests {
     /// instead, which still drill to real members under the already-merged spec 63 c1 (CODE-LENS
     /// PURITY).
     #[test]
-    #[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree() {
         let ce = |id: &str| Node {
             id: id.to_string(),
@@ -6320,7 +6314,6 @@ mod tests {
     /// lens plumbing; it does not own detection (c1 of spec 53), the grain/supersession (c2), or the
     /// fold recording (c3).
     #[test]
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain(
     ) {
         // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
@@ -6532,7 +6525,6 @@ mod tests {
     /// a per-kind bucket, at any zoom (mirroring criterion 1's identical fix for the code lens). This is
     /// the criterion-4 fold behaviour driven inside-out.
     #[test]
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain(
     ) {
         // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
