@@ -88,45 +88,35 @@ fn gitsemver_available() -> bool {
         .unwrap_or(false)
 }
 
-#[test]
-fn a_plain_commit_after_a_tag_increments_the_patch() {
+/// A repo tagged v1.0.0 with one further commit titled `subject` derives a version starting
+/// `prefix` under Mainline mode (`why` is the assertion's reason), never the fallback marker.
+fn assert_derives_after_the_tag(subject: &str, prefix: &str, why: &str) {
     if !gitsemver_available() {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "docs: update the readme");
+    fixture_repo(dir.path(), subject);
 
     let version = gitsemver::derive_version("go-gitsemver", dir.path());
 
-    assert!(
-        version.starts_with("1.0.1"),
-        "a plain commit after v1.0.0 must bump the patch under Mainline mode; got: {version}"
-    );
+    assert!(version.starts_with(prefix), "{why}; got: {version}");
     assert!(
         !version.contains("unversioned"),
         "a successful derivation must never carry the fallback marker; got: {version}"
     );
 }
 
-#[test]
-fn a_feat_commit_after_a_tag_increments_the_minor() {
-    if !gitsemver_available() {
-        eprintln!("skipping: go-gitsemver not on PATH");
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "feat: add a thing");
-
-    let version = gitsemver::derive_version("go-gitsemver", dir.path());
-
-    assert!(
-        version.starts_with("1.1.0"),
-        "a feat: commit after v1.0.0 must bump the minor under Mainline mode; got: {version}"
+rigger::test_cases! { assert_derives_after_the_tag;
+    a_plain_commit_after_a_tag_increments_the_patch: (
+        "docs: update the readme",
+        "1.0.1",
+        "a plain commit after v1.0.0 must bump the patch under Mainline mode",
     );
-    assert!(
-        !version.contains("unversioned"),
-        "a successful derivation must never carry the fallback marker; got: {version}"
+    a_feat_commit_after_a_tag_increments_the_minor: (
+        "feat: add a thing",
+        "1.1.0",
+        "a feat: commit after v1.0.0 must bump the minor under Mainline mode",
     );
 }
 
