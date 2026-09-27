@@ -145,11 +145,14 @@ pub fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
 /// directly. Falls back to the whole source when the marker is absent, so a future reshaping
 /// never makes a scan pass by silently scanning nothing.
 pub fn production_main_rs() -> String {
-    let src = repo_text("src/main.rs");
-    match src.find("#[cfg(test)]\nmod tests {") {
-        Some(cut) => src[..cut].to_string(),
-        None => src,
-    }
+    production_part(&repo_text("src/main.rs")).to_string()
+}
+
+/// `src` up to its trailing `#[cfg(test)]\nmod tests {` unit-test module (this tree keeps the
+/// module last in every file), or the whole of `src` when it has none.
+pub fn production_part(src: &str) -> &str {
+    src.find("#[cfg(test)]\nmod tests {")
+        .map_or(src, |cut| &src[..cut])
 }
 
 /// The `(name, needle)` rows of `table` whose needle `text` does not contain, each rendered as

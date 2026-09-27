@@ -91,7 +91,7 @@
 //! properties reliable enough for a plain-text scan: (a) a brace-delimited item's own closing
 //! `}` always sits at EXACTLY the item's own indentation, however many lines its signature
 //! spans, and (b) an item's leading attributes/doc comments are always contiguous immediately
-//! above it. [`block_span`] and [`cfg_test_ranges`] below lean on exactly these two properties
+//! above it. [`block_span`] and [`cfg_test_ranges`] (in `common/source_audit.rs`) lean on exactly these two properties
 //! and nothing else about Rust's grammar.
 
 mod common;
@@ -102,7 +102,9 @@ use std::path::{Path, PathBuf};
 
 #[path = "common/source_audit.rs"]
 mod source_audit;
-use source_audit::Finding;
+use source_audit::{
+    block_span, cfg_test_ranges, enclosing_fn_line, fn_sig_lines, in_ranges, Finding,
+};
 
 /// The reap authorities a covered removal site's enclosing function calls (spec 79's Design
 /// and `u79c1-rewiring-complete-and-exemption-marker`): the two direct calls every routed
@@ -123,123 +125,6 @@ const REAP_AUTHORITIES: [&str; 5] = [
 /// human-authored reason is actually sound, only that an exemption was deliberately claimed at
 /// this site rather than merely inferred from an unrelated nearby comment.
 const EXEMPTION_MARKER: &str = "reap-exempt";
-
-/// The number of leading ASCII space characters on `line` - this audit's sole proxy for
-/// "indentation level", since every file it scans is rustfmt-clean (a build-gate
-/// precondition) and rustfmt never indents with tabs.
-fn leading_spaces(line: &str) -> usize {
-    line.chars().take_while(|&c| c == ' ').count()
-}
-
-/// True for a line that DECLARES a function: `fn ` appearing as its own word (never part of a
-/// longer identifier or embedded in prose - "function" has no `fn` substring at all, since
-/// `f` is always followed by `u`, never `n`, so no comment-line guard is needed here). Matches
-/// `fn `, `pub fn `, `pub(crate) fn `, `async fn `, `unsafe fn `, and any other modifier
-/// combination, since it only requires the character immediately before `fn ` to be a
-/// non-identifier character (or the start of the line).
-fn is_fn_sig_line(line: &str) -> bool {
-    let chars: Vec<char> = line.chars().collect();
-    let marker: Vec<char> = "fn ".chars().collect();
-    if chars.len() < marker.len() {
-        return false;
-    }
-    for start in 0..=(chars.len() - marker.len()) {
-        if chars[start..start + marker.len()] != marker[..] {
-            continue;
-        }
-        let before_ok =
-            start == 0 || !(chars[start - 1].is_alphanumeric() || chars[start - 1] == '_');
-        if before_ok {
-            return true;
-        }
-    }
-    false
-}
-
-/// The `[start, end]` line range (0-based, inclusive) of the brace- or semicolon-delimited
-/// item beginning at `start`: the first line at/after `start` whose trimmed-end text ends in
-/// `;` (a single-statement item - e.g. `lib.rs`'s `mod blast_radius_eval;`) closes the item on
-/// that same line; the first line ending in `{` opens a block, closed by the first LATER line
-/// at `start`'s OWN indentation whose trimmed text is exactly `}`. A multi-line signature
-/// (wrapped params, a `where` clause) is handled the same way either form is: this only cares
-/// about which line eventually ends in `{` or `;`, never how many lines came before it.
-fn block_span(lines: &[&str], start: usize) -> (usize, usize) {
-    let indent = leading_spaces(lines[start]);
-    let mut k = start;
-    while k < lines.len() {
-        let t = lines[k].trim_end();
-        if t.ends_with(';') {
-            return (start, k);
-        }
-        if t.ends_with('{') {
-            let mut m = k + 1;
-            while m < lines.len() {
-                if lines[m].trim() == "}" && leading_spaces(lines[m]) == indent {
-                    return (start, m);
-                }
-                m += 1;
-            }
-            return (start, lines.len() - 1);
-        }
-        k += 1;
-    }
-    (start, lines.len() - 1)
-}
-
-/// The `[start, end]` ranges (0-based, inclusive) of every `#[cfg(test)]`-attributed item in
-/// `lines`: a whole `mod { ... }` block (the common shape - `tests`, `pure_metric_tests`,
-/// `corpus_gates`, ...), a single standalone item (`main.rs`'s `#[cfg(test)] fn
-/// compose_precommit`), or a semicolon-terminated module declaration (`lib.rs`'s `#[cfg(test)]
-/// mod blast_radius_eval;`). Attributes may stack (`blast_radius_eval.rs`'s `#[cfg(test)]`
-/// directly above a further `#[cfg(feature = "symbols")]` before the actual `mod`), so this
-/// skips every contiguous attribute/blank line before locating the attributed item itself.
-/// Requires the marker line's TRIMMED text to be EXACTLY `#[cfg(test)]` - never a substring
-/// match - so a doc comment merely mentioning the phrase in prose (as `blast_radius_eval.rs`'s
-/// own module doc does) is never mistaken for the attribute (a `//` or `///` line can never
-/// equal `#[cfg(test)]` after trimming).
-fn cfg_test_ranges(lines: &[&str]) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if lines[i].trim() != "#[cfg(test)]" {
-            i += 1;
-            continue;
-        }
-        let mut j = i + 1;
-        while j < lines.len() {
-            let t = lines[j].trim();
-            if t.is_empty() || t.starts_with('#') {
-                j += 1;
-            } else {
-                break;
-            }
-        }
-        if j >= lines.len() {
-            break;
-        }
-        let (_, end) = block_span(lines, j);
-        ranges.push((i, end));
-        i = end + 1;
-    }
-    ranges
-}
-
-fn in_ranges(line: usize, ranges: &[(usize, usize)]) -> bool {
-    ranges.iter().any(|&(s, e)| line >= s && line <= e)
-}
-
-/// Every `fn`-signature line (0-based, ascending order) that is NOT inside `excluded` and is
-/// not itself a comment line (a further guard against a doc comment that happens to embed a
-/// literal `fn ` code sample, on top of [`is_fn_sig_line`]'s own word-boundary check).
-fn fn_sig_lines(lines: &[&str], excluded: &[(usize, usize)]) -> Vec<usize> {
-    (0..lines.len())
-        .filter(|&i| {
-            !in_ranges(i, excluded)
-                && !lines[i].trim_start().starts_with("//")
-                && is_fn_sig_line(lines[i])
-        })
-        .collect()
-}
 
 /// The earliest line (0-based) of the contiguous doc-comment/attribute block sitting
 /// immediately above `fn_line` (an `fn`-signature line), if any - so a `reap-exempt` marker
@@ -269,16 +154,8 @@ fn doc_comment_start(lines: &[&str], fn_line: usize) -> usize {
 /// over the function's own leading doc-comment/attribute block via [`doc_comment_start`], so a
 /// marker placed there (not just in the body) still counts.
 fn enclosing_fn_span(lines: &[&str], sigs: &[usize], at: usize) -> Option<(usize, usize)> {
-    for &s in sigs.iter().rev() {
-        if s > at {
-            continue;
-        }
-        let (_, end) = block_span(lines, s);
-        if at <= end {
-            return Some((doc_comment_start(lines, s), end));
-        }
-    }
-    None
+    enclosing_fn_line(lines, sigs, at)
+        .map(|s| (doc_comment_start(lines, s), block_span(lines, s).1))
 }
 
 /// Whether `authority` is a reap call whose second argument is checked for a literal
