@@ -8444,42 +8444,20 @@ mod tests {
         assert!(err.contains("dup-cccccccccccc"), "{err}");
     }
 
-    /// THE EXACT-CLUSTER GATE: every exact cluster still open on the real tree carries a
-    /// recorded disposition - or, for this interim integration only, belongs to a group of the
-    /// still-running `src-a` cleanup lane (matched by site file+name, since ids move with
-    /// content), read from that lane's group file.
+    /// THE EXACT-CLUSTER GATE: an exact duplicate is never left open - every exact cluster on the
+    /// real tree carries a recorded disposition, so the exact list holds only clusters a reader
+    /// has judged to be look-alikes rather than one logic written twice.
     #[test]
-    fn every_open_exact_cluster_is_dispositioned_or_awaits_the_src_a_lane() {
-        // TODO(src-a merge): once the src-a lane is merged, delete the group-file allowance
-        // below so ONLY dispositioned exact clusters may remain.
-        let group_path = PathBuf::from(std::env::var("HOME").expect("HOME is set"))
-            .join(".cache/rigger/drafts/cleanup/groups/src-a.json");
-        let raw = fs::read_to_string(&group_path)
-            .unwrap_or_else(|e| panic!("{} is unreadable ({e})", group_path.display()));
-        let groups: Vec<DupClusterWire> =
-            serde_json::from_str(&raw).expect("the src-a group file is a cluster list");
-        let site_names =
-            |sites: &mut dyn Iterator<Item = (&str, &str)>| -> BTreeSet<(String, String)> {
-                sites.map(|(f, n)| (f.to_string(), n.to_string())).collect()
-            };
-        let group_sets: Vec<BTreeSet<(String, String)>> = groups
-            .iter()
-            .map(|g| site_names(&mut g.sites.iter().map(|s| (s.file.as_str(), s.name.as_str()))))
-            .collect();
-        let unaccounted: Vec<&str> = real_catalog()
+    fn every_open_exact_cluster_is_dispositioned() {
+        let undispositioned: Vec<&str> = real_catalog()
             .iter()
             .filter(|c| c.classification == "exact" && c.disposition.is_none())
-            .filter(|c| {
-                let set =
-                    site_names(&mut c.sites.iter().map(|s| (s.file.as_str(), s.name.as_str())));
-                !group_sets.iter().any(|g| set.is_subset(g))
-            })
             .map(|c| c.id.as_str())
             .collect();
         assert!(
-            unaccounted.is_empty(),
-            "open exact clusters with neither a disposition in {DISPOSITIONS_PATH} nor a src-a \
-             group: {unaccounted:?}"
+            undispositioned.is_empty(),
+            "exact clusters with no disposition in {DISPOSITIONS_PATH} - close each duplicate, or \
+             record why it is not one: {undispositioned:?}"
         );
     }
 
