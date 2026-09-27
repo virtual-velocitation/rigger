@@ -2944,21 +2944,21 @@ pub struct Response {
 }
 
 impl Response {
-    /// A rendered text body of `content_type` ([`HTML_CONTENT_TYPE`] for a page,
-    /// [`JSON_CONTENT_TYPE`] for an API reply).
-    fn rendered(status: u16, content_type: &'static str, body: String) -> Self {
+    /// The one constructor every other shape below is a thin variant over.
+    fn new(status: u16, content_type: &'static str, body: Vec<u8>) -> Self {
         Response {
             status,
             content_type,
-            body: body.into_bytes(),
+            body,
         }
     }
+    /// A rendered text body of `content_type` ([`HTML_CONTENT_TYPE`] for a page,
+    /// [`JSON_CONTENT_TYPE`] for an API reply).
+    fn rendered(status: u16, content_type: &'static str, body: String) -> Self {
+        Self::new(status, content_type, body.into_bytes())
+    }
     fn text(status: u16, body: &str) -> Self {
-        Response {
-            status,
-            content_type: "text/plain; charset=utf-8",
-            body: body.as_bytes().to_vec(),
-        }
+        Self::new(status, "text/plain; charset=utf-8", body.as_bytes().to_vec())
     }
     /// A binary asset served verbatim (spec 93 criterion 3: `/console/core.wasm` as
     /// `application/wasm`). Takes a `&'static [u8]` (an embedded artifact, never a runtime-
@@ -2966,11 +2966,7 @@ impl Response {
     /// visibly the embed's own bytes, not a hidden allocation of something computed per
     /// request.
     fn binary(status: u16, content_type: &'static str, body: &'static [u8]) -> Self {
-        Response {
-            status,
-            content_type,
-            body: body.to_vec(),
-        }
+        Self::new(status, content_type, body.to_vec())
     }
 
     fn reason(&self) -> &'static str {
