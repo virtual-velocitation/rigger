@@ -8920,19 +8920,20 @@ mod tests {
         assert!(err.contains("more than one cluster"), "{err}");
     }
 
-    /// THE EXACT-CLUSTER GATE: an exact duplicate is never left open - every exact cluster on the
-    /// real tree carries a recorded disposition, so the exact list holds only clusters a reader
-    /// has judged to be look-alikes rather than one logic written twice.
+    /// THE CLUSTER GATE: no duplicate of any class is ever left open - every cluster on the real
+    /// tree (exact, near or semantic, mechanical or a mandatory sweep) carries a recorded
+    /// disposition, so the catalog holds only clusters a reader has judged not to be one logic
+    /// written twice.
     #[test]
-    fn every_open_exact_cluster_is_dispositioned() {
-        let undispositioned: Vec<&str> = real_catalog()
+    fn every_open_cluster_is_dispositioned() {
+        let undispositioned: Vec<String> = real_catalog()
             .iter()
-            .filter(|c| c.classification == "exact" && c.disposition.is_none())
-            .map(|c| c.id.as_str())
+            .filter(|c| c.disposition.is_none())
+            .map(|c| format!("{} ({})", c.id, c.classification))
             .collect();
         assert!(
             undispositioned.is_empty(),
-            "exact clusters with no disposition in {DISPOSITIONS_PATH} - close each duplicate, or \
+            "clusters with no disposition in {DISPOSITIONS_PATH} - close each duplicate, or \
              record why it is not one: {undispositioned:?}"
         );
     }
