@@ -42,7 +42,7 @@ the engine itself, and the engine is wrong in three ways that no read discipline
   SQL is being used as a B-tree with transactions and a file format. Its bundled C library
   (`Cargo.toml:150`) is the one C dependency in the build and the one reason the `store` lane
   cannot follow the pure `core` lane. Two of its indexes work only when a query is phrased
-  with the exact expression they were built on (`src/contextgraph/sqlite.rs:787-792`), and
+  with the exact expression they were built on (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:787-792`), and
   `reset --derived` can leave per-stream revision holes that a documented two-phase operator
   procedure repairs (`docs/architecture.md:580-617`).
 - **It has no notion of a project's lifecycle.** A store is open whenever any process wants

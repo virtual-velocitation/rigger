@@ -15,7 +15,7 @@ is noise on top of the code the graph is meant to be about.
 
 ## Design
 
-The fold (`fold`/`apply` in `src/contextgraph/sqlite.rs`) turns run events into graph nodes and edges.
+The fold (`fold`/`apply` in `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) turns run events into graph nodes and edges.
 Several arms create machinery: `TYPE_FILE_TOUCHED` (~503) makes an `agent --TOUCHES--> file`
 node-and-edge; `TYPE_GATE_VERDICT` (~521) makes a `KIND_GATE` node; `TYPE_UNIT_STARTED` (~545) and
 `TYPE_UNIT_INTEGRATED` (~583) make `KIND_UNIT` nodes; and `TYPE_DECISION_MADE` (~454) /

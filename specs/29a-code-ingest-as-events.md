@@ -17,7 +17,7 @@ routes its output through the event log:
 - **Emit.** The per-file extraction emits `CodeEntityExtracted` (one per definition) and
   `EdgeInferred` (one per reference) events. Extraction stays in the `symbols` feature; the emit +
   fold is always compiled.
-- **Fold.** New fold arms in `Projection::apply` -> `fold` (`src/contextgraph/sqlite.rs`) turn
+- **Fold.** New fold arms in `Projection::apply` -> `fold` (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) turn
   those events into `code-entity` nodes (kind added alongside the existing `KIND_*` consts in
   `crates/rigger-domain/src/contextgraph.rs`), a `file` container node, and structural edges.
 - **Tier.** Each structural edge carries a confidence tier: explicit-in-source

@@ -1,0 +1,38 @@
+//! Rigger's context-graph persistence adapter, ring 3 of the workspace: the SQLite projector
+//! behind the `Projection` port. It knows rusqlite, the filesystem and the domain; the root
+//! `rigger` crate re-exports it under its historical `rigger::contextgraph::sqlite` path.
+
+pub mod contextgraph;
+
+// The modules the moved code names by their historical `crate::` paths.
+#[cfg(any(test, feature = "store", not(feature = "core")))]
+use rigger_domain::eventstore;
+#[cfg(any(feature = "store", not(feature = "core")))]
+use rigger_domain::spawn;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::{concepts, test_cases};
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_root::{conductor, metrics};
+#[cfg(any(feature = "store", not(feature = "core")))]
+use rigger_store_sqlite::sqlite;
+
+/// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests, compiled
+/// here from the same files. They name the crate as `rigger::...`, which
+/// `extern crate self as rigger` makes resolve to this crate, whose modules sit at the same
+/// paths the root facade re-exports them under.
+#[cfg(test)]
+extern crate self as rigger;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/fold.rs"]
+mod fold_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/graph.rs"]
+mod graph_fixtures;
+#[cfg(test)]
+mod test_support {
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::fold_fixtures::*;
+    pub use crate::graph_fixtures::*;
+}

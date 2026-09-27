@@ -52,7 +52,7 @@ pub const GOD_NODE_DEGREE_THRESHOLD: usize = 5;
 /// The human-readable label of a graph node: its `summary` (a decision / finding), else its `title`
 /// (a design-doc / rule), else its `name` (a code entity), else its id. ONE label authority every
 /// query below reads, never a re-invented derivation.
-pub(crate) fn node_label(node: &Node) -> String {
+pub fn node_label(node: &Node) -> String {
     for key in ["summary", "title", "name"] {
         if let Some(v) = node.attrs.get(key) {
             if !v.is_empty() {
@@ -116,7 +116,7 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
 /// a dotfile like `.gitignore` (whose only `.` is leading) is NOT a file, and a dev-loop id like
 /// `plan-critique` (no extension) never is either. A file path contains neither `::` nor `#`, so the
 /// splits leave a plain path untouched. Pure and total.
-pub(crate) fn file_of(id: &str) -> Option<&str> {
+pub fn file_of(id: &str) -> Option<&str> {
     let file = id.split_once("::").map_or(id, |(f, _)| f);
     let file = file.split_once('#').map_or(file, |(f, _)| f);
     let last_segment = file.rsplit_once('/').map_or(file, |(_, seg)| seg);
@@ -130,7 +130,7 @@ pub(crate) fn file_of(id: &str) -> Option<&str> {
 /// when it carries no `::`. The in-memory twin of the pinned `substr(id, instr(id, '::') + 2)`
 /// expression the store's cross-file name resolution uses (spec 52), so the FILES re-projection's
 /// bare-node resolution (spec 55 c1) matches a bare placeholder to the DEFINITIONS sharing its name.
-pub(crate) fn name_suffix(id: &str) -> &str {
+pub fn name_suffix(id: &str) -> &str {
     match id.find("::") {
         Some(i) => &id[i + 2..],
         None => id,
@@ -144,7 +144,7 @@ pub(crate) fn name_suffix(id: &str) -> &str {
 /// the IDENTICAL shape identically (spec 52's `definitions_with_suffix`, in-memory). Each candidate
 /// list is sorted + deduped for a deterministic frontier: EXACTLY ONE candidate resolves a bare
 /// placeholder honestly, MORE THAN ONE (or zero) cannot be.
-pub(crate) fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
+pub fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
     let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for n in &graph.nodes {
         if n.kind == KIND_CODE_ENTITY && n.attrs.contains_key("name") {
@@ -208,14 +208,14 @@ pub const REPROJECT_NO_COMMUNITY: &str = "no derived communities";
 pub const REPROJECT_NO_CONCEPT: &str = "not part of any concept";
 
 /// The documented texts a DERIVED lens carries (see [`Buckets::derived_texts`]).
-pub(crate) struct DerivedLensTexts {
+pub struct DerivedLensTexts {
     /// The empty-state message when [`Buckets::underived`]: the derivation prompt.
     pub(crate) underived: &'static str,
     /// The empty-CELL message for a derived-lens RE-PROJECTION whose member set folds into NO
     /// derived bucket (spec 55 c2).
     #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))]
     // only read by dash.rs's reproject_derived, gated out under core-only
-    pub(crate) no_membership: &'static str,
+    pub no_membership: &'static str,
     /// The super-node KIND whose deterministic `label` attr names a bucket cluster.
     pub(crate) label_kind: &'static str,
 }
@@ -301,15 +301,15 @@ impl Lens {
 /// drill consume. Built ONCE per request, so the code lens scans the live `IN_COMMUNITY` memberships
 /// a single time. `pub(crate)`: `dash.rs`'s `reproject`/`reproject_derived` re-bucket a SUBJECT's
 /// member set through this SAME resolver, so there is ONE bucket-fold authority, never two.
-pub(crate) struct Buckets<'g> {
-    pub(crate) lens: &'g Lens,
+pub struct Buckets<'g> {
+    pub lens: &'g Lens,
     /// A node id -> its single bucket super-node id: under [`Lens::Code`] the `community/<r>/<n>` it
     /// lives in (at most one live membership per grain, per the spec 53 c3 fold); under
     /// [`Lens::Concepts`] the PRIMARY `concept/<r>/<n>` it realizes (the largest concept it realizes,
     /// ties by lexicographically-smallest id, when it realizes more than one). Empty under
     /// [`Lens::Files`], and empty under a derived-lens grain with NO assignments - the empty-state
     /// signal [`Buckets::underived`] reads.
-    pub(crate) membership: BTreeMap<&'g str, &'g str>,
+    pub membership: BTreeMap<&'g str, &'g str>,
     /// The member nodes carrying MORE THAN ONE live `REALIZES` membership at this grain (spec 54 c3):
     /// each folds under its PRIMARY concept above and is FLAGGED `shared` in the drill, so a
     /// multi-concept member appears once, never silently duplicated. Always empty under
@@ -331,7 +331,7 @@ impl<'g> Buckets<'g> {
     /// `concept/<resolution>/` target, then fold each member to its PRIMARY concept (the largest
     /// concept by member count, ties by smallest id) and record the members that realize more than one
     /// as `shared`. A no-op under [`Lens::Files`].
-    pub(crate) fn new(graph: &'g Graph, lens: &'g Lens) -> Self {
+    pub fn new(graph: &'g Graph, lens: &'g Lens) -> Self {
         let mut membership: BTreeMap<&str, &str> = BTreeMap::new();
         let mut shared: BTreeSet<&str> = BTreeSet::new();
         let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -406,7 +406,7 @@ impl<'g> Buckets<'g> {
     /// [`KIND_CONCEPT`]) is EXCLUDED (it IS a bucket, not a member, so it never inflates a bucket's
     /// member count or dominant kind); every other membership-less node keeps its KIND bucket.
     #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from dash.rs's reproject, gated out under core-only
-    pub(crate) fn key(&self, node: &Node) -> Option<String> {
+    pub fn key(&self, node: &Node) -> Option<String> {
         match self.lens {
             Lens::Files => Some(cluster_key(&node.id, &node.kind)),
             Lens::Code { .. } | Lens::Concepts { .. } => {
@@ -443,7 +443,7 @@ impl<'g> Buckets<'g> {
     /// [`CONCEPTS_LENS_TEXTS`] under [`Lens::Concepts`]), or `None` under [`Lens::Files`], which
     /// is never underived, never reaches a derived re-projection (`dash.rs`'s `reproject_files`
     /// computes its own empty-cell case directly), and attaches no bucket label.
-    pub(crate) fn derived_texts(&self) -> Option<&'static DerivedLensTexts> {
+    pub fn derived_texts(&self) -> Option<&'static DerivedLensTexts> {
         match self.lens {
             Lens::Files => None,
             Lens::Code { .. } => Some(&CODE_LENS_TEXTS),
@@ -453,7 +453,7 @@ impl<'g> Buckets<'g> {
 
     /// Whether `id` carries MORE THAN ONE live concept membership at this grain (spec 54 c3): a shared
     /// member the drill flags. Always `false` under [`Lens::Files`] and [`Lens::Code`].
-    pub(crate) fn is_shared(&self, id: &str) -> bool {
+    pub fn is_shared(&self, id: &str) -> bool {
         self.shared.contains(id)
     }
 }
@@ -582,7 +582,7 @@ pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<Str
 /// its subsystem / idea instead of its opaque id: a coupling community under [`Lens::Code`] (folded
 /// by spec 53 c3), a derived concept under [`Lens::Concepts`] (spec 54). Empty under [`Lens::Files`]
 /// (no super-node bucket exists there) and for the FILES re-projection (a file names itself).
-pub(crate) fn bucket_label_index<'g>(
+pub fn bucket_label_index<'g>(
     graph: &'g Graph,
     buckets: &Buckets<'g>,
 ) -> BTreeMap<&'g str, &'g str> {
@@ -613,7 +613,7 @@ pub(crate) fn bucket_label_index<'g>(
 /// BOTH endpoints fall in the folded set; an intra-bucket edge (or self-loop) adds no weight; the
 /// pair is canonicalized (smaller key first) so an `a -> b` and a `b -> a` graph edge fold into one
 /// weighted super-edge. Deterministic by construction (`BTreeMap` folds).
-pub(crate) fn fold_buckets<'g>(
+pub fn fold_buckets<'g>(
     nodes: impl Iterator<Item = &'g Node>,
     edges: &[Edge],
     key_of: impl Fn(&Node) -> Option<String>,
@@ -849,7 +849,7 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
 /// singleton set; an unknown subject (absent from the graph) is empty. Deterministic - members come
 /// out in ascending-id order - and deduped. `pub(crate)`: shared by [`card`] (a file's `top_entities` /
 /// a concept's `top_evidence`) and `dash.rs`'s `reproject`.
-pub(crate) fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
+pub fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
     let by_id: BTreeMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let mut ids: BTreeSet<&str> = BTreeSet::new();
     match by_id.get(subject).map(|n| n.kind.as_str()) {
@@ -908,7 +908,7 @@ pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
 /// re-pointed run-tree click (spec 43) uses it to seed from a unit's several decision/finding
 /// content nodes at once - the unit id itself being no longer a node - and still echo the unit id
 /// the client asked for.
-pub(crate) fn neighborhood_of(
+pub fn neighborhood_of(
     graph: &Graph,
     seeds: &[String],
     echo_seed: &str,
@@ -1125,7 +1125,7 @@ pub fn memory_rail(graph: &Graph, node: &str) -> MemoryRail {
 /// single node. [`memory_rail`] is the one-element case - matching [`neighborhood_of`]'s own
 /// multi-seed-core / single-seed-wrapper split, and reusing the SAME `effective_seeds` `dash.rs`'s
 /// `graph_json` already computes (spec 43's `repoint_seed`).
-pub(crate) fn memory_rail_of(graph: &Graph, seeds: &[String]) -> MemoryRail {
+pub fn memory_rail_of(graph: &Graph, seeds: &[String]) -> MemoryRail {
     let mut decisions: BTreeMap<String, RationaleLeaf> = BTreeMap::new();
     let mut findings: BTreeMap<String, RationaleLeaf> = BTreeMap::new();
     let mut concepts: BTreeMap<String, ConceptRef> = BTreeMap::new();

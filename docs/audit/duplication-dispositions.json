@@ -75,7 +75,7 @@
     "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
   },
   {
-    "id": "dup-09373b2db35f",
+    "id": "dup-7903ca87eb63",
     "disposition": "not-a-duplicate",
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
@@ -220,7 +220,7 @@
     "reason": "Both use the shared `reset_modes_of`/`reset_refusal`; they pin two different flags' rules (`--force-live` never implying a mode vs `--build-cache` composing with other modes)."
   },
   {
-    "id": "dup-0d8e695ac484",
+    "id": "dup-c76c4d91d8a8",
     "disposition": "not-a-duplicate",
     "reason": "Both already read through the shared `raw_rows`; one selects every edge row's project tag, the other the schema's own index names from `sqlite_master`."
   },
@@ -235,7 +235,7 @@
     "reason": "Three different map queries over one fixture: landmark ranking by degree, case-insensitive name search, and the kind/degree fields a search hit carries."
   },
   {
-    "id": "dup-145855a9e558",
+    "id": "dup-c650c3e62b50",
     "disposition": "not-a-duplicate",
     "reason": "Both already read through the shared `call_edge_rows`; they are the two opposite directions of a direct CALLS hop (a node's callees vs its callers), each with its own query."
   },
@@ -255,12 +255,12 @@
     "reason": "Two named modes of the shared `name_occurrence_map` (counting references too vs definitions only), feeding two different ranking signals."
   },
   {
-    "id": "dup-2d860358c266",
+    "id": "dup-84342f753367",
     "disposition": "not-a-duplicate",
     "reason": "Two different fold arms with different fixtures and assertions: the five design-intent link relations vs workflow stage/gate/agent nodes and their needs/runs/reviews edges."
   },
   {
-    "id": "dup-32d7509fc4e5",
+    "id": "dup-3e472366e265",
     "disposition": "not-a-duplicate",
     "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
   },
@@ -275,12 +275,12 @@
     "reason": "Three different reindex scenarios with different steps and assertions: a concurrent peer's persisted write, a changed file, and a deleted file."
   },
   {
-    "id": "dup-da0e76ab77ee",
+    "id": "dup-233d5e6363a7",
     "disposition": "not-a-duplicate",
     "reason": "Opposite halves of the proof-staging contract: a forward reference is staged then reconciled, while the empty-name boundary sentinel must never stage anything."
   },
   {
-    "id": "dup-f0a2e1334847",
+    "id": "dup-1cee568104ee",
     "disposition": "not-a-duplicate",
     "reason": "Different concerns sharing a lookup shape: one reaches a decision's summary through GOVERNS, the other proves recording a proof merges into and never wipes an entity's attrs."
   },
@@ -495,7 +495,7 @@
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-a6e475e1f6ef",
+    "id": "dup-5d7389dec484",
     "disposition": "not-a-duplicate",
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
@@ -510,7 +510,7 @@
     "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
   },
   {
-    "id": "dup-212931e1642a",
+    "id": "dup-0fd09c691597",
     "disposition": "not-a-duplicate",
     "reason": "`spawn_is_recorded` checks a test driver's recorded spawn set while `is_shared` classifies a graph query result; the shared shape is a single boolean lookup."
   },
@@ -575,22 +575,22 @@
     "reason": "Two property tests over different functions and invariants (module names never carry a dot or slash; credential fragments never survive redaction)."
   },
   {
-    "id": "dup-f33f59e9bcbf",
+    "id": "dup-cc43c38b38ca",
     "disposition": "not-a-duplicate",
     "reason": "Fold helpers that each build a different event type or payload (inferred edges with and without evidence, doc concepts, doc links, batch refs, unit integration, concept realization, lang-less refs) over the shared `apply_json`."
   },
   {
-    "id": "dup-f84eec928003",
+    "id": "dup-b5bd50de3e2a",
     "disposition": "not-a-duplicate",
     "reason": "`apply_code_entity_partial` and `apply_community` fold two different event types with different payload fields over the shared `apply_json`."
   },
   {
-    "id": "dup-25b1ff5f5bfa",
+    "id": "dup-554a83a84ac8",
     "disposition": "not-a-duplicate",
     "reason": "Two projector tests with different seeded event orders and different assertions (inferred-tier order independence versus no demotion of an extracted reference)."
   },
   {
-    "id": "dup-e509388ccd96",
+    "id": "dup-941c45a14b87",
     "disposition": "not-a-duplicate",
     "reason": "`edge_desc` renders a graph edge while `runs_menu_line` renders a run-menu row; they format different fields into different lines."
   },

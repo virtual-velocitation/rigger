@@ -92,13 +92,38 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e45f8e7bf3cb",
+    "id": "dup-c4ed262956e5",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-domain/src/config.rs",
         "name": "\".rigger\"",
         "content_hash": "bc20dd2902db1109"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "crates/rigger-store-sqlite/src/registry.rs",
@@ -229,31 +254,6 @@
         "file": "src/config_store.rs",
         "name": "\"create .rigger dir\"",
         "content_hash": "647e8aea340be175"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "src/dash.rs",
@@ -2863,6 +2863,54 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-0fd09c691597",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/contextgraph/query.rs",
+        "name": "is_shared",
+        "content_hash": "a9a8398504617bc1"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "spawn_is_recorded",
+        "content_hash": "c4a3d4618515456f"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/contextgraph/query.rs, src/conductor.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-7903ca87eb63",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/contextgraph/query.rs",
+        "name": "graph_load_rejects_malformed_json_without_panicking",
+        "content_hash": "d66f264f46d94da4"
+      },
+      {
+        "file": "crates/rigger-domain/src/spec.rs",
+        "name": "empty_when_no_criteria",
+        "content_hash": "d66f264f46d94da4"
+      },
+      {
+        "file": "src/config_store.rs",
+        "name": "rejects_missing_frontmatter",
+        "content_hash": "d66f264f46d94da4"
+      },
+      {
+        "file": "src/main.rs",
+        "name": "dirty_tracked_paths_on_a_clean_tree_is_empty",
+        "content_hash": "d66f264f46d94da4"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/spec.rs, src/config_store.rs, src/main.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-bb7aa56f67d8",
     "classification": "exact",
     "sites": [
@@ -3426,35 +3474,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-09373b2db35f",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/spec.rs",
-        "name": "empty_when_no_criteria",
-        "content_hash": "d66f264f46d94da4"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "rejects_missing_frontmatter",
-        "content_hash": "d66f264f46d94da4"
-      },
-      {
-        "file": "src/contextgraph/query.rs",
-        "name": "graph_load_rejects_malformed_json_without_panicking",
-        "content_hash": "d66f264f46d94da4"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "dirty_tracked_paths_on_a_clean_tree_is_empty",
-        "content_hash": "d66f264f46d94da4"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-domain/src/spec.rs, src/config_store.rs, src/contextgraph/query.rs, src/main.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-81e8434ac795",
     "classification": "near",
     "sites": [
@@ -3522,114 +3541,221 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-183455104b30",
+    "id": "dup-5d7389dec484",
     "classification": "near",
     "sites": [
       {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "name": "append_assigns_revisions",
-        "content_hash": "6c6e84f1920c4dda"
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "code_entity_id",
+        "content_hash": "5d23ae9ae3e76aee"
       },
       {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "name": "backward_stream_read_reverses_set",
-        "content_hash": "74608c5c9c7570c0"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "name": "forward_stream_read_honors_nonzero_from",
-        "content_hash": "d1393e6afaf0cbe3"
-      }
-    ],
-    "proposed_home": "contract::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-d32a420335cb",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
-        "name": "no_credential_fragment_ever_survives",
-        "content_hash": "76f737610a4ec43f"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "module_of_never_returns_a_string_carrying_a_dot_or_a_slash",
-        "content_hash": "84dc1535e1142804"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/mod.rs, src/console/map.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-2586d99fb4f1",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "factor",
-        "content_hash": "e8cdb779abbfeffa"
-      },
-      {
-        "file": "src/metrics.rs",
-        "name": "cost_per_upheld",
-        "content_hash": "e8cdb779abbfeffa"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/metrics.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-a87f9002607d",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "key_expr",
-        "content_hash": "14b162c1828e22af"
+        "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
+        "name": "what",
+        "content_hash": "5d23ae9ae3e76aee"
       },
       {
         "file": "src/conductor.rs",
-        "name": "unit_branch",
-        "content_hash": "9c80ca639aa5a725"
+        "name": "adoption_provenance_key",
+        "content_hash": "dd84157febaa78c9"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "quarantine_record_key",
+        "content_hash": "dd84157febaa78c9"
+      },
+      {
+        "file": "tests/no_os_kill_audit.rs",
+        "name": "join",
+        "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/conductor.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/spawn_store.rs, src/conductor.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-20c2938a0805",
+    "id": "dup-c650c3e62b50",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "calls_out",
+        "content_hash": "823934e3ec3eb854"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "callers_direct",
+        "content_hash": "823934e3ec3eb854"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-1cee568104ee",
     "classification": "near",
     "sites": [
       {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "direction_sql",
-        "content_hash": "93065e93693e5696"
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "subgraph_finds_the_governing_decision",
+        "content_hash": "8c826723ce04656b"
       },
       {
-        "file": "src/grounder/symbols/events.rs",
-        "name": "kind_str",
-        "content_hash": "356013c71e3aa4fe"
-      },
-      {
-        "file": "src/grounder/symbols/events.rs",
-        "name": "lang_str",
-        "content_hash": "5e060abaf3ab9226"
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs",
+        "content_hash": "61f414add7123d87"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/grounder/symbols/events.rs)",
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3ee05868cb12",
+    "id": "dup-cc43c38b38ca",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_edge_inferred",
+        "content_hash": "85f0929eee0497a3"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_edge_inferred_evidence",
+        "content_hash": "8bc67119bff75c79"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_doc_concept",
+        "content_hash": "996551ca93317af7"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_doc_link",
+        "content_hash": "85f0929eee0497a3"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_batch_ref",
+        "content_hash": "9cb538193b87692a"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_unit_integrated",
+        "content_hash": "500951845611ec13"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "name": "apply_ref_json",
+        "content_hash": "500951845611ec13"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "name": "apply_ref_fresh",
+        "content_hash": "6028722bd16ba494"
+      },
+      {
+        "file": "tests/concepts_fold_periphery.rs",
+        "name": "realized",
+        "content_hash": "02a4512e6d2c56de"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, tests/code_ingest_events.rs, tests/concepts_fold_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-b5bd50de3e2a",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_code_entity_partial",
+        "content_hash": "6a95c2630e09aa17"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_community",
+        "content_hash": "fb58b0c254be782f"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-84342f753367",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "design_intent_link_events_fold_into_the_five_design_intent_edges",
+        "content_hash": "2ad5826ac0fcd978"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges",
+        "content_hash": "489a8a414b017064"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-3e472366e265",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "decision_fold_projects_no_agent_node_or_decided_edge",
+        "content_hash": "321b3edf0b7fb797"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "review_finding_projects_no_raised_edge_even_with_an_event_actor",
+        "content_hash": "3c6453b821df8e1c"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-c76c4d91d8a8",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "edge_projects",
+        "content_hash": "8152209280dd27cb"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "index_names",
+        "content_hash": "c6085ab3c4fa427e"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-f4557659a212",
     "classification": "semantic",
     "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "1953385dcb5ae89a"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "1953385dcb5ae89a"
+      },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "Connection::open",
@@ -3644,16 +3770,6 @@
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "51b969072f57b125"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "1953385dcb5ae89a"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "1953385dcb5ae89a"
       },
       {
         "file": "src/main.rs",
@@ -3806,6 +3922,168 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-554a83a84ac8",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "the_cross_file_inferred_tier_is_order_independent",
+        "content_hash": "c72b94720823c022"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "the_definition_upgrade_never_demotes_a_same_file_extracted_reference",
+        "content_hash": "b25cbdaf2861da53"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-941c45a14b87",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "edge_desc",
+        "content_hash": "e440409270bfff61"
+      },
+      {
+        "file": "src/main.rs",
+        "name": "runs_menu_line",
+        "content_hash": "84eec79883799081"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, src/main.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-233d5e6363a7",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds",
+        "content_hash": "3c59226dd21127b3"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name",
+        "content_hash": "99c15ac54e69d707"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-183455104b30",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "name": "append_assigns_revisions",
+        "content_hash": "6c6e84f1920c4dda"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "name": "backward_stream_read_reverses_set",
+        "content_hash": "74608c5c9c7570c0"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "name": "forward_stream_read_honors_nonzero_from",
+        "content_hash": "d1393e6afaf0cbe3"
+      }
+    ],
+    "proposed_home": "contract::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-d32a420335cb",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
+        "name": "no_credential_fragment_ever_survives",
+        "content_hash": "76f737610a4ec43f"
+      },
+      {
+        "file": "src/console/map.rs",
+        "name": "module_of_never_returns_a_string_carrying_a_dot_or_a_slash",
+        "content_hash": "84dc1535e1142804"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/mod.rs, src/console/map.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-2586d99fb4f1",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "factor",
+        "content_hash": "e8cdb779abbfeffa"
+      },
+      {
+        "file": "src/metrics.rs",
+        "name": "cost_per_upheld",
+        "content_hash": "e8cdb779abbfeffa"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/metrics.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-a87f9002607d",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "key_expr",
+        "content_hash": "14b162c1828e22af"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "unit_branch",
+        "content_hash": "9c80ca639aa5a725"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/conductor.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-20c2938a0805",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "direction_sql",
+        "content_hash": "93065e93693e5696"
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "name": "kind_str",
+        "content_hash": "356013c71e3aa4fe"
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "name": "lang_str",
+        "content_hash": "5e060abaf3ab9226"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/grounder/symbols/events.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-831910355599",
     "classification": "near",
     "sites": [
@@ -3859,40 +4137,6 @@
       }
     ],
     "proposed_home": "run_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-a6e475e1f6ef",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
-        "name": "what",
-        "content_hash": "5d23ae9ae3e76aee"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "adoption_provenance_key",
-        "content_hash": "dd84157febaa78c9"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "quarantine_record_key",
-        "content_hash": "dd84157febaa78c9"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "code_entity_id",
-        "content_hash": "5d23ae9ae3e76aee"
-      },
-      {
-        "file": "tests/no_os_kill_audit.rs",
-        "name": "join",
-        "content_hash": "5d23ae9ae3e76aee"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-store-sqlite/src/spawn_store.rs, src/conductor.rs, src/contextgraph/sqlite.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -4456,25 +4700,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-212931e1642a",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "spawn_is_recorded",
-        "content_hash": "c4a3d4618515456f"
-      },
-      {
-        "file": "src/contextgraph/query.rs",
-        "name": "is_shared",
-        "content_hash": "2732ed84e6da9caa"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, src/contextgraph/query.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-21f642b8fe3c",
     "classification": "near",
     "sites": [
@@ -4763,231 +4988,6 @@
       }
     ],
     "proposed_home": "map::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-145855a9e558",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "calls_out",
-        "content_hash": "823934e3ec3eb854"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "callers_direct",
-        "content_hash": "823934e3ec3eb854"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-f0a2e1334847",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "subgraph_finds_the_governing_decision",
-        "content_hash": "8c826723ce04656b"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs",
-        "content_hash": "61f414add7123d87"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-f33f59e9bcbf",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "apply_edge_inferred",
-        "content_hash": "85f0929eee0497a3"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "apply_edge_inferred_evidence",
-        "content_hash": "8bc67119bff75c79"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "apply_doc_concept",
-        "content_hash": "996551ca93317af7"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "apply_doc_link",
-        "content_hash": "85f0929eee0497a3"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "apply_batch_ref",
-        "content_hash": "9cb538193b87692a"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "apply_unit_integrated",
-        "content_hash": "500951845611ec13"
-      },
-      {
-        "file": "tests/code_ingest_events.rs",
-        "name": "apply_ref_json",
-        "content_hash": "500951845611ec13"
-      },
-      {
-        "file": "tests/code_ingest_events.rs",
-        "name": "apply_ref_fresh",
-        "content_hash": "6028722bd16ba494"
-      },
-      {
-        "file": "tests/concepts_fold_periphery.rs",
-        "name": "realized",
-        "content_hash": "02a4512e6d2c56de"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: src/contextgraph/sqlite.rs, tests/code_ingest_events.rs, tests/concepts_fold_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-f84eec928003",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "apply_code_entity_partial",
-        "content_hash": "6a95c2630e09aa17"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "apply_community",
-        "content_hash": "fb58b0c254be782f"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-2d860358c266",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "design_intent_link_events_fold_into_the_five_design_intent_edges",
-        "content_hash": "2ad5826ac0fcd978"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges",
-        "content_hash": "489a8a414b017064"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-32d7509fc4e5",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "decision_fold_projects_no_agent_node_or_decided_edge",
-        "content_hash": "321b3edf0b7fb797"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "review_finding_projects_no_raised_edge_even_with_an_event_actor",
-        "content_hash": "3c6453b821df8e1c"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-0d8e695ac484",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "edge_projects",
-        "content_hash": "8152209280dd27cb"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "index_names",
-        "content_hash": "c6085ab3c4fa427e"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-25b1ff5f5bfa",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "the_cross_file_inferred_tier_is_order_independent",
-        "content_hash": "c72b94720823c022"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "the_definition_upgrade_never_demotes_a_same_file_extracted_reference",
-        "content_hash": "b25cbdaf2861da53"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-e509388ccd96",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "edge_desc",
-        "content_hash": "e440409270bfff61"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "runs_menu_line",
-        "content_hash": "84eec79883799081"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/contextgraph/sqlite.rs, src/main.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-da0e76ab77ee",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds",
-        "content_hash": "3c59226dd21127b3"
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "name": "the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name",
-        "content_hash": "99c15ac54e69d707"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

@@ -68,7 +68,7 @@ is the substrate both run over.
 Each spawn's prompt is assembled in `build_prompt_with_failure` (`src/conductor.rs:5855`):
 prior-failure block + grounder refs (`gr.ground(query, 8)`, `:6002`, `GROUNDED_SEED_K=8`
 `:78`) + `graph_context(seed)` (`:6014`/`:6023`), which runs `graph.subgraph(seed, 2)`
-(`:6028`; recursive CTE `src/contextgraph/sqlite.rs:78`) and renders three budgeted sections
+(`:6028`; recursive CTE `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:78`) and renders three budgeted sections
 via `write_capped_section` (`:6690`) wrapped by `write_capped_decisions/lessons/findings`
 (`:6785`/`:6805`/`:6830`). Hand-tuned budgets (`:6623-6652`): decisions 12 verbatim / 24KiB,
 lessons 12 / 12KiB, findings 24 / 48KiB. Measured pre-cap blowups quoted in-source: findings

@@ -10,7 +10,7 @@ events, 609 MB payload, 1.4 GB file): 2,443,614 events (97.9%) are the derived i
 (`ingest::append_and_fold_batch`, `src/ingest.rs:48`; `RunCtx::emit_keyed_batch`,
 `src/conductor.rs:3261`), so the log's copy has no production reader: `graph.db` is a persisted
 incremental projection, no command rebuilds it from the log (only tests do,
-`src/contextgraph/sqlite.rs:7177`), and `src/docs.rs:728` forbids deleting it. They are
+`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7177`), and `src/docs.rs:728` forbids deleting it. They are
 appended on every step (`conductor.rs:10557`), on every landed merge (`conductor.rs:9504`) and
 by `rigger graph build` (`src/main.rs:4737`); spec 60's guard against re-accumulation is a dedup
 inside the two ingest sinks (`project_scoped_replay_keys`, `crates/rigger-domain/src/ingest.rs:160`), and the store

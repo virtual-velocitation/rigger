@@ -74,18 +74,43 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 2406,
-        "end_line": 2408
+        "start_line": 2410,
+        "end_line": 2412
       }
     ]
   },
   {
-    "id": "dup-e45f8e7bf3cb",
+    "id": "dup-c4ed262956e5",
     "sites": [
       {
         "file": "crates/rigger-domain/src/config.rs",
         "start_line": 20,
         "end_line": 20
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4352,
+        "end_line": 4352
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4360,
+        "end_line": 4360
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4368,
+        "end_line": 4368
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4376,
+        "end_line": 4376
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4384,
+        "end_line": 4384
       },
       {
         "file": "crates/rigger-store-sqlite/src/registry.rs",
@@ -216,31 +241,6 @@
         "file": "src/config_store.rs",
         "start_line": 2056,
         "end_line": 2056
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4352,
-        "end_line": 4352
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4360,
-        "end_line": 4360
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4368,
-        "end_line": 4368
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4376,
-        "end_line": 4376
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4384,
-        "end_line": 4384
       },
       {
         "file": "src/dash.rs",
@@ -2494,28 +2494,23 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3096,
-        "end_line": 3096
+        "start_line": 3100,
+        "end_line": 3100
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3281,
-        "end_line": 3281
+        "start_line": 3285,
+        "end_line": 3285
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3282,
-        "end_line": 3282
+        "start_line": 3286,
+        "end_line": 3286
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5391,
-        "end_line": 5391
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 5687,
-        "end_line": 5687
+        "start_line": 5395,
+        "end_line": 5395
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -2524,13 +2519,18 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8825,
-        "end_line": 8825
+        "start_line": 5695,
+        "end_line": 5695
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8827,
-        "end_line": 8827
+        "start_line": 8829,
+        "end_line": 8829
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8831,
+        "end_line": 8831
       },
       {
         "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
@@ -2835,6 +2835,46 @@
     ]
   },
   {
+    "id": "dup-0fd09c691597",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/contextgraph/query.rs",
+        "start_line": 456,
+        "end_line": 458
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 3751,
+        "end_line": 3753
+      }
+    ]
+  },
+  {
+    "id": "dup-7903ca87eb63",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/contextgraph/query.rs",
+        "start_line": 1937,
+        "end_line": 1939
+      },
+      {
+        "file": "crates/rigger-domain/src/spec.rs",
+        "start_line": 986,
+        "end_line": 988
+      },
+      {
+        "file": "src/config_store.rs",
+        "start_line": 944,
+        "end_line": 946
+      },
+      {
+        "file": "src/main.rs",
+        "start_line": 17145,
+        "end_line": 17147
+      }
+    ]
+  },
+  {
     "id": "dup-bb7aa56f67d8",
     "sites": [
       {
@@ -3019,23 +3059,23 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7663,
-        "end_line": 7674
+        "start_line": 7667,
+        "end_line": 7678
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7694,
-        "end_line": 7705
+        "start_line": 7698,
+        "end_line": 7709
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7717,
-        "end_line": 7723
+        "start_line": 7721,
+        "end_line": 7727
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8282,
-        "end_line": 8292
+        "start_line": 8286,
+        "end_line": 8296
       }
     ]
   },
@@ -3229,8 +3269,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5959,
-        "end_line": 5961
+        "start_line": 5963,
+        "end_line": 5965
       }
     ]
   },
@@ -3309,8 +3349,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3157,
-        "end_line": 3164
+        "start_line": 3161,
+        "end_line": 3168
       }
     ]
   },
@@ -3330,31 +3370,6 @@
     ]
   },
   {
-    "id": "dup-09373b2db35f",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 986,
-        "end_line": 988
-      },
-      {
-        "file": "src/config_store.rs",
-        "start_line": 944,
-        "end_line": 946
-      },
-      {
-        "file": "src/contextgraph/query.rs",
-        "start_line": 1937,
-        "end_line": 1939
-      },
-      {
-        "file": "src/main.rs",
-        "start_line": 17145,
-        "end_line": 17147
-      }
-    ]
-  },
-  {
     "id": "dup-81e8434ac795",
     "sites": [
       {
@@ -3369,8 +3384,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7312,
-        "end_line": 7316
+        "start_line": 7316,
+        "end_line": 7320
       }
     ]
   },
@@ -3410,93 +3425,188 @@
     ]
   },
   {
-    "id": "dup-183455104b30",
+    "id": "dup-5d7389dec484",
     "sites": [
       {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 172,
-        "end_line": 192
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 1846,
+        "end_line": 1848
       },
       {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 301,
-        "end_line": 346
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 350,
-        "end_line": 375
-      }
-    ]
-  },
-  {
-    "id": "dup-d32a420335cb",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
-        "start_line": 239,
-        "end_line": 252
-      },
-      {
-        "file": "src/console/map.rs",
-        "start_line": 1265,
-        "end_line": 1279
-      }
-    ]
-  },
-  {
-    "id": "dup-2586d99fb4f1",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 503,
-        "end_line": 509
-      },
-      {
-        "file": "src/metrics.rs",
-        "start_line": 494,
-        "end_line": 500
-      }
-    ]
-  },
-  {
-    "id": "dup-a87f9002607d",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 718,
-        "end_line": 720
+        "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
+        "start_line": 63,
+        "end_line": 65
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12565,
-        "end_line": 12567
+        "start_line": 382,
+        "end_line": 384
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 395,
+        "end_line": 397
+      },
+      {
+        "file": "tests/no_os_kill_audit.rs",
+        "start_line": 52,
+        "end_line": 54
       }
     ]
   },
   {
-    "id": "dup-20c2938a0805",
+    "id": "dup-c650c3e62b50",
     "sites": [
       {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1022,
-        "end_line": 1027
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 1963,
+        "end_line": 1975
       },
       {
-        "file": "src/grounder/symbols/events.rs",
-        "start_line": 739,
-        "end_line": 750
-      },
-      {
-        "file": "src/grounder/symbols/events.rs",
-        "start_line": 754,
-        "end_line": 763
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 2031,
+        "end_line": 2043
       }
     ]
   },
   {
-    "id": "dup-3ee05868cb12",
+    "id": "dup-1cee568104ee",
     "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 2787,
+        "end_line": 2800
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 7817,
+        "end_line": 7837
+      }
+    ]
+  },
+  {
+    "id": "dup-cc43c38b38ca",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 3204,
+        "end_line": 3211
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 3245,
+        "end_line": 3252
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4091,
+        "end_line": 4098
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4201,
+        "end_line": 4208
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4531,
+        "end_line": 4538
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 6060,
+        "end_line": 6070
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "start_line": 841,
+        "end_line": 848
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "start_line": 993,
+        "end_line": 1000
+      },
+      {
+        "file": "tests/concepts_fold_periphery.rs",
+        "start_line": 52,
+        "end_line": 59
+      }
+    ]
+  },
+  {
+    "id": "dup-b5bd50de3e2a",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 3220,
+        "end_line": 3239
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 3281,
+        "end_line": 3299
+      }
+    ]
+  },
+  {
+    "id": "dup-84342f753367",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4211,
+        "end_line": 4334
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 4337,
+        "end_line": 4455
+      }
+    ]
+  },
+  {
+    "id": "dup-3e472366e265",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 5793,
+        "end_line": 5826
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 5880,
+        "end_line": 5908
+      }
+    ]
+  },
+  {
+    "id": "dup-c76c4d91d8a8",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 6603,
+        "end_line": 6605
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 7637,
+        "end_line": 7645
+      }
+    ]
+  },
+  {
+    "id": "dup-f4557659a212",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 6699,
+        "end_line": 6699
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 7469,
+        "end_line": 7469
+      },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "start_line": 1459,
@@ -3511,16 +3621,6 @@
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
         "start_line": 13,
         "end_line": 13
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6699,
-        "end_line": 6699
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7469,
-        "end_line": 7469
       },
       {
         "file": "src/main.rs",
@@ -3670,6 +3770,136 @@
     ]
   },
   {
+    "id": "dup-554a83a84ac8",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 7373,
+        "end_line": 7414
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 7417,
+        "end_line": 7432
+      }
+    ]
+  },
+  {
+    "id": "dup-941c45a14b87",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 7546,
+        "end_line": 7548
+      },
+      {
+        "file": "src/main.rs",
+        "start_line": 8605,
+        "end_line": 8611
+      }
+    ]
+  },
+  {
+    "id": "dup-233d5e6363a7",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 7859,
+        "end_line": 7890
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "start_line": 8135,
+        "end_line": 8166
+      }
+    ]
+  },
+  {
+    "id": "dup-183455104b30",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "start_line": 172,
+        "end_line": 192
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "start_line": 301,
+        "end_line": 346
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "start_line": 350,
+        "end_line": 375
+      }
+    ]
+  },
+  {
+    "id": "dup-d32a420335cb",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
+        "start_line": 239,
+        "end_line": 252
+      },
+      {
+        "file": "src/console/map.rs",
+        "start_line": 1265,
+        "end_line": 1279
+      }
+    ]
+  },
+  {
+    "id": "dup-2586d99fb4f1",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "start_line": 503,
+        "end_line": 509
+      },
+      {
+        "file": "src/metrics.rs",
+        "start_line": 494,
+        "end_line": 500
+      }
+    ]
+  },
+  {
+    "id": "dup-a87f9002607d",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "start_line": 718,
+        "end_line": 720
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 12565,
+        "end_line": 12567
+      }
+    ]
+  },
+  {
+    "id": "dup-20c2938a0805",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "start_line": 1022,
+        "end_line": 1027
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "start_line": 739,
+        "end_line": 750
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "start_line": 754,
+        "end_line": 763
+      }
+    ]
+  },
+  {
     "id": "dup-831910355599",
     "sites": [
       {
@@ -3711,36 +3941,6 @@
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
         "start_line": 449,
         "end_line": 464
-      }
-    ]
-  },
-  {
-    "id": "dup-a6e475e1f6ef",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
-        "start_line": 63,
-        "end_line": 65
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 382,
-        "end_line": 384
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 395,
-        "end_line": 397
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 1846,
-        "end_line": 1848
-      },
-      {
-        "file": "tests/no_os_kill_audit.rs",
-        "start_line": 52,
-        "end_line": 54
       }
     ]
   },
@@ -4280,21 +4480,6 @@
     ]
   },
   {
-    "id": "dup-212931e1642a",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "start_line": 3751,
-        "end_line": 3753
-      },
-      {
-        "file": "src/contextgraph/query.rs",
-        "start_line": 456,
-        "end_line": 458
-      }
-    ]
-  },
-  {
     "id": "dup-21f642b8fe3c",
     "sites": [
       {
@@ -4444,8 +4629,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8831,
-        "end_line": 8839
+        "start_line": 8835,
+        "end_line": 8843
       }
     ]
   },
@@ -4531,191 +4716,6 @@
         "file": "src/console/map.rs",
         "start_line": 2576,
         "end_line": 2584
-      }
-    ]
-  },
-  {
-    "id": "dup-145855a9e558",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 1963,
-        "end_line": 1975
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2031,
-        "end_line": 2043
-      }
-    ]
-  },
-  {
-    "id": "dup-f0a2e1334847",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2787,
-        "end_line": 2800
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7817,
-        "end_line": 7837
-      }
-    ]
-  },
-  {
-    "id": "dup-f33f59e9bcbf",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3204,
-        "end_line": 3211
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3245,
-        "end_line": 3252
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4091,
-        "end_line": 4098
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4201,
-        "end_line": 4208
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4531,
-        "end_line": 4538
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6060,
-        "end_line": 6070
-      },
-      {
-        "file": "tests/code_ingest_events.rs",
-        "start_line": 841,
-        "end_line": 848
-      },
-      {
-        "file": "tests/code_ingest_events.rs",
-        "start_line": 993,
-        "end_line": 1000
-      },
-      {
-        "file": "tests/concepts_fold_periphery.rs",
-        "start_line": 52,
-        "end_line": 59
-      }
-    ]
-  },
-  {
-    "id": "dup-f84eec928003",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3220,
-        "end_line": 3239
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3281,
-        "end_line": 3299
-      }
-    ]
-  },
-  {
-    "id": "dup-2d860358c266",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4211,
-        "end_line": 4334
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4337,
-        "end_line": 4455
-      }
-    ]
-  },
-  {
-    "id": "dup-32d7509fc4e5",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5793,
-        "end_line": 5826
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5880,
-        "end_line": 5908
-      }
-    ]
-  },
-  {
-    "id": "dup-0d8e695ac484",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6603,
-        "end_line": 6605
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7637,
-        "end_line": 7645
-      }
-    ]
-  },
-  {
-    "id": "dup-25b1ff5f5bfa",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7373,
-        "end_line": 7414
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7417,
-        "end_line": 7432
-      }
-    ]
-  },
-  {
-    "id": "dup-e509388ccd96",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7546,
-        "end_line": 7548
-      },
-      {
-        "file": "src/main.rs",
-        "start_line": 8605,
-        "end_line": 8611
-      }
-    ]
-  },
-  {
-    "id": "dup-da0e76ab77ee",
-    "sites": [
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7859,
-        "end_line": 7890
-      },
-      {
-        "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8135,
-        "end_line": 8166
       }
     ]
   },
@@ -4864,53 +4864,48 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3088,
-        "end_line": 3088
+        "start_line": 3092,
+        "end_line": 3092
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3094,
-        "end_line": 3094
+        "start_line": 3098,
+        "end_line": 3098
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3269,
-        "end_line": 3269
+        "start_line": 3273,
+        "end_line": 3273
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3270,
-        "end_line": 3270
+        "start_line": 3274,
+        "end_line": 3274
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3310,
-        "end_line": 3310
+        "start_line": 3314,
+        "end_line": 3314
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3534,
-        "end_line": 3534
+        "start_line": 3538,
+        "end_line": 3538
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3953,
-        "end_line": 3953
+        "start_line": 3957,
+        "end_line": 3957
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4375,
-        "end_line": 4375
+        "start_line": 4379,
+        "end_line": 4379
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5391,
-        "end_line": 5391
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 5505,
-        "end_line": 5505
+        "start_line": 5395,
+        "end_line": 5395
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -4919,8 +4914,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8652,
-        "end_line": 8652
+        "start_line": 5513,
+        "end_line": 5513
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -4934,33 +4929,38 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8815,
-        "end_line": 8815
+        "start_line": 8664,
+        "end_line": 8664
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8816,
-        "end_line": 8816
+        "start_line": 8819,
+        "end_line": 8819
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8818,
-        "end_line": 8818
+        "start_line": 8820,
+        "end_line": 8820
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8883,
-        "end_line": 8883
+        "start_line": 8822,
+        "end_line": 8822
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8905,
-        "end_line": 8905
+        "start_line": 8887,
+        "end_line": 8887
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8911,
-        "end_line": 8911
+        "start_line": 8909,
+        "end_line": 8909
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8915,
+        "end_line": 8915
       }
     ]
   },
@@ -4974,13 +4974,13 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7365,
-        "end_line": 7372
+        "start_line": 7369,
+        "end_line": 7376
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7492,
-        "end_line": 7498
+        "start_line": 7496,
+        "end_line": 7502
       }
     ]
   },
@@ -5389,8 +5389,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 2453,
-        "end_line": 2559
+        "start_line": 2457,
+        "end_line": 2563
       }
     ]
   },
@@ -5874,33 +5874,33 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3259,
-        "end_line": 3290
+        "start_line": 3263,
+        "end_line": 3294
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3529,
-        "end_line": 3550
+        "start_line": 3533,
+        "end_line": 3554
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3880,
-        "end_line": 3993
+        "start_line": 3884,
+        "end_line": 3997
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5347,
-        "end_line": 5915
+        "start_line": 5351,
+        "end_line": 5919
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8645,
-        "end_line": 8668
+        "start_line": 8649,
+        "end_line": 8672
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8814,
-        "end_line": 8819
+        "start_line": 8818,
+        "end_line": 8823
       }
     ]
   },
@@ -6909,8 +6909,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9050,
-        "end_line": 9056
+        "start_line": 9054,
+        "end_line": 9060
       }
     ]
   },
@@ -7004,18 +7004,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3688,
-        "end_line": 3691
+        "start_line": 3692,
+        "end_line": 3695
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 5194,
-        "end_line": 5197
+        "start_line": 5198,
+        "end_line": 5201
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7170,
-        "end_line": 7173
+        "start_line": 7174,
+        "end_line": 7177
       }
     ]
   },
@@ -7024,23 +7024,23 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3746,
-        "end_line": 3763
+        "start_line": 3750,
+        "end_line": 3767
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3765,
-        "end_line": 3778
+        "start_line": 3769,
+        "end_line": 3782
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7123,
-        "end_line": 7140
+        "start_line": 7127,
+        "end_line": 7144
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7142,
-        "end_line": 7157
+        "start_line": 7146,
+        "end_line": 7161
       }
     ]
   },

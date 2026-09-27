@@ -25,7 +25,7 @@ the grammar's `tags` query and lowers each tag into a `Def { kind, name, line }`
 `SymRef { name, line }` (`src/grounder/symbols/model.rs`). A `SymRef` keeps only name + line - the
 enclosing definition is thrown away. The emit pass (`src/grounder/symbols/events.rs`
 `extract_events`) turns each `SymRef` into `EdgeInferred { file, name, lang, fresh }`, and the fold
-(`src/contextgraph/sqlite.rs`) resolves `name` to a callee entity and folds
+(`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) resolves `name` to a callee entity and folds
 `<file> --REFERENCES--> <callee>`.
 
 Each tag already carries a byte RANGE (`tree_sitter_tags::Tag::range`), not just the name span the

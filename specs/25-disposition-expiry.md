@@ -13,12 +13,12 @@ load-bearing.
 
 The projection already invalidates on decision supersession: the `TYPE_DECISION_MADE` fold arm,
 when `supersedes` is set, runs `UPDATE edges SET valid_to = ?1 WHERE from_id = ?2 AND rel =
-'GOVERNS' AND valid_to IS NULL` (`src/contextgraph/sqlite.rs`, the supersession arm). Mirror that
+'GOVERNS' AND valid_to IS NULL` (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, the supersession arm). Mirror that
 mechanism for findings.
 
 A finding becomes a `KIND_FINDING` node with a `REL_RAISED` edge (from the raiser) and one
 `REL_ABOUT` edge per touched file, created in the `TYPE_REVIEW_FINDING` fold arm
-(`src/contextgraph/sqlite.rs`). There is NO dedicated disposition event; a finding's disposition
+(`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`). There is NO dedicated disposition event; a finding's disposition
 is the join of its attribution (`by`) with the adjudicator's result, exactly as `src/metrics.rs`
 (`ReviewQuality`, `survival()`, `upheld_unattributed`) computes it:
 

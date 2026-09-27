@@ -24,7 +24,7 @@ rebuildable projection. Mirror its shape:
 Scope by run boundary: only findings/decisions OLDER than the current run (events before the
 latest `RunStarted` boundary) are consolidated; current-run items stay raw. This reuses the same
 `RunStarted`-boundary attribution the `reset --runs` prune (`Projector::prune`,
-`src/contextgraph/sqlite.rs`) and the LIVE/HISTORICAL peer labels (spec 21) already use. It is the
+`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) and the LIVE/HISTORICAL peer labels (spec 21) already use. It is the
 AUTOMATIC form of what `reset --runs` does by hand.
 
 The distiller is a projection over the append-only log (section 2.1): it introduces NO new event type

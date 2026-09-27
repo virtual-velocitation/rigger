@@ -5,11 +5,11 @@ slice it needs; the hive never loses understanding, it moves understanding to hi
 the evidence says so and to a higher altitude when a run is over. Today it forgets by age. The
 log holds 11,791 `DecisionMade` events; the live graph holds 403 decision nodes, because
 `rigger reset --runs` (`src/main.rs:9154`, `superseded_graph_nodes` at `main.rs:9231`,
-`Projector::prune` at `src/contextgraph/sqlite.rs:173`) drops every dead run's decisions and
+`Projector::prune` at `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:173`) drops every dead run's decisions and
 findings from the graph on the run boundary alone, keeping only `LessonLearned`. A decision whose code is
 still in the tree is forgotten with its run; a decision whose code is long gone stays live
 until its run dies. Spec 25 already moves RESOLVED findings into history by disposition
-(`invalidate_finding_edges`, `src/contextgraph/sqlite.rs:1775`, from the adjudication arm at
+(`invalidate_finding_edges`, `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1775`, from the adjudication arm at
 `:1497` and the integration arm at `:1138`), the right shape, for one kind only; a file's own
 structural edges are already retired when a fresh generation lands (`supersede_file_edges`,
 `sqlite.rs:1814`) and a superseding decision retires `GOVERNS` (`sqlite.rs:1055`). Nothing consolidates: no code folds decisions or findings into a

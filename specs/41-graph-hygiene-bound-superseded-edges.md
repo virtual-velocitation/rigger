@@ -15,7 +15,7 @@ event log is untouched (a rebuild re-derives any needed history); only the proje
 ## Design
 
 The projection accumulates superseded edges from three folds, none of which reclaims the rows it
-invalidates: the `fresh`-batch structural supersession (`src/contextgraph/sqlite.rs`, spec 29a - the
+invalidates: the `fresh`-batch structural supersession (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, spec 29a - the
 dominant source, re-firing for every changed file every run), decision supersession (`GOVERNS`
 invalidation on `REL_SUPERSEDES`), and disposition-expiry (finding-edge invalidation, spec 25). Today
 `reset --runs` (`Projector::prune`) reclaims dead-run DECISIONS and FINDINGS but not the superseded

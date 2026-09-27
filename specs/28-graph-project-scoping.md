@@ -11,13 +11,13 @@ the graph off per-project-local storage onto a shared backend.
 Today project isolation on the graph is purely physical: the `Namespaced` decorator
 (`crates/rigger-store-sqlite/src/eventstore/namespace.rs`) prefixes event STREAMS with `proj-<id>-`, but the graph nodes and
 edges carry NO project field - the schema is `nodes(id, kind, attrs)` and `edges(from_id, to_id,
-rel, valid_from, valid_to, source)` (`src/contextgraph/sqlite.rs`). Two projects stay separate only
+rel, valid_from, valid_to, source)` (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`). Two projects stay separate only
 because each has its own `graph.db`. A shared backend would mix them. This spec adds the missing
 in-graph state.
 
 - **Tag on write.** Every node and edge carries a `project` scope derived from the SAME identity
   `Namespaced::new` uses to build the `proj-<id>-` prefix (a plain project string). The fold path
-  (`Projection::apply` -> `fold`, `src/contextgraph/sqlite.rs`) stamps it on insert.
+  (`Projection::apply` -> `fold`, `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) stamps it on insert.
 - **Filter on read.** `subgraph(seed, depth)` and every read the conductor uses (`graph_context`,
   `src/conductor.rs`) filter to the current project, so a seed id that exists in two projects
   returns only the current project's neighborhood. This mirrors, for the graph, what

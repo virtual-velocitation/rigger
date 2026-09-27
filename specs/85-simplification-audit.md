@@ -2,7 +2,7 @@
 
 **Goal:** rigger has grown by accretion. `src/` is 128,533 lines in 56 files, three of which are
 programs rather than modules - `src/conductor.rs` 34,677 lines, `src/main.rs` 24,024,
-`src/dash.rs` 11,120 (plus `src/contextgraph/sqlite.rs` 7,320) - holding most of the 3,367
+`src/dash.rs` 11,120 (plus `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` 7,320) - holding most of the 3,367
 functions. `tests/` is 97,633 lines in 153 files, roughly one periphery file per spec criterion,
 with `tests/cli.rs` alone at 26,930 lines and 2,804 `#[test]`s overall. There are 76 separate
 `Command::new` sites. The loop adds and reviews per unit and never consolidates, so duplication

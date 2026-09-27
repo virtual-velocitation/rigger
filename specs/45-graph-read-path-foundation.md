@@ -50,7 +50,7 @@ creates the store; on an existing one it refreshes incrementally.
 ### Additive indexes
 
 Add two indexes through the existing additive-migration pattern (the `column_exists`-style guarded
-`CREATE INDEX IF NOT EXISTS` in `src/contextgraph/sqlite.rs`), so whole-graph reads and the directed
+`CREATE INDEX IF NOT EXISTS` in `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`), so whole-graph reads and the directed
 call traversal (spec 46) stay sub-linear as a repository grows:
 
 - a PARTIAL index on the live-edge relation - `edges(rel, from_id) WHERE valid_to IS NULL` - for the

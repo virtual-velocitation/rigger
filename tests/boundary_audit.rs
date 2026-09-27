@@ -367,15 +367,20 @@ const DOMAIN_VIOLATIONS: &[(&str, &str, &str, &str)] = &[(
 )];
 
 /// Every [`DOMAIN_VIOLATIONS`]-shaped entry under `root` whose item is no longer declared in its
-/// file, or whose file is outside the domain crate.
-fn stale_domain_violations(root: &Path, entries: &[(&str, &str, &str, &str)]) -> Vec<String> {
+/// file, or whose file is outside the `homes` crate sources the list covers.
+fn stale_violations(
+    root: &Path,
+    homes: &[&str],
+    entries: &[(&str, &str, &str, &str)],
+) -> Vec<String> {
     entries
         .iter()
         .filter_map(|&(file, item, reach, lesson)| {
             let text = fs::read_to_string(root.join(file)).unwrap_or_default();
-            if !file.starts_with(DOMAIN_SRC) {
+            if !homes.iter().any(|home| file.starts_with(home)) {
                 Some(format!(
-                    "({file:?}, {item:?}, {reach:?}, {lesson:?}): {file} is not in {DOMAIN_SRC}"
+                    "({file:?}, {item:?}, {reach:?}, {lesson:?}): {file} is not in {}",
+                    homes.join(", ")
                 ))
             } else if !declares(&text, item) {
                 Some(format!(
@@ -393,12 +398,13 @@ fn stale_domain_violations(root: &Path, entries: &[(&str, &str, &str, &str)]) ->
 fn every_split_allowlist_entry_is_still_live() {
     let root = repo_root();
     let mut stale = stale_deferred_items(&root, &[DOMAIN_SRC], DEFERRED_DOMAIN_ITEMS);
-    stale.extend(stale_domain_violations(&root, DOMAIN_VIOLATIONS));
+    stale.extend(stale_violations(&root, &[DOMAIN_SRC], DOMAIN_VIOLATIONS));
     stale.extend(stale_deferred_items(
         &root,
         ADAPTER_SRCS,
         DEFERRED_ADAPTER_ITEMS,
     ));
+    stale.extend(stale_violations(&root, ADAPTER_SRCS, ADAPTER_VIOLATIONS));
     assert!(stale.is_empty(), "{}", stale.join("\n"));
 }
 
@@ -440,18 +446,21 @@ fn a_domain_allowlist_entry_that_moved_or_vanished_is_reported() {
         ),
         ("src/ledger.rs", "fold", "the clock", "l6"),
     ];
-    let stale = stale_domain_violations(root, &violations);
+    let stale = stale_violations(root, &[DOMAIN_SRC], &violations);
     assert_eq!(stale.len(), 2, "{stale:#?}");
     assert!(stale[0].contains("`gone` is no longer declared"));
     assert!(stale[1].contains("is not in crates/rigger-domain/src"));
 }
 
 // ---------------------------------------------------------------------------------------------
-// Rule 1d: adapter items still outside their adapter crate
+// Rule 1d: adapter items still outside their adapter crate, or reaching outward inside it
 // ---------------------------------------------------------------------------------------------
 
 /// The adapter crates' sources.
-const ADAPTER_SRCS: &[&str] = &["crates/rigger-store-sqlite/src"];
+const ADAPTER_SRCS: &[&str] = &[
+    "crates/rigger-store-sqlite/src",
+    "crates/rigger-graph-sqlite/src",
+];
 
 /// Items the workspace plan assigns to an adapter crate that still live in the root crate,
 /// `(file, item, lesson)`: each one's code names a type from a crate that does not exist yet (the
@@ -506,6 +515,32 @@ const DEFERRED_ADAPTER_ITEMS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Items placed in an adapter crate by their responsibility that still reach outward for
+/// something an adapter must not know (the conductor, a driver, the dash, the CLI),
+/// `(file, item, what it reaches for, lesson)`. The lesson records the move that removes the
+/// reach; the entry goes when the item stops declaring it at that location.
+const ADAPTER_VIOLATIONS: &[(&str, &str, &str, &str)] = &[
+    (
+        "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "apply_review_finding",
+        "the conductor's META_SPAWN meta key, through a dev-dependency on the root crate",
+        "lesson-split-graph-sqlite-test-meta-spawn",
+    ),
+    (
+        "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "a_blast_radius_computed_event_folds_to_nothing_idempotently",
+        "metrics' TYPE_BLAST_RADIUS_COMPUTED, named through the conductor, through a \
+         dev-dependency on the root crate",
+        "lesson-split-graph-sqlite-test-blast-radius-type",
+    ),
+    (
+        "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "consumers_read_the_log_not_the_dropped_machinery_nodes",
+        "metrics::project, through a dev-dependency on the root crate",
+        "lesson-split-graph-sqlite-test-metrics-project",
+    ),
+];
+
 // ---------------------------------------------------------------------------------------------
 // Rule 2: adapters are wired only in the composition root
 // ---------------------------------------------------------------------------------------------
@@ -525,11 +560,7 @@ const ADAPTERS: &[Adapter] = &[
     Adapter {
         family: "sqlite opener",
         constructor: r"\bopen_connection\(",
-        home: &[
-            "src/contextgraph/sqlite.rs",
-            "crates/rigger-store-sqlite/",
-            "crates/rigger-graph-sqlite/",
-        ],
+        home: &["crates/rigger-store-sqlite/", "crates/rigger-graph-sqlite/"],
     },
     Adapter {
         family: "event store",
@@ -539,7 +570,7 @@ const ADAPTERS: &[Adapter] = &[
     Adapter {
         family: "graph projection",
         constructor: r"\bProjector::open\(",
-        home: &["src/contextgraph/sqlite.rs", "crates/rigger-graph-sqlite/"],
+        home: &["crates/rigger-graph-sqlite/"],
     },
     Adapter {
         family: "agent driver",
