@@ -69,7 +69,7 @@ mod gitsemver;
 #[path = "../tests/common/fixtures/mod.rs"]
 mod test_support;
 
-const RIGGER_DIR: &str = ".rigger";
+use rigger::config::RIGGER_DIR;
 
 /// The breadcrumb file, under [`RIGGER_DIR`], where a run driver records the URL of the
 /// dashboard it auto-started (spec 19b, unit 1), so `rigger status` - a separate process -
@@ -7169,7 +7169,7 @@ fn dash_reap_idle_window() -> std::time::Duration {
 /// this check exists to draw). Never creates a directory, so scanning a registered project's
 /// markers never conjures a `.rigger/tmp` under a project that has none.
 fn foreign_instance_scratch_root(root: &str) -> String {
-    let rigger_dir = Path::new(root).join(".rigger");
+    let rigger_dir = Path::new(root).join(RIGGER_DIR);
     let workdir = config_store::read_scratch_workdir(&rigger_dir).unwrap_or_default();
     rigger::worktree::scratch_root_path(root, &workdir, None)
 }

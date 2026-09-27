@@ -3,6 +3,7 @@
 //! the shared decision channel. Integrate commits the agent's changes and merges
 //! the branch into the base; the work lands.
 
+use crate::config::RIGGER_DIR;
 use crate::eventstore::Event;
 use crate::spawn::SpawnEvent;
 
@@ -1692,7 +1693,12 @@ pub fn scratch_root_path_with(
         _ if !configured.trim().is_empty() => configured.trim().to_string(),
         _ => cache_scratch_root_from(repo, xdg, home)
             .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo })),
+            .unwrap_or_else(|| {
+                format!(
+                    "{}/{RIGGER_DIR}/tmp",
+                    if repo.is_empty() { "." } else { repo }
+                )
+            }),
     };
     match (chosen.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),

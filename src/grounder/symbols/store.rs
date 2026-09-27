@@ -13,6 +13,7 @@
 //! `tests/cli.rs` two-process test pins it across separate `rigger` processes (the check the
 //! in-process test structurally cannot make, since one process shares its own hash seed).
 
+use crate::config::RIGGER_DIR;
 use crate::grounder::symbols::model::SymbolIndex;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 /// one location.
 pub fn index_path(dir: &str) -> PathBuf {
     Path::new(dir)
-        .join(".rigger")
+        .join(RIGGER_DIR)
         .join("symbols")
         .join("index.json")
 }

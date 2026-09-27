@@ -12,7 +12,7 @@
 
 #[cfg(test)]
 use crate::config;
-use crate::config::{ReviewPanel, Stage, Workflow};
+use crate::config::{ReviewPanel, Stage, Workflow, RIGGER_DIR};
 use crate::config_store;
 use crate::contextgraph::{
     DocConceptExtracted, DocLinkExtracted, KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS,
@@ -23,9 +23,11 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 /// The one relative path every entity/edge this pass extracts is attributed to (the `doc` attr on
-/// every folded node): `.rigger/workflow.yml` is ALWAYS the source, so this is a constant, never a
+/// every folded node): `.rigger/workflow.yml` is ALWAYS the source, so it is derived here, never a
 /// parameter threaded through every call.
-const WORKFLOW_DOC: &str = ".rigger/workflow.yml";
+fn workflow_doc() -> String {
+    format!("{RIGGER_DIR}/workflow.yml")
+}
 
 fn stage_id(name: &str) -> String {
     format!("stage:{name}")
@@ -200,7 +202,7 @@ pub fn extract_events(workflow: &Workflow) -> Vec<Event> {
                 kind: kind.to_string(),
                 id,
                 title,
-                doc: WORKFLOW_DOC.to_string(),
+                doc: workflow_doc(),
             };
             Event::new(
                 TYPE_DOC_CONCEPT_EXTRACTED,
@@ -230,7 +232,7 @@ pub fn extract_events(workflow: &Workflow) -> Vec<Event> {
 /// frontmatter concern. Absent or unparseable yields NO events (never a crash), mirroring how a
 /// design doc with no design intent yields nothing to the design extraction pass.
 pub fn project_events(root: &str) -> Vec<Event> {
-    let path = Path::new(root).join(".rigger").join("workflow.yml");
+    let path = Path::new(root).join(workflow_doc());
     match config_store::load_workflow(&path) {
         Ok(wf) => extract_events(&wf),
         Err(_) => Vec::new(),
@@ -247,7 +249,7 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
     if events.is_empty() {
         Vec::new()
     } else {
-        vec![(WORKFLOW_DOC.to_string(), events)]
+        vec![(workflow_doc(), events)]
     }
 }
 

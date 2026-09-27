@@ -14,6 +14,11 @@ use serde::Deserialize;
 
 use crate::failure;
 
+/// The per-project state directory at a project's root (like `.git/`): the declarative
+/// surface (`workflow.yml`, `agents/`, `instructions/`) and every store rigger keeps. The ONE
+/// spelling of that directory name; every path under it is built from this.
+pub const RIGGER_DIR: &str = ".rigger";
+
 #[derive(Debug, thiserror::Error)]
 #[error("config: {0}")]
 pub struct Error(pub String);

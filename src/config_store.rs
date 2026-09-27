@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use crate::config::{
     err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
-    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow,
+    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow, RIGGER_DIR,
 };
 use crate::instructions::Instruction;
 // The rest of `config`'s pure surface this file's own PRODUCTION code never touches, but its
@@ -38,7 +38,7 @@ use std::time::Duration;
 /// from <dir>/.rigger/workflow.yml, then validates referential and structural
 /// integrity.
 pub fn load(dir: &str) -> Result<Config, Error> {
-    let base = Path::new(dir).join(".rigger");
+    let base = Path::new(dir).join(RIGGER_DIR);
     let mut agents = load_agents(&base.join("agents"))?;
     let workflow = load_workflow(&base.join("workflow.yml"))?;
     resolve_wall_clocks(&mut agents, &workflow.defaults);
@@ -57,7 +57,7 @@ pub fn load(dir: &str) -> Result<Config, Error> {
 /// is not part of it. An absent directory is an empty layer; any other read failure is an
 /// error naming the path, never a silently thinner layer.
 pub fn load_instructions(dir: &Path) -> Result<Vec<Instruction>, Error> {
-    let ins_dir = dir.join(".rigger").join("instructions");
+    let ins_dir = dir.join(RIGGER_DIR).join("instructions");
     let entries = match std::fs::read_dir(&ins_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
