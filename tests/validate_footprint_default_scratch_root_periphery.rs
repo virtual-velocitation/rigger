@@ -23,14 +23,7 @@ use std::process::Command;
 
 mod common;
 
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use common::cli::temp_project;
 
 /// Seed an initialized, otherwise-empty `.rigger/events.db`, mirroring
 /// `tests/reset_build_cache_periphery.rs::seed_store` - `rigger validate` needs a resolvable

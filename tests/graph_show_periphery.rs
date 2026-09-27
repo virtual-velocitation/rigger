@@ -52,18 +52,8 @@ mod common;
 use common::cli::body_line_count;
 use common::cli::open_graph;
 use common::cli::seed_rigger_dir;
+use common::cli::temp_project;
 use common::rigger_bin;
-
-/// A throwaway project dir that is its own git repo, so `project_identity()` (which scopes the
-/// namespaced streams and the graph project) is stable across the seed and the binary's reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
 
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Opts out of the
 /// auto-started dashboard and points the instance registry at a throwaway state dir, exactly as

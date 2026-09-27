@@ -573,37 +573,6 @@ fn two_real_files_under_at_sign_paths_keep_two_batch_identities_end_to_end() {
     );
 }
 
-/// The project identity the binary resolves for `root`, mirrored here so a seed lands in the exact
-/// namespaced run stream the compiled binary reads back: the tracked `.rigger/project.id` at the
-/// git top-level when present, else the git top-level basename, else `root`'s own basename.
-#[cfg(feature = "symbols")]
-fn run_stream_identity(root: &std::path::Path) -> String {
-    let toplevel = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel
-        .as_deref()
-        .map(std::path::Path::new)
-        .unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
 /// Append events directly to the namespaced run stream under `root` - the store the compiled binary
 /// opens - standing in for facts a prior run recorded.
 #[cfg(feature = "symbols")]
@@ -625,26 +594,6 @@ fn seed_run_stream(root: &std::path::Path, events: &[Event]) {
         .unwrap();
 }
 
-/// The whole namespaced run stream under `root`, read back the way the binary reads it.
-#[cfg(feature = "symbols")]
-fn read_run_stream(root: &std::path::Path) -> Vec<Event> {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let backend = Store::open(
-        root.join(".rigger")
-            .join("events.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap()
-}
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
@@ -652,6 +601,10 @@ mod common;
 
 #[cfg(feature = "symbols")]
 use common::cli::ingested_count;
+#[cfg(feature = "symbols")]
+use common::cli::read_run_events;
+#[cfg(feature = "symbols")]
+use common::cli::run_stream_identity;
 
 /// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr, success).
 #[cfg(feature = "symbols")]
@@ -695,7 +648,7 @@ fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
         "sanity: the first build over a fresh tree must ingest the derived index; got:\n{out}"
     );
 
-    let log = read_run_stream(root);
+    let log = read_run_events(root);
     let suppressed: BTreeSet<String> = project_scoped_replay_keys(&log).into_iter().collect();
     assert_eq!(
         suppressed,
@@ -717,7 +670,7 @@ fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
         "a re-build over a byte-identical tree must append NOTHING; got:\n{out2}"
     );
     assert_eq!(
-        read_run_stream(root)
+        read_run_events(root)
             .iter()
             .filter(|e| is_derived_index_type(&e.type_))
             .count(),
@@ -783,7 +736,7 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
         "the new file must be ingested despite domain events pre-claiming its content keys; got:\n{out2}"
     );
 
-    let recorded: BTreeSet<String> = read_run_stream(root)
+    let recorded: BTreeSet<String> = read_run_events(root)
         .iter()
         .filter(|e| is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(rigger::conductor::META_REPLAY_KEY).cloned())
@@ -814,7 +767,7 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
 /// and "the log holds the latest generation in full" are claims about.
 #[cfg(feature = "symbols")]
 fn recorded_derived_keys(root: &std::path::Path) -> BTreeSet<String> {
-    read_run_stream(root)
+    read_run_events(root)
         .iter()
         .filter(|e| is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(rigger::conductor::META_REPLAY_KEY).cloned())
@@ -826,7 +779,7 @@ fn recorded_derived_keys(root: &std::path::Path) -> BTreeSet<String> {
 /// "only what changed is re-emitted" has to be measured against this and not against the set.
 #[cfg(feature = "symbols")]
 fn recorded_derived_events(root: &std::path::Path) -> usize {
-    read_run_stream(root)
+    read_run_events(root)
         .iter()
         .filter(|e| is_derived_index_type(&e.type_))
         .count()
@@ -946,7 +899,7 @@ fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_chan
     // live. The predicate over the log is the shipped read of "what is already recorded", so this
     // equality is the net contract itself: the edited file's superseded generation is retired, the
     // skipped files' generations are still there whole, and nothing else is live.
-    let live: BTreeSet<String> = project_scoped_replay_keys(&read_run_stream(root))
+    let live: BTreeSet<String> = project_scoped_replay_keys(&read_run_events(root))
         .into_iter()
         .collect();
     assert_eq!(

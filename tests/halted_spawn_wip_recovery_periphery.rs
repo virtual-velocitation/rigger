@@ -85,6 +85,8 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::run_stream_identity;
+use common::cli::seed_run_events;
 use common::git::git_ok;
 use common::git::git_out;
 use std::path::Path;
@@ -467,7 +469,7 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is
         root,
         &[(
             rigger::spawn::TYPE_SPAWN_REQUESTED,
-            serde_json::to_value(&sibling).unwrap(),
+            &serde_json::to_value(&sibling).unwrap().to_string(),
         )],
     );
     // The sibling's own liveness marker, touched right now - well inside its 3600s bound -
@@ -599,59 +601,6 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_r
     );
 }
 
-/// The `project_identity` a fresh, real `rigger` process resolves for `root` - mirrors
-/// `tests/cli.rs`'s identically-named helper (the tracked `.rigger/project.id` at the git
-/// top-level when present, else the git top-level basename, else `root`'s own basename), so a
-/// seed appended under this identity lands in the exact stream a later `rigger step` reads.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Seed run-lifecycle events directly into the namespaced run stream, standing in for the
-/// conductor minting them - mirrors `tests/cli.rs`'s identically-named helper. `rigger emit`
-/// (the guarded courier CLI) refuses these conductor-owned boundary types (spec 22), so a
-/// test that must seed a PRIOR window's recorded lifecycle appends through the store
-/// directly, at the SAME identity a later real `rigger step` process resolves for `root`.
-fn seed_run_events(root: &Path, events: &[(&str, serde_json::Value)]) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for (ty, data) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(*ty, serde_json::to_vec(data).unwrap())],
-            )
-            .unwrap();
-    }
-}
-
 /// The run id `rigger::run::current_run_id` resolves for the events a real `rigger step`
 /// process against `root` has already written - read back from the SAME on-disk store, at the
 /// SAME project identity, [`seed_run_events`] appends to. Lets a test plant a liveness marker
@@ -779,19 +728,20 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
         &[
             (
                 "RunStarted",
-                serde_json::json!({"run": "r1", "criteria": []}),
+                &serde_json::json!({"run": "r1", "criteria": []}).to_string(),
             ),
             (
                 "UnitStarted",
-                serde_json::json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                &serde_json::json!({"id": "s", "agent": "worker", "branch": unit_branch("s")})
+                    .to_string(),
             ),
             (
                 "UnitStatus",
-                serde_json::json!({"id": "s", "status": "verified"}),
+                &serde_json::json!({"id": "s", "status": "verified"}).to_string(),
             ),
             (
                 "UnitStatus",
-                serde_json::json!({"id": "s", "status": "reviewed"}),
+                &serde_json::json!({"id": "s", "status": "reviewed"}).to_string(),
             ),
         ],
     );

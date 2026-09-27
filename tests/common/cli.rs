@@ -45,6 +45,26 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     )
 }
 
+/// A throwaway project dir that is its own git repo, so `project_identity()` (which scopes the
+/// namespaced streams) resolves to the directory's basename exactly as it does for a real
+/// project and a seed appended under that identity lands in the stream the binary reads back.
+/// No `.rigger/` dir yet.
+pub fn temp_project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("create temp project");
+    let _ = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status();
+    dir
+}
+
+/// A [`temp_project`] that already carries an empty `.rigger/` dir.
+pub fn temp_rigger_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    seed_rigger_dir(dir.path());
+    dir
+}
+
 /// `rigger emit <typ> <json>` in `root`, asserting it succeeds.
 pub fn emit(root: &Path, typ: &str, json: &str) {
     let (_o, err, ok) = run_rigger(root, &["emit", typ, json]);

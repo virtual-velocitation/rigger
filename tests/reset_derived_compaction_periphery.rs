@@ -83,6 +83,7 @@ mod common;
 
 use common::cli::keyed;
 use common::cli::run_rigger;
+use common::cli::temp_rigger_project;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
@@ -572,17 +573,6 @@ fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wro
 // 3. The cross-module seam: the command prunes what `ingest` declares, and nothing else decides
 // ---------------------------------------------------------------------------------------
 
-/// A throwaway project whose identity resolves the same way it does for a real one.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
 fn event_log(root: &Path) -> PathBuf {
     root.join(".rigger").join("events.db")
 }
@@ -647,7 +637,7 @@ fn per_type_report(out: &str) -> Vec<(String, usize)> {
 
 #[test]
 fn the_command_prunes_and_accounts_for_exactly_the_derived_index_types_ingest_declares() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     const ROUNDS: u64 = 5;
     seed_project(root, ROUNDS);
@@ -801,7 +791,7 @@ fn a_compacted_stream_answers_expected_revision_from_its_highest_surviving_revis
 
 #[test]
 fn reset_accepts_each_mode_at_most_once_and_composes_the_two_in_either_order() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 3);
 
@@ -1053,7 +1043,7 @@ fn registry_entry(help: &str, mode: &str) -> String {
 /// it.
 #[test]
 fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_is_real() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let (out, err, ok) = run_rigger(dir.path(), &["--help"]);
     assert!(ok, "rigger --help must succeed; stderr: {err}\n{out}");
     let help = format!("{err}{out}");
@@ -1079,7 +1069,7 @@ fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_
     // EVERY ADVERTISED MODE IS REAL. Each runs in its own freshly seeded project so one mode's
     // prune cannot be what makes the next one look like it worked.
     for mode in &modes {
-        let project = temp_project();
+        let project = temp_rigger_project();
         seed_project(project.path(), 3);
         let (out, err, ok) = run_rigger(project.path(), &["reset", mode]);
         let said = format!("{err}{out}");
@@ -1097,7 +1087,7 @@ fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_
 
     // AND NOTHING ELSE IS. An unadvertised mode is refused, and the refusal enumerates exactly the
     // modes the registry advertises, so a mode added to one and not the other cannot go unnoticed.
-    let project = temp_project();
+    let project = temp_rigger_project();
     seed_project(project.path(), 3);
     let (out, err, ok) = run_rigger(project.path(), &["reset", "--everything"]);
     let said = format!("{err}{out}");
@@ -1316,7 +1306,7 @@ const DEAD_DECISION: &str = "d-dead-run";
 /// would take its identity from its own temp directory name, so two identically-seeded projects
 /// would write their events under two different stream names and could not be compared.
 fn pinned_project() -> tempfile::TempDir {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     std::fs::write(dir.path().join(".rigger").join("project.id"), PINNED_ID)
         .expect("pin the project identity");
     dir
@@ -1679,7 +1669,7 @@ fn seed_run_history_and_duplication(root: &Path, rounds: u64) {
 #[test]
 fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_compaction() {
     const ROUNDS: u64 = 6;
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_run_history_and_duplication(root, ROUNDS);
 
@@ -1940,7 +1930,7 @@ fn append_duplication(root: &Path, key: &str, rounds: u64, base_secs: u64) {
 #[test]
 fn the_status_view_reads_a_compacted_log_exactly_as_it_read_the_bloated_one() {
     const ROUNDS: u64 = 6;
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
 
     // A finished earlier run, then the duplication, then the current run - which is blocked
@@ -2184,7 +2174,7 @@ fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
 /// the real one agree and the bug is invisible.
 #[test]
 fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     const ROUNDS: u64 = 5;
     seed_run_with_a_parked_spawn(root, ROUNDS);
@@ -2349,7 +2339,7 @@ fn git_in(root: &Path, args: &[&str]) {
 /// any seed: a seed written under the identity the directory name implies would land in a stream
 /// the binary then never reads back.
 fn committed_config_project() -> tempfile::TempDir {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // The repo's own identity, so the commit below never depends on the machine's git config.
     git_in(root, &["config", "user.email", "periphery@example.invalid"]);
@@ -3442,7 +3432,7 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     // A CLEAN LOG: one recording per replay key, which is what a log written since the ingest
     // dedup existed holds. The fixture differs from every other one in this file by exactly the
     // round count, so "clean" here means precisely "no key recorded twice".
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 1);
     let before = raw_rows(&event_log(root));
@@ -3520,7 +3510,7 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
 
     // THE OTHER DIRECTION: on a log that DOES hold duplication the clause is absent, so it reads
     // as a statement about this log rather than as boilerplate the command always prints.
-    let bloated = temp_project();
+    let bloated = temp_rigger_project();
     seed_project(bloated.path(), 4);
     let (out, err, ok) = run_rigger(bloated.path(), &["reset", "--derived"]);
     assert!(
@@ -3571,7 +3561,7 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     // THE CONTENDED RUN. The reader is parked BEFORE the binary starts and released only after it
     // exits, so the checkpoint is refused for the whole of the command's life. An open read
     // transaction from a second connection is exactly what a second rigger process holds.
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, ROUNDS);
     // ROOM TO RECLAIM. The rewrite runs over a file that is holding reclaimable free pages, and
@@ -3598,7 +3588,7 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     drop(reader);
 
     // THE CONTROL. A second project seeded identically, with nobody reading it.
-    let solo_dir = temp_project();
+    let solo_dir = temp_rigger_project();
     seed_project(solo_dir.path(), ROUNDS);
     plant_free_pages(&event_log(solo_dir.path()), 3_000);
     let (uncontended, err, ok) = run_rigger(solo_dir.path(), &["reset", "--derived"]);
@@ -3824,7 +3814,7 @@ fn a_prune_that_shed_nothing_still_reclaims_the_free_space_the_file_is_holding()
 
 #[test]
 fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // ONE recording per replay key - the clean log of section 18, differing from the duplicated
     // fixtures by exactly the round count.
@@ -3895,7 +3885,7 @@ fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
 
 #[test]
 fn the_command_reclaims_the_free_space_a_failed_reclamation_left_in_the_file() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // THE STATE A FAILED RECLAMATION LEAVES: the duplication is already gone (so this pass deletes
     // nothing) and the space it freed is still sitting in the file.
@@ -3975,7 +3965,7 @@ const WHY_A_DEDUPLICATED_LOG_STILL_SHEDS: [(&str, &str); 3] = [
 
 #[test]
 fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 4);
 
@@ -3996,7 +3986,7 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
 
     // THE OTHER DIRECTION, so the clause is a statement about THIS log rather than boilerplate:
     // the clean log does not carry it.
-    let clean = temp_project();
+    let clean = temp_rigger_project();
     seed_project(clean.path(), 1);
     let (clean_out, err, ok) = run_rigger(clean.path(), &["reset", "--derived"]);
     assert!(
@@ -4074,7 +4064,7 @@ fn file_len(path: &Path) -> u64 {
 
 #[test]
 fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 4);
     let db = event_log(root);

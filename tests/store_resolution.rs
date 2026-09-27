@@ -14,7 +14,6 @@
 //! by their own criteria; here we only prove that every command constructs its backend
 //! through the one resolver, and that the resolver genuinely reaches a server.
 
-use std::path::Path;
 use std::process::Command;
 
 // ---------------------------------------------------------------------------------------
@@ -143,32 +142,7 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
-/// The project identity the binary resolves for `root` (the git top-level basename, or the
-/// tracked `.rigger/project.id`), mirrored here so a read-back of the server binds the exact
-/// `proj-<id>-run` stream a courier's write landed in.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
+use common::cli::run_stream_identity;
 
 /// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
 /// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as
