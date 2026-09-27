@@ -8757,7 +8757,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "9f9218af6940c8af"
+    "content_hash": "6a75307947dc286e"
   },
   {
     "file": "src/main.rs",
