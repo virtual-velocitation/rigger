@@ -1,6 +1,6 @@
 [
   {
-    "id": "dup-0001",
+    "id": "dup-7dfa0dd1a6a8",
     "sites": [
       {
         "file": "src/blast_radius_eval.rs",
@@ -15,7 +15,7 @@
     ]
   },
   {
-    "id": "dup-0002",
+    "id": "dup-6726d9f61f47",
     "sites": [
       {
         "file": "src/blocker.rs",
@@ -80,7 +80,7 @@
     ]
   },
   {
-    "id": "dup-0003",
+    "id": "dup-097bb5af6d73",
     "sites": [
       {
         "file": "src/blocker.rs",
@@ -105,7 +105,7 @@
     ]
   },
   {
-    "id": "dup-0004",
+    "id": "dup-32656e0a4e12",
     "sites": [
       {
         "file": "src/blocker.rs",
@@ -125,7 +125,7 @@
     ]
   },
   {
-    "id": "dup-0005",
+    "id": "dup-98656c51258d",
     "sites": [
       {
         "file": "src/budget.rs",
@@ -140,7 +140,7 @@
     ]
   },
   {
-    "id": "dup-0006",
+    "id": "dup-4062dc785c22",
     "sites": [
       {
         "file": "src/budget.rs",
@@ -2345,7 +2345,7 @@
     ]
   },
   {
-    "id": "dup-0007",
+    "id": "dup-15530d0e8b19",
     "sites": [
       {
         "file": "src/canary.rs",
@@ -2360,7 +2360,7 @@
     ]
   },
   {
-    "id": "dup-0008",
+    "id": "dup-d05484625d05",
     "sites": [
       {
         "file": "src/canary_store.rs",
@@ -2475,7 +2475,7 @@
     ]
   },
   {
-    "id": "dup-0009",
+    "id": "dup-89ad38712cb8",
     "sites": [
       {
         "file": "src/canary_store.rs",
@@ -2490,7 +2490,7 @@
     ]
   },
   {
-    "id": "dup-0010",
+    "id": "dup-37f6bddf866b",
     "sites": [
       {
         "file": "src/canary_store.rs",
@@ -2505,7 +2505,7 @@
     ]
   },
   {
-    "id": "dup-0011",
+    "id": "dup-545f4f2922c2",
     "sites": [
       {
         "file": "src/canary_store.rs",
@@ -2520,7 +2520,7 @@
     ]
   },
   {
-    "id": "dup-0012",
+    "id": "dup-ce5e360ed6f9",
     "sites": [
       {
         "file": "src/canary_store.rs",
@@ -2535,7 +2535,7 @@
     ]
   },
   {
-    "id": "dup-0013",
+    "id": "dup-907622568d07",
     "sites": [
       {
         "file": "src/canary_store.rs",
@@ -2575,7 +2575,7 @@
     ]
   },
   {
-    "id": "dup-0014",
+    "id": "dup-f7d3481192bd",
     "sites": [
       {
         "file": "src/canary_store.rs",
@@ -2605,7 +2605,7 @@
     ]
   },
   {
-    "id": "dup-0015",
+    "id": "dup-9d7ea1906fb1",
     "sites": [
       {
         "file": "src/canary_store.rs",
@@ -2620,7 +2620,7 @@
     ]
   },
   {
-    "id": "dup-0016",
+    "id": "dup-0b5573eeaebe",
     "sites": [
       {
         "file": "src/community.rs",
@@ -2655,7 +2655,7 @@
     ]
   },
   {
-    "id": "dup-0017",
+    "id": "dup-66994196ec07",
     "sites": [
       {
         "file": "src/community.rs",
@@ -2675,7 +2675,7 @@
     ]
   },
   {
-    "id": "dup-0018",
+    "id": "dup-c963bbaabe6f",
     "sites": [
       {
         "file": "src/community.rs",
@@ -2695,7 +2695,7 @@
     ]
   },
   {
-    "id": "dup-0019",
+    "id": "dup-40ae75e373d7",
     "sites": [
       {
         "file": "src/community.rs",
@@ -2720,7 +2720,7 @@
     ]
   },
   {
-    "id": "dup-0020",
+    "id": "dup-dce1c6b695ea",
     "sites": [
       {
         "file": "src/community.rs",
@@ -2745,7 +2745,7 @@
     ]
   },
   {
-    "id": "dup-0021",
+    "id": "dup-a17e83ea2e51",
     "sites": [
       {
         "file": "src/concepts.rs",
@@ -2770,7 +2770,7 @@
     ]
   },
   {
-    "id": "dup-0022",
+    "id": "dup-a9e2c470df31",
     "sites": [
       {
         "file": "src/concepts.rs",
@@ -2830,7 +2830,7 @@
     ]
   },
   {
-    "id": "dup-0023",
+    "id": "dup-dbc13315560a",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -2870,7 +2870,7 @@
     ]
   },
   {
-    "id": "dup-0024",
+    "id": "dup-e6404599f437",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -2900,7 +2900,7 @@
     ]
   },
   {
-    "id": "dup-0025",
+    "id": "dup-4f8625f176c2",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -2915,7 +2915,7 @@
     ]
   },
   {
-    "id": "dup-0026",
+    "id": "dup-2f724ff9616c",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3005,7 +3005,7 @@
     ]
   },
   {
-    "id": "dup-0027",
+    "id": "dup-32250d38007f",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3020,7 +3020,7 @@
     ]
   },
   {
-    "id": "dup-0028",
+    "id": "dup-0fcb9d9d58f0",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3035,7 +3035,7 @@
     ]
   },
   {
-    "id": "dup-0029",
+    "id": "dup-f5686c66da77",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3070,7 +3070,7 @@
     ]
   },
   {
-    "id": "dup-0030",
+    "id": "dup-acc2ed196b43",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3085,7 +3085,7 @@
     ]
   },
   {
-    "id": "dup-0031",
+    "id": "dup-83a6d4922163",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3150,7 +3150,7 @@
     ]
   },
   {
-    "id": "dup-0032",
+    "id": "dup-535941bb5619",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3165,7 +3165,7 @@
     ]
   },
   {
-    "id": "dup-0033",
+    "id": "dup-212931e1642a",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3180,7 +3180,7 @@
     ]
   },
   {
-    "id": "dup-0034",
+    "id": "dup-33a58a041083",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3195,7 +3195,7 @@
     ]
   },
   {
-    "id": "dup-0035",
+    "id": "dup-21f642b8fe3c",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3215,7 +3215,7 @@
     ]
   },
   {
-    "id": "dup-0036",
+    "id": "dup-a9c1fef7a277",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3230,7 +3230,7 @@
     ]
   },
   {
-    "id": "dup-0037",
+    "id": "dup-05a7db8875d2",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3245,7 +3245,7 @@
     ]
   },
   {
-    "id": "dup-0038",
+    "id": "dup-9b50f55fa65b",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3260,7 +3260,7 @@
     ]
   },
   {
-    "id": "dup-0039",
+    "id": "dup-00aa5624b0f1",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3275,7 +3275,7 @@
     ]
   },
   {
-    "id": "dup-0040",
+    "id": "dup-3f1ef3fa3676",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3300,7 +3300,7 @@
     ]
   },
   {
-    "id": "dup-0041",
+    "id": "dup-6b7ebc7d745b",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3315,7 +3315,7 @@
     ]
   },
   {
-    "id": "dup-0042",
+    "id": "dup-99369c42d138",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3330,7 +3330,7 @@
     ]
   },
   {
-    "id": "dup-0043",
+    "id": "dup-ed66e478154e",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3345,7 +3345,7 @@
     ]
   },
   {
-    "id": "dup-0044",
+    "id": "dup-0e5893f29c61",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3365,7 +3365,7 @@
     ]
   },
   {
-    "id": "dup-0045",
+    "id": "dup-de33c52cc0f7",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3385,7 +3385,7 @@
     ]
   },
   {
-    "id": "dup-0046",
+    "id": "dup-bbde86d7c01f",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3410,7 +3410,7 @@
     ]
   },
   {
-    "id": "dup-0047",
+    "id": "dup-42e20190c39c",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3480,7 +3480,7 @@
     ]
   },
   {
-    "id": "dup-0048",
+    "id": "dup-a3fe93ea3850",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3495,7 +3495,7 @@
     ]
   },
   {
-    "id": "dup-0049",
+    "id": "dup-b3adccc0b3fa",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3515,7 +3515,7 @@
     ]
   },
   {
-    "id": "dup-0050",
+    "id": "dup-f2f3e85e2d69",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3575,7 +3575,7 @@
     ]
   },
   {
-    "id": "dup-0051",
+    "id": "dup-d5fba0292aa2",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3595,7 +3595,7 @@
     ]
   },
   {
-    "id": "dup-0052",
+    "id": "dup-65bacee881b1",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3620,7 +3620,7 @@
     ]
   },
   {
-    "id": "dup-0053",
+    "id": "dup-d98727ab3f5b",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3680,7 +3680,7 @@
     ]
   },
   {
-    "id": "dup-0054",
+    "id": "dup-c6d8f0e34b48",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3695,7 +3695,7 @@
     ]
   },
   {
-    "id": "dup-0055",
+    "id": "dup-a339d2be67ad",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3715,7 +3715,7 @@
     ]
   },
   {
-    "id": "dup-0056",
+    "id": "dup-c1b367529b91",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3735,7 +3735,7 @@
     ]
   },
   {
-    "id": "dup-0057",
+    "id": "dup-30420471154e",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3750,7 +3750,7 @@
     ]
   },
   {
-    "id": "dup-0058",
+    "id": "dup-7367c5f0f4e7",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3775,7 +3775,7 @@
     ]
   },
   {
-    "id": "dup-0059",
+    "id": "dup-57f15af532d4",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7234,33 +7234,33 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4107,
-        "end_line": 4107
+        "start_line": 4134,
+        "end_line": 4134
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4417,
-        "end_line": 4417
+        "start_line": 4444,
+        "end_line": 4444
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4709,
-        "end_line": 4709
+        "start_line": 4736,
+        "end_line": 4736
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4713,
-        "end_line": 4713
+        "start_line": 4740,
+        "end_line": 4740
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7729,
-        "end_line": 7729
+        "start_line": 7756,
+        "end_line": 7756
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7732,
-        "end_line": 7732
+        "start_line": 7759,
+        "end_line": 7759
       },
       {
         "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
@@ -7715,7 +7715,7 @@
     ]
   },
   {
-    "id": "dup-0060",
+    "id": "dup-6bb42578d223",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7735,7 +7735,7 @@
     ]
   },
   {
-    "id": "dup-0061",
+    "id": "dup-b4365447b145",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7750,7 +7750,7 @@
     ]
   },
   {
-    "id": "dup-0062",
+    "id": "dup-759dfad03215",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7765,7 +7765,7 @@
     ]
   },
   {
-    "id": "dup-0063",
+    "id": "dup-f87ed9fec6d6",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7780,7 +7780,7 @@
     ]
   },
   {
-    "id": "dup-0064",
+    "id": "dup-321a8f47e7f4",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7805,7 +7805,7 @@
     ]
   },
   {
-    "id": "dup-0065",
+    "id": "dup-7b686b5d0083",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7830,7 +7830,7 @@
     ]
   },
   {
-    "id": "dup-0066",
+    "id": "dup-b4f4d55cdaa6",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7845,7 +7845,7 @@
     ]
   },
   {
-    "id": "dup-0067",
+    "id": "dup-49e5321ada1e",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7860,7 +7860,7 @@
     ]
   },
   {
-    "id": "dup-0068",
+    "id": "dup-8c331b2ae5bd",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7890,7 +7890,7 @@
     ]
   },
   {
-    "id": "dup-0069",
+    "id": "dup-8f8d84022f1f",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7905,7 +7905,7 @@
     ]
   },
   {
-    "id": "dup-0070",
+    "id": "dup-b4bcec70ea0b",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7920,7 +7920,7 @@
     ]
   },
   {
-    "id": "dup-0071",
+    "id": "dup-3d7e127e7901",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7935,7 +7935,7 @@
     ]
   },
   {
-    "id": "dup-0072",
+    "id": "dup-abd8e8e23b7d",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7960,7 +7960,7 @@
     ]
   },
   {
-    "id": "dup-0073",
+    "id": "dup-a8bdbc63a1ba",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -7975,7 +7975,7 @@
     ]
   },
   {
-    "id": "dup-0074",
+    "id": "dup-39b858fed5e5",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8005,7 +8005,7 @@
     ]
   },
   {
-    "id": "dup-0075",
+    "id": "dup-b233003304f0",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8020,7 +8020,7 @@
     ]
   },
   {
-    "id": "dup-0076",
+    "id": "dup-ccc12da3ce7c",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8035,7 +8035,7 @@
     ]
   },
   {
-    "id": "dup-0077",
+    "id": "dup-f758ca7c9ceb",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8050,7 +8050,7 @@
     ]
   },
   {
-    "id": "dup-0078",
+    "id": "dup-baa6e9166bf9",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8070,7 +8070,7 @@
     ]
   },
   {
-    "id": "dup-0079",
+    "id": "dup-4fe4c7f9d7a8",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8090,7 +8090,7 @@
     ]
   },
   {
-    "id": "dup-0080",
+    "id": "dup-32d8fad79719",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8105,7 +8105,7 @@
     ]
   },
   {
-    "id": "dup-0081",
+    "id": "dup-482ea4962db5",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8120,7 +8120,7 @@
     ]
   },
   {
-    "id": "dup-0082",
+    "id": "dup-975bea08853b",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8140,7 +8140,7 @@
     ]
   },
   {
-    "id": "dup-0083",
+    "id": "dup-1468d4b7e0dc",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8165,7 +8165,7 @@
     ]
   },
   {
-    "id": "dup-0084",
+    "id": "dup-cd30ba0dffbb",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8180,7 +8180,7 @@
     ]
   },
   {
-    "id": "dup-0085",
+    "id": "dup-df21ef0fa837",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8195,7 +8195,7 @@
     ]
   },
   {
-    "id": "dup-0086",
+    "id": "dup-717ff53c2a8a",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8215,7 +8215,7 @@
     ]
   },
   {
-    "id": "dup-0087",
+    "id": "dup-854d13abab44",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8230,7 +8230,7 @@
     ]
   },
   {
-    "id": "dup-0088",
+    "id": "dup-58c883e8418c",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8245,7 +8245,7 @@
     ]
   },
   {
-    "id": "dup-0089",
+    "id": "dup-67d634e9d610",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8265,7 +8265,7 @@
     ]
   },
   {
-    "id": "dup-0090",
+    "id": "dup-1d528737c6e9",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8285,7 +8285,7 @@
     ]
   },
   {
-    "id": "dup-0091",
+    "id": "dup-86a90e7e30a5",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8300,7 +8300,7 @@
     ]
   },
   {
-    "id": "dup-0092",
+    "id": "dup-beebc024f3ed",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8335,7 +8335,7 @@
     ]
   },
   {
-    "id": "dup-0093",
+    "id": "dup-e5b4286f116e",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8350,7 +8350,7 @@
     ]
   },
   {
-    "id": "dup-0094",
+    "id": "dup-a3de2424e191",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8365,7 +8365,7 @@
     ]
   },
   {
-    "id": "dup-0095",
+    "id": "dup-3e43b6e7670b",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8380,7 +8380,7 @@
     ]
   },
   {
-    "id": "dup-0096",
+    "id": "dup-6f75388894d5",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8395,7 +8395,7 @@
     ]
   },
   {
-    "id": "dup-0097",
+    "id": "dup-59328344af76",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8425,7 +8425,7 @@
     ]
   },
   {
-    "id": "dup-0098",
+    "id": "dup-b86205b99ea6",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8440,7 +8440,7 @@
     ]
   },
   {
-    "id": "dup-0099",
+    "id": "dup-d2ae28659c98",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8455,7 +8455,7 @@
     ]
   },
   {
-    "id": "dup-0100",
+    "id": "dup-ca68a744f43b",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8470,7 +8470,7 @@
     ]
   },
   {
-    "id": "dup-0101",
+    "id": "dup-eb7cf86024c7",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8485,7 +8485,7 @@
     ]
   },
   {
-    "id": "dup-0102",
+    "id": "dup-bdcc59e0aab8",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8505,7 +8505,7 @@
     ]
   },
   {
-    "id": "dup-0103",
+    "id": "dup-7c61e67bfa2f",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8520,7 +8520,7 @@
     ]
   },
   {
-    "id": "dup-0104",
+    "id": "dup-b864871887f6",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8610,7 +8610,7 @@
     ]
   },
   {
-    "id": "dup-0105",
+    "id": "dup-026b4324e7e5",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8630,7 +8630,7 @@
     ]
   },
   {
-    "id": "dup-0106",
+    "id": "dup-9a16f7a5d506",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -8645,7 +8645,7 @@
     ]
   },
   {
-    "id": "dup-0107",
+    "id": "dup-2148fe41cedc",
     "sites": [
       {
         "file": "src/config.rs",
@@ -8665,7 +8665,7 @@
     ]
   },
   {
-    "id": "dup-0108",
+    "id": "dup-e47e931c741d",
     "sites": [
       {
         "file": "src/config.rs",
@@ -8685,7 +8685,7 @@
     ]
   },
   {
-    "id": "dup-0109",
+    "id": "dup-6e5175353084",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8700,7 +8700,7 @@
     ]
   },
   {
-    "id": "dup-0110",
+    "id": "dup-5eaba0e2bfde",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8720,7 +8720,7 @@
     ]
   },
   {
-    "id": "dup-0111",
+    "id": "dup-898fea4e5b39",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8734,13 +8734,13 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7736,
-        "end_line": 7744
+        "start_line": 7763,
+        "end_line": 7771
       }
     ]
   },
   {
-    "id": "dup-0112",
+    "id": "dup-7da4ecc76203",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8755,7 +8755,7 @@
     ]
   },
   {
-    "id": "dup-0113",
+    "id": "dup-c10a9e4a46df",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8780,7 +8780,7 @@
     ]
   },
   {
-    "id": "dup-0114",
+    "id": "dup-a8f1cb8eda87",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8795,7 +8795,7 @@
     ]
   },
   {
-    "id": "dup-0115",
+    "id": "dup-2e7f97275499",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8830,7 +8830,7 @@
     ]
   },
   {
-    "id": "dup-0116",
+    "id": "dup-e3ad868386ae",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8845,7 +8845,7 @@
     ]
   },
   {
-    "id": "dup-0117",
+    "id": "dup-ae0479d6c9b3",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8865,7 +8865,7 @@
     ]
   },
   {
-    "id": "dup-0118",
+    "id": "dup-be97ce907814",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8885,7 +8885,7 @@
     ]
   },
   {
-    "id": "dup-0119",
+    "id": "dup-7bae97cd072c",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8900,7 +8900,7 @@
     ]
   },
   {
-    "id": "dup-0120",
+    "id": "dup-918c13bc36d3",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8924,33 +8924,33 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6673,
-        "end_line": 6684
+        "start_line": 6700,
+        "end_line": 6711
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6692,
-        "end_line": 6703
+        "start_line": 6719,
+        "end_line": 6730
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6741,
-        "end_line": 6747
+        "start_line": 6768,
+        "end_line": 6774
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6789,
-        "end_line": 6793
+        "start_line": 6816,
+        "end_line": 6820
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7374,
-        "end_line": 7384
+        "start_line": 7401,
+        "end_line": 7411
       }
     ]
   },
   {
-    "id": "dup-0121",
+    "id": "dup-be1e9fdfabe6",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8994,28 +8994,28 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6687,
-        "end_line": 6689
+        "start_line": 6714,
+        "end_line": 6716
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6715,
-        "end_line": 6717
+        "start_line": 6742,
+        "end_line": 6744
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6720,
-        "end_line": 6722
+        "start_line": 6747,
+        "end_line": 6749
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6725,
-        "end_line": 6730
+        "start_line": 6752,
+        "end_line": 6757
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6733,
-        "end_line": 6738
+        "start_line": 6760,
+        "end_line": 6765
       },
       {
         "file": "tests/store_secrets_periphery.rs",
@@ -9025,7 +9025,7 @@
     ]
   },
   {
-    "id": "dup-0122",
+    "id": "dup-fdbf1d3819aa",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -9040,7 +9040,7 @@
     ]
   },
   {
-    "id": "dup-0123",
+    "id": "dup-0b34706f58ad",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -9055,7 +9055,7 @@
     ]
   },
   {
-    "id": "dup-0124",
+    "id": "dup-7081e6d4e9ca",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -9075,7 +9075,7 @@
     ]
   },
   {
-    "id": "dup-0125",
+    "id": "dup-de9dbebd736c",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -9090,7 +9090,7 @@
     ]
   },
   {
-    "id": "dup-0126",
+    "id": "dup-9c2a5feef7eb",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -9105,7 +9105,7 @@
     ]
   },
   {
-    "id": "dup-0127",
+    "id": "dup-31f0a377e225",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -9120,7 +9120,7 @@
     ]
   },
   {
-    "id": "dup-0128",
+    "id": "dup-0f11f47627d7",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -9140,7 +9140,7 @@
     ]
   },
   {
-    "id": "dup-0129",
+    "id": "dup-13cd66603695",
     "sites": [
       {
         "file": "src/console/mod.rs",
@@ -9155,7 +9155,7 @@
     ]
   },
   {
-    "id": "dup-0130",
+    "id": "dup-dd0899576f8b",
     "sites": [
       {
         "file": "src/console/mod.rs",
@@ -9175,7 +9175,7 @@
     ]
   },
   {
-    "id": "dup-0131",
+    "id": "dup-ebdf0a8c1ad4",
     "sites": [
       {
         "file": "src/console/mod.rs",
@@ -9195,7 +9195,7 @@
     ]
   },
   {
-    "id": "dup-0132",
+    "id": "dup-6e04284d20b9",
     "sites": [
       {
         "file": "src/console/mod.rs",
@@ -9210,7 +9210,7 @@
     ]
   },
   {
-    "id": "dup-0133",
+    "id": "dup-e1509a98d9a4",
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
@@ -9230,7 +9230,7 @@
     ]
   },
   {
-    "id": "dup-0134",
+    "id": "dup-66a9637a97ef",
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
@@ -9245,7 +9245,7 @@
     ]
   },
   {
-    "id": "dup-0135",
+    "id": "dup-47db42dd1ad1",
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
@@ -9275,7 +9275,7 @@
     ]
   },
   {
-    "id": "dup-0136",
+    "id": "dup-a9de3156b52f",
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
@@ -9305,7 +9305,7 @@
     ]
   },
   {
-    "id": "dup-0137",
+    "id": "dup-0f107277e0be",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9320,7 +9320,7 @@
     ]
   },
   {
-    "id": "dup-0138",
+    "id": "dup-1a4b9f8408af",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9360,7 +9360,7 @@
     ]
   },
   {
-    "id": "dup-0139",
+    "id": "dup-58e1b97732ff",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9435,7 +9435,7 @@
     ]
   },
   {
-    "id": "dup-0140",
+    "id": "dup-14c2448dcb68",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9465,7 +9465,7 @@
     ]
   },
   {
-    "id": "dup-0141",
+    "id": "dup-ffce8b2fdf7c",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9480,7 +9480,7 @@
     ]
   },
   {
-    "id": "dup-0142",
+    "id": "dup-cc50e1a31380",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9505,7 +9505,7 @@
     ]
   },
   {
-    "id": "dup-0143",
+    "id": "dup-2e0e5aa448b1",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9530,7 +9530,7 @@
     ]
   },
   {
-    "id": "dup-0144",
+    "id": "dup-18be64354f04",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9545,7 +9545,7 @@
     ]
   },
   {
-    "id": "dup-0145",
+    "id": "dup-e4cc0ac793e5",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9745,7 +9745,7 @@
     ]
   },
   {
-    "id": "dup-0146",
+    "id": "dup-8b23564b85d3",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9760,7 +9760,7 @@
     ]
   },
   {
-    "id": "dup-0147",
+    "id": "dup-7fd24acb08d3",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9780,7 +9780,7 @@
     ]
   },
   {
-    "id": "dup-0148",
+    "id": "dup-a88be81e20b2",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9800,7 +9800,7 @@
     ]
   },
   {
-    "id": "dup-0149",
+    "id": "dup-7218ce30d0c4",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9830,7 +9830,7 @@
     ]
   },
   {
-    "id": "dup-0150",
+    "id": "dup-f0a2e1334847",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9845,7 +9845,7 @@
     ]
   },
   {
-    "id": "dup-0151",
+    "id": "dup-3ff7c389ddab",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9865,7 +9865,7 @@
     ]
   },
   {
-    "id": "dup-0152",
+    "id": "dup-5bd79a0f11ce",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9920,7 +9920,7 @@
     ]
   },
   {
-    "id": "dup-0153",
+    "id": "dup-46724a648bfd",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9970,7 +9970,7 @@
     ]
   },
   {
-    "id": "dup-0154",
+    "id": "dup-2d860358c266",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9985,7 +9985,7 @@
     ]
   },
   {
-    "id": "dup-0155",
+    "id": "dup-ef319f80acff",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10000,7 +10000,7 @@
     ]
   },
   {
-    "id": "dup-0156",
+    "id": "dup-f653c159d604",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10015,7 +10015,7 @@
     ]
   },
   {
-    "id": "dup-0157",
+    "id": "dup-32d7509fc4e5",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10030,7 +10030,7 @@
     ]
   },
   {
-    "id": "dup-0158",
+    "id": "dup-7017240c22e7",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10045,7 +10045,7 @@
     ]
   },
   {
-    "id": "dup-0159",
+    "id": "dup-58ebb5f70eb5",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10060,7 +10060,7 @@
     ]
   },
   {
-    "id": "dup-0160",
+    "id": "dup-eee5e6821ad9",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10075,7 +10075,7 @@
     ]
   },
   {
-    "id": "dup-0161",
+    "id": "dup-d499f8d22c33",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10095,7 +10095,7 @@
     ]
   },
   {
-    "id": "dup-0162",
+    "id": "dup-e509388ccd96",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10110,7 +10110,7 @@
     ]
   },
   {
-    "id": "dup-0163",
+    "id": "dup-72b8ab279760",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10125,7 +10125,7 @@
     ]
   },
   {
-    "id": "dup-0164",
+    "id": "dup-da0e76ab77ee",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -10140,7 +10140,7 @@
     ]
   },
   {
-    "id": "dup-0165",
+    "id": "dup-f26e8be6f1dc",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10384,68 +10384,68 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3518,
-        "end_line": 3518
+        "start_line": 3545,
+        "end_line": 3545
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3778,
-        "end_line": 3778
+        "start_line": 3805,
+        "end_line": 3805
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4417,
-        "end_line": 4417
+        "start_line": 4444,
+        "end_line": 4444
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4528,
-        "end_line": 4528
+        "start_line": 4555,
+        "end_line": 4555
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4531,
-        "end_line": 4531
+        "start_line": 4558,
+        "end_line": 4558
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7614,
-        "end_line": 7614
+        "start_line": 7641,
+        "end_line": 7641
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7619,
-        "end_line": 7619
+        "start_line": 7646,
+        "end_line": 7646
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7624,
-        "end_line": 7624
+        "start_line": 7651,
+        "end_line": 7651
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7715,
-        "end_line": 7715
+        "start_line": 7742,
+        "end_line": 7742
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7718,
-        "end_line": 7718
+        "start_line": 7745,
+        "end_line": 7745
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7720,
-        "end_line": 7720
+        "start_line": 7747,
+        "end_line": 7747
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7784,
-        "end_line": 7784
+        "start_line": 7811,
+        "end_line": 7811
       }
     ]
   },
   {
-    "id": "dup-0166",
+    "id": "dup-de9cc22c4dd2",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10504,33 +10504,33 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3470,
-        "end_line": 3578
+        "start_line": 3497,
+        "end_line": 3605
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4395,
-        "end_line": 4917
+        "start_line": 4422,
+        "end_line": 4944
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7606,
-        "end_line": 7632
+        "start_line": 7633,
+        "end_line": 7659
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7710,
-        "end_line": 7721
+        "start_line": 7737,
+        "end_line": 7748
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7778,
-        "end_line": 7791
+        "start_line": 7805,
+        "end_line": 7818
       }
     ]
   },
   {
-    "id": "dup-0167",
+    "id": "dup-0c8ae5048676",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10550,7 +10550,7 @@
     ]
   },
   {
-    "id": "dup-0168",
+    "id": "dup-c625eace16da",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10570,7 +10570,7 @@
     ]
   },
   {
-    "id": "dup-0169",
+    "id": "dup-38a67b4d10f0",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10585,7 +10585,7 @@
     ]
   },
   {
-    "id": "dup-0170",
+    "id": "dup-f75bb0a20873",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10615,7 +10615,7 @@
     ]
   },
   {
-    "id": "dup-0171",
+    "id": "dup-eaae7b5012e1",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10630,7 +10630,7 @@
     ]
   },
   {
-    "id": "dup-0172",
+    "id": "dup-ab1e05aa7807",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10645,7 +10645,7 @@
     ]
   },
   {
-    "id": "dup-0173",
+    "id": "dup-165facf5f50f",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10660,7 +10660,7 @@
     ]
   },
   {
-    "id": "dup-0174",
+    "id": "dup-1c15f0995d1a",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10675,7 +10675,7 @@
     ]
   },
   {
-    "id": "dup-0175",
+    "id": "dup-22838aa7e23b",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10690,7 +10690,7 @@
     ]
   },
   {
-    "id": "dup-0176",
+    "id": "dup-bc73ec6a6126",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10705,7 +10705,7 @@
     ]
   },
   {
-    "id": "dup-0177",
+    "id": "dup-742759124cfb",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10720,7 +10720,7 @@
     ]
   },
   {
-    "id": "dup-0178",
+    "id": "dup-4fa082976655",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10735,7 +10735,7 @@
     ]
   },
   {
-    "id": "dup-0179",
+    "id": "dup-c3117dc1ba20",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10750,7 +10750,7 @@
     ]
   },
   {
-    "id": "dup-0180",
+    "id": "dup-4d77d0fdce5a",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10770,7 +10770,7 @@
     ]
   },
   {
-    "id": "dup-0181",
+    "id": "dup-9a7b8bd4fefa",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10800,7 +10800,7 @@
     ]
   },
   {
-    "id": "dup-0182",
+    "id": "dup-3be7511516ac",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10815,7 +10815,7 @@
     ]
   },
   {
-    "id": "dup-0183",
+    "id": "dup-776fd9e153e2",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10840,7 +10840,7 @@
     ]
   },
   {
-    "id": "dup-0184",
+    "id": "dup-6a2acacd5cf0",
     "sites": [
       {
         "file": "src/docs.rs",
@@ -10855,7 +10855,7 @@
     ]
   },
   {
-    "id": "dup-0185",
+    "id": "dup-bcc850364281",
     "sites": [
       {
         "file": "src/docs.rs",
@@ -10870,7 +10870,7 @@
     ]
   },
   {
-    "id": "dup-0186",
+    "id": "dup-001b3e86f3c5",
     "sites": [
       {
         "file": "src/docs.rs",
@@ -10910,7 +10910,7 @@
     ]
   },
   {
-    "id": "dup-0187",
+    "id": "dup-177e437d33cc",
     "sites": [
       {
         "file": "src/docs.rs",
@@ -10925,7 +10925,7 @@
     ]
   },
   {
-    "id": "dup-0188",
+    "id": "dup-04388bdc57cf",
     "sites": [
       {
         "file": "src/driver/claude_code.rs",
@@ -10955,7 +10955,7 @@
     ]
   },
   {
-    "id": "dup-0189",
+    "id": "dup-85412eee5dd7",
     "sites": [
       {
         "file": "src/driver/cli.rs",
@@ -10970,7 +10970,7 @@
     ]
   },
   {
-    "id": "dup-0190",
+    "id": "dup-1856c00f9b89",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -10985,7 +10985,7 @@
     ]
   },
   {
-    "id": "dup-0191",
+    "id": "dup-458f5abd58de",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -11000,7 +11000,7 @@
     ]
   },
   {
-    "id": "dup-0192",
+    "id": "dup-3631d3538de9",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -11015,7 +11015,7 @@
     ]
   },
   {
-    "id": "dup-0193",
+    "id": "dup-1b30068be20e",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -11030,7 +11030,7 @@
     ]
   },
   {
-    "id": "dup-0194",
+    "id": "dup-8bac3a592ea8",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -11045,7 +11045,7 @@
     ]
   },
   {
-    "id": "dup-0195",
+    "id": "dup-d7ac19769555",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -11070,7 +11070,7 @@
     ]
   },
   {
-    "id": "dup-0196",
+    "id": "dup-03445327d61d",
     "sites": [
       {
         "file": "src/driver/workflow.rs",
@@ -11085,7 +11085,7 @@
     ]
   },
   {
-    "id": "dup-0197",
+    "id": "dup-866e5f4c8285",
     "sites": [
       {
         "file": "src/eventstore/contract.rs",
@@ -11105,7 +11105,7 @@
     ]
   },
   {
-    "id": "dup-0198",
+    "id": "dup-a23c56e564d2",
     "sites": [
       {
         "file": "src/eventstore/contract.rs",
@@ -11120,7 +11120,7 @@
     ]
   },
   {
-    "id": "dup-0199",
+    "id": "dup-d5aec6aa228a",
     "sites": [
       {
         "file": "src/eventstore/contract.rs",
@@ -11145,7 +11145,7 @@
     ]
   },
   {
-    "id": "dup-0200",
+    "id": "dup-fa1daef12c00",
     "sites": [
       {
         "file": "src/eventstore/contract.rs",
@@ -11170,7 +11170,7 @@
     ]
   },
   {
-    "id": "dup-0201",
+    "id": "dup-c1f767e3196e",
     "sites": [
       {
         "file": "src/eventstore/kurrentdb.rs",
@@ -11185,7 +11185,7 @@
     ]
   },
   {
-    "id": "dup-0202",
+    "id": "dup-f02a615cda8b",
     "sites": [
       {
         "file": "src/eventstore/kurrentdb.rs",
@@ -11200,7 +11200,7 @@
     ]
   },
   {
-    "id": "dup-0203",
+    "id": "dup-c5228cf29179",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -11215,7 +11215,7 @@
     ]
   },
   {
-    "id": "dup-0204",
+    "id": "dup-34ff03908ec6",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -11230,7 +11230,7 @@
     ]
   },
   {
-    "id": "dup-0205",
+    "id": "dup-df8481bbb5ef",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -11245,7 +11245,7 @@
     ]
   },
   {
-    "id": "dup-0206",
+    "id": "dup-7f0fe9332e9b",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -11265,7 +11265,7 @@
     ]
   },
   {
-    "id": "dup-0207",
+    "id": "dup-3049e1b1c058",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -11280,7 +11280,7 @@
     ]
   },
   {
-    "id": "dup-0208",
+    "id": "dup-b000d24367b5",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -11295,7 +11295,7 @@
     ]
   },
   {
-    "id": "dup-0209",
+    "id": "dup-09b3cd252ed3",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11310,7 +11310,7 @@
     ]
   },
   {
-    "id": "dup-0210",
+    "id": "dup-705c28b30bbe",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11330,7 +11330,7 @@
     ]
   },
   {
-    "id": "dup-0211",
+    "id": "dup-93c3800a4ebf",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11350,7 +11350,7 @@
     ]
   },
   {
-    "id": "dup-0212",
+    "id": "dup-bf3c46e0b3c8",
     "sites": [
       {
         "file": "src/failure.rs",
@@ -11375,7 +11375,7 @@
     ]
   },
   {
-    "id": "dup-0213",
+    "id": "dup-783dbb4d5f73",
     "sites": [
       {
         "file": "src/failure.rs",
@@ -11395,7 +11395,7 @@
     ]
   },
   {
-    "id": "dup-0214",
+    "id": "dup-cd0c403c5416",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11415,7 +11415,7 @@
     ]
   },
   {
-    "id": "dup-0215",
+    "id": "dup-79a43fc10be7",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11430,7 +11430,7 @@
     ]
   },
   {
-    "id": "dup-0216",
+    "id": "dup-5cea6682a78d",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11470,7 +11470,7 @@
     ]
   },
   {
-    "id": "dup-0217",
+    "id": "dup-51f28ce4ac01",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11495,7 +11495,7 @@
     ]
   },
   {
-    "id": "dup-0218",
+    "id": "dup-89818290a26a",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11510,7 +11510,7 @@
     ]
   },
   {
-    "id": "dup-0219",
+    "id": "dup-515cc0d4ac39",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11525,7 +11525,7 @@
     ]
   },
   {
-    "id": "dup-0220",
+    "id": "dup-7526d45d4438",
     "sites": [
       {
         "file": "src/grounder/design/events.rs",
@@ -11540,7 +11540,7 @@
     ]
   },
   {
-    "id": "dup-0221",
+    "id": "dup-0f2f14f8c3ce",
     "sites": [
       {
         "file": "src/grounder/design/events.rs",
@@ -11560,7 +11560,7 @@
     ]
   },
   {
-    "id": "dup-0222",
+    "id": "dup-7664240a3c1c",
     "sites": [
       {
         "file": "src/grounder/design/events.rs",
@@ -11575,7 +11575,7 @@
     ]
   },
   {
-    "id": "dup-0223",
+    "id": "dup-d6fb24114b41",
     "sites": [
       {
         "file": "src/grounder/design/extract.rs",
@@ -11595,7 +11595,7 @@
     ]
   },
   {
-    "id": "dup-0224",
+    "id": "dup-6b3780670600",
     "sites": [
       {
         "file": "src/grounder/design/extract.rs",
@@ -11610,7 +11610,7 @@
     ]
   },
   {
-    "id": "dup-0225",
+    "id": "dup-fe07703e2589",
     "sites": [
       {
         "file": "src/grounder/design/extract.rs",
@@ -11635,7 +11635,7 @@
     ]
   },
   {
-    "id": "dup-0226",
+    "id": "dup-b2fef22b9e41",
     "sites": [
       {
         "file": "src/grounder/design/extract.rs",
@@ -11650,7 +11650,7 @@
     ]
   },
   {
-    "id": "dup-0227",
+    "id": "dup-7e1f522f852f",
     "sites": [
       {
         "file": "src/grounder/design/model.rs",
@@ -11665,7 +11665,7 @@
     ]
   },
   {
-    "id": "dup-0228",
+    "id": "dup-fe20f68eb184",
     "sites": [
       {
         "file": "src/grounder/symbols/events.rs",
@@ -11680,7 +11680,7 @@
     ]
   },
   {
-    "id": "dup-0229",
+    "id": "dup-6c4197f4d7b0",
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
@@ -11700,7 +11700,7 @@
     ]
   },
   {
-    "id": "dup-0230",
+    "id": "dup-83dec5393591",
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
@@ -11740,7 +11740,7 @@
     ]
   },
   {
-    "id": "dup-0231",
+    "id": "dup-a391c6b864b8",
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
@@ -11755,7 +11755,7 @@
     ]
   },
   {
-    "id": "dup-0232",
+    "id": "dup-c1bdf6ee7cd2",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11770,7 +11770,7 @@
     ]
   },
   {
-    "id": "dup-0233",
+    "id": "dup-2aabb2b82325",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11785,7 +11785,7 @@
     ]
   },
   {
-    "id": "dup-0234",
+    "id": "dup-109459b28ca6",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11800,7 +11800,7 @@
     ]
   },
   {
-    "id": "dup-0235",
+    "id": "dup-9432fcaa9237",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11815,7 +11815,7 @@
     ]
   },
   {
-    "id": "dup-0236",
+    "id": "dup-d45ee6096ba3",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11835,7 +11835,7 @@
     ]
   },
   {
-    "id": "dup-0237",
+    "id": "dup-5e84e7b4d6c7",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11855,7 +11855,7 @@
     ]
   },
   {
-    "id": "dup-0238",
+    "id": "dup-f8c8e2e29540",
     "sites": [
       {
         "file": "src/grounder/symbols/mod.rs",
@@ -11870,7 +11870,7 @@
     ]
   },
   {
-    "id": "dup-0239",
+    "id": "dup-d4aab3ae8e0e",
     "sites": [
       {
         "file": "src/grounder/symbols/registry.rs",
@@ -11885,7 +11885,7 @@
     ]
   },
   {
-    "id": "dup-0240",
+    "id": "dup-071bc310e7eb",
     "sites": [
       {
         "file": "src/grounder/symbols/store.rs",
@@ -11900,7 +11900,7 @@
     ]
   },
   {
-    "id": "dup-0241",
+    "id": "dup-664af4b75f14",
     "sites": [
       {
         "file": "src/grounder/symbols/store.rs",
@@ -11915,7 +11915,7 @@
     ]
   },
   {
-    "id": "dup-0242",
+    "id": "dup-e84b51908c12",
     "sites": [
       {
         "file": "src/grounder/workflowdef.rs",
@@ -11930,7 +11930,7 @@
     ]
   },
   {
-    "id": "dup-0243",
+    "id": "dup-a9ddd3832b37",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11945,7 +11945,7 @@
     ]
   },
   {
-    "id": "dup-0244",
+    "id": "dup-101d2578e9ab",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11960,7 +11960,7 @@
     ]
   },
   {
-    "id": "dup-0245",
+    "id": "dup-b87498bfdd3f",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11975,7 +11975,7 @@
     ]
   },
   {
-    "id": "dup-0246",
+    "id": "dup-f0e2b5d78ab3",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11990,7 +11990,7 @@
     ]
   },
   {
-    "id": "dup-0247",
+    "id": "dup-fe46e4fc223a",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -12005,7 +12005,7 @@
     ]
   },
   {
-    "id": "dup-0248",
+    "id": "dup-ca344cae18a6",
     "sites": [
       {
         "file": "src/ingest.rs",
@@ -12020,7 +12020,7 @@
     ]
   },
   {
-    "id": "dup-0249",
+    "id": "dup-f6d1231a427d",
     "sites": [
       {
         "file": "src/ingest.rs",
@@ -12035,7 +12035,7 @@
     ]
   },
   {
-    "id": "dup-0250",
+    "id": "dup-1056b386d0e6",
     "sites": [
       {
         "file": "src/ledger.rs",
@@ -12050,7 +12050,7 @@
     ]
   },
   {
-    "id": "dup-0251",
+    "id": "dup-8d3ce1c32a5c",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -12065,7 +12065,7 @@
     ]
   },
   {
-    "id": "dup-0252",
+    "id": "dup-c213c764b52f",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -12080,7 +12080,7 @@
     ]
   },
   {
-    "id": "dup-0253",
+    "id": "dup-21dfa9e879a5",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -12095,7 +12095,7 @@
     ]
   },
   {
-    "id": "dup-0254",
+    "id": "dup-ed57da6d4e9d",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -12115,7 +12115,7 @@
     ]
   },
   {
-    "id": "dup-0255",
+    "id": "dup-84f9f5d5c24e",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -12130,7 +12130,7 @@
     ]
   },
   {
-    "id": "dup-0256",
+    "id": "dup-1ad7aae3f918",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -12155,7 +12155,7 @@
     ]
   },
   {
-    "id": "dup-0257",
+    "id": "dup-a493d9ff0ecb",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -12170,7 +12170,7 @@
     ]
   },
   {
-    "id": "dup-0258",
+    "id": "dup-1dede83a534e",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12190,7 +12190,7 @@
     ]
   },
   {
-    "id": "dup-0259",
+    "id": "dup-68e53fc1438c",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12205,7 +12205,7 @@
     ]
   },
   {
-    "id": "dup-0260",
+    "id": "dup-d5427f16e4ff",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12220,7 +12220,7 @@
     ]
   },
   {
-    "id": "dup-0261",
+    "id": "dup-4841cf90306e",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12235,7 +12235,7 @@
     ]
   },
   {
-    "id": "dup-0262",
+    "id": "dup-e110574b66dc",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12250,7 +12250,7 @@
     ]
   },
   {
-    "id": "dup-0263",
+    "id": "dup-37fb424fdf8e",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12265,7 +12265,7 @@
     ]
   },
   {
-    "id": "dup-0264",
+    "id": "dup-e8acd938f6de",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12280,7 +12280,7 @@
     ]
   },
   {
-    "id": "dup-0265",
+    "id": "dup-3dfc1455ab14",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12295,7 +12295,7 @@
     ]
   },
   {
-    "id": "dup-0266",
+    "id": "dup-9b1654a7e498",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12315,7 +12315,7 @@
     ]
   },
   {
-    "id": "dup-0267",
+    "id": "dup-12ac4b7065b5",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12335,7 +12335,7 @@
     ]
   },
   {
-    "id": "dup-0268",
+    "id": "dup-868a774d8573",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12355,7 +12355,7 @@
     ]
   },
   {
-    "id": "dup-0269",
+    "id": "dup-1e7392f128ce",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12370,7 +12370,7 @@
     ]
   },
   {
-    "id": "dup-0270",
+    "id": "dup-52233e27e2a1",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12385,7 +12385,7 @@
     ]
   },
   {
-    "id": "dup-0271",
+    "id": "dup-fd2b29375126",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12405,7 +12405,7 @@
     ]
   },
   {
-    "id": "dup-0272",
+    "id": "dup-293e693c9ec7",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12535,7 +12535,7 @@
     ]
   },
   {
-    "id": "dup-0273",
+    "id": "dup-c9a997adc78f",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12575,7 +12575,7 @@
     ]
   },
   {
-    "id": "dup-0274",
+    "id": "dup-44ce3929c4a7",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12600,7 +12600,7 @@
     ]
   },
   {
-    "id": "dup-0275",
+    "id": "dup-231174fb1dc1",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12615,7 +12615,7 @@
     ]
   },
   {
-    "id": "dup-0276",
+    "id": "dup-d129d6d16af4",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12635,7 +12635,7 @@
     ]
   },
   {
-    "id": "dup-0277",
+    "id": "dup-2b6a01e72e97",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12655,7 +12655,7 @@
     ]
   },
   {
-    "id": "dup-0278",
+    "id": "dup-bf2e56140b6c",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12670,7 +12670,7 @@
     ]
   },
   {
-    "id": "dup-0279",
+    "id": "dup-6ea24d919b4e",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12685,7 +12685,7 @@
     ]
   },
   {
-    "id": "dup-0280",
+    "id": "dup-120355900a73",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12710,7 +12710,7 @@
     ]
   },
   {
-    "id": "dup-0281",
+    "id": "dup-ab16c8f475f6",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12725,7 +12725,7 @@
     ]
   },
   {
-    "id": "dup-0282",
+    "id": "dup-7cb4d017b035",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12740,7 +12740,7 @@
     ]
   },
   {
-    "id": "dup-0283",
+    "id": "dup-503113873c48",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12755,7 +12755,7 @@
     ]
   },
   {
-    "id": "dup-0284",
+    "id": "dup-3493c3ab4888",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12770,7 +12770,7 @@
     ]
   },
   {
-    "id": "dup-0285",
+    "id": "dup-cd539bcae8b6",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12795,7 +12795,7 @@
     ]
   },
   {
-    "id": "dup-0286",
+    "id": "dup-8aae77675253",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12810,7 +12810,7 @@
     ]
   },
   {
-    "id": "dup-0287",
+    "id": "dup-4065bd38c76d",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12845,7 +12845,7 @@
     ]
   },
   {
-    "id": "dup-0288",
+    "id": "dup-95358c0dc964",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12860,7 +12860,7 @@
     ]
   },
   {
-    "id": "dup-0289",
+    "id": "dup-8090cd14957f",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12875,7 +12875,7 @@
     ]
   },
   {
-    "id": "dup-0290",
+    "id": "dup-47bca8aa31e7",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12890,7 +12890,7 @@
     ]
   },
   {
-    "id": "dup-0291",
+    "id": "dup-6cb9b1500b11",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12905,7 +12905,7 @@
     ]
   },
   {
-    "id": "dup-0292",
+    "id": "dup-b3f279a36f39",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12920,7 +12920,7 @@
     ]
   },
   {
-    "id": "dup-0293",
+    "id": "dup-8208a30a91e2",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12935,7 +12935,7 @@
     ]
   },
   {
-    "id": "dup-0294",
+    "id": "dup-084a2ca755da",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12950,7 +12950,7 @@
     ]
   },
   {
-    "id": "dup-0295",
+    "id": "dup-1da899f622be",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12965,7 +12965,7 @@
     ]
   },
   {
-    "id": "dup-0296",
+    "id": "dup-2855c9cddfa4",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12980,7 +12980,7 @@
     ]
   },
   {
-    "id": "dup-0297",
+    "id": "dup-03eafd1bdc86",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12995,7 +12995,7 @@
     ]
   },
   {
-    "id": "dup-0298",
+    "id": "dup-06a8cadee157",
     "sites": [
       {
         "file": "src/main.rs",
@@ -13025,7 +13025,7 @@
     ]
   },
   {
-    "id": "dup-0299",
+    "id": "dup-f1c34d029317",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -13045,7 +13045,7 @@
     ]
   },
   {
-    "id": "dup-0300",
+    "id": "dup-cef805c01fcd",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -13065,7 +13065,7 @@
     ]
   },
   {
-    "id": "dup-0301",
+    "id": "dup-1e098835f449",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -13085,7 +13085,7 @@
     ]
   },
   {
-    "id": "dup-0302",
+    "id": "dup-cbfbbbc5102c",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -13100,7 +13100,7 @@
     ]
   },
   {
-    "id": "dup-0303",
+    "id": "dup-da04374b96b0",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -13135,7 +13135,7 @@
     ]
   },
   {
-    "id": "dup-0304",
+    "id": "dup-4903bb384d8c",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -13150,7 +13150,7 @@
     ]
   },
   {
-    "id": "dup-0305",
+    "id": "dup-fd7d16ecc9d8",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -13165,7 +13165,7 @@
     ]
   },
   {
-    "id": "dup-0306",
+    "id": "dup-fb8e130faaf9",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13205,7 +13205,7 @@
     ]
   },
   {
-    "id": "dup-0307",
+    "id": "dup-9cfc1b9df362",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13220,7 +13220,7 @@
     ]
   },
   {
-    "id": "dup-0308",
+    "id": "dup-06d3afaf520c",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13235,7 +13235,7 @@
     ]
   },
   {
-    "id": "dup-0309",
+    "id": "dup-09df6ba9a4c6",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13250,7 +13250,7 @@
     ]
   },
   {
-    "id": "dup-0310",
+    "id": "dup-0a954d1e88d1",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13270,7 +13270,7 @@
     ]
   },
   {
-    "id": "dup-0311",
+    "id": "dup-17538867af44",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13305,7 +13305,7 @@
     ]
   },
   {
-    "id": "dup-0312",
+    "id": "dup-b4de5d907148",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13335,7 +13335,7 @@
     ]
   },
   {
-    "id": "dup-0313",
+    "id": "dup-6f8bcb91ed6b",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13350,7 +13350,7 @@
     ]
   },
   {
-    "id": "dup-0314",
+    "id": "dup-d04c0e512a77",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13365,7 +13365,7 @@
     ]
   },
   {
-    "id": "dup-0315",
+    "id": "dup-576605ec7eeb",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13380,7 +13380,7 @@
     ]
   },
   {
-    "id": "dup-0316",
+    "id": "dup-3de871af68c4",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13395,7 +13395,7 @@
     ]
   },
   {
-    "id": "dup-0317",
+    "id": "dup-7a0ec0f1fd4b",
     "sites": [
       {
         "file": "src/progress.rs",
@@ -13410,7 +13410,7 @@
     ]
   },
   {
-    "id": "dup-0318",
+    "id": "dup-7cb3c316417a",
     "sites": [
       {
         "file": "src/progress.rs",
@@ -13425,7 +13425,7 @@
     ]
   },
   {
-    "id": "dup-0319",
+    "id": "dup-c8ebc048439a",
     "sites": [
       {
         "file": "src/progress_store.rs",
@@ -13440,7 +13440,7 @@
     ]
   },
   {
-    "id": "dup-0320",
+    "id": "dup-dfb3994243db",
     "sites": [
       {
         "file": "src/reap.rs",
@@ -13475,7 +13475,7 @@
     ]
   },
   {
-    "id": "dup-0321",
+    "id": "dup-598a9a49a445",
     "sites": [
       {
         "file": "src/reap.rs",
@@ -13500,7 +13500,7 @@
     ]
   },
   {
-    "id": "dup-0322",
+    "id": "dup-a6152a39715c",
     "sites": [
       {
         "file": "src/reap.rs",
@@ -13515,7 +13515,7 @@
     ]
   },
   {
-    "id": "dup-0323",
+    "id": "dup-9b815eab7862",
     "sites": [
       {
         "file": "src/registry.rs",
@@ -13585,7 +13585,7 @@
     ]
   },
   {
-    "id": "dup-0324",
+    "id": "dup-2482a255b7c2",
     "sites": [
       {
         "file": "src/registry.rs",
@@ -13605,7 +13605,7 @@
     ]
   },
   {
-    "id": "dup-0325",
+    "id": "dup-cec0d4808430",
     "sites": [
       {
         "file": "src/registry.rs",
@@ -13620,7 +13620,7 @@
     ]
   },
   {
-    "id": "dup-0326",
+    "id": "dup-8640e5c69d2e",
     "sites": [
       {
         "file": "src/registry.rs",
@@ -13635,7 +13635,7 @@
     ]
   },
   {
-    "id": "dup-0327",
+    "id": "dup-8b14b77d020f",
     "sites": [
       {
         "file": "src/run_store.rs",
@@ -13655,7 +13655,7 @@
     ]
   },
   {
-    "id": "dup-0328",
+    "id": "dup-c317d66b0546",
     "sites": [
       {
         "file": "src/run_store.rs",
@@ -13670,7 +13670,7 @@
     ]
   },
   {
-    "id": "dup-0329",
+    "id": "dup-3dd926889508",
     "sites": [
       {
         "file": "src/sidecar.rs",
@@ -13685,7 +13685,7 @@
     ]
   },
   {
-    "id": "dup-0330",
+    "id": "dup-eca5df3ce0b6",
     "sites": [
       {
         "file": "src/sidecar.rs",
@@ -13705,7 +13705,7 @@
     ]
   },
   {
-    "id": "dup-0331",
+    "id": "dup-ea6fa9464303",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13720,7 +13720,7 @@
     ]
   },
   {
-    "id": "dup-0332",
+    "id": "dup-6da1db6b6b9c",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13740,7 +13740,7 @@
     ]
   },
   {
-    "id": "dup-0333",
+    "id": "dup-fafc632ca1eb",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13755,7 +13755,7 @@
     ]
   },
   {
-    "id": "dup-0334",
+    "id": "dup-28f66f377bbe",
     "sites": [
       {
         "file": "src/spawn_store.rs",
@@ -13770,7 +13770,7 @@
     ]
   },
   {
-    "id": "dup-0335",
+    "id": "dup-44068e98ea9d",
     "sites": [
       {
         "file": "src/spawn_store.rs",
@@ -13790,7 +13790,7 @@
     ]
   },
   {
-    "id": "dup-0336",
+    "id": "dup-e652dc112891",
     "sites": [
       {
         "file": "src/spawn_store.rs",
@@ -13810,7 +13810,7 @@
     ]
   },
   {
-    "id": "dup-0337",
+    "id": "dup-1a713042d2fe",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13825,7 +13825,7 @@
     ]
   },
   {
-    "id": "dup-0338",
+    "id": "dup-349556161f61",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13840,7 +13840,7 @@
     ]
   },
   {
-    "id": "dup-0339",
+    "id": "dup-0d5eef5ac533",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13855,7 +13855,7 @@
     ]
   },
   {
-    "id": "dup-0340",
+    "id": "dup-800a16d7cea3",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13870,7 +13870,7 @@
     ]
   },
   {
-    "id": "dup-0341",
+    "id": "dup-ef13446197e2",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13885,7 +13885,7 @@
     ]
   },
   {
-    "id": "dup-0342",
+    "id": "dup-7b967b22273b",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13910,7 +13910,7 @@
     ]
   },
   {
-    "id": "dup-0343",
+    "id": "dup-315e8a57aba8",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13919,13 +13919,13 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6283,
-        "end_line": 6287
+        "start_line": 6310,
+        "end_line": 6314
       }
     ]
   },
   {
-    "id": "dup-0344",
+    "id": "dup-ef9582d62608",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -13950,7 +13950,7 @@
     ]
   },
   {
-    "id": "dup-0345",
+    "id": "dup-d9507699194d",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -13965,7 +13965,7 @@
     ]
   },
   {
-    "id": "dup-0346",
+    "id": "dup-7d44acf98f84",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -13985,7 +13985,7 @@
     ]
   },
   {
-    "id": "dup-0347",
+    "id": "dup-7be99a62ed80",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -14005,7 +14005,7 @@
     ]
   },
   {
-    "id": "dup-0348",
+    "id": "dup-680698863a6e",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -14020,7 +14020,7 @@
     ]
   },
   {
-    "id": "dup-0349",
+    "id": "dup-fbb2e2648317",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14035,7 +14035,7 @@
     ]
   },
   {
-    "id": "dup-0350",
+    "id": "dup-a29a6c1a667b",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14055,7 +14055,7 @@
     ]
   },
   {
-    "id": "dup-0351",
+    "id": "dup-ce75d4dcd6eb",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14070,7 +14070,7 @@
     ]
   },
   {
-    "id": "dup-0352",
+    "id": "dup-17993613795d",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14085,7 +14085,7 @@
     ]
   },
   {
-    "id": "dup-0353",
+    "id": "dup-cda9c1a42625",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14100,7 +14100,7 @@
     ]
   },
   {
-    "id": "dup-0354",
+    "id": "dup-8a40ee6f30d4",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14115,7 +14115,7 @@
     ]
   },
   {
-    "id": "dup-0355",
+    "id": "dup-c8b104ef8278",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14130,7 +14130,7 @@
     ]
   },
   {
-    "id": "dup-0356",
+    "id": "dup-ab80a443a0c5",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14145,7 +14145,7 @@
     ]
   },
   {
-    "id": "dup-0357",
+    "id": "dup-952c99c5929f",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14160,7 +14160,7 @@
     ]
   },
   {
-    "id": "dup-0358",
+    "id": "dup-541e6f1b21c3",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14175,7 +14175,7 @@
     ]
   },
   {
-    "id": "dup-0359",
+    "id": "dup-20eb2c3a9787",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14200,7 +14200,7 @@
     ]
   },
   {
-    "id": "dup-0360",
+    "id": "dup-068178008d84",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14215,7 +14215,7 @@
     ]
   },
   {
-    "id": "dup-0361",
+    "id": "dup-2d7ee9df221d",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14240,7 +14240,7 @@
     ]
   },
   {
-    "id": "dup-0362",
+    "id": "dup-0c5f12097509",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14255,7 +14255,7 @@
     ]
   },
   {
-    "id": "dup-0363",
+    "id": "dup-d728cb89cb95",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14270,7 +14270,7 @@
     ]
   },
   {
-    "id": "dup-0364",
+    "id": "dup-f88bdbc9c8d0",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14290,7 +14290,7 @@
     ]
   },
   {
-    "id": "dup-0365",
+    "id": "dup-50e826431b47",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14305,7 +14305,7 @@
     ]
   },
   {
-    "id": "dup-0366",
+    "id": "dup-27b900886bcf",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14320,7 +14320,7 @@
     ]
   },
   {
-    "id": "dup-0367",
+    "id": "dup-da582945f2af",
     "sites": [
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -14420,7 +14420,7 @@
     ]
   },
   {
-    "id": "dup-0368",
+    "id": "dup-609de45fc19c",
     "sites": [
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -14525,7 +14525,7 @@
     ]
   },
   {
-    "id": "dup-0369",
+    "id": "dup-8a0f5e23f315",
     "sites": [
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -14550,7 +14550,7 @@
     ]
   },
   {
-    "id": "dup-0370",
+    "id": "dup-af90a59bd7ae",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14575,7 +14575,7 @@
     ]
   },
   {
-    "id": "dup-0371",
+    "id": "dup-55487fee1a95",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14595,7 +14595,7 @@
     ]
   },
   {
-    "id": "dup-0372",
+    "id": "dup-008193fd96e0",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14610,7 +14610,7 @@
     ]
   },
   {
-    "id": "dup-0373",
+    "id": "dup-74ffd79bb650",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14625,7 +14625,7 @@
     ]
   },
   {
-    "id": "dup-0374",
+    "id": "dup-7baafe962b8c",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14640,7 +14640,7 @@
     ]
   },
   {
-    "id": "dup-0375",
+    "id": "dup-4cd2de755c71",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14655,7 +14655,7 @@
     ]
   },
   {
-    "id": "dup-0376",
+    "id": "dup-cac17f66d5aa",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14670,7 +14670,7 @@
     ]
   },
   {
-    "id": "dup-0377",
+    "id": "dup-20256de409e4",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14685,7 +14685,7 @@
     ]
   },
   {
-    "id": "dup-0378",
+    "id": "dup-cedec06c004c",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14740,7 +14740,7 @@
     ]
   },
   {
-    "id": "dup-0379",
+    "id": "dup-03529e692cb2",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14755,7 +14755,7 @@
     ]
   },
   {
-    "id": "dup-0380",
+    "id": "dup-f42c046bd13b",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14770,7 +14770,7 @@
     ]
   },
   {
-    "id": "dup-0381",
+    "id": "dup-3d27f0c99a2d",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14785,7 +14785,7 @@
     ]
   },
   {
-    "id": "dup-0382",
+    "id": "dup-4df365546ed9",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14800,7 +14800,7 @@
     ]
   },
   {
-    "id": "dup-0383",
+    "id": "dup-d43c3eaa1464",
     "sites": [
       {
         "file": "tests/build_budget_slots_periphery.rs",
@@ -14825,7 +14825,7 @@
     ]
   },
   {
-    "id": "dup-0384",
+    "id": "dup-495d91864a7d",
     "sites": [
       {
         "file": "tests/build_budget_slots_periphery.rs",
@@ -14855,7 +14855,7 @@
     ]
   },
   {
-    "id": "dup-0385",
+    "id": "dup-af4237462cdd",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -14880,7 +14880,7 @@
     ]
   },
   {
-    "id": "dup-0386",
+    "id": "dup-3afbd6f7f931",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -14900,7 +14900,7 @@
     ]
   },
   {
-    "id": "dup-0387",
+    "id": "dup-65c2645daf24",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -14915,7 +14915,7 @@
     ]
   },
   {
-    "id": "dup-0388",
+    "id": "dup-9b9db533d046",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -14935,7 +14935,7 @@
     ]
   },
   {
-    "id": "dup-0389",
+    "id": "dup-735f2d3802fc",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -14950,7 +14950,7 @@
     ]
   },
   {
-    "id": "dup-0390",
+    "id": "dup-dd10d8d2efb8",
     "sites": [
       {
         "file": "tests/build_watch_paths.rs",
@@ -14965,7 +14965,7 @@
     ]
   },
   {
-    "id": "dup-0391",
+    "id": "dup-45864f32842e",
     "sites": [
       {
         "file": "tests/build_watch_paths.rs",
@@ -14985,7 +14985,7 @@
     ]
   },
   {
-    "id": "dup-0392",
+    "id": "dup-dc997a3ea272",
     "sites": [
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
@@ -15000,7 +15000,7 @@
     ]
   },
   {
-    "id": "dup-0393",
+    "id": "dup-58e746ca5c35",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -15015,7 +15015,7 @@
     ]
   },
   {
-    "id": "dup-0394",
+    "id": "dup-7a25c420a372",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -15035,7 +15035,7 @@
     ]
   },
   {
-    "id": "dup-0395",
+    "id": "dup-44a3460f395f",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -15065,7 +15065,7 @@
     ]
   },
   {
-    "id": "dup-0396",
+    "id": "dup-d887cb6f63f7",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -15080,7 +15080,7 @@
     ]
   },
   {
-    "id": "dup-0397",
+    "id": "dup-69a067f1165c",
     "sites": [
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
@@ -15095,7 +15095,7 @@
     ]
   },
   {
-    "id": "dup-0398",
+    "id": "dup-d5b85752a84d",
     "sites": [
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
@@ -15115,7 +15115,7 @@
     ]
   },
   {
-    "id": "dup-0399",
+    "id": "dup-0792f3c788b4",
     "sites": [
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -15225,7 +15225,7 @@
     ]
   },
   {
-    "id": "dup-0400",
+    "id": "dup-2634e1abc409",
     "sites": [
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -15370,7 +15370,7 @@
     ]
   },
   {
-    "id": "dup-0401",
+    "id": "dup-0a35fd6b5871",
     "sites": [
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -15460,7 +15460,7 @@
     ]
   },
   {
-    "id": "dup-0402",
+    "id": "dup-d97925a56a22",
     "sites": [
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -15475,7 +15475,7 @@
     ]
   },
   {
-    "id": "dup-0403",
+    "id": "dup-934f8f050012",
     "sites": [
       {
         "file": "tests/canary_tolerant_attribution_periphery.rs",
@@ -15490,7 +15490,7 @@
     ]
   },
   {
-    "id": "dup-0404",
+    "id": "dup-e6dd9744b4a8",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -15545,7 +15545,7 @@
     ]
   },
   {
-    "id": "dup-0405",
+    "id": "dup-f96c562f4b14",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -15660,7 +15660,7 @@
     ]
   },
   {
-    "id": "dup-0406",
+    "id": "dup-2301697e0c93",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -15800,7 +15800,7 @@
     ]
   },
   {
-    "id": "dup-0407",
+    "id": "dup-15bd83077e06",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -15850,7 +15850,7 @@
     ]
   },
   {
-    "id": "dup-0408",
+    "id": "dup-bb528516e036",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -15920,7 +15920,7 @@
     ]
   },
   {
-    "id": "dup-0409",
+    "id": "dup-f17856d9afa5",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -15990,7 +15990,7 @@
     ]
   },
   {
-    "id": "dup-0410",
+    "id": "dup-403d89c8c44e",
     "sites": [
       {
         "file": "tests/change_path_revert_periphery.rs",
@@ -16055,7 +16055,7 @@
     ]
   },
   {
-    "id": "dup-0411",
+    "id": "dup-1278ad7ac8f2",
     "sites": [
       {
         "file": "tests/change_path_revert_periphery.rs",
@@ -16075,7 +16075,7 @@
     ]
   },
   {
-    "id": "dup-0412",
+    "id": "dup-8ed32f24ab48",
     "sites": [
       {
         "file": "tests/change_path_revert_periphery.rs",
@@ -16095,7 +16095,7 @@
     ]
   },
   {
-    "id": "dup-0413",
+    "id": "dup-0d17abad86ea",
     "sites": [
       {
         "file": "tests/change_path_revert_periphery.rs",
@@ -16110,7 +16110,7 @@
     ]
   },
   {
-    "id": "dup-0414",
+    "id": "dup-654e461fa21e",
     "sites": [
       {
         "file": "tests/change_path_revert_periphery.rs",
@@ -16130,7 +16130,7 @@
     ]
   },
   {
-    "id": "dup-0415",
+    "id": "dup-17fda34088e9",
     "sites": [
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
@@ -16145,7 +16145,7 @@
     ]
   },
   {
-    "id": "dup-0416",
+    "id": "dup-52a5458ebb34",
     "sites": [
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
@@ -16160,7 +16160,7 @@
     ]
   },
   {
-    "id": "dup-0417",
+    "id": "dup-c1369da1ab04",
     "sites": [
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
@@ -16175,7 +16175,7 @@
     ]
   },
   {
-    "id": "dup-0418",
+    "id": "dup-71839f37e2e1",
     "sites": [
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
@@ -16190,7 +16190,7 @@
     ]
   },
   {
-    "id": "dup-0419",
+    "id": "dup-d9335a9582f6",
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -16205,7 +16205,7 @@
     ]
   },
   {
-    "id": "dup-0420",
+    "id": "dup-48f2e07f226c",
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -16220,7 +16220,7 @@
     ]
   },
   {
-    "id": "dup-0421",
+    "id": "dup-91dd301e54a3",
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -16250,7 +16250,7 @@
     ]
   },
   {
-    "id": "dup-0422",
+    "id": "dup-699a2c37bc05",
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -16280,7 +16280,7 @@
     ]
   },
   {
-    "id": "dup-0423",
+    "id": "dup-816e0e3f9e9c",
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -16305,7 +16305,7 @@
     ]
   },
   {
-    "id": "dup-0424",
+    "id": "dup-59674298e70d",
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -16330,7 +16330,7 @@
     ]
   },
   {
-    "id": "dup-0425",
+    "id": "dup-746548e2ac0a",
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -16345,7 +16345,7 @@
     ]
   },
   {
-    "id": "dup-0426",
+    "id": "dup-0744800a9e5c",
     "sites": [
       {
         "file": "tests/claude_code_stream_periphery.rs",
@@ -16360,7 +16360,7 @@
     ]
   },
   {
-    "id": "dup-0427",
+    "id": "dup-88c4dbe1fddc",
     "sites": [
       {
         "file": "tests/claude_code_stream_periphery.rs",
@@ -16375,7 +16375,7 @@
     ]
   },
   {
-    "id": "dup-0428",
+    "id": "dup-5b90efc91cfa",
     "sites": [
       {
         "file": "tests/claude_code_stream_periphery.rs",
@@ -16400,7 +16400,7 @@
     ]
   },
   {
-    "id": "dup-0429",
+    "id": "dup-36cbb5dce011",
     "sites": [
       {
         "file": "tests/claude_code_stream_periphery.rs",
@@ -16415,7 +16415,7 @@
     ]
   },
   {
-    "id": "dup-0430",
+    "id": "dup-a2ee92a6864a",
     "sites": [
       {
         "file": "tests/claude_code_stream_periphery.rs",
@@ -16450,7 +16450,7 @@
     ]
   },
   {
-    "id": "dup-0431",
+    "id": "dup-c6049b35446c",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16470,7 +16470,7 @@
     ]
   },
   {
-    "id": "dup-0432",
+    "id": "dup-35edae988776",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16515,7 +16515,7 @@
     ]
   },
   {
-    "id": "dup-0433",
+    "id": "dup-7195e47370fb",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16540,7 +16540,7 @@
     ]
   },
   {
-    "id": "dup-0434",
+    "id": "dup-e933ce0b2ad2",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16575,7 +16575,7 @@
     ]
   },
   {
-    "id": "dup-0435",
+    "id": "dup-61646c45a2ae",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16605,7 +16605,7 @@
     ]
   },
   {
-    "id": "dup-0436",
+    "id": "dup-ff88b0026c66",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16620,7 +16620,7 @@
     ]
   },
   {
-    "id": "dup-0437",
+    "id": "dup-e32723f24899",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16655,7 +16655,7 @@
     ]
   },
   {
-    "id": "dup-0438",
+    "id": "dup-209a533eff7a",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16670,7 +16670,7 @@
     ]
   },
   {
-    "id": "dup-0439",
+    "id": "dup-838d5d89040e",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16685,7 +16685,7 @@
     ]
   },
   {
-    "id": "dup-0440",
+    "id": "dup-52abb8e62304",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16700,7 +16700,7 @@
     ]
   },
   {
-    "id": "dup-0441",
+    "id": "dup-22f21b82b33e",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16715,7 +16715,7 @@
     ]
   },
   {
-    "id": "dup-0442",
+    "id": "dup-ca5b8d6d2708",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16740,7 +16740,7 @@
     ]
   },
   {
-    "id": "dup-0443",
+    "id": "dup-5790877fc434",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16760,7 +16760,7 @@
     ]
   },
   {
-    "id": "dup-0444",
+    "id": "dup-9d5e6d4b40c2",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16775,7 +16775,7 @@
     ]
   },
   {
-    "id": "dup-0445",
+    "id": "dup-3a32bd6722e5",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16790,7 +16790,7 @@
     ]
   },
   {
-    "id": "dup-0446",
+    "id": "dup-e81b025c9d07",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16805,7 +16805,7 @@
     ]
   },
   {
-    "id": "dup-0447",
+    "id": "dup-3867a053c268",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16830,7 +16830,7 @@
     ]
   },
   {
-    "id": "dup-0448",
+    "id": "dup-5d238edf7ede",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16865,7 +16865,7 @@
     ]
   },
   {
-    "id": "dup-0449",
+    "id": "dup-351339d2a9e4",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16880,7 +16880,7 @@
     ]
   },
   {
-    "id": "dup-0450",
+    "id": "dup-628fcd6f6381",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16900,7 +16900,7 @@
     ]
   },
   {
-    "id": "dup-0451",
+    "id": "dup-78d667c5e5e3",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16990,7 +16990,7 @@
     ]
   },
   {
-    "id": "dup-0452",
+    "id": "dup-bd36cfcfb092",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17010,7 +17010,7 @@
     ]
   },
   {
-    "id": "dup-0453",
+    "id": "dup-e905d635ee5c",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17025,7 +17025,7 @@
     ]
   },
   {
-    "id": "dup-0454",
+    "id": "dup-b8dbc28d6bf5",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17050,7 +17050,7 @@
     ]
   },
   {
-    "id": "dup-0455",
+    "id": "dup-35116801ee32",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17070,7 +17070,7 @@
     ]
   },
   {
-    "id": "dup-0456",
+    "id": "dup-06f248242d71",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17100,7 +17100,7 @@
     ]
   },
   {
-    "id": "dup-0457",
+    "id": "dup-485082ea8e22",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17115,7 +17115,7 @@
     ]
   },
   {
-    "id": "dup-0458",
+    "id": "dup-9d43338e2f18",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17130,7 +17130,7 @@
     ]
   },
   {
-    "id": "dup-0459",
+    "id": "dup-b4eb9ad7910c",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17145,7 +17145,7 @@
     ]
   },
   {
-    "id": "dup-0460",
+    "id": "dup-29589cdd3ab6",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17160,7 +17160,7 @@
     ]
   },
   {
-    "id": "dup-0461",
+    "id": "dup-423ce64b5d88",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17175,7 +17175,7 @@
     ]
   },
   {
-    "id": "dup-0462",
+    "id": "dup-8c5977d41df1",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17190,7 +17190,7 @@
     ]
   },
   {
-    "id": "dup-0463",
+    "id": "dup-5963eaa7c5d4",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17210,7 +17210,7 @@
     ]
   },
   {
-    "id": "dup-0464",
+    "id": "dup-39f4fabe9676",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17225,7 +17225,7 @@
     ]
   },
   {
-    "id": "dup-0465",
+    "id": "dup-28168bc8f220",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17240,7 +17240,7 @@
     ]
   },
   {
-    "id": "dup-0466",
+    "id": "dup-a3b92ad79a44",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17260,7 +17260,7 @@
     ]
   },
   {
-    "id": "dup-0467",
+    "id": "dup-3fcf230bb545",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17280,7 +17280,7 @@
     ]
   },
   {
-    "id": "dup-0468",
+    "id": "dup-ddfa90f5f624",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17300,7 +17300,7 @@
     ]
   },
   {
-    "id": "dup-0469",
+    "id": "dup-82b7e5265ac8",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17325,7 +17325,7 @@
     ]
   },
   {
-    "id": "dup-0470",
+    "id": "dup-1f8e56620bf5",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17340,7 +17340,7 @@
     ]
   },
   {
-    "id": "dup-0471",
+    "id": "dup-8faa62bc8a80",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17355,7 +17355,7 @@
     ]
   },
   {
-    "id": "dup-0472",
+    "id": "dup-a610d4150595",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17370,7 +17370,7 @@
     ]
   },
   {
-    "id": "dup-0473",
+    "id": "dup-d8202cc261d7",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17405,7 +17405,7 @@
     ]
   },
   {
-    "id": "dup-0474",
+    "id": "dup-455c5678334a",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17420,7 +17420,7 @@
     ]
   },
   {
-    "id": "dup-0475",
+    "id": "dup-60f95b908904",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17435,7 +17435,7 @@
     ]
   },
   {
-    "id": "dup-0476",
+    "id": "dup-38e357732587",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17450,7 +17450,7 @@
     ]
   },
   {
-    "id": "dup-0477",
+    "id": "dup-23a51d7ab74a",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17470,7 +17470,7 @@
     ]
   },
   {
-    "id": "dup-0478",
+    "id": "dup-893acdaa7308",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17485,7 +17485,7 @@
     ]
   },
   {
-    "id": "dup-0479",
+    "id": "dup-36fd772d194a",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17515,7 +17515,7 @@
     ]
   },
   {
-    "id": "dup-0480",
+    "id": "dup-5c7ae82e0b2e",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17530,7 +17530,7 @@
     ]
   },
   {
-    "id": "dup-0481",
+    "id": "dup-10b6b0abe3bc",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17545,7 +17545,7 @@
     ]
   },
   {
-    "id": "dup-0482",
+    "id": "dup-ad5c04bfa829",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17575,7 +17575,7 @@
     ]
   },
   {
-    "id": "dup-0483",
+    "id": "dup-583e3c262f0a",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17590,7 +17590,7 @@
     ]
   },
   {
-    "id": "dup-0484",
+    "id": "dup-faefc6349bf3",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17610,7 +17610,7 @@
     ]
   },
   {
-    "id": "dup-0485",
+    "id": "dup-ba18e4160c0c",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17625,7 +17625,7 @@
     ]
   },
   {
-    "id": "dup-0486",
+    "id": "dup-3de39f4663d2",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17645,7 +17645,7 @@
     ]
   },
   {
-    "id": "dup-0487",
+    "id": "dup-568e2e76718f",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17665,7 +17665,7 @@
     ]
   },
   {
-    "id": "dup-0488",
+    "id": "dup-ea7c7253c23e",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17685,7 +17685,7 @@
     ]
   },
   {
-    "id": "dup-0489",
+    "id": "dup-cd82dc5541ee",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17700,7 +17700,7 @@
     ]
   },
   {
-    "id": "dup-0490",
+    "id": "dup-4dad33ec9f34",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17715,7 +17715,7 @@
     ]
   },
   {
-    "id": "dup-0491",
+    "id": "dup-b27809005a82",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17730,7 +17730,7 @@
     ]
   },
   {
-    "id": "dup-0492",
+    "id": "dup-1e053528cdee",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17745,7 +17745,7 @@
     ]
   },
   {
-    "id": "dup-0493",
+    "id": "dup-a03bc38e5622",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17775,7 +17775,7 @@
     ]
   },
   {
-    "id": "dup-0494",
+    "id": "dup-23d51808a185",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17795,7 +17795,7 @@
     ]
   },
   {
-    "id": "dup-0495",
+    "id": "dup-3f8594b6898c",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17830,7 +17830,7 @@
     ]
   },
   {
-    "id": "dup-0496",
+    "id": "dup-7dbbb04020b2",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17845,7 +17845,7 @@
     ]
   },
   {
-    "id": "dup-0497",
+    "id": "dup-e0fd3ad75f50",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17860,7 +17860,7 @@
     ]
   },
   {
-    "id": "dup-0498",
+    "id": "dup-a25efb6375e9",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17875,7 +17875,7 @@
     ]
   },
   {
-    "id": "dup-0499",
+    "id": "dup-54b375032ca2",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17915,7 +17915,7 @@
     ]
   },
   {
-    "id": "dup-0500",
+    "id": "dup-a1f3b920fc7c",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17930,7 +17930,7 @@
     ]
   },
   {
-    "id": "dup-0501",
+    "id": "dup-74b76fba837c",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17945,7 +17945,7 @@
     ]
   },
   {
-    "id": "dup-0502",
+    "id": "dup-9d43af68ec57",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17970,7 +17970,7 @@
     ]
   },
   {
-    "id": "dup-0503",
+    "id": "dup-fe895d3c99d5",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17990,7 +17990,7 @@
     ]
   },
   {
-    "id": "dup-0504",
+    "id": "dup-6bd29f859235",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18005,7 +18005,7 @@
     ]
   },
   {
-    "id": "dup-0505",
+    "id": "dup-42c29bfec243",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18020,7 +18020,7 @@
     ]
   },
   {
-    "id": "dup-0506",
+    "id": "dup-5da01a770e8a",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18035,7 +18035,7 @@
     ]
   },
   {
-    "id": "dup-0507",
+    "id": "dup-eb93d5a8fdd3",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18050,7 +18050,7 @@
     ]
   },
   {
-    "id": "dup-0508",
+    "id": "dup-62b22328f7ae",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18065,7 +18065,7 @@
     ]
   },
   {
-    "id": "dup-0509",
+    "id": "dup-b656a19baf97",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18080,7 +18080,7 @@
     ]
   },
   {
-    "id": "dup-0510",
+    "id": "dup-77feccf69c40",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18100,7 +18100,7 @@
     ]
   },
   {
-    "id": "dup-0511",
+    "id": "dup-a69e0d149cd4",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18125,7 +18125,7 @@
     ]
   },
   {
-    "id": "dup-0512",
+    "id": "dup-6d0ac21cea6b",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18150,7 +18150,7 @@
     ]
   },
   {
-    "id": "dup-0513",
+    "id": "dup-da0337f50194",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18165,7 +18165,7 @@
     ]
   },
   {
-    "id": "dup-0514",
+    "id": "dup-618da8150a9f",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18195,7 +18195,7 @@
     ]
   },
   {
-    "id": "dup-0515",
+    "id": "dup-44795984d091",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18220,7 +18220,7 @@
     ]
   },
   {
-    "id": "dup-0516",
+    "id": "dup-93ee1bbdb003",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18250,7 +18250,7 @@
     ]
   },
   {
-    "id": "dup-0517",
+    "id": "dup-cf8ac394deb9",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18275,7 +18275,7 @@
     ]
   },
   {
-    "id": "dup-0518",
+    "id": "dup-534a06179667",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18410,7 +18410,7 @@
     ]
   },
   {
-    "id": "dup-0519",
+    "id": "dup-1786bc93ea6a",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18425,7 +18425,7 @@
     ]
   },
   {
-    "id": "dup-0520",
+    "id": "dup-e7fabdabc486",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18440,7 +18440,7 @@
     ]
   },
   {
-    "id": "dup-0521",
+    "id": "dup-00d97505e566",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18480,7 +18480,7 @@
     ]
   },
   {
-    "id": "dup-0522",
+    "id": "dup-4fbc57c56116",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18495,7 +18495,7 @@
     ]
   },
   {
-    "id": "dup-0523",
+    "id": "dup-25eddb71045b",
     "sites": [
       {
         "file": "tests/code_lens_overview_collapse_viz.rs",
@@ -18510,7 +18510,7 @@
     ]
   },
   {
-    "id": "dup-0524",
+    "id": "dup-3250589053fd",
     "sites": [
       {
         "file": "tests/code_lens_overview_collapse_viz.rs",
@@ -18540,7 +18540,7 @@
     ]
   },
   {
-    "id": "dup-0525",
+    "id": "dup-fbb5bc55dc09",
     "sites": [
       {
         "file": "tests/code_lens_overview_collapse_viz.rs",
@@ -18575,7 +18575,7 @@
     ]
   },
   {
-    "id": "dup-0526",
+    "id": "dup-5445e11f2c4a",
     "sites": [
       {
         "file": "tests/code_lens_overview_collapse_viz.rs",
@@ -18610,7 +18610,7 @@
     ]
   },
   {
-    "id": "dup-0527",
+    "id": "dup-8b7b9d4ceab8",
     "sites": [
       {
         "file": "tests/code_lens_overview_collapse_viz.rs",
@@ -18645,7 +18645,7 @@
     ]
   },
   {
-    "id": "dup-0528",
+    "id": "dup-f31664ca8a0a",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18690,7 +18690,7 @@
     ]
   },
   {
-    "id": "dup-0529",
+    "id": "dup-841111722cf8",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18705,7 +18705,7 @@
     ]
   },
   {
-    "id": "dup-0530",
+    "id": "dup-9c8fbf2fd88a",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18720,7 +18720,7 @@
     ]
   },
   {
-    "id": "dup-0531",
+    "id": "dup-14f55a46039c",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18735,7 +18735,7 @@
     ]
   },
   {
-    "id": "dup-0532",
+    "id": "dup-680731fdfa42",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18750,7 +18750,7 @@
     ]
   },
   {
-    "id": "dup-0533",
+    "id": "dup-c23edb94c48b",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18765,7 +18765,7 @@
     ]
   },
   {
-    "id": "dup-0534",
+    "id": "dup-2feba71e0201",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18780,7 +18780,7 @@
     ]
   },
   {
-    "id": "dup-0535",
+    "id": "dup-6fa14392ee7f",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18795,7 +18795,7 @@
     ]
   },
   {
-    "id": "dup-0536",
+    "id": "dup-f476ae0e4ebe",
     "sites": [
       {
         "file": "tests/common/layer_cli.rs",
@@ -18810,7 +18810,7 @@
     ]
   },
   {
-    "id": "dup-0537",
+    "id": "dup-81933c2b8b1b",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -18835,7 +18835,7 @@
     ]
   },
   {
-    "id": "dup-0538",
+    "id": "dup-b02e5a0dd9cd",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -18850,7 +18850,7 @@
     ]
   },
   {
-    "id": "dup-0539",
+    "id": "dup-e64131a21f44",
     "sites": [
       {
         "file": "tests/community_detection_pass.rs",
@@ -18865,7 +18865,7 @@
     ]
   },
   {
-    "id": "dup-0540",
+    "id": "dup-38bcd5cba1f7",
     "sites": [
       {
         "file": "tests/community_fold_periphery.rs",
@@ -18880,7 +18880,7 @@
     ]
   },
   {
-    "id": "dup-0541",
+    "id": "dup-29092fe5ff01",
     "sites": [
       {
         "file": "tests/community_fold_periphery.rs",
@@ -18895,7 +18895,7 @@
     ]
   },
   {
-    "id": "dup-0542",
+    "id": "dup-0d1a377baf4e",
     "sites": [
       {
         "file": "tests/concepts_labels_membership.rs",
@@ -18910,7 +18910,7 @@
     ]
   },
   {
-    "id": "dup-0543",
+    "id": "dup-4b1ad528add9",
     "sites": [
       {
         "file": "tests/concepts_labels_membership.rs",
@@ -18925,7 +18925,7 @@
     ]
   },
   {
-    "id": "dup-0544",
+    "id": "dup-5030159da26c",
     "sites": [
       {
         "file": "tests/concepts_lens_view_periphery.rs",
@@ -18995,7 +18995,7 @@
     ]
   },
   {
-    "id": "dup-0545",
+    "id": "dup-d9f0f0a521ae",
     "sites": [
       {
         "file": "tests/confidence_tier_blast_radius.rs",
@@ -19025,7 +19025,7 @@
     ]
   },
   {
-    "id": "dup-0546",
+    "id": "dup-2b83769d8374",
     "sites": [
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -19090,7 +19090,7 @@
     ]
   },
   {
-    "id": "dup-0547",
+    "id": "dup-a41dbeb63c50",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19115,7 +19115,7 @@
     ]
   },
   {
-    "id": "dup-0548",
+    "id": "dup-60a3a5a3d659",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19130,7 +19130,7 @@
     ]
   },
   {
-    "id": "dup-0549",
+    "id": "dup-c9e94ced41cc",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19145,7 +19145,7 @@
     ]
   },
   {
-    "id": "dup-0550",
+    "id": "dup-0fbc4645bb71",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19170,7 +19170,7 @@
     ]
   },
   {
-    "id": "dup-0551",
+    "id": "dup-54ddd6b0fb8e",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19185,7 +19185,7 @@
     ]
   },
   {
-    "id": "dup-0552",
+    "id": "dup-05c4cd5de433",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19200,7 +19200,7 @@
     ]
   },
   {
-    "id": "dup-0553",
+    "id": "dup-65315ff68385",
     "sites": [
       {
         "file": "tests/console_shell_periphery.rs",
@@ -19215,7 +19215,7 @@
     ]
   },
   {
-    "id": "dup-0554",
+    "id": "dup-d40fc7b9f479",
     "sites": [
       {
         "file": "tests/console_shell_periphery.rs",
@@ -19230,7 +19230,7 @@
     ]
   },
   {
-    "id": "dup-0555",
+    "id": "dup-944a50b2b0e5",
     "sites": [
       {
         "file": "tests/console_shell_periphery.rs",
@@ -19245,7 +19245,7 @@
     ]
   },
   {
-    "id": "dup-0556",
+    "id": "dup-27949f690fca",
     "sites": [
       {
         "file": "tests/console_shell_periphery.rs",
@@ -19260,7 +19260,7 @@
     ]
   },
   {
-    "id": "dup-0557",
+    "id": "dup-f99638d3db96",
     "sites": [
       {
         "file": "tests/console_shell_periphery.rs",
@@ -19275,7 +19275,7 @@
     ]
   },
   {
-    "id": "dup-0558",
+    "id": "dup-f6273c6eadea",
     "sites": [
       {
         "file": "tests/console_status_periphery.rs",
@@ -19295,7 +19295,7 @@
     ]
   },
   {
-    "id": "dup-0559",
+    "id": "dup-33a645f955b6",
     "sites": [
       {
         "file": "tests/console_status_periphery.rs",
@@ -19310,7 +19310,7 @@
     ]
   },
   {
-    "id": "dup-0560",
+    "id": "dup-2c0773c5730e",
     "sites": [
       {
         "file": "tests/console_wasm_build_periphery.rs",
@@ -19325,7 +19325,7 @@
     ]
   },
   {
-    "id": "dup-0561",
+    "id": "dup-e359b939b0fa",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -19340,7 +19340,7 @@
     ]
   },
   {
-    "id": "dup-0562",
+    "id": "dup-b6b330a14069",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -19360,7 +19360,7 @@
     ]
   },
   {
-    "id": "dup-0563",
+    "id": "dup-c18c78652ce0",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -19390,7 +19390,7 @@
     ]
   },
   {
-    "id": "dup-0564",
+    "id": "dup-a256cd45f584",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -19420,7 +19420,7 @@
     ]
   },
   {
-    "id": "dup-0565",
+    "id": "dup-e4929ff28bff",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -19435,7 +19435,7 @@
     ]
   },
   {
-    "id": "dup-0566",
+    "id": "dup-ca854230f60e",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_fence_periphery.rs",
@@ -19455,7 +19455,7 @@
     ]
   },
   {
-    "id": "dup-0567",
+    "id": "dup-ff831de3ad9e",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_periphery.rs",
@@ -19475,7 +19475,7 @@
     ]
   },
   {
-    "id": "dup-0568",
+    "id": "dup-70f9fcb53583",
     "sites": [
       {
         "file": "tests/dash_cluster_detail_drill.rs",
@@ -19490,7 +19490,7 @@
     ]
   },
   {
-    "id": "dup-0569",
+    "id": "dup-2a040e2046d5",
     "sites": [
       {
         "file": "tests/dash_decisions_progressive_disclosure.rs",
@@ -19525,7 +19525,7 @@
     ]
   },
   {
-    "id": "dup-0570",
+    "id": "dup-6ea1d47d52fe",
     "sites": [
       {
         "file": "tests/dash_exploration_route_client_contract.rs",
@@ -19540,7 +19540,7 @@
     ]
   },
   {
-    "id": "dup-0571",
+    "id": "dup-646484abd365",
     "sites": [
       {
         "file": "tests/dash_exploration_route_client_contract.rs",
@@ -19555,7 +19555,7 @@
     ]
   },
   {
-    "id": "dup-0572",
+    "id": "dup-91477cc75aa4",
     "sites": [
       {
         "file": "tests/dash_graph_exploration_fold.rs",
@@ -19570,7 +19570,7 @@
     ]
   },
   {
-    "id": "dup-0573",
+    "id": "dup-79495b3c2235",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19590,7 +19590,7 @@
     ]
   },
   {
-    "id": "dup-0574",
+    "id": "dup-1af9e6f23ac9",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19615,7 +19615,7 @@
     ]
   },
   {
-    "id": "dup-0575",
+    "id": "dup-910604a80ba4",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19635,7 +19635,7 @@
     ]
   },
   {
-    "id": "dup-0576",
+    "id": "dup-18b7a49b84c9",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19660,7 +19660,7 @@
     ]
   },
   {
-    "id": "dup-0577",
+    "id": "dup-383ec90e9854",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19690,7 +19690,7 @@
     ]
   },
   {
-    "id": "dup-0578",
+    "id": "dup-4a238fd11f57",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19705,7 +19705,7 @@
     ]
   },
   {
-    "id": "dup-0579",
+    "id": "dup-50a702102afc",
     "sites": [
       {
         "file": "tests/dash_release_ready.rs",
@@ -19720,7 +19720,7 @@
     ]
   },
   {
-    "id": "dup-0580",
+    "id": "dup-a32a3092b87c",
     "sites": [
       {
         "file": "tests/dash_release_ready.rs",
@@ -19735,7 +19735,7 @@
     ]
   },
   {
-    "id": "dup-0581",
+    "id": "dup-fb72166b4d9e",
     "sites": [
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -19760,7 +19760,7 @@
     ]
   },
   {
-    "id": "dup-0582",
+    "id": "dup-ef040039558b",
     "sites": [
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -19775,7 +19775,7 @@
     ]
   },
   {
-    "id": "dup-0583",
+    "id": "dup-e331ed7752cd",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -19815,7 +19815,7 @@
     ]
   },
   {
-    "id": "dup-0584",
+    "id": "dup-1e0bbe2f9d9b",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -19835,7 +19835,7 @@
     ]
   },
   {
-    "id": "dup-0585",
+    "id": "dup-c52667e89089",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -19855,7 +19855,7 @@
     ]
   },
   {
-    "id": "dup-0586",
+    "id": "dup-3e2a3434e2a4",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -19870,7 +19870,7 @@
     ]
   },
   {
-    "id": "dup-0587",
+    "id": "dup-3f16dbe89d0a",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -19890,7 +19890,7 @@
     ]
   },
   {
-    "id": "dup-0588",
+    "id": "dup-d3e2a91f4c34",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -19910,7 +19910,7 @@
     ]
   },
   {
-    "id": "dup-0589",
+    "id": "dup-d64d702abca2",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -19935,7 +19935,7 @@
     ]
   },
   {
-    "id": "dup-0590",
+    "id": "dup-c06e1c41c352",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -19950,7 +19950,7 @@
     ]
   },
   {
-    "id": "dup-0591",
+    "id": "dup-47e12bef94e9",
     "sites": [
       {
         "file": "tests/dedup_seeding_periphery.rs",
@@ -19965,7 +19965,7 @@
     ]
   },
   {
-    "id": "dup-0592",
+    "id": "dup-ff761af86084",
     "sites": [
       {
         "file": "tests/design_intent_events.rs",
@@ -19980,7 +19980,7 @@
     ]
   },
   {
-    "id": "dup-0593",
+    "id": "dup-59e92471febe",
     "sites": [
       {
         "file": "tests/design_intent_events.rs",
@@ -19995,7 +19995,7 @@
     ]
   },
   {
-    "id": "dup-0594",
+    "id": "dup-a40c6024904b",
     "sites": [
       {
         "file": "tests/duplication_catalog_contract_periphery.rs",
@@ -20010,7 +20010,7 @@
     ]
   },
   {
-    "id": "dup-0595",
+    "id": "dup-0e983b9878cc",
     "sites": [
       {
         "file": "tests/escalation_resume_periphery.rs",
@@ -20035,7 +20035,7 @@
     ]
   },
   {
-    "id": "dup-0596",
+    "id": "dup-192d2ab57421",
     "sites": [
       {
         "file": "tests/fanout_gate_inheritance_periphery.rs",
@@ -20050,7 +20050,7 @@
     ]
   },
   {
-    "id": "dup-0597",
+    "id": "dup-8e257fd8da19",
     "sites": [
       {
         "file": "tests/fanout_gate_inheritance_periphery.rs",
@@ -20070,7 +20070,7 @@
     ]
   },
   {
-    "id": "dup-0598",
+    "id": "dup-5ba03e5035fa",
     "sites": [
       {
         "file": "tests/fanout_gate_inheritance_periphery.rs",
@@ -20085,7 +20085,7 @@
     ]
   },
   {
-    "id": "dup-0599",
+    "id": "dup-10da41b33025",
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
@@ -20100,7 +20100,7 @@
     ]
   },
   {
-    "id": "dup-0600",
+    "id": "dup-a56f1137cdfb",
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
@@ -20115,7 +20115,7 @@
     ]
   },
   {
-    "id": "dup-0601",
+    "id": "dup-45e554b7c4ec",
     "sites": [
       {
         "file": "tests/gate_store_fence_periphery.rs",
@@ -20130,7 +20130,7 @@
     ]
   },
   {
-    "id": "dup-0602",
+    "id": "dup-ad93c6b10a41",
     "sites": [
       {
         "file": "tests/gate_store_fence_periphery.rs",
@@ -20145,7 +20145,7 @@
     ]
   },
   {
-    "id": "dup-0603",
+    "id": "dup-ec0892efe50c",
     "sites": [
       {
         "file": "tests/gitsemver_derivation.rs",
@@ -20165,7 +20165,7 @@
     ]
   },
   {
-    "id": "dup-0604",
+    "id": "dup-97567fb0f51d",
     "sites": [
       {
         "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
@@ -20195,7 +20195,7 @@
     ]
   },
   {
-    "id": "dup-0605",
+    "id": "dup-26588610e4bb",
     "sites": [
       {
         "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
@@ -20225,7 +20225,7 @@
     ]
   },
   {
-    "id": "dup-0606",
+    "id": "dup-3f3d5990c9fe",
     "sites": [
       {
         "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
@@ -20239,23 +20239,23 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6555,
-        "end_line": 6563
+        "start_line": 6582,
+        "end_line": 6590
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6566,
-        "end_line": 6573
+        "start_line": 6593,
+        "end_line": 6600
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6576,
-        "end_line": 6580
+        "start_line": 6603,
+        "end_line": 6607
       }
     ]
   },
   {
-    "id": "dup-0607",
+    "id": "dup-2f5b1cb5dc34",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
@@ -20290,7 +20290,7 @@
     ]
   },
   {
-    "id": "dup-0608",
+    "id": "dup-76ac18c56947",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
@@ -20320,7 +20320,7 @@
     ]
   },
   {
-    "id": "dup-0609",
+    "id": "dup-c3da05bb2e4c",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
@@ -20335,7 +20335,7 @@
     ]
   },
   {
-    "id": "dup-0610",
+    "id": "dup-1b1b02dfa8b3",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
@@ -20350,7 +20350,7 @@
     ]
   },
   {
-    "id": "dup-0611",
+    "id": "dup-14936792d6c7",
     "sites": [
       {
         "file": "tests/graph_collision_body_and_tiebreak.rs",
@@ -20365,7 +20365,7 @@
     ]
   },
   {
-    "id": "dup-0612",
+    "id": "dup-c1ff693c34c5",
     "sites": [
       {
         "file": "tests/graph_collision_body_and_tiebreak.rs",
@@ -20380,7 +20380,7 @@
     ]
   },
   {
-    "id": "dup-0613",
+    "id": "dup-e4e39c11c4c2",
     "sites": [
       {
         "file": "tests/graph_denoise_target_project.rs",
@@ -20395,7 +20395,7 @@
     ]
   },
   {
-    "id": "dup-0614",
+    "id": "dup-fa251330d936",
     "sites": [
       {
         "file": "tests/graph_density_spread_floor_and_centring.rs",
@@ -20420,7 +20420,7 @@
     ]
   },
   {
-    "id": "dup-0615",
+    "id": "dup-e839c021f4f0",
     "sites": [
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -20435,7 +20435,7 @@
     ]
   },
   {
-    "id": "dup-0616",
+    "id": "dup-3c2b219dfd23",
     "sites": [
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -20460,7 +20460,7 @@
     ]
   },
   {
-    "id": "dup-0617",
+    "id": "dup-a6c1ae385046",
     "sites": [
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -20475,7 +20475,7 @@
     ]
   },
   {
-    "id": "dup-0618",
+    "id": "dup-0f2d7b120d84",
     "sites": [
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -20490,7 +20490,7 @@
     ]
   },
   {
-    "id": "dup-0619",
+    "id": "dup-2b556ed2237e",
     "sites": [
       {
         "file": "tests/graph_query_engine_relocation_periphery.rs",
@@ -20510,7 +20510,7 @@
     ]
   },
   {
-    "id": "dup-0620",
+    "id": "dup-0b4679e80d36",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -20530,7 +20530,7 @@
     ]
   },
   {
-    "id": "dup-0621",
+    "id": "dup-5984868133d3",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -20550,7 +20550,7 @@
     ]
   },
   {
-    "id": "dup-0622",
+    "id": "dup-fd84899a290e",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -20565,7 +20565,7 @@
     ]
   },
   {
-    "id": "dup-0623",
+    "id": "dup-f14f51f52c81",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -20580,7 +20580,7 @@
     ]
   },
   {
-    "id": "dup-0624",
+    "id": "dup-966be757c249",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -20595,7 +20595,7 @@
     ]
   },
   {
-    "id": "dup-0625",
+    "id": "dup-1a162aaf091f",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -20610,7 +20610,7 @@
     ]
   },
   {
-    "id": "dup-0626",
+    "id": "dup-2601722bfe68",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -20685,7 +20685,7 @@
     ]
   },
   {
-    "id": "dup-0627",
+    "id": "dup-a198bba61cf9",
     "sites": [
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
@@ -20700,7 +20700,7 @@
     ]
   },
   {
-    "id": "dup-0628",
+    "id": "dup-6d950c4feda9",
     "sites": [
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
@@ -20720,7 +20720,7 @@
     ]
   },
   {
-    "id": "dup-0629",
+    "id": "dup-9f46bfbbb980",
     "sites": [
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
@@ -20735,7 +20735,7 @@
     ]
   },
   {
-    "id": "dup-0630",
+    "id": "dup-e9536beddfde",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20755,7 +20755,7 @@
     ]
   },
   {
-    "id": "dup-0631",
+    "id": "dup-b6242c10f555",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20770,7 +20770,7 @@
     ]
   },
   {
-    "id": "dup-0632",
+    "id": "dup-99707b40bf49",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20790,7 +20790,7 @@
     ]
   },
   {
-    "id": "dup-0633",
+    "id": "dup-c0401be91085",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20810,7 +20810,7 @@
     ]
   },
   {
-    "id": "dup-0634",
+    "id": "dup-c579d7abdb85",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20825,7 +20825,7 @@
     ]
   },
   {
-    "id": "dup-0635",
+    "id": "dup-72a7cd5d3922",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20840,7 +20840,7 @@
     ]
   },
   {
-    "id": "dup-0636",
+    "id": "dup-09b3e7c0162a",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20860,7 +20860,7 @@
     ]
   },
   {
-    "id": "dup-0637",
+    "id": "dup-d663e5ee2dc9",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20875,7 +20875,7 @@
     ]
   },
   {
-    "id": "dup-0638",
+    "id": "dup-aef8c049d303",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20890,7 +20890,7 @@
     ]
   },
   {
-    "id": "dup-0639",
+    "id": "dup-a2f278ce0c8d",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20910,7 +20910,7 @@
     ]
   },
   {
-    "id": "dup-0640",
+    "id": "dup-c26be666d17b",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20935,7 +20935,7 @@
     ]
   },
   {
-    "id": "dup-0641",
+    "id": "dup-676391cb986b",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20955,7 +20955,7 @@
     ]
   },
   {
-    "id": "dup-0642",
+    "id": "dup-2799c6c81ede",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -20975,7 +20975,7 @@
     ]
   },
   {
-    "id": "dup-0643",
+    "id": "dup-b002746fe58e",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -20995,7 +20995,7 @@
     ]
   },
   {
-    "id": "dup-0644",
+    "id": "dup-3dee03a7934a",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21010,7 +21010,7 @@
     ]
   },
   {
-    "id": "dup-0645",
+    "id": "dup-109f4d9bf687",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21025,7 +21025,7 @@
     ]
   },
   {
-    "id": "dup-0646",
+    "id": "dup-cf443bd84ddb",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21040,7 +21040,7 @@
     ]
   },
   {
-    "id": "dup-0647",
+    "id": "dup-41d75f251351",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21055,7 +21055,7 @@
     ]
   },
   {
-    "id": "dup-0648",
+    "id": "dup-2e889577b60f",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21070,7 +21070,7 @@
     ]
   },
   {
-    "id": "dup-0649",
+    "id": "dup-e110dd267f53",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21085,7 +21085,7 @@
     ]
   },
   {
-    "id": "dup-0650",
+    "id": "dup-8ea961567395",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21100,7 +21100,7 @@
     ]
   },
   {
-    "id": "dup-0651",
+    "id": "dup-2c150e59c6d9",
     "sites": [
       {
         "file": "tests/land_refused_names_its_paths_periphery.rs",
@@ -21115,7 +21115,7 @@
     ]
   },
   {
-    "id": "dup-0652",
+    "id": "dup-6e8b956f469d",
     "sites": [
       {
         "file": "tests/meta_phases_declaration_periphery.rs",
@@ -21145,7 +21145,7 @@
     ]
   },
   {
-    "id": "dup-0653",
+    "id": "dup-238f6df687da",
     "sites": [
       {
         "file": "tests/metadata_card_handoff_viz.rs",
@@ -21170,7 +21170,7 @@
     ]
   },
   {
-    "id": "dup-0654",
+    "id": "dup-ff735ff86fe9",
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -21215,7 +21215,7 @@
     ]
   },
   {
-    "id": "dup-0655",
+    "id": "dup-a1bb5f4f31db",
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -21230,7 +21230,7 @@
     ]
   },
   {
-    "id": "dup-0656",
+    "id": "dup-513c6408e168",
     "sites": [
       {
         "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
@@ -21255,7 +21255,7 @@
     ]
   },
   {
-    "id": "dup-0657",
+    "id": "dup-2be2113adc3a",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21270,7 +21270,7 @@
     ]
   },
   {
-    "id": "dup-0658",
+    "id": "dup-a76bc2af4d4b",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21330,7 +21330,7 @@
     ]
   },
   {
-    "id": "dup-0659",
+    "id": "dup-7f174d1fe10b",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21355,7 +21355,7 @@
     ]
   },
   {
-    "id": "dup-0660",
+    "id": "dup-3e64f9e11fa8",
     "sites": [
       {
         "file": "tests/parallel_ordered_emit.rs",
@@ -21370,7 +21370,7 @@
     ]
   },
   {
-    "id": "dup-0661",
+    "id": "dup-e4f67a924cc1",
     "sites": [
       {
         "file": "tests/phase_of_role_mapping_periphery.rs",
@@ -21390,7 +21390,7 @@
     ]
   },
   {
-    "id": "dup-0662",
+    "id": "dup-079f642aa361",
     "sites": [
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
@@ -21405,7 +21405,7 @@
     ]
   },
   {
-    "id": "dup-0663",
+    "id": "dup-a4d69d3496b8",
     "sites": [
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
@@ -21420,7 +21420,7 @@
     ]
   },
   {
-    "id": "dup-0664",
+    "id": "dup-f2bd03caddee",
     "sites": [
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
@@ -21435,7 +21435,7 @@
     ]
   },
   {
-    "id": "dup-0665",
+    "id": "dup-52c298941291",
     "sites": [
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
@@ -21450,7 +21450,7 @@
     ]
   },
   {
-    "id": "dup-0666",
+    "id": "dup-b2a2222bcd37",
     "sites": [
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -21465,7 +21465,7 @@
     ]
   },
   {
-    "id": "dup-0667",
+    "id": "dup-051d26b56ca0",
     "sites": [
       {
         "file": "tests/projections_stay_local.rs",
@@ -21480,7 +21480,7 @@
     ]
   },
   {
-    "id": "dup-0668",
+    "id": "dup-b39b9c66964a",
     "sites": [
       {
         "file": "tests/projections_stay_local.rs",
@@ -21495,7 +21495,7 @@
     ]
   },
   {
-    "id": "dup-0669",
+    "id": "dup-398370d93ff5",
     "sites": [
       {
         "file": "tests/projections_stay_local.rs",
@@ -21510,7 +21510,7 @@
     ]
   },
   {
-    "id": "dup-0670",
+    "id": "dup-a9c4583a7e25",
     "sites": [
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
@@ -21530,7 +21530,7 @@
     ]
   },
   {
-    "id": "dup-0671",
+    "id": "dup-21b6c6935a91",
     "sites": [
       {
         "file": "tests/reap_before_removal_audit.rs",
@@ -21550,7 +21550,7 @@
     ]
   },
   {
-    "id": "dup-0672",
+    "id": "dup-02b6d686ec67",
     "sites": [
       {
         "file": "tests/reap_before_removal_periphery.rs",
@@ -21580,7 +21580,7 @@
     ]
   },
   {
-    "id": "dup-0673",
+    "id": "dup-fc5ffda10df5",
     "sites": [
       {
         "file": "tests/reminder_dedup_workflow_child_env_periphery.rs",
@@ -21595,7 +21595,7 @@
     ]
   },
   {
-    "id": "dup-0674",
+    "id": "dup-e79f508e24b9",
     "sites": [
       {
         "file": "tests/replan_episode_identity.rs",
@@ -21610,7 +21610,7 @@
     ]
   },
   {
-    "id": "dup-0675",
+    "id": "dup-51d311a880da",
     "sites": [
       {
         "file": "tests/replan_episode_identity.rs",
@@ -21630,7 +21630,7 @@
     ]
   },
   {
-    "id": "dup-0676",
+    "id": "dup-7f420e04a35c",
     "sites": [
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -21650,7 +21650,7 @@
     ]
   },
   {
-    "id": "dup-0677",
+    "id": "dup-cb850da85ff9",
     "sites": [
       {
         "file": "tests/reset_derived_compaction.rs",
@@ -21665,7 +21665,7 @@
     ]
   },
   {
-    "id": "dup-0678",
+    "id": "dup-fac08fda1cc8",
     "sites": [
       {
         "file": "tests/reset_derived_compaction.rs",
@@ -21680,7 +21680,7 @@
     ]
   },
   {
-    "id": "dup-0679",
+    "id": "dup-a34458e32ad6",
     "sites": [
       {
         "file": "tests/reset_derived_compaction.rs",
@@ -21700,7 +21700,7 @@
     ]
   },
   {
-    "id": "dup-0680",
+    "id": "dup-bd6fce254096",
     "sites": [
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -21720,7 +21720,7 @@
     ]
   },
   {
-    "id": "dup-0681",
+    "id": "dup-3fde39b380e2",
     "sites": [
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -21745,7 +21745,7 @@
     ]
   },
   {
-    "id": "dup-0682",
+    "id": "dup-bc312aeb64ee",
     "sites": [
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -21760,7 +21760,7 @@
     ]
   },
   {
-    "id": "dup-0683",
+    "id": "dup-12d8867a4234",
     "sites": [
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -21775,7 +21775,7 @@
     ]
   },
   {
-    "id": "dup-0684",
+    "id": "dup-a4deb38387de",
     "sites": [
       {
         "file": "tests/reset_menu.rs",
@@ -21790,7 +21790,7 @@
     ]
   },
   {
-    "id": "dup-0685",
+    "id": "dup-1e8e281bd0c7",
     "sites": [
       {
         "file": "tests/reset_menu.rs",
@@ -21810,7 +21810,7 @@
     ]
   },
   {
-    "id": "dup-0686",
+    "id": "dup-d6230ae2025e",
     "sites": [
       {
         "file": "tests/reset_menu.rs",
@@ -21825,7 +21825,7 @@
     ]
   },
   {
-    "id": "dup-0687",
+    "id": "dup-195a4541aac8",
     "sites": [
       {
         "file": "tests/reset_menu.rs",
@@ -21840,7 +21840,7 @@
     ]
   },
   {
-    "id": "dup-0688",
+    "id": "dup-6adbc1efd3a6",
     "sites": [
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -21855,7 +21855,7 @@
     ]
   },
   {
-    "id": "dup-0689",
+    "id": "dup-1b76150a5849",
     "sites": [
       {
         "file": "tests/review_round_speculation_winner_merge_round_start_sha_periphery.rs",
@@ -21870,7 +21870,7 @@
     ]
   },
   {
-    "id": "dup-0690",
+    "id": "dup-109b0f8ef06e",
     "sites": [
       {
         "file": "tests/review_tier_roster_periphery.rs",
@@ -21885,617 +21885,617 @@
     ]
   },
   {
-    "id": "dup-0691",
+    "id": "dup-51ecdac1e9c5",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3286,
-        "end_line": 3289
+        "start_line": 3313,
+        "end_line": 3316
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3293,
-        "end_line": 3296
+        "start_line": 3320,
+        "end_line": 3323
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6155,
-        "end_line": 6158
+        "start_line": 6182,
+        "end_line": 6185
       }
     ]
   },
   {
-    "id": "dup-0692",
+    "id": "dup-c2f78f917d22",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3337,
-        "end_line": 3353
+        "start_line": 3364,
+        "end_line": 3380
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3355,
-        "end_line": 3368
+        "start_line": 3382,
+        "end_line": 3395
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6108,
-        "end_line": 6125
+        "start_line": 6135,
+        "end_line": 6152
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6127,
-        "end_line": 6142
+        "start_line": 6154,
+        "end_line": 6169
       }
     ]
   },
   {
-    "id": "dup-0693",
+    "id": "dup-d6624a34c478",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3642,
-        "end_line": 3806
+        "start_line": 3669,
+        "end_line": 3833
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4067,
-        "end_line": 4309
+        "start_line": 4094,
+        "end_line": 4336
       }
     ]
   },
   {
-    "id": "dup-0694",
+    "id": "dup-352fe3f93801",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6212,
-        "end_line": 6221
+        "start_line": 6239,
+        "end_line": 6248
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6401,
-        "end_line": 6407
+        "start_line": 6428,
+        "end_line": 6434
       }
     ]
   },
   {
-    "id": "dup-0695",
+    "id": "dup-9484e0875b43",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6315,
-        "end_line": 6321
+        "start_line": 6342,
+        "end_line": 6348
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6324,
-        "end_line": 6332
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6335,
-        "end_line": 6347
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6350,
+        "start_line": 6351,
         "end_line": 6359
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6478,
-        "end_line": 6486
-      }
-    ]
-  },
-  {
-    "id": "dup-0696",
-    "sites": [
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6372,
-        "end_line": 6378
+        "start_line": 6362,
+        "end_line": 6374
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6381,
-        "end_line": 6390
-      }
-    ]
-  },
-  {
-    "id": "dup-0697",
-    "sites": [
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6498,
-        "end_line": 6502
+        "start_line": 6377,
+        "end_line": 6386
       },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6583,
-        "end_line": 6588
-      }
-    ]
-  },
-  {
-    "id": "dup-0698",
-    "sites": [
       {
         "file": "tests/simplification_audit.rs",
         "start_line": 6505,
-        "end_line": 6516
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6519,
-        "end_line": 6537
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6540,
-        "end_line": 6552
+        "end_line": 6513
       }
     ]
   },
   {
-    "id": "dup-0699",
+    "id": "dup-810705e338e2",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6652,
-        "end_line": 6658
+        "start_line": 6399,
+        "end_line": 6405
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6661,
-        "end_line": 6670
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 6750,
-        "end_line": 6755
+        "start_line": 6408,
+        "end_line": 6417
       }
     ]
   },
   {
-    "id": "dup-0700",
+    "id": "dup-0c08d8eb1d0d",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6814,
-        "end_line": 6846
+        "start_line": 6525,
+        "end_line": 6529
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6849,
-        "end_line": 6863
+        "start_line": 6610,
+        "end_line": 6615
       }
     ]
   },
   {
-    "id": "dup-0701",
+    "id": "dup-23662b623144",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6879,
-        "end_line": 6885
+        "start_line": 6532,
+        "end_line": 6543
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8174,
-        "end_line": 8181
+        "start_line": 6546,
+        "end_line": 6564
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9029,
-        "end_line": 9046
+        "start_line": 6567,
+        "end_line": 6579
       }
     ]
   },
   {
-    "id": "dup-0702",
+    "id": "dup-a33193324b1e",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6929,
-        "end_line": 6956
+        "start_line": 6679,
+        "end_line": 6685
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8330,
-        "end_line": 8357
+        "start_line": 6688,
+        "end_line": 6697
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10276,
-        "end_line": 10303
+        "start_line": 6777,
+        "end_line": 6782
       }
     ]
   },
   {
-    "id": "dup-0703",
+    "id": "dup-52aec5100373",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6995,
-        "end_line": 7019
+        "start_line": 6841,
+        "end_line": 6873
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8407,
-        "end_line": 8434
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 10373,
-        "end_line": 10400
+        "start_line": 6876,
+        "end_line": 6890
       }
     ]
   },
   {
-    "id": "dup-0704",
+    "id": "dup-821f10171731",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7045,
-        "end_line": 7111
+        "start_line": 6906,
+        "end_line": 6912
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10410,
-        "end_line": 10497
+        "start_line": 8241,
+        "end_line": 8248
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 9093,
+        "end_line": 9110
       }
     ]
   },
   {
-    "id": "dup-0705",
+    "id": "dup-f421b9a827dd",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7606,
-        "end_line": 7632
+        "start_line": 6956,
+        "end_line": 6983
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7635,
-        "end_line": 7653
+        "start_line": 8394,
+        "end_line": 8421
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 10340,
+        "end_line": 10367
       }
     ]
   },
   {
-    "id": "dup-0706",
+    "id": "dup-082bc8a1f792",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7778,
-        "end_line": 7791
+        "start_line": 7022,
+        "end_line": 7046
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8042,
-        "end_line": 8059
+        "start_line": 8471,
+        "end_line": 8498
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 10437,
+        "end_line": 10464
       }
     ]
   },
   {
-    "id": "dup-0707",
+    "id": "dup-0cc7e9bffb3b",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7798,
-        "end_line": 7811
+        "start_line": 7072,
+        "end_line": 7138
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7914,
-        "end_line": 7929
+        "start_line": 10474,
+        "end_line": 10561
       }
     ]
   },
   {
-    "id": "dup-0708",
+    "id": "dup-8ea9a5680226",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7814,
-        "end_line": 7821
+        "start_line": 7633,
+        "end_line": 7659
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7824,
-        "end_line": 7832
+        "start_line": 7662,
+        "end_line": 7680
       }
     ]
   },
   {
-    "id": "dup-0709",
+    "id": "dup-2a66a04ed48d",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7932,
-        "end_line": 7960
+        "start_line": 7805,
+        "end_line": 7818
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7963,
-        "end_line": 7992
+        "start_line": 8069,
+        "end_line": 8086
+      }
+    ]
+  },
+  {
+    "id": "dup-28f7951ffc52",
+    "sites": [
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7825,
+        "end_line": 7838
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7995,
+        "start_line": 7941,
+        "end_line": 7956
+      }
+    ]
+  },
+  {
+    "id": "dup-358dae07a664",
+    "sites": [
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7841,
+        "end_line": 7848
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7851,
+        "end_line": 7859
+      }
+    ]
+  },
+  {
+    "id": "dup-0d4baf65b210",
+    "sites": [
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7959,
+        "end_line": 7987
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7990,
         "end_line": 8019
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8022,
+        "end_line": 8046
       }
     ]
   },
   {
-    "id": "dup-0710",
+    "id": "dup-4b4a78faea1e",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8685,
-        "end_line": 8716
+        "start_line": 8749,
+        "end_line": 8780
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8878,
-        "end_line": 8923
+        "start_line": 8942,
+        "end_line": 8987
       }
     ]
   },
   {
-    "id": "dup-0711",
+    "id": "dup-1297ab598508",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8724,
-        "end_line": 8748
+        "start_line": 8788,
+        "end_line": 8812
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8751,
-        "end_line": 8768
+        "start_line": 8815,
+        "end_line": 8832
       }
     ]
   },
   {
-    "id": "dup-0712",
+    "id": "dup-72955e5d1448",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8813,
-        "end_line": 8866
+        "start_line": 8877,
+        "end_line": 8930
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9122,
-        "end_line": 9175
+        "start_line": 9186,
+        "end_line": 9239
       }
     ]
   },
   {
-    "id": "dup-0713",
+    "id": "dup-3fd4dd52e781",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9241,
-        "end_line": 9251
+        "start_line": 9305,
+        "end_line": 9315
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9254,
-        "end_line": 9267
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 9270,
-        "end_line": 9286
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 9289,
-        "end_line": 9307
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 9310,
+        "start_line": 9318,
         "end_line": 9331
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 9334,
+        "end_line": 9350
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 9353,
+        "end_line": 9371
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 9374,
+        "end_line": 9395
       }
     ]
   },
   {
-    "id": "dup-0714",
+    "id": "dup-136b8a23c627",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9389,
-        "end_line": 9400
+        "start_line": 9453,
+        "end_line": 9464
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9404,
-        "end_line": 9415
+        "start_line": 9468,
+        "end_line": 9479
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9419,
-        "end_line": 9435
+        "start_line": 9483,
+        "end_line": 9499
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9439,
-        "end_line": 9447
+        "start_line": 9503,
+        "end_line": 9511
       }
     ]
   },
   {
-    "id": "dup-0715",
+    "id": "dup-cc3ade7789a8",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9476,
-        "end_line": 9490
+        "start_line": 9540,
+        "end_line": 9554
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9493,
-        "end_line": 9507
+        "start_line": 9557,
+        "end_line": 9571
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9556,
-        "end_line": 9568
+        "start_line": 9620,
+        "end_line": 9632
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9571,
-        "end_line": 9581
+        "start_line": 9635,
+        "end_line": 9645
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9593,
-        "end_line": 9605
+        "start_line": 9657,
+        "end_line": 9669
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9608,
-        "end_line": 9625
+        "start_line": 9672,
+        "end_line": 9689
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9645,
-        "end_line": 9664
+        "start_line": 9709,
+        "end_line": 9728
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9667,
-        "end_line": 9682
+        "start_line": 9731,
+        "end_line": 9746
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9954,
-        "end_line": 9967
+        "start_line": 10018,
+        "end_line": 10031
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9988,
-        "end_line": 10003
+        "start_line": 10052,
+        "end_line": 10067
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10078,
-        "end_line": 10092
+        "start_line": 10142,
+        "end_line": 10156
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10109,
-        "end_line": 10122
+        "start_line": 10173,
+        "end_line": 10186
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10125,
-        "end_line": 10140
+        "start_line": 10189,
+        "end_line": 10204
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10143,
-        "end_line": 10153
+        "start_line": 10207,
+        "end_line": 10217
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10156,
-        "end_line": 10167
+        "start_line": 10220,
+        "end_line": 10231
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10170,
-        "end_line": 10181
+        "start_line": 10234,
+        "end_line": 10245
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10184,
-        "end_line": 10194
+        "start_line": 10248,
+        "end_line": 10258
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10197,
-        "end_line": 10210
+        "start_line": 10261,
+        "end_line": 10274
       }
     ]
   },
   {
-    "id": "dup-0716",
+    "id": "dup-e13db81454c5",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9628,
-        "end_line": 9636
+        "start_line": 9692,
+        "end_line": 9700
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9685,
-        "end_line": 9701
+        "start_line": 9749,
+        "end_line": 9765
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9838,
-        "end_line": 9853
+        "start_line": 9902,
+        "end_line": 9917
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9970,
-        "end_line": 9985
+        "start_line": 10034,
+        "end_line": 10049
       }
     ]
   },
   {
-    "id": "dup-0717",
+    "id": "dup-243981b57f4c",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9704,
-        "end_line": 9737
+        "start_line": 9768,
+        "end_line": 9801
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9740,
-        "end_line": 9762
+        "start_line": 9804,
+        "end_line": 9826
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9765,
-        "end_line": 9791
+        "start_line": 9829,
+        "end_line": 9855
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9794,
-        "end_line": 9820
+        "start_line": 9858,
+        "end_line": 9884
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9823,
-        "end_line": 9835
+        "start_line": 9887,
+        "end_line": 9899
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10006,
-        "end_line": 10017
+        "start_line": 10070,
+        "end_line": 10081
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10020,
-        "end_line": 10040
+        "start_line": 10084,
+        "end_line": 10104
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10043,
-        "end_line": 10075
+        "start_line": 10107,
+        "end_line": 10139
       }
     ]
   },
   {
-    "id": "dup-0718",
+    "id": "dup-f7ac2f319534",
     "sites": [
       {
         "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
@@ -22515,7 +22515,7 @@
     ]
   },
   {
-    "id": "dup-0719",
+    "id": "dup-502c3b2e40cb",
     "sites": [
       {
         "file": "tests/spawn_timing_periphery.rs",
@@ -22530,7 +22530,7 @@
     ]
   },
   {
-    "id": "dup-0720",
+    "id": "dup-7fb3b2dc01eb",
     "sites": [
       {
         "file": "tests/spec_lint.rs",
@@ -22745,7 +22745,7 @@
     ]
   },
   {
-    "id": "dup-0721",
+    "id": "dup-8c79cc874323",
     "sites": [
       {
         "file": "tests/step_attention_periphery.rs",
@@ -22765,7 +22765,7 @@
     ]
   },
   {
-    "id": "dup-0722",
+    "id": "dup-adfce3b42b86",
     "sites": [
       {
         "file": "tests/step_sheds_the_freshen.rs",
@@ -22780,7 +22780,7 @@
     ]
   },
   {
-    "id": "dup-0723",
+    "id": "dup-4895b9c89fc2",
     "sites": [
       {
         "file": "tests/stop_failure_hook_periphery.rs",
@@ -22795,7 +22795,7 @@
     ]
   },
   {
-    "id": "dup-0724",
+    "id": "dup-8698869c5150",
     "sites": [
       {
         "file": "tests/store_config.rs",
@@ -22810,7 +22810,7 @@
     ]
   },
   {
-    "id": "dup-0725",
+    "id": "dup-ceb5550e49fc",
     "sites": [
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -22835,7 +22835,7 @@
     ]
   },
   {
-    "id": "dup-0726",
+    "id": "dup-587e27d5de77",
     "sites": [
       {
         "file": "tests/store_flag_precedence.rs",
@@ -22860,7 +22860,7 @@
     ]
   },
   {
-    "id": "dup-0727",
+    "id": "dup-a919bb059729",
     "sites": [
       {
         "file": "tests/store_flag_precedence.rs",
@@ -22885,7 +22885,7 @@
     ]
   },
   {
-    "id": "dup-0728",
+    "id": "dup-e4ab9512e200",
     "sites": [
       {
         "file": "tests/store_flag_precedence.rs",
@@ -22900,7 +22900,7 @@
     ]
   },
   {
-    "id": "dup-0729",
+    "id": "dup-06a0599fe034",
     "sites": [
       {
         "file": "tests/store_precedence.rs",
@@ -22920,7 +22920,7 @@
     ]
   },
   {
-    "id": "dup-0730",
+    "id": "dup-56fda398784b",
     "sites": [
       {
         "file": "tests/store_precedence.rs",
@@ -22935,7 +22935,7 @@
     ]
   },
   {
-    "id": "dup-0731",
+    "id": "dup-11b115e94d2f",
     "sites": [
       {
         "file": "tests/store_precedence.rs",
@@ -22955,7 +22955,7 @@
     ]
   },
   {
-    "id": "dup-0732",
+    "id": "dup-4575c16355c4",
     "sites": [
       {
         "file": "tests/store_resolution_cli.rs",
@@ -22975,7 +22975,7 @@
     ]
   },
   {
-    "id": "dup-0733",
+    "id": "dup-7815c1a6b1fb",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -22995,7 +22995,7 @@
     ]
   },
   {
-    "id": "dup-0734",
+    "id": "dup-001010e90812",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23035,7 +23035,7 @@
     ]
   },
   {
-    "id": "dup-0735",
+    "id": "dup-785cba2a9c59",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23055,7 +23055,7 @@
     ]
   },
   {
-    "id": "dup-0736",
+    "id": "dup-1aa39f54e782",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23075,7 +23075,7 @@
     ]
   },
   {
-    "id": "dup-0737",
+    "id": "dup-86a9aa26ea95",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23095,7 +23095,7 @@
     ]
   },
   {
-    "id": "dup-0738",
+    "id": "dup-b88edb755f54",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23110,7 +23110,7 @@
     ]
   },
   {
-    "id": "dup-0739",
+    "id": "dup-4e3b78526858",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23125,7 +23125,7 @@
     ]
   },
   {
-    "id": "dup-0740",
+    "id": "dup-857434e1b1a8",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells_contract.rs",
@@ -23140,7 +23140,7 @@
     ]
   },
   {
-    "id": "dup-0741",
+    "id": "dup-c0da695a6c1b",
     "sites": [
       {
         "file": "tests/subject_lens_reprojection_contract.rs",
@@ -23160,7 +23160,7 @@
     ]
   },
   {
-    "id": "dup-0742",
+    "id": "dup-03f81374c9c3",
     "sites": [
       {
         "file": "tests/subject_lens_reprojection_contract.rs",
@@ -23175,7 +23175,7 @@
     ]
   },
   {
-    "id": "dup-0743",
+    "id": "dup-43938b7413a3",
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
@@ -23215,7 +23215,7 @@
     ]
   },
   {
-    "id": "dup-0744",
+    "id": "dup-a854599a6683",
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
@@ -23230,7 +23230,7 @@
     ]
   },
   {
-    "id": "dup-0745",
+    "id": "dup-10ee2edd03ee",
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
@@ -23245,7 +23245,7 @@
     ]
   },
   {
-    "id": "dup-0746",
+    "id": "dup-15e10e5cf0cb",
     "sites": [
       {
         "file": "tests/validate_advisories.rs",
@@ -23260,7 +23260,7 @@
     ]
   },
   {
-    "id": "dup-0747",
+    "id": "dup-8605d00c9c2c",
     "sites": [
       {
         "file": "tests/validate_advisories.rs",
@@ -23275,7 +23275,7 @@
     ]
   },
   {
-    "id": "dup-0748",
+    "id": "dup-3e5b7806c96a",
     "sites": [
       {
         "file": "tests/watchdog_cli_periphery.rs",
@@ -23295,7 +23295,7 @@
     ]
   },
   {
-    "id": "dup-0749",
+    "id": "dup-66ad4537aac9",
     "sites": [
       {
         "file": "tests/watchdog_cli_periphery.rs",
@@ -23315,7 +23315,7 @@
     ]
   },
   {
-    "id": "dup-0750",
+    "id": "dup-1e4dd368e94c",
     "sites": [
       {
         "file": "tests/worker_persona_label_periphery.rs",
@@ -23330,7 +23330,7 @@
     ]
   },
   {
-    "id": "dup-0751",
+    "id": "dup-659554f6286f",
     "sites": [
       {
         "file": "tests/workflow_definition_and_js_constants_periphery.rs",
@@ -23345,7 +23345,7 @@
     ]
   },
   {
-    "id": "dup-0752",
+    "id": "dup-3f38688e37c6",
     "sites": [
       {
         "file": "tests/workflow_driver_resolved_model_periphery.rs",

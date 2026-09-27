@@ -3259,10 +3259,31 @@ fn cluster_sort_key(c: &DupCluster) -> (String, usize) {
     }
 }
 
+/// A cluster's id, derived from its OWN content - its classification, its proposed home and
+/// its sorted `file#content_hash` site keys, hashed and rendered `dup-<12 hex>` - never from its
+/// position in the catalog, so closing one cluster never renumbers another and a citation of
+/// an id stays valid until that cluster itself changes. Line numbers never enter the key, so a
+/// pure line shift keeps the id too.
+fn cluster_id(c: &DupCluster) -> String {
+    let mut site_keys: Vec<String> = c
+        .sites
+        .iter()
+        .map(|s| format!("{}#{}", s.file, s.content_hash))
+        .collect();
+    site_keys.sort_unstable();
+    let key = format!(
+        "{}\n{}\n{}",
+        c.classification,
+        c.proposed_home,
+        site_keys.join("\n")
+    );
+    format!("dup-{}", &content_hash(&key)[..12])
+}
+
 /// Build the full duplication catalog from an already-scanned tree: the mechanical (Jaccard)
 /// clusters, the five mandatory sweeps, and the additional hand-found semantic clusters,
-/// combined into ONE deterministically ordered list with sequential `dup-NNNN` ids assigned
-/// after sorting (so ids are stable regardless of which pass found a given cluster). Takes
+/// combined into ONE deterministically ordered list, each carrying its content-derived
+/// [`cluster_id`]. Panics on an id collision rather than writing an ambiguous catalog. Takes
 /// `files` (not a root path) so [`real_catalog`] can share [`real_files`]'s ONE scan of the
 /// real tree instead of a second unrelated one.
 fn build_catalog(files: &[FileScan]) -> Vec<DupCluster> {
@@ -3271,8 +3292,14 @@ fn build_catalog(files: &[FileScan]) -> Vec<DupCluster> {
     clusters.extend(build_sweep_clusters(files, &refs));
     clusters.extend(build_extra_semantic_clusters(files, &refs));
     clusters.sort_by_key(cluster_sort_key);
-    for (idx, c) in clusters.iter_mut().enumerate() {
-        c.id = format!("dup-{:04}", idx + 1);
+    let mut seen = HashSet::new();
+    for c in clusters.iter_mut() {
+        c.id = cluster_id(c);
+        assert!(
+            seen.insert(c.id.clone()),
+            "two clusters derive the same id {}",
+            c.id
+        );
     }
     clusters
 }
@@ -8074,8 +8101,46 @@ mod tests {
     // build_catalog / catalog_to_json / render_section_2 / replace_section_2
     // -------------------------------------------------------------------------------------
 
+    /// A cluster's id is derived from its own content, never its position: removing one
+    /// cluster from the tree (here the pair sorting FIRST, so a positional scheme would shift
+    /// every later id) leaves every surviving cluster's id unchanged, and each id reads
+    /// `dup-<12 lowercase hex>`.
     #[test]
-    fn build_catalog_assigns_sequential_ids_after_the_deterministic_sort() {
+    fn removing_a_cluster_keeps_every_other_clusters_id() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        let removed_pair = "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n";
+        write_fixture(dir.path(), "src/a.rs", removed_pair);
+        write_fixture(dir.path(), "src/b.rs", removed_pair);
+        let kept_pair = "fn twice(s: &str) -> String {\n    format!(\"{s}{s}\")\n}\n";
+        write_fixture(dir.path(), "src/y.rs", kept_pair);
+        write_fixture(dir.path(), "src/z.rs", kept_pair);
+        let before = build_catalog(&scan_tree(dir.path()));
+
+        write_fixture(dir.path(), "src/b.rs", "fn unrelated() {}\n");
+        let after = build_catalog(&scan_tree(dir.path()));
+
+        assert_eq!(
+            after.len() + 1,
+            before.len(),
+            "exactly the one pair must disappear"
+        );
+        let id_shape = regex::Regex::new(r"^dup-[0-9a-f]{12}$").expect("a valid pattern");
+        for c in &after {
+            assert!(
+                id_shape.is_match(&c.id),
+                "id {:?} is not dup-<12 hex>",
+                c.id
+            );
+            let twin = before
+                .iter()
+                .find(|b| b.sites == c.sites && b.note == c.note)
+                .unwrap_or_else(|| panic!("cluster {} has no counterpart before", c.id));
+            assert_eq!(twin.id, c.id, "a surviving cluster's id must not move");
+        }
+    }
+
+    #[test]
+    fn build_catalog_orders_clusters_by_their_first_site() {
         let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
         write_fixture(
             dir.path(),
@@ -8088,11 +8153,13 @@ mod tests {
             "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
         );
         let clusters = build_catalog(&scan_tree(dir.path()));
-        let ids: Vec<&str> = clusters.iter().map(|c| c.id.as_str()).collect();
-        let mut sorted_ids = ids.clone();
-        sorted_ids.sort_unstable();
-        assert_eq!(ids, sorted_ids, "ids must already be in ascending order");
-        assert_eq!(ids[0], "dup-0001");
+        let keys: Vec<(String, usize)> = clusters.iter().map(cluster_sort_key).collect();
+        let mut sorted_keys = keys.clone();
+        sorted_keys.sort();
+        assert_eq!(
+            keys, sorted_keys,
+            "clusters must already be in first-site order"
+        );
         // The mechanical exact cluster (src/a.rs, src/z.rs) sorts before every sweep cluster
         // whose sites all live under src/a.rs alone (a fixture with no Command::new etc.), so
         // it is exactly one of the returned clusters and its own site order is (a.rs, z.rs).
@@ -8282,17 +8349,14 @@ mod tests {
         }
     }
 
-    /// Cluster ids are unique and already in ascending `dup-NNNN` order (the drift guard's own
-    /// determinism premise, checked directly against the real tree rather than a fixture).
+    /// Cluster ids are unique on the real tree (the drift guard's own determinism premise,
+    /// checked directly against the real tree rather than a fixture).
     #[test]
-    fn real_cluster_ids_are_unique_and_ascending() {
+    fn real_cluster_ids_are_unique() {
         let clusters = real_catalog();
         let ids: Vec<&str> = clusters.iter().map(|c| c.id.as_str()).collect();
         let distinct: HashSet<&str> = ids.iter().copied().collect();
         assert_eq!(distinct.len(), ids.len(), "duplicate cluster id");
-        let mut sorted = ids.clone();
-        sorted.sort_unstable();
-        assert_eq!(ids, sorted);
     }
 
     /// The adversarial sample over the REAL function population is exactly
@@ -8398,7 +8462,7 @@ mod tests {
 
     /// CLAIM 2: "a pin bump that shifts every site in a file leaves it byte-identical." A
     /// synthetic two-file fixture (the same renamed-identical-pair shape
-    /// `build_catalog_assigns_sequential_ids_after_the_deterministic_sort` uses, so the fixture
+    /// `build_catalog_orders_clusters_by_their_first_site` uses, so the fixture
     /// forms a real 2-site cluster), then a "pin bump" - 5 unrelated comment lines prepended to
     /// ONE file, shifting `add_one`'s own line span by 5 but leaving its text untouched -
     /// regenerates a byte-IDENTICAL guarded catalog, because content_hash keys on the span's own

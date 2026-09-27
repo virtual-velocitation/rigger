@@ -194,14 +194,13 @@ fn every_deserialized_site_has_a_non_empty_file_name_and_content_hash() {
     }
 }
 
-/// Spec 85 Design's `dup-NNNN` id scheme, checked against the PERSISTED file rather than the
-/// generator's in-memory ids (`real_cluster_ids_are_unique_and_ascending` in
-/// `tests/simplification_audit.rs` only ever checks the freshly-computed value). A consumer
-/// that parses the numeric suffix (e.g. to sort, or to generate the NEXT id for a manually
-/// added cluster) needs the exact `dup-` prefix plus 4 zero-padded digits, not merely "looks
-/// like ascending strings".
+/// The catalog's id scheme, checked against the PERSISTED file rather than the generator's
+/// in-memory ids (`real_cluster_ids_are_unique` in `tests/simplification_audit.rs` only ever
+/// checks the freshly-computed value): every id is unique and reads `dup-` plus exactly 12
+/// lowercase hex digits - a content-derived id, so a consumer citing one can rely on it naming
+/// the same cluster until that cluster itself changes.
 #[test]
-fn cluster_ids_in_the_committed_catalog_are_unique_ascending_and_dup_nnnn_formatted() {
+fn cluster_ids_in_the_committed_catalog_are_unique_and_content_hash_formatted() {
     let clusters = deserialize_committed_catalog();
     let ids: Vec<&str> = clusters.iter().map(|c| c.id.as_str()).collect();
     let distinct: std::collections::HashSet<&str> = ids.iter().copied().collect();
@@ -210,33 +209,16 @@ fn cluster_ids_in_the_committed_catalog_are_unique_ascending_and_dup_nnnn_format
         ids.len(),
         "duplicate cluster id in {CATALOG_PATH}"
     );
-    let mut sorted = ids.clone();
-    sorted.sort_unstable();
-    assert_eq!(
-        ids, sorted,
-        "{CATALOG_PATH} cluster ids are not already in ascending order"
-    );
-    for (i, id) in ids.iter().enumerate() {
+    for id in ids {
         let digits = id.strip_prefix("dup-").unwrap_or_else(|| {
             panic!("cluster id {id:?} does not start with the documented \"dup-\" prefix")
         });
-        assert_eq!(
-            digits.len(),
-            4,
-            "cluster id {id:?} does not carry exactly 4 digits after \"dup-\""
-        );
         assert!(
-            digits.chars().all(|c| c.is_ascii_digit()),
-            "cluster id {id:?} has a non-digit after \"dup-\""
-        );
-        let n: usize = digits
-            .parse()
-            .unwrap_or_else(|e| panic!("cluster id {id:?} digits do not parse as a number: {e}"));
-        assert_eq!(
-            n,
-            i + 1,
-            "cluster id {id:?} at position {i} is not sequential (expected dup-{:04})",
-            i + 1
+            digits.len() == 12
+                && digits
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "cluster id {id:?} does not carry exactly 12 lowercase hex digits after \"dup-\""
         );
     }
 }
@@ -411,7 +393,7 @@ const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 type CitedSite = (String, usize, usize);
 
 /// Section 2's per-cluster site citations (`render_section_2`'s own template:
-/// `` - `{file}:{start}-{end}` `{name}` ``), grouped by `#### \`dup-NNNN\`` cluster header, in
+/// `` - `{file}:{start}-{end}` `{name}` ``), grouped by `#### \`dup-<id>\`` cluster header, in
 /// report order. Bounded to the "### Clusters" span and cut off before "### Adversarial sample" -
 /// that subsection's own bullets share the identical citation shape (the same real sites, read
 /// for a different purpose) and would otherwise be misattributed to whichever cluster renders
@@ -423,7 +405,7 @@ fn section_2_cluster_site_citations(report: &str) -> Vec<(String, Vec<CitedSite>
     let rest = &report[start..];
     let end = rest.find("### Adversarial sample").unwrap_or(rest.len());
     let clusters_text = &rest[..end];
-    let header_re = regex::Regex::new(r"(?m)^#### `(dup-\d+)`").expect("valid regex");
+    let header_re = regex::Regex::new(r"(?m)^#### `(dup-[0-9a-f]+)`").expect("valid regex");
     let site_re = regex::Regex::new(r"(?m)^- `([^`]+):(\d+)-(\d+)` `[^`]+`").expect("valid regex");
     let headers: Vec<(usize, String)> = header_re
         .captures_iter(clusters_text)
