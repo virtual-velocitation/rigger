@@ -1433,47 +1433,40 @@ mod tests {
         assert_eq!(crate::spawn::ROLE_SDET_AUTHOR, "sdet-author");
     }
 
-    /// Spec 102, criterion 3 (AN UNKNOWN KEY IS NAMED), the spec's own worked example:
-    /// `defaults.max_parallel_unitz` (a typo of a real-world field this repo's own
-    /// `.rigger/workflow.yml` once carried silently dead) fails naming that dotted path -
-    /// this criterion OWNS unknown-key rejection at every config level, proven here at the
-    /// `load_workflow` level [`load`] itself calls, and at the CLI level (`rigger validate`)
-    /// in `tests/config_unknown_key_dotted_path_periphery.rs` - both read through this same
-    /// function, so their text is identical by construction, not by convention.
-    #[test]
-    fn load_workflow_rejects_an_unknown_key_under_defaults_naming_its_dotted_path() {
+    /// Loading `yaml` as a workflow fails with an error naming `dotted: unknown key`; `why` is
+    /// the assertion's own reason.
+    fn assert_load_workflow_names_the_unknown_key(yaml: &str, dotted: &str, why: &str) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("workflow.yml");
-        std::fs::write(
-            &path,
-            "name: w\ndefaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n",
-        )
-        .expect("write workflow.yml");
+        std::fs::write(&path, yaml).expect("write workflow.yml");
 
         let msg = load_workflow(&path).unwrap_err().to_string();
         assert!(
-            msg.contains("defaults.max_parallel_unitz: unknown key"),
-            "must name the dotted path of the unrecognized key: {msg}"
+            msg.contains(&format!("{dotted}: unknown key")),
+            "{why}: {msg}"
         );
     }
 
-    /// The same rejection reached through a nested map key (`stages.<name>.<field>`), proving
-    /// the dotted path composes correctly past a `BTreeMap` level too, not just a plain
-    /// struct-in-struct nesting.
-    #[test]
-    fn load_workflow_rejects_an_unknown_key_under_a_named_stage_naming_its_dotted_path() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("workflow.yml");
-        std::fs::write(
-            &path,
+    crate::test_cases! { assert_load_workflow_names_the_unknown_key;
+        /// Spec 102, criterion 3 (AN UNKNOWN KEY IS NAMED), the spec's own worked example:
+        /// `defaults.max_parallel_unitz` (a typo of a real-world field this repo's own
+        /// `.rigger/workflow.yml` once carried silently dead) fails naming that dotted path -
+        /// this criterion OWNS unknown-key rejection at every config level, proven here at the
+        /// `load_workflow` level [`load`] itself calls, and at the CLI level (`rigger validate`)
+        /// in `tests/config_unknown_key_dotted_path_periphery.rs` - both read through this same
+        /// function, so their text is identical by construction, not by convention.
+        load_workflow_rejects_an_unknown_key_under_defaults_naming_its_dotted_path: (
+            "name: w\ndefaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n",
+            "defaults.max_parallel_unitz",
+            "must name the dotted path of the unrecognized key",
+        );
+        /// The same rejection reached through a nested map key (`stages.<name>.<field>`), proving
+        /// the dotted path composes correctly past a `BTreeMap` level too, not just a plain
+        /// struct-in-struct nesting.
+        load_workflow_rejects_an_unknown_key_under_a_named_stage_naming_its_dotted_path: (
             "name: w\nstages:\n  implement:\n    agent: rust-engineer\n    gatez: [build]\n",
-        )
-        .expect("write workflow.yml");
-
-        let msg = load_workflow(&path).unwrap_err().to_string();
-        assert!(
-            msg.contains("stages.implement.gatez: unknown key"),
-            "must name the dotted path through the stage's own map key: {msg}"
+            "stages.implement.gatez",
+            "must name the dotted path through the stage's own map key",
         );
     }
 
