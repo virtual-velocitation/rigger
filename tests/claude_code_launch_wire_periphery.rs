@@ -260,13 +260,10 @@ fn spawn_launched_json_back_compat_a_pre_criterion_6_record_with_no_ended_or_cla
 ) {
     // Criterion 6 (THE STOP) added `ended`/`class` to the SAME record criterion 1 already
     // shipped. Every launch record any run wrote before criterion 6 landed - this file's
-    // OWN minimal shape above, unchanged - carries neither key, so two things must hold
-    // for a log a criterion-6 binary reads that a pre-criterion-6 one wrote: the type
-    // still parses with both new fields defaulting to `None`, and (the load-bearing half,
-    // since `open_launches` is what a supervisor start-up reconciliation reads)
-    // `progress::open_launches` still reads such a record as OPEN - never silently
-    // "closed" by the missing key, which would leave a genuinely-crashed pre-upgrade
-    // launch unreconciled forever.
+    // OWN minimal shape above, unchanged - carries neither key, so for a log a criterion-6
+    // binary reads that a pre-criterion-6 one wrote, the type must still parse with both new
+    // fields defaulting to `None` - an open record, never silently "closed" by the missing
+    // key.
     let pre_criterion_6 =
         r#"{"spawn":"u9/implementer#0","launch":0,"session_id":"s-1","started":1700000000}"#;
     let sl: SpawnLaunched = serde_json::from_str(pre_criterion_6)
@@ -279,17 +276,6 @@ fn spawn_launched_json_back_compat_a_pre_criterion_6_record_with_no_ended_or_cla
         sl.class, None,
         "a missing class key must default to None, not fail to parse"
     );
-
-    let event =
-        rigger::eventstore::Event::new(TYPE_SPAWN_LAUNCHED, pre_criterion_6.as_bytes().to_vec());
-    let open = rigger::progress::open_launches(std::slice::from_ref(&event))
-        .expect("decode a pre-criterion-6 SpawnLaunched event");
-    assert_eq!(
-        open.len(),
-        1,
-        "a pre-criterion-6 record with no ended key must read as open, never silently closed"
-    );
-    assert_eq!(open[0].spawn, "u9/implementer#0");
 }
 
 // ---- Driver: the empty-string field fallbacks, reachable only by direct construction ----

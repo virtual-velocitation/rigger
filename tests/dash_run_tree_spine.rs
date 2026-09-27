@@ -28,6 +28,8 @@
 //! BOTH the default and the `--no-default-features` lane - none is feature-gated - so these guard
 //! the boundary in both lanes.
 
+mod common;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -142,8 +144,8 @@ fn child<'a>(node: &'a Value, label: &str) -> &'a Value {
 /// in-process builder the inside-out test exercises.
 #[test]
 fn run_tree_spine_crosses_the_http_state_boundary() {
-    let a_impl = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
-    let b_impl = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "impl B");
+    let a_impl = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
+    let b_impl = common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "impl B");
 
     // Unit A (u30-c1): fully integrated. Unit B (u30-c2): implementer parked with NO result yet.
     let events = positioned(vec![
@@ -299,8 +301,8 @@ fn connect_with_retry(addr: SocketAddr) -> TcpStream {
 /// reported line omits the key entirely (absent, never a JSON `null`).
 #[test]
 fn tree_node_doing_is_omitted_when_absent_and_carried_when_live() {
-    let loud = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "loud");
-    let quiet = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "quiet");
+    let loud = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "loud");
+    let quiet = common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "quiet");
 
     // Both implementers are parked (running); only `loud` has a live progress report.
     let events = positioned(vec![
@@ -351,7 +353,7 @@ fn tree_node_doing_is_omitted_when_absent_and_carried_when_live() {
 /// this guards the `errored` arm of the projection and the `failed` branch of the status rollup.
 #[test]
 fn run_tree_reads_a_failed_agent_and_rolls_failure_up() {
-    let a_impl = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
+    let a_impl = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
     let failed = SpawnResult::failed(a_impl.id.clone(), "the build did not compile")
         .to_event()
         .unwrap();
@@ -396,7 +398,7 @@ fn run_tree_reads_a_failed_agent_and_rolls_failure_up() {
 /// failure at Implement and shows no phantom Gates line.
 #[test]
 fn a_crashed_implementer_renders_no_gates_node() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
         impl0.to_event().unwrap(),
@@ -480,8 +482,9 @@ fn run_tree_groups_units_by_spec_and_falls_back_to_a_generic_bucket() {
 /// this a still-hung or hung-then-recovered agent would render a FALSE failure and roll it up.
 #[test]
 fn a_re_parked_liveness_fault_reads_running_and_a_superseding_ok_reads_done() {
-    let recovered = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "recovered");
-    let still_hung = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "still hung");
+    let recovered = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "recovered");
+    let still_hung =
+        common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "still hung");
 
     // u30-c1: a hung agent's liveness fault, THEN a real success answers the same spawn.
     // u30-c2: a hung agent with ONLY the liveness fault - re-parked, awaiting a real result.
@@ -539,7 +542,7 @@ fn a_re_parked_liveness_fault_reads_running_and_a_superseding_ok_reads_done() {
 /// `building` forever). None of these arms is driven by the inside-out test.
 #[test]
 fn an_escalated_unit_renders_gates_failed_and_surfaces_at_the_spec_root() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
 
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
@@ -589,7 +592,7 @@ fn an_escalated_unit_renders_gates_failed_and_surfaces_at_the_spec_root() {
 /// rolls up to the spec root. This fixture makes the mask impossible to re-green.
 #[test]
 fn an_escalated_units_gate_failure_is_not_masked_by_a_trailing_passing_gate() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
 
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
@@ -646,8 +649,8 @@ fn an_escalated_units_gate_failure_is_not_masked_by_a_trailing_passing_gate() {
 /// phantom `Gates:passed` returns, reddening this test.
 #[test]
 fn an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed() {
-    let esc_impl = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "crash");
-    let fail_impl = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "crash");
+    let esc_impl = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "crash");
+    let fail_impl = common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "crash");
 
     let events = positioned(vec![
         // u30-c1: crash-to-exhaustion. The implementer crashed (an error result), the gate block was
@@ -708,8 +711,8 @@ fn an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed() {
 /// the masked-failure test guards `Some(false)`, this guards the latest-attempt `Some(true)`.
 #[test]
 fn a_regated_green_unit_renders_gates_passed_despite_an_earlier_failed_attempt() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
-    let impl1 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 1, "attempt 1");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl1 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 1, "attempt 1");
 
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
@@ -773,8 +776,8 @@ fn a_regated_green_unit_renders_gates_passed_despite_an_earlier_failed_attempt()
 /// Gates node must read the RECORDED gate verdict, not `ledger::Status`.
 #[test]
 fn a_review_rejected_unit_whose_gates_passed_renders_gates_passed_and_surfaces_the_reject() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
-    let adj0 = SpawnRequest::new("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adjudicator");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let adj0 = common::spawn_request("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adjudicator");
 
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
@@ -820,7 +823,7 @@ fn a_review_rejected_unit_whose_gates_passed_renders_gates_passed_and_surfaces_t
 fn a_pre_gate_unit_whose_implementer_finished_does_not_render_gates_failed() {
     use rigger::ledger;
 
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
         impl0.to_event().unwrap(),
@@ -861,7 +864,7 @@ fn a_pre_gate_unit_whose_implementer_finished_does_not_render_gates_failed() {
 fn a_gates_cleared_unit_with_no_recorded_verdict_still_renders_gates_passed() {
     use rigger::ledger;
 
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
         impl0.to_event().unwrap(),
@@ -907,13 +910,14 @@ fn a_gates_cleared_unit_with_no_recorded_verdict_still_renders_gates_passed() {
 /// DISTINCT sibling (`attempt#0 retry2`), never collapsing into the original's identical label.
 #[test]
 fn multi_attempt_and_gap18_retry_spawns_render_as_distinct_sibling_agents() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
-    let impl1 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 1, "attempt 1");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl1 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 1, "attempt 1");
 
     // A degenerate adjudicator result (empty) triggers a Gap-18 respawn under a ~retry2 id that
     // shares the original's attempt ordinal 0.
-    let adj0 = SpawnRequest::new("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj original");
-    let mut adj0_retry = SpawnRequest::new("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj respawn");
+    let adj0 = common::spawn_request("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj original");
+    let mut adj0_retry =
+        common::spawn_request("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj respawn");
     adj0_retry.id = spawn_retry_id("u30-c1", ROLE_ADJUDICATOR, 0, 2);
     assert_eq!(
         adj0_retry.id, "u30-c1/adjudicator#0~retry2",

@@ -4627,7 +4627,7 @@ fn locate_definition_extent(
 /// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout
 /// (spec 45): no run, no `RunStarted`, no event beyond the code-ingest events the fold already
 /// emits, so the graph exists on any repo the tool has merely cloned - not only ones a run has
-/// driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project`])
+/// driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project_batched`])
 /// the live run uses; only this standalone entry is new, so a build and a run can never fork the
 /// key an event is deduped under.
 ///
@@ -7240,7 +7240,7 @@ fn foreign_instance_scratch_root(root: &str) -> String {
 /// (spec 62 criterion 5 round 2 - [`foreign_instance_scratch_root`]); when
 /// [`dash::should_reap_singleton`] says the machine is quiet - no registered instance is live,
 /// at least one has been seen, and no agent liveness marker anywhere is fresh - it exits the
-/// process, terminating the blocked [`dash::serve`] accept loop. This RETARGETS spec 39's
+/// process, terminating the blocked [`dash::serve_on`] accept loop. This RETARGETS spec 39's
 /// per-run liveness watch at the machine-level singleton: the dash serves every registered
 /// instance and outlives any single run, so it SURVIVES one project's run ending while
 /// another's is still live (that instance keeps `read_live` non-empty), SURVIVES a live agent on
@@ -14257,8 +14257,7 @@ const GUARD_WRITE_BLOCKING_EXIT_CODE: i32 = 2;
 
 /// `rigger guard-write --root <dir> [--root <dir> ...]`: THE WRITE GUARD (spec 104
 /// criterion 4) - the `PreToolUse` command hook for `Edit`/`Write`/`NotebookEdit` the host
-/// injects into a launched agent's settings (the injection half of this same criterion:
-/// [`crate::driver::claude_code::install_write_guard_hook`]). Reads ONE PreToolUse payload
+/// injects into a launched agent's settings. Reads ONE PreToolUse payload
 /// as JSON on stdin (`{"tool_name","tool_input","cwd"}`) and allows a target under one of
 /// `roots`, denying every other - absolute, relative, `..`, symlink-escaping - with the
 /// reason naming the first root. THE GUARD DENIES BY DEFAULT
@@ -14332,8 +14331,7 @@ fn cmd_hook(args: &[String]) -> Res {
 
 /// `rigger hook stop-failure --spawn <id> --class <category>`: THE HOOKS' `StopFailure`
 /// family - command AND record halves both (spec 104 criterion 5, Design: "criterion 5's,
-/// command, record and injection both"; the injection half, one entry per category, is
-/// [`rigger::driver::claude_code::install_stop_failure_hooks`]). The installed hook runs
+/// command, record and injection both"). The installed hook runs
 /// this the moment a turn ends on `category`, so FAILURE CLASS's first-priority source
 /// ([`rigger::progress::latest_stop_failure_class`]) survives even when the stream's own
 /// last line is lost. `--class` must name one of [`conductor::AgentFailure`]'s known
@@ -14664,6 +14662,24 @@ blocks integration no matter what the static gates say.\n",
 mod tests {
     use super::*;
 
+    /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt`
+    /// (so it cannot drift from the labels), every optional field empty.
+    fn test_request(
+        unit: &str,
+        stage: &str,
+        role: &str,
+        attempt: u32,
+        prompt: &str,
+    ) -> spawn::SpawnRequest {
+        spawn::SpawnRequest {
+            id: spawn::spawn_id(unit, role, attempt),
+            unit: unit.to_string(),
+            stage: stage.to_string(),
+            prompt: prompt.to_string(),
+            ..Default::default()
+        }
+    }
+
     // --- Spec 66, criterion 5: DISCOVERABILITY - `rigger prime` names the spec lint ---
 
     /// [`spec_lint_next_step`] is the single-sourced text every pre-launch "next steps"
@@ -14769,7 +14785,7 @@ mod tests {
     /// The flagship criterion-1 proof: a `step` with NO dash serving starts exactly one, and
     /// a later `step` while it is serving starts NONE - the marker/pid check short-circuits.
     /// `start` is injected (counting spawns and recording a marker owned by THIS process, a
-    /// guaranteed-live pid), so the real `pid_is_alive` predicate finds the recorded dash
+    /// guaranteed-live pid), so the injected liveness predicate finds the recorded dash
     /// serving on the second call - proving idempotency without a real dashboard process.
     #[test]
     fn ensure_run_dashboard_at_starts_once_then_short_circuits_on_a_live_marker() {
@@ -14785,7 +14801,7 @@ mod tests {
         // First step of the run: no marker yet -> start one and record its marker.
         let first = ensure_run_dashboard_at(
             &marker_path,
-            |m| dash::pid_is_alive(m.pid),
+            |m| m.pid == std::process::id(),
             || {
                 starts.set(starts.get() + 1);
                 Ok(live)
@@ -14806,7 +14822,7 @@ mod tests {
         // A later step WHILE it is serving: the marker names a live dash -> NO second start.
         let second = ensure_run_dashboard_at(
             &marker_path,
-            |m| dash::pid_is_alive(m.pid),
+            |m| m.pid == std::process::id(),
             || {
                 starts.set(starts.get() + 1);
                 Ok(dash::DashMarker {
@@ -15320,10 +15336,6 @@ mod tests {
         let unserved_port =
             dash::free_port_from(41200).expect("a free loopback port must be available");
         let live_pid = std::process::id();
-        assert!(
-            dash::pid_is_alive(live_pid),
-            "the marker's pid must genuinely be alive for this scenario to be meaningful"
-        );
         dash::DashMarker {
             port: unserved_port,
             pid: live_pid,
@@ -17994,7 +18006,7 @@ mod tests {
                 br#"{"id":"unit-old","commit":"abc"}"#.to_vec(),
             ),
             // The straggler: requested AFTER integration, still unanswered.
-            spawn::SpawnRequest::new("unit-old", "review", "adversary", 1, "p")
+            test_request("unit-old", "review", "adversary", 1, "p")
                 .to_event()
                 .unwrap(),
         ];
@@ -18027,7 +18039,7 @@ mod tests {
                 ledger::TYPE_UNIT_INTEGRATED,
                 br#"{"id":"unit-old","commit":"abc"}"#.to_vec(),
             ),
-            spawn::SpawnRequest::new("unit-old", "review", "adversary", 1, "p")
+            test_request("unit-old", "review", "adversary", 1, "p")
                 .to_event()
                 .unwrap(),
             spawn::SpawnResult::ok("unit-old/adversary#1", "approve")
@@ -18046,13 +18058,13 @@ mod tests {
         // level liveness set, folded the same conservative way `liveness::sweep` folds its
         // own in-flight set - requested, no result yet - and scoped to the CURRENT run
         // exactly like `live_branches`/`dead_slugs` above.
-        let prior_spawn = spawn::SpawnRequest::new("unit-prior", "impl", "implementer", 0, "p")
+        let prior_spawn = test_request("unit-prior", "impl", "implementer", 0, "p")
             .to_event()
             .unwrap();
-        let in_flight = spawn::SpawnRequest::new("unit-6", "impl", "implementer", 0, "p")
+        let in_flight = test_request("unit-6", "impl", "implementer", 0, "p")
             .to_event()
             .unwrap();
-        let answered = spawn::SpawnRequest::new("unit-6", "impl", "implementer", 1, "p")
+        let answered = test_request("unit-6", "impl", "implementer", 1, "p")
             .to_event()
             .unwrap();
         let answered_result = spawn::SpawnResult::ok("unit-6/implementer#1", "done")
@@ -19922,7 +19934,7 @@ mod tests {
     fn result_advisories_is_silent_for_a_parked_unanswered_spawn() {
         // A parked spawn (its request is recorded) with no result yet needs no advisory:
         // this is the normal courier path.
-        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let req = test_request("u", "impl", "implementer", 0, "do it");
         let ev = req.to_event().unwrap();
         let notes = result_advisories(std::slice::from_ref(&ev), &req.id, true);
         assert!(
@@ -19935,7 +19947,7 @@ mod tests {
     fn result_advisories_flags_a_supersede_with_the_prior_result_position() {
         // Request recorded (no orphan) AND a prior result at a known position -> exactly
         // the supersede advisory, naming that position.
-        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let req = test_request("u", "impl", "implementer", 0, "do it");
         let req_ev = req.to_event().unwrap();
         let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
         res_ev.position = 7;
@@ -19950,7 +19962,7 @@ mod tests {
         // The `--if-absent` path (weave with unit-10): the CAS never overwrites, so a
         // supersede note would claim a replacement that never happens. Only the orphan
         // rule applies; a request-and-result pair yields no note at all.
-        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let req = test_request("u", "impl", "implementer", 0, "do it");
         let req_ev = req.to_event().unwrap();
         let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
         res_ev.position = 7;
@@ -25556,9 +25568,9 @@ mod tests {
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
 
-        let same_batch = spawn::SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
-        let cross_batch = spawn::SpawnRequest::new("u2", "review", "adversary", 0, "cross batch");
-        let dead = spawn::SpawnRequest::new("u3", "impl", "implementer", 0, "never answered");
+        let same_batch = test_request("u1", "impl", "implementer", 0, "same batch");
+        let cross_batch = test_request("u2", "review", "adversary", 0, "cross batch");
+        let dead = test_request("u3", "impl", "implementer", 0, "never answered");
 
         // u1's request+result share ONE append call, so the real store stamps them with the
         // SAME recorded_at - the deterministic same-batch-suspect shape.

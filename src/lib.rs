@@ -47,11 +47,6 @@ pub mod console;
 pub mod contextgraph;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod dash;
-/// The sleep-phase consolidation distiller (spec 27): a rebuildable projection that folds
-/// OLDER-THAN-CURRENT-RUN findings/decisions into per-file digest nodes so cross-run graph
-/// growth stays bounded automatically. Modeled on [`playbooks`]; reads existing events only.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod distiller;
 /// The self-documenting discipline pipeline (spec 20, unit 1): a typed, code-derived
 /// context rendered into the `using-rigger` skill and the handbook discipline chapter,
 /// so the operating discipline stays in lock-step with the code the binary runs on.

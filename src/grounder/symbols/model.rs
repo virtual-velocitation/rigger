@@ -211,36 +211,14 @@ impl SymbolIndex {
         self.hashes.get(rel_path).map(String::as_str)
     }
 
-    /// Every definition whose name equals `name`, across languages. Grounding wants precision,
-    /// so the cross-language reach is fine here; references are the language-scoped view.
-    pub fn definitions_named(&self, name: &str) -> Vec<&Def> {
-        self.files
-            .values()
-            .flat_map(|f| f.defs.iter())
-            .filter(|d| d.name == name)
-            .collect()
-    }
-
-    /// `(file, reference)` pairs referencing `name`, SCOPED to `lang`: a Rust reference never
-    /// links a Python definition (the cross-language-collision fix, 5.5.2).
-    pub fn references_named(&self, name: &str, lang: Lang) -> Vec<(&str, &SymRef)> {
-        self.files
-            .iter()
-            .filter(|(_, f)| f.lang == lang)
-            .flat_map(|(p, f)| f.refs.iter().map(move |r| (p.as_str(), r)))
-            .filter(|(_, r)| r.name == name)
-            .collect()
-    }
-
     /// The whole file map (rel-path -> symbols), for consumers that iterate the index.
     pub fn files(&self) -> &BTreeMap<String, FileSymbols> {
         &self.files
     }
 
     /// How many references name `name` WITHIN `lang` - the per-language fan-out degree, the raw
-    /// fan-out the suppression threshold is computed against. SCOPED to `lang`, mirroring
-    /// `references_named`: the cross-reference graph is per-language (5.5.2), so the degree over
-    /// it is too. A name that over-links in another language never inflates this count (a Python
+    /// fan-out the suppression threshold is computed against. SCOPED to `lang`: the
+    /// cross-reference graph is per-language (5.5.2), so the degree over it is too. A name that over-links in another language never inflates this count (a Python
     /// `parse` leaves the Rust `parse` degree untouched).
     pub fn reference_degree(&self, name: &str, lang: Lang) -> usize {
         self.files
@@ -316,57 +294,6 @@ pub fn percentile_cutoff(counts: &mut [usize], percentile: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn definitions_and_references_are_name_indexed_and_language_scoped() {
-        let mut idx = SymbolIndex::default();
-        idx.insert_file(
-            "a.rs".into(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs: vec![Def {
-                    kind: Kind::Function,
-                    name: "parse".into(),
-                    line: 3,
-                    is_test: false,
-                    is_out_of_line_module: false,
-                    path_override: None,
-                    enclosing_inline_module_path: None,
-                }],
-                refs: vec![SymRef {
-                    name: "parse".into(),
-                    line: 9,
-                    enclosing: None,
-                    is_test: false,
-                }],
-                partial: false,
-            },
-        );
-        idx.insert_file(
-            "b.py".into(),
-            FileSymbols {
-                lang: Lang::Python,
-                defs: vec![Def {
-                    kind: Kind::Function,
-                    name: "parse".into(),
-                    line: 1,
-                    is_test: false,
-                    is_out_of_line_module: false,
-                    path_override: None,
-                    enclosing_inline_module_path: None,
-                }],
-                refs: vec![],
-                partial: false,
-            },
-        );
-        // Name lookup finds both definitions of `parse`, across languages.
-        assert_eq!(idx.definitions_named("parse").len(), 2);
-        // References are LANGUAGE-SCOPED: a Rust `parse` reference never links the Python def.
-        let rs_refs = idx.references_named("parse", Lang::Rust);
-        assert_eq!(rs_refs.len(), 1);
-        assert_eq!(rs_refs[0].0, "a.rs");
-        assert_eq!(idx.references_named("parse", Lang::Python).len(), 0);
-    }
 
     #[test]
     fn hub_symbols_are_flagged_by_repo_relative_degree() {

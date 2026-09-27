@@ -967,7 +967,7 @@ mod tests {
     /// [`spawn::SpawnRequest`]'s own `to_event`, never a hand-assembled JSON literal, so
     /// these tests exercise the exact wire shape `spawn::recorded` reads in production.
     fn spawn_requested(unit: &str, role: &str, attempt: u32, position: Position) -> Event {
-        let mut e = spawn::SpawnRequest::new(unit, "implement", role, attempt, "do the thing")
+        let mut e = crate::spawn::test_request(unit, "implement", role, attempt, "do the thing")
             .to_event()
             .unwrap();
         e.position = position;

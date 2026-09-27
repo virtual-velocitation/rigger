@@ -446,7 +446,16 @@ mod staleness_tests {
 #[cfg(feature = "symbols")]
 mod tests {
     use super::*;
-    use crate::grounder::symbols::model::Kind;
+    use crate::grounder::symbols::model::{Def, Kind};
+
+    /// Every definition named `name` across `idx` - the tests' observer of what an index holds.
+    fn defs_named<'a>(idx: &'a SymbolIndex, name: &str) -> Vec<&'a Def> {
+        idx.files()
+            .values()
+            .flat_map(|f| f.defs.iter())
+            .filter(|d| d.name == name)
+            .collect()
+    }
 
     #[test]
     fn reindex_replaces_only_the_named_file() {
@@ -458,9 +467,9 @@ mod tests {
         // Change only a.rs; reindex just that file.
         std::fs::write(dir.path().join("a.rs"), "fn oneprime() {}\n").unwrap();
         reindex_files(root, &mut idx, &["a.rs".into()], None);
-        assert_eq!(idx.definitions_named("oneprime").len(), 1); // a.rs's new symbol is in
-        assert!(idx.definitions_named("one").is_empty()); // a.rs's old symbol is gone (entry replaced)
-        assert_eq!(idx.definitions_named("two").len(), 1); // b.rs untouched
+        assert_eq!(defs_named(&idx, "oneprime").len(), 1); // a.rs's new symbol is in
+        assert!(defs_named(&idx, "one").is_empty()); // a.rs's old symbol is gone (entry replaced)
+        assert_eq!(defs_named(&idx, "two").len(), 1); // b.rs untouched
     }
 
     #[test]
@@ -470,7 +479,7 @@ mod tests {
         std::fs::write(dir.path().join("a.rs"), "fn gone_symbol() {}\n").unwrap();
         std::fs::write(dir.path().join("b.rs"), "fn kept_symbol() {}\n").unwrap();
         let mut idx = build_index(root, None);
-        assert_eq!(idx.definitions_named("gone_symbol").len(), 1);
+        assert_eq!(defs_named(&idx, "gone_symbol").len(), 1);
 
         // Delete a.rs, then reindex JUST it - the incremental freshening a post-integrate reindex
         // runs. The gone file's stale symbols must be PURGED, not left grounding a file that no
@@ -479,9 +488,9 @@ mod tests {
         reindex_files(root, &mut idx, &["a.rs".into()], None);
 
         // The deleted file's symbol is gone and its entry is dropped; the untouched file stands.
-        assert!(idx.definitions_named("gone_symbol").is_empty());
+        assert!(defs_named(&idx, "gone_symbol").is_empty());
         assert!(!idx.files().contains_key("a.rs"));
-        assert_eq!(idx.definitions_named("kept_symbol").len(), 1);
+        assert_eq!(defs_named(&idx, "kept_symbol").len(), 1);
 
         // The incremental index over the deletion EQUALS a fresh whole-tree build over the
         // surviving tree - the invariant reindex must hold (it never visits the gone file either).
@@ -528,8 +537,7 @@ mod tests {
         std::fs::write(dir.path().join("c.rs"), "fn (((").unwrap();
         let idx = build_index(dir.path().to_str().unwrap(), None);
         // The parseable file's definition is indexed with its kind.
-        assert!(idx
-            .definitions_named("parse")
+        assert!(defs_named(&idx, "parse")
             .iter()
             .any(|d| d.kind == Kind::Function));
         assert!(idx.files().contains_key("a.rs"));

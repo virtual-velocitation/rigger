@@ -7,7 +7,7 @@
 //!
 //! This layer runs OUTSIDE the crate, over the library's PUBLIC surface only (`Projector::open` ->
 //! `Projection::apply` -> the new `whole` -> `dash::graph_seeds` / `Projection::subgraph` /
-//! `dash::serve` + `/api/graph`), exactly as the real dash provider and any external caller reach it.
+//! `dash::serve_on` + `/api/graph`), exactly as the real dash provider and any external caller reach it.
 //! It cannot touch the private `conn`, the crate-internal fold helpers, or the binary-private
 //! `dash_read_whole_graph` the implementer's in-binary test drives - so it guards what the two
 //! inside-out tests are structurally blind to:

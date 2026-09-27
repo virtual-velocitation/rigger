@@ -1433,38 +1433,6 @@ mod tests {
         assert_eq!(crate::spawn::ROLE_SDET_AUTHOR, "sdet-author");
     }
 
-    #[test]
-    fn the_sdet_author_role_is_on_by_default_and_opt_out() {
-        // Spec 32: the SDET-author role is ALWAYS-ON (config-driven, default on) and
-        // self-scopes. The on-by-default rule must hold whether the `sdet_author:` field, or
-        // the whole `defaults:` block, is omitted - so it is checked against the DERIVED
-        // `Defaults::default()` (which a missing `defaults:` block constructs) AND both
-        // from-YAML omission paths, not just a hand-set `None`.
-        assert!(
-            Defaults::default().sdet_author_enabled(),
-            "the sdet-author role is on by default (derived Default)"
-        );
-        // A present-but-empty `defaults:` block: still on.
-        let empty_defaults: Workflow = serde_yaml::from_str("name: w\ndefaults: {}\n").unwrap();
-        assert!(empty_defaults.defaults.sdet_author_enabled());
-        // No `defaults:` block at all: still on (this is exactly the case a bare `bool` with
-        // a serde default-true would silently flip OFF, because the missing block builds the
-        // derived Default).
-        let no_defaults: Workflow = serde_yaml::from_str("name: w\n").unwrap();
-        assert!(no_defaults.defaults.sdet_author_enabled());
-        // Explicit opt-out: off.
-        let off: Workflow =
-            serde_yaml::from_str("name: w\ndefaults:\n  sdet_author: false\n").unwrap();
-        assert!(
-            !off.defaults.sdet_author_enabled(),
-            "an explicit `sdet_author: false` opts the workflow out"
-        );
-        // Explicit opt-in: on.
-        let on: Workflow =
-            serde_yaml::from_str("name: w\ndefaults:\n  sdet_author: true\n").unwrap();
-        assert!(on.defaults.sdet_author_enabled());
-    }
-
     /// Spec 102, criterion 3 (AN UNKNOWN KEY IS NAMED), the spec's own worked example:
     /// `defaults.max_parallel_unitz` (a typo of a real-world field this repo's own
     /// `.rigger/workflow.yml` once carried silently dead) fails naming that dotted path -

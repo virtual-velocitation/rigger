@@ -19,6 +19,8 @@
 //! file drives that public surface directly, as an external caller of the `rigger` library
 //! would (never through `console::palette_commands`), closing that gap.
 
+mod common;
+
 use rigger::eventstore::Event;
 use rigger::spawn::{self, SpawnRequest, ROLE_IMPLEMENTER};
 
@@ -42,7 +44,7 @@ fn malformed_spawn_requested_at(position: u64) -> Event {
 /// is a real, comparable assertion rather than two separate claims.
 #[test]
 fn recorded_lenient_skips_a_malformed_spawn_and_keeps_a_well_formed_one() {
-    let good = SpawnRequest::new("u1", "implement", ROLE_IMPLEMENTER, 0, "do it");
+    let good = common::spawn_request("u1", "implement", ROLE_IMPLEMENTER, 0, "do it");
     let events = vec![
         spawn_requested_at(&good, 1),
         malformed_spawn_requested_at(2),
@@ -73,8 +75,8 @@ fn recorded_lenient_skips_a_malformed_spawn_and_keeps_a_well_formed_one() {
 /// `recorded`'s fold rather than silently diverging from it on the happy path.
 #[test]
 fn recorded_lenient_agrees_with_recorded_on_a_well_formed_log() {
-    let a = SpawnRequest::new("u1", "implement", ROLE_IMPLEMENTER, 0, "do it");
-    let b = SpawnRequest::new("u2", "implement", ROLE_IMPLEMENTER, 0, "do it too");
+    let a = common::spawn_request("u1", "implement", ROLE_IMPLEMENTER, 0, "do it");
+    let b = common::spawn_request("u2", "implement", ROLE_IMPLEMENTER, 0, "do it too");
     let events = vec![spawn_requested_at(&a, 1), spawn_requested_at(&b, 2)];
 
     let strict = spawn::recorded(&events).expect("a well-formed log must not error");
@@ -95,8 +97,8 @@ fn recorded_lenient_agrees_with_recorded_on_a_well_formed_log() {
 /// the contract at all: it reads only `.into_keys()`, so this is the one place it is pinned.
 #[test]
 fn recorded_lenient_collapses_a_re_parked_duplicate_id_to_the_last_recorded_request() {
-    let first = SpawnRequest::new("u1", "implement", ROLE_IMPLEMENTER, 0, "first prompt");
-    let last = SpawnRequest::new("u1", "implement", ROLE_IMPLEMENTER, 0, "last prompt");
+    let first = common::spawn_request("u1", "implement", ROLE_IMPLEMENTER, 0, "first prompt");
+    let last = common::spawn_request("u1", "implement", ROLE_IMPLEMENTER, 0, "last prompt");
     assert_eq!(
         first.id, last.id,
         "test setup must actually re-park the SAME deterministic id"

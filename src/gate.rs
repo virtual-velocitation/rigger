@@ -376,7 +376,7 @@ pub fn resolved_cache_dir(cache_dir: &str) -> String {
     }
 }
 
-/// The compilation-cache wrapper binaries [`resolve_wrapper_name`] probes for under
+/// The compilation-cache wrapper binaries [`resolve_wrapper_name_from`] probes for under
 /// `build.wrapper: auto` (spec 65 unit 2, NO SILENT DEGRADE): a small, config-extensible
 /// pit-of-success default - `auto` exists so a machine that already has one of these
 /// installed benefits without demanding config. A NAMED wrapper (any other `build.wrapper`
@@ -418,7 +418,7 @@ fn is_executable_file(path: &std::path::Path) -> bool {
 /// `None` when the layer is disabled - the pure core, taking PATH as a value (`path_var`)
 /// rather than reading the environment itself, so it is unit-testable against a synthetic
 /// PATH without mutating (or racing on) the real process environment; see
-/// [`resolve_wrapper_name`] for the ambient-reading edge production callers use. Spec 65
+/// [`resolve_build_layer`] for the ambient-reading edge production callers use. Spec 65
 /// unit 2, NO SILENT DEGRADE, layered on top of [`BuildEnv::resolve`]'s own foundational
 /// (verbatim, wrapper-agnostic) shape:
 /// - empty / (case- and whitespace-insensitive) `off`: unchanged from `BuildEnv::resolve`'s
@@ -451,17 +451,6 @@ pub fn resolve_wrapper_name_from(
             binary: w.to_string(),
         })
     }
-}
-
-/// The ambient-PATH-reading edge [`resolve_wrapper_name_from`]'s WRAPPER-BINARY-axis callers
-/// use: reads the real `PATH` once, right here (mirrors [`default_cache_dir`]'s own
-/// `XDG_STATE_HOME`/`HOME` read pattern), and hands it to the pure core. Folded into
-/// [`resolve_build_layer`] below (the production entry point, which also checks the
-/// cache-directory axis) rather than called directly by config/conductor/CLI production code -
-/// kept `pub` as the wrapper-only building block its own tests exercise and
-/// [`resolve_build_layer`] composes.
-pub fn resolve_wrapper_name(wrapper: &str) -> Result<Option<String>, WrapperUnavailable> {
-    resolve_wrapper_name_from(wrapper, &std::env::var_os("PATH").unwrap_or_default())
 }
 
 /// A `build.cache_dir` (or the DEFAULT [`default_cache_dir`]/[`resolved_cache_dir`] when
@@ -576,7 +565,7 @@ pub fn resolve_build_layer_from(
 }
 
 /// The ambient-PATH-reading edge [`resolve_build_layer_from`]'s production callers use -
-/// mirrors [`resolve_wrapper_name`]'s own ambient-PATH read, composed with the cache-dir
+/// reads the real `PATH` once, right here, and composes the wrapper axis with the cache-dir
 /// axis. See [`resolve_build_layer_from`] for the full contract.
 pub fn resolve_build_layer(
     wrapper: &str,
@@ -1760,12 +1749,12 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    // --- resolve_wrapper_name (spec 65 unit 2, NO SILENT DEGRADE) -----------------------
+    // --- resolve_wrapper_name_from (spec 65 unit 2, NO SILENT DEGRADE) -----------------------
     //
     // All of these drive the pure, injectable core (`resolve_wrapper_name_from`) against a
     // synthetic PATH built from temp dirs, never the real ambient environment - so none of
-    // them touch (or race on) the process-global `PATH` var. `resolve_wrapper_name` itself
-    // (the ambient-reading edge) is exercised at the CLI level in tests/cli.rs, where a
+    // them touch (or race on) the process-global `PATH` var. The ambient-reading edge
+    // (`resolve_build_layer`) is exercised at the CLI level in tests/cli.rs, where a
     // synthetic PATH is safely scoped to a child process instead.
 
     fn write_executable(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
@@ -2026,7 +2015,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     fn resolve_build_layer_named_wrapper_absent_from_path_still_errors_before_the_cache_dir() {
         let empty_path = path_var(&[]);
         // Both axes are broken (absent binary AND an uncreatable dir); the wrapper-binary
-        // axis must win (its error is the one surfaced), matching resolve_wrapper_name's
+        // axis must win (its error is the one surfaced), matching resolve_wrapper_name_from's
         // own established precedence.
         let tmp = tempfile::tempdir().expect("tempdir");
         let blocked = uncreatable_dir(tmp.path());

@@ -432,8 +432,7 @@ impl Grounder for Symbols {
         // tuple so neither binding needs a dead pre-initialization before the locked block.
         let (structural, serialize): (Vec<String>, bool) = {
             let idx = self.idx.lock().unwrap();
-            // Iterate `files()` directly to KEEP each hit's owning file: `definitions_named` drops
-            // it (the arch-u15-1-defsnamed-drops-file cohesion note), which would force a rescan.
+            // Iterate `files()` directly to KEEP each hit's owning file.
             // `files()` is a BTreeMap, so this is sorted-path-order and deterministic.
             let mut definers: Vec<&str> = Vec::new();
             let mut referencers: Vec<&str> = Vec::new();

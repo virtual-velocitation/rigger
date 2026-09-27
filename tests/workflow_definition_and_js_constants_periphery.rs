@@ -44,7 +44,7 @@
 //!    (`FileSymbols::partial`, threaded through `CodeEntityExtracted`/`EdgeInferred`, stamped onto
 //!    the file node's `partial` attr by `contextgraph::sqlite`'s fold). Round 4's own tests
 //!    (`extract.rs`, `events.rs`) prove this by calling `extract()` / `build_index()` /
-//!    `index_events()` directly and folding into an in-memory `Projector::open(":memory:", ..)` -
+//!    `project_batches()` directly and folding into an in-memory `Projector::open(":memory:", ..)` -
 //!    never through the CLI's actual cold-build entry point (`cmd_graph_build`) writing the REAL
 //!    persisted `graph.db` a reader's `--around` then queries. Proven here instead: a real
 //!    malformed `workflows/*.js` file run through a real `rigger graph build`, read back from the

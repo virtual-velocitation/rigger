@@ -8222,8 +8222,8 @@ mod tests {
         fn re_extracting_an_edited_file_does_not_silently_drop_an_unrelated_files_accumulated_proof(
         ) {
             // sdet-u86c2-r-review: cross-file proof evidence must survive a LATER, UNRELATED
-            // re-extraction of the DEFINING file. The real pipeline (project_batches_paced /
-            // index_events) keys each file's batch on its own content hash, so an unchanged file
+            // re-extraction of the DEFINING file. The real pipeline (project_batches_paced)
+            // keys each file's batch on its own content hash, so an unchanged file
             // (here, the test file that proved this entity) is never re-walked and its
             // `proof_events` never re-emit merely because a SIBLING file changed - see
             // grounder::symbols::events::project_batches's own doc: "an unchanged file is not

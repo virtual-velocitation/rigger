@@ -390,8 +390,7 @@ impl EventStore for Store {
             .rt
             .block_on(self.client.append_to_stream(stream, &opts, data))
         {
-            // This backend runs no content-identity guard - it has no index over event
-            // metadata to seek - so it APPENDS THROUGH: every handed event is written
+            // This backend recognises nothing as already recorded, so it APPENDS THROUGH: every handed event is written
             // and reported written, which is the fail-safe direction (it can only ever
             // write more, never drop). Only the HONESTY half of the port is owed here,
             // and it is owed in full: each reported position must be one the server

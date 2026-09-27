@@ -934,7 +934,7 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore};
     use crate::spawn::{self, SpawnRequest, ROLE_IMPLEMENTER};
-    use crate::spawn_store::park;
+    use crate::spawn_store::park_in_run;
 
     /// Park a spawn carrying a wall-clock bound, so the sweep considers it.
     fn park_bounded(store: &Store, unit: &str, secs: u64) -> SpawnRequest {
@@ -945,9 +945,9 @@ mod tests {
     /// spawns of the same unit (same `ROLE_IMPLEMENTER`, different attempts never collide
     /// on the deterministic id, unlike two calls at attempt 0).
     fn park_bounded_attempt(store: &Store, unit: &str, attempt: u32, secs: u64) -> SpawnRequest {
-        let mut req = SpawnRequest::new(unit, unit, ROLE_IMPLEMENTER, attempt, "task");
+        let mut req = crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, attempt, "task");
         req.max_wall_clock = Some(secs);
-        park(store, &req).unwrap();
+        park_in_run(store, &req, "").unwrap();
         req
     }
 
@@ -1054,8 +1054,8 @@ mod tests {
 
         // No max_wall_clock: unbounded, exempt from liveness timeouts (back-compat). Its
         // marker is planted "now" but the sweep runs far in the future - still not stale.
-        let unbounded = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task");
-        park(&store, &unbounded).unwrap();
+        let unbounded = crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 0, "task");
+        park_in_run(&store, &unbounded, "").unwrap();
         plant_marker(root, &unbounded.id);
 
         let events = read(&store);
@@ -1392,9 +1392,9 @@ mod tests {
         // A sibling (attempt 1) was UNBOUNDED and finished normally long ago; its marker
         // was never reclaimed (markers are never reclaimed - a standing finding), so it
         // still sits on disk.
-        let mut unbounded = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 1, "task");
+        let mut unbounded = crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 1, "task");
         unbounded.max_wall_clock = None;
-        park(&store, &unbounded).unwrap();
+        park_in_run(&store, &unbounded, "").unwrap();
         plant_marker(root, &unbounded.id);
         spawn_store::record_result(&store, &SpawnResult::ok(&unbounded.id, "done long ago"))
             .unwrap();

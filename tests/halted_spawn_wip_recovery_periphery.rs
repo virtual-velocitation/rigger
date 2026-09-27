@@ -243,7 +243,7 @@ fn seed_halted_worktree(root: &Path, unit: &str, file: &str, content: &str) -> s
 /// through `rigger result` - simulating the agent editing the tree and then being halted (a
 /// liveness sweep, the outer wall clock, a crash) before it could ever commit or report.
 /// This is the real-binary, real-git, two-process stand-in for `conductor.rs`'s own
-/// in-process `Worktree::create` + `park` + `std::fs::write` setup: the checkpoint's own
+/// in-process `Worktree::create` + `park_in_run` + `std::fs::write` setup: the checkpoint's own
 /// guard requires the named spawn to carry a real `SpawnRequested` before any dirty tree is
 /// ever captured, so a genuine halt can only be built ACROSS a real prior dispatch, never
 /// materialized on a worktree that has never been adopted by any `rigger step` at all.
@@ -512,13 +512,8 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is
     // A SIBLING spawn of the SAME unit "solo" - attempt 1, bounded, requested and STILL
     // LIVE - seeded directly into the real store the priming step just wrote to, at the SAME
     // run the priming step started (appended after its `RunStarted`, before any later one).
-    let mut sibling = rigger::spawn::SpawnRequest::new(
-        "solo",
-        "solo",
-        rigger::spawn::ROLE_IMPLEMENTER,
-        1,
-        "task",
-    );
+    let mut sibling =
+        common::spawn_request("solo", "solo", rigger::spawn::ROLE_IMPLEMENTER, 1, "task");
     sibling.max_wall_clock = Some(3600);
     seed_run_events(
         root,

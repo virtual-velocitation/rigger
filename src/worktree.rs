@@ -715,17 +715,6 @@ impl Worktree {
         }
     }
 
-    /// Whether the worktree has uncommitted changes (a dirty tree). Used to assert
-    /// the gate runs against a CLEAN, committed tree. Delegates to [`path_is_dirty`],
-    /// the one git-status-dirty primitive this method, `sweep_terminal_logged` (this
-    /// module), and `main.rs`'s `reclaim_orphan_scratch` all share (spec 89 round 3,
-    /// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - one dirty
-    /// check, not three independently-written `git status --porcelain -z` calls that
-    /// can silently diverge on how each fails.
-    pub fn is_dirty(&self) -> Result<bool, Error> {
-        path_is_dirty(&self.dir)
-    }
-
     /// Every path this unit changed relative to the base the worktree branched
     /// from - the COMMITTED diff (`git diff --name-only <base>..HEAD`) UNIONED with
     /// any still-uncommitted changes (`git status`).
@@ -2600,8 +2589,8 @@ fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
 }
 
 /// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
-/// single `git status --porcelain -z` primitive [`Worktree::is_dirty`], [`sweep_terminal_logged`],
-/// and `main.rs`'s `reclaim_orphan_scratch` all share (spec 89 round 3,
+/// single `git status --porcelain -z` primitive [`sweep_terminal_logged`] and `main.rs`'s
+/// `reclaim_orphan_scratch` share (spec 89 round 3,
 /// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`). Round 2 had grown TWO
 /// separate inline `git status` calls at those last two sites instead of reusing the one
 /// abstraction already sitting right here, private to this module - and the pair silently
@@ -2653,8 +2642,7 @@ mod tests {
     /// durable row-level record. Kept HERE, test-scoped, rather than in production - production
     /// has no caller for the combined form any more (only this module's tests did, which the
     /// dead-code audit would otherwise flag as a real production surface with zero real
-    /// callers, exactly the class `expect_merged`/`is_dirty` are already dispositioned for
-    /// nearby) - so the tests that genuinely want to exercise the combined merge+land behavior
+    /// callers) - so the tests that genuinely want to exercise the combined merge+land behavior
     /// end to end (crash-resume idempotency, conflict-leaves-markers-in-place, a non-content
     /// merge failure surfacing) keep doing so through one call, unchanged.
     enum IntegrateOutcome {
@@ -4733,7 +4721,7 @@ mod tests {
 
         std::fs::write(wt_path.join("feature.txt"), "work\n").unwrap();
         assert!(
-            wt.is_dirty().unwrap(),
+            path_is_dirty(&wt.dir).unwrap(),
             "an uncommitted file leaves a dirty tree"
         );
 
@@ -4743,7 +4731,7 @@ mod tests {
             "committing must return the new commit hash"
         );
         assert!(
-            !wt.is_dirty().unwrap(),
+            !path_is_dirty(&wt.dir).unwrap(),
             "after commit the worktree must be clean - the gate sees the committed artifact"
         );
         // The committed file is the one the unit changed relative to base, surviving
@@ -4809,7 +4797,7 @@ mod tests {
 
         std::fs::write(wt_path.join("feature.txt"), "work\n").unwrap();
         let committed = wt.commit("rigger: pre-commit").unwrap();
-        assert!(!wt.is_dirty().unwrap());
+        assert!(!path_is_dirty(&wt.dir).unwrap());
 
         let merged = wt.integrate("rigger: integrate").unwrap().expect_merged();
         assert_eq!(
@@ -4844,7 +4832,7 @@ mod tests {
         wt.commit("wip: residue commit").unwrap();
         std::fs::write(wt_path.join("untracked-residue.txt"), "leftover\n").unwrap();
         assert!(
-            wt.is_dirty().unwrap(),
+            path_is_dirty(&wt.dir).unwrap(),
             "premise: the tree must be dirty before restore"
         );
 
@@ -4856,7 +4844,7 @@ mod tests {
             "the branch tip must be back at exactly the reviewed sha"
         );
         assert!(
-            !wt.is_dirty().unwrap(),
+            !path_is_dirty(&wt.dir).unwrap(),
             "the worktree must be clean - both the tracked residue commit and the \
              untracked file must be gone"
         );
@@ -5200,7 +5188,7 @@ mod tests {
     use crate::conductor::STREAM;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, ExpectedRevision};
-    use crate::spawn::{SpawnRequest, SpawnResult};
+    use crate::spawn::SpawnResult;
 
     fn read_stream(store: &Store) -> Vec<Event> {
         store.read_stream(STREAM, 0, Direction::Forward).unwrap()
@@ -5215,7 +5203,7 @@ mod tests {
     #[test]
     fn spawn_fence_is_in_flight_when_the_latest_spawn_has_no_recorded_result() {
         let store = Store::open(":memory:").unwrap();
-        let req = SpawnRequest::new("u1", "u1", "implementer", 0, "task");
+        let req = crate::spawn::test_request("u1", "u1", "implementer", 0, "task");
         store
             .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
             .unwrap();
@@ -5238,7 +5226,7 @@ mod tests {
     #[test]
     fn spawn_fence_is_terminal_at_the_results_position_once_a_real_result_lands() {
         let store = Store::open(":memory:").unwrap();
-        let req = SpawnRequest::new("u2", "u2", "implementer", 0, "task");
+        let req = crate::spawn::test_request("u2", "u2", "implementer", 0, "task");
         store
             .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
             .unwrap();
@@ -5274,7 +5262,7 @@ mod tests {
         // the `&&`, or a flipped `==`, would let this wrong-typed decoy's LATER position (or
         // no position at all) leak into the evidence instead of the real result's.
         let store = Store::open(":memory:").unwrap();
-        let req = SpawnRequest::new("u5", "u5", "implementer", 0, "task");
+        let req = crate::spawn::test_request("u5", "u5", "implementer", 0, "task");
         store
             .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
             .unwrap();
@@ -5306,7 +5294,7 @@ mod tests {
     #[test]
     fn spawn_fence_names_a_liveness_fault_result_as_hung() {
         let store = Store::open(":memory:").unwrap();
-        let mut req = SpawnRequest::new("u3", "u3", "implementer", 0, "task");
+        let mut req = crate::spawn::test_request("u3", "u3", "implementer", 0, "task");
         req.max_wall_clock = Some(60);
         store
             .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
@@ -5341,7 +5329,7 @@ mod tests {
         // review-tier spawn requested AFTER it (attempt 1, a distinct role) has not - the
         // fence must follow the LATEST request, not the first one, keeping the worktree live.
         let store = Store::open(":memory:").unwrap();
-        let impl_req = SpawnRequest::new("u4", "u4", "implementer", 0, "task");
+        let impl_req = crate::spawn::test_request("u4", "u4", "implementer", 0, "task");
         store
             .append(
                 STREAM,
@@ -5357,7 +5345,7 @@ mod tests {
             )
             .unwrap();
 
-        let review_req = SpawnRequest::new("u4", "u4", "adversary", 1, "review");
+        let review_req = crate::spawn::test_request("u4", "u4", "adversary", 1, "review");
         store
             .append(
                 STREAM,
@@ -5384,7 +5372,8 @@ mod tests {
         // `sweep_terminal`'s caller does) must show `NoSpawn` instead - the current run
         // never requested anything for this unit.
         let store = Store::open(":memory:").unwrap();
-        let prior = SpawnRequest::new("reused-slug", "reused-slug", "implementer", 0, "task");
+        let prior =
+            crate::spawn::test_request("reused-slug", "reused-slug", "implementer", 0, "task");
         store
             .append(STREAM, ExpectedRevision::Any, &[prior.to_event().unwrap()])
             .unwrap();
@@ -5414,14 +5403,14 @@ mod tests {
     /// A `SpawnRequested` event for `unit`, unanswered - the shape `spawn_fence` reads as
     /// "in flight".
     fn requested(unit: &str) -> Event {
-        let req = crate::spawn::SpawnRequest::new(unit, unit, "implementer", 0, "task");
+        let req = crate::spawn::test_request(unit, unit, "implementer", 0, "task");
         req.to_event().unwrap()
     }
 
     /// A `SpawnRequested` + a real (non-liveness-fault) `SpawnResult` for `unit` - the
     /// shape `spawn_fence` reads as "terminal".
     fn requested_and_answered(unit: &str) -> Vec<Event> {
-        let req = crate::spawn::SpawnRequest::new(unit, unit, "implementer", 0, "task");
+        let req = crate::spawn::test_request(unit, unit, "implementer", 0, "task");
         let res = crate::spawn::SpawnResult::ok(&req.id, "done");
         vec![req.to_event().unwrap(), res.to_event().unwrap()]
     }
@@ -5429,7 +5418,7 @@ mod tests {
     /// A `SpawnRequested` + a liveness-fault `SpawnResult` for `unit` - the shape
     /// `spawn_fence` reads as "hung".
     fn requested_and_hung(unit: &str) -> Vec<Event> {
-        let req = crate::spawn::SpawnRequest::new(unit, unit, "implementer", 0, "task");
+        let req = crate::spawn::test_request(unit, unit, "implementer", 0, "task");
         let res = crate::spawn::SpawnResult::liveness_fault(&req.id, "stale marker", "infra");
         vec![req.to_event().unwrap(), res.to_event().unwrap()]
     }

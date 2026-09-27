@@ -4,7 +4,7 @@
 //! a tree node (or a graph node) SETS that seed - there is no hand-seeding. This criterion OWNS the
 //! graph route and select-to-seed.
 //!
-//! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve`), and crosses
+//! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve_on`), and crosses
 //! the REAL loopback HTTP socket the operator's browser actually hits. The implementer's inside-out
 //! unit tests in `dash.rs` call the pure `route`/`neighborhood` IN-PROCESS: they are structurally
 //! blind to the serve path (the `route` dispatch of `GET /api/graph` and the HTTP framing the socket

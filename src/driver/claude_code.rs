@@ -24,11 +24,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::conductor::{
-    classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
+    classify_failure, no_result_error, AgentDriver, AgentResult, Error, SpawnOpts,
 };
 use crate::config::AgentDef;
 use crate::eventstore::{Direction, EventStore};
-use crate::hooks;
 use crate::liveness;
 use crate::progress::{self, SpawnLaunched};
 use crate::progress_store;
@@ -598,7 +597,7 @@ impl Driver<'_> {
     /// `api_retry` category, matching `rigger status`'s own established progress-event
     /// run-scoping convention at `src/main.rs`) from THIS driver's own progress store,
     /// folds it against `last_api_retry_category` via [`classify_failure`], and embeds the
-    /// result as recoverable data ([`failure_class`]) via [`no_result_error`] ahead of a
+    /// result via [`no_result_error`] ahead of a
     /// human-readable message carrying the class and `stderr_tail` (lossily decoded,
     /// trimmed). A progress-store read failure degrades to "no `StopFailure` record found"
     /// (`None`) rather than failing the whole classification - the second source
@@ -652,10 +651,7 @@ impl Driver<'_> {
     /// input stream, waits a grace period, then ends the child through the sanctioned
     /// lifecycle helper on the child's own handle" (architecture addendum §4.6), then records
     /// the EXISTING liveness-fault shape and closes the launch record `stopped`. THE STOP
-    /// sweeps nothing beyond that one child's own PID TREE - unlike [`Driver::reconcile_on_start`],
-    /// which safely sweeps its spawn's whole worktree by cwd because it runs at supervisor
-    /// start-up, before any spawn is dispatched, with no live siblings - a running spawn's
-    /// worktree can be shared concurrently by sibling spawns in the same unit (the review
+    /// sweeps nothing beyond that one child's own PID TREE - a running spawn's worktree can be shared concurrently by sibling spawns in the same unit (the review
     /// fan-out's own lenses, `run_review_agents_concurrently`), and a cwd-scanned match has no
     /// notion of which spawn owns a process, so a cwd sweep here would signal a live sibling's
     /// own legitimate process, not just this spawn's leftovers (`op-104-stop-no-sweep-at-wall-
@@ -724,8 +720,7 @@ impl Driver<'_> {
         crate::reap::end_child(reaper.child_mut(), descendants);
 
         // That descendant walk is matched by PID-TREE membership alone, deliberately NEVER
-        // by cwd - still NO worktree-wide sweep here (unlike `reconcile_on_start`'s
-        // identical-looking one): this spawn's worktree can be shared, right now, by a live
+        // by cwd - NO worktree-wide sweep here: this spawn's worktree can be shared, right now, by a live
         // SIBLING spawn (the review fan-out's own concurrent lenses,
         // `run_review_agents_concurrently`, all passed the same dir), and a cwd-scanned
         // match has no notion of which spawn owns a process - a sweep here would signal
@@ -734,9 +729,6 @@ impl Driver<'_> {
         // against the round-1 fix this replaces). A sibling's process hangs off a DIFFERENT
         // parent, so it can never appear in this child's own descendant tree regardless of
         // what it shares on disk - safe by construction, not by omission.
-        // (`reconcile_on_start` keeps its own cwd sweep because it runs only at supervisor
-        // start-up, before any spawn is dispatched, when no sibling can be alive -
-        // `op-104-stop-no-sweep-at-wall-clock-stop`.)
         //
         // A descendant that had ALREADY escaped this child's process tree before the
         // snapshot above ever ran (reparented to init by a double fork, say) is invisible
@@ -855,60 +847,6 @@ impl Driver<'_> {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-    }
-
-    /// SUPERVISOR START-UP RECONCILIATION (spec 104 criterion 6, STOP's other half): "on
-    /// start the supervisor closes any `SpawnLaunched` left open as `interrupted` and
-    /// reaps processes still rooted in that spawn's worktree before it relaunches." Called
-    /// once, before any relaunch, with `progress_events` already scoped to `run_id` (the
-    /// SAME slice shape [`crate::progress::consolidate`]'s own caller already assembles) -
-    /// this function reads no store itself for that half, only writes the closures.
-    ///
-    /// CONSTRAINTS WALK ("cold start - the log and the progress store are the only
-    /// state"): a spawn's worktree dir needs NO event field of its own - it is the same
-    /// PURE function of the run's scratch root and the spawn's unit
-    /// ([`crate::conductor::unit_worktree_dir`]) every other worktree caller already uses,
-    /// via [`crate::spawn::unit_of`] on the open record's own spawn id. An empty
-    /// `scratch_root` (no scratch configured) or a spawn id `unit_of` cannot parse
-    /// degrades to "close the record, reap nothing" - the same conservative shape
-    /// [`crate::liveness`]'s marker functions use for a degenerate id, never a guess at a
-    /// path to reap.
-    ///
-    /// Returns the spawn ids reconciled (closed), in [`crate::progress::open_launches`]'s
-    /// deterministic order - callers with nothing to log can ignore it.
-    pub fn reconcile_on_start(
-        &self,
-        progress_events: &[crate::eventstore::Event],
-        run_id: &str,
-    ) -> Result<Vec<String>, Error> {
-        let open = crate::progress::open_launches(progress_events).map_err(|e| {
-            Error(format!(
-                "claude_code driver: reconcile: decode an open SpawnLaunched: {e}"
-            ))
-        })?;
-        let authorized_root = Path::new(&self.scratch_root);
-        let mut reconciled = Vec::with_capacity(open.len());
-        for sl in &open {
-            progress_store::record_launch(
-                self.progress_store,
-                run_id,
-                &SpawnLaunched::closed(
-                    sl.spawn.clone(),
-                    sl.launch,
-                    sl.session_id.clone(),
-                    "interrupted",
-                    "",
-                ),
-            )?;
-            if !self.scratch_root.is_empty() {
-                if let Some(unit) = crate::spawn::unit_of(&sl.spawn).filter(|u| !u.is_empty()) {
-                    let dir = crate::conductor::unit_worktree_dir(&self.scratch_root, unit);
-                    crate::reap::reap_processes_rooted_under(Path::new(&dir), authorized_root);
-                }
-            }
-            reconciled.push(sl.spawn.clone());
-        }
-        Ok(reconciled)
     }
 }
 
@@ -1127,99 +1065,6 @@ fn mcp_config_json(spawn_id: &str, rigger_bin: &str) -> String {
     .to_string()
 }
 
-/// Single-quote `s` for embedding in a POSIX shell command line: wraps it in `'...'` and
-/// replaces every embedded `'` with `'\''` (close the quote, an escaped literal quote, reopen
-/// it) - the standard shell-safe encoding, so a root containing a space or a shell
-/// metacharacter can never split an argument or be reinterpreted. A hook's `command` (see
-/// [`install_write_guard_hook`]) is a shell command line Claude Code runs through the
-/// operator's shell, never a bare argv array, so every value threaded into one needs this,
-/// not just a join with spaces.
-fn shell_single_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
-/// The exact `rigger guard-write --root <dir> [--root <dir> ...]` shell command line THE
-/// WRITE GUARD's installed hook runs (spec 104 criterion 4, Design's "THE WRITE GUARD"):
-/// one `--root` per root, each single-quoted, in the given order - so the printed command
-/// is deterministic and matches `rigger guard-write`'s own "the first root" deny wording
-/// (`--root` given first is the root a reader of this exact command line sees first too).
-fn write_guard_command(roots: &[String], rigger_bin: &str) -> String {
-    let mut cmd = shell_single_quote(rigger_bin);
-    cmd.push_str(" guard-write");
-    for root in roots {
-        cmd.push_str(" --root ");
-        cmd.push_str(&shell_single_quote(root));
-    }
-    cmd
-}
-
-/// THE WRITE GUARD's injection half (spec 104 criterion 4: "criterion 4's, command and
-/// injection both"): merges the `PreToolUse` hook entry that runs
-/// `rigger guard-write --root <dir>...` for `Edit|Write|NotebookEdit` into a spawn's
-/// settings JSON. Reuses [`hooks::install_pretooluse_hook`] - the SAME merge authority
-/// `rigger setup`'s own PreToolUse installs use (spec 92's graph-first lookup hook), never
-/// a second, parallel hook-merging implementation - so this composes cleanly with whatever
-/// `existing` already carries: empty (nothing yet), or criterion 5's `StopFailure` family
-/// already merged in under its OWN top-level event key, left untouched by this call (THE
-/// HOOKS: "the per-spawn settings JSON carries exactly two hook families ... assembled ...
-/// from their two owners"). `roots` is the spawn's `dir` and its scratch container (THE
-/// WRITE GUARD's own stated roots); `existing` may be empty.
-pub fn install_write_guard_hook(
-    existing: &[u8],
-    roots: &[String],
-    rigger_bin: &str,
-) -> Result<Vec<u8>, hooks::Error> {
-    let command = write_guard_command(roots, rigger_bin);
-    hooks::install_pretooluse_hook(existing, "Edit|Write|NotebookEdit", &command)
-}
-
-/// The exact `rigger hook stop-failure --spawn <id> --class <category>` shell command line
-/// THE HOOKS' `StopFailure` family runs for one category (Design's THE HOOKS paragraph,
-/// verbatim). Mirrors [`write_guard_command`]'s single-quoting discipline: `spawn_id` rides
-/// through a real POSIX shell exactly as [`shell_single_quote`] documents there.
-fn stop_failure_command(spawn_id: &str, class: AgentFailure, rigger_bin: &str) -> String {
-    format!(
-        "{} hook stop-failure --spawn {} --class {}",
-        shell_single_quote(rigger_bin),
-        shell_single_quote(spawn_id),
-        class,
-    )
-}
-
-/// THE STOPFAILURE HOOK's injection half (spec 104 criterion 5, Design's THE HOOKS:
-/// "criterion 5's, command, record and injection both"): merges ONE `StopFailure` hook
-/// entry per [`AgentFailure::CATEGORIES`] into a spawn's settings JSON, each running
-/// [`stop_failure_command`] for its own category and matched by that category's own name -
-/// mirroring [`install_write_guard_hook`]'s reuse of the shared merge authority
-/// ([`hooks::install_stopfailure_hook`], never a second, parallel hook-merging
-/// implementation) and composing cleanly with whatever `existing` already carries: empty,
-/// or criterion 4's `PreToolUse` write-guard family already merged in under its OWN
-/// top-level event key, left untouched by this call (THE HOOKS: "the per-spawn settings
-/// JSON carries exactly two hook families ... assembled ... from their two owners").
-/// `existing` may be empty.
-pub fn install_stop_failure_hooks(
-    existing: &[u8],
-    spawn_id: &str,
-    rigger_bin: &str,
-) -> Result<Vec<u8>, hooks::Error> {
-    let mut settings = existing.to_vec();
-    for class in AgentFailure::CATEGORIES {
-        let command = stop_failure_command(spawn_id, class, rigger_bin);
-        settings = hooks::install_stopfailure_hook(&settings, class.as_str(), &command)?;
-    }
-    Ok(settings)
-}
-
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
 /// - every field below is a fact, never inferred at read time.
@@ -1280,7 +1125,7 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conductor::failure_class;
+    use crate::conductor::{strip_failure_marker, AgentFailure};
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use std::io::Read;
@@ -1329,154 +1174,6 @@ mod tests {
         assert_eq!(get_val("--permission-prompts"), "none");
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         assert_eq!(get_val("--settings"), "{\"hooks\":{}}");
-    }
-
-    // ---- THE WRITE GUARD's injection half (spec 104 criterion 4) ----
-
-    #[test]
-    fn write_guard_command_shapes_one_root_flag_per_root_in_order() {
-        let roots = vec!["/spawn/dir".to_string(), "/spawn/scratch".to_string()];
-        assert_eq!(
-            write_guard_command(&roots, "rigger"),
-            "'rigger' guard-write --root '/spawn/dir' --root '/spawn/scratch'"
-        );
-    }
-
-    #[test]
-    fn write_guard_command_escapes_an_embedded_single_quote() {
-        let roots = vec!["/a b/it's/weird".to_string()];
-        let cmd = write_guard_command(&roots, "rigger");
-        // Round-trip: a POSIX shell splitting this exact string must recover the ORIGINAL
-        // root text, embedded quote and space both - not a mis-split argument.
-        assert_eq!(cmd, "'rigger' guard-write --root '/a b/it'\\''s/weird'");
-    }
-
-    #[test]
-    fn install_write_guard_hook_merges_the_pretooluse_entry_into_empty_settings() {
-        let roots = vec!["/spawn/dir".to_string()];
-        let out = install_write_guard_hook(b"", &roots, "rigger").unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["matcher"],
-            "Edit|Write|NotebookEdit"
-        );
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            "'rigger' guard-write --root '/spawn/dir'"
-        );
-    }
-
-    #[test]
-    fn install_write_guard_hook_passes_both_the_dir_and_the_scratch_container_as_roots() {
-        let roots = vec!["/spawn/dir".to_string(), "/spawn/scratch".to_string()];
-        let out = install_write_guard_hook(b"", &roots, "rigger").unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        let command = v["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap();
-        assert!(command.contains("--root '/spawn/dir'"));
-        assert!(command.contains("--root '/spawn/scratch'"));
-    }
-
-    #[test]
-    fn install_write_guard_hook_composes_with_an_existing_stopfailure_family() {
-        // THE HOOKS: exactly two hook families, assembled from their two owners. Simulate
-        // criterion 5's StopFailure entries already present under their OWN event key, and
-        // prove this call adds PreToolUse alongside it without touching StopFailure.
-        let existing = br#"{
-            "hooks": {
-                "StopFailure": [
-                    {"matcher": "", "hooks": [{"type": "command", "command": "rigger hook stop-failure --spawn u1/implementer#0 --class rate_limit"}]}
-                ]
-            }
-        }"#;
-        let roots = vec!["/spawn/dir".to_string()];
-        let out = install_write_guard_hook(existing, &roots, "rigger").unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(
-            v["hooks"]["StopFailure"][0]["hooks"][0]["command"],
-            "rigger hook stop-failure --spawn u1/implementer#0 --class rate_limit",
-            "the StopFailure family must survive untouched"
-        );
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["matcher"],
-            "Edit|Write|NotebookEdit"
-        );
-    }
-
-    #[test]
-    fn install_write_guard_hook_is_idempotent() {
-        let roots = vec!["/spawn/dir".to_string()];
-        let first = install_write_guard_hook(b"", &roots, "rigger").unwrap();
-        let second = install_write_guard_hook(&first, &roots, "rigger").unwrap();
-        assert_eq!(
-            first, second,
-            "installing the same roots twice must not duplicate the hook entry"
-        );
-    }
-
-    // ---- FAILURE CLASS (spec 104 criterion 5): `AgentFailure`/`classify_failure`/
-    // `should_relaunch`/`no_result_error`/`failure_class` now live in `conductor` (adj-
-    // u104c5 REQUIRED FIX 3) with their own tests; only this file's genuinely
-    // adapter-shaped pieces (the `StopFailure` hook's command + injection) stay here. ----
-
-    #[test]
-    fn stop_failure_command_shapes_the_exact_hook_invocation() {
-        assert_eq!(
-            stop_failure_command("u1/implementer#0", AgentFailure::RateLimit, "rigger"),
-            "'rigger' hook stop-failure --spawn 'u1/implementer#0' --class rate_limit"
-        );
-    }
-
-    #[test]
-    fn install_stop_failure_hooks_merges_one_block_per_category() {
-        let out = install_stop_failure_hooks(b"", "u1/implementer#0", "rigger").unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        let arr = v["hooks"]["StopFailure"].as_array().unwrap();
-        assert_eq!(
-            arr.len(),
-            AgentFailure::CATEGORIES.len(),
-            "one entry per error category (Design's THE HOOKS)"
-        );
-        for class in AgentFailure::CATEGORIES {
-            assert!(
-                arr.iter().any(|b| b["matcher"] == class.as_str()
-                    && b["hooks"][0]["command"]
-                        .as_str()
-                        .unwrap()
-                        .contains(&format!("--class {class}"))),
-                "missing entry for {class}: {arr:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn install_stop_failure_hooks_is_idempotent() {
-        let first = install_stop_failure_hooks(b"", "u1/implementer#0", "rigger").unwrap();
-        let second = install_stop_failure_hooks(&first, "u1/implementer#0", "rigger").unwrap();
-        assert_eq!(
-            first, second,
-            "installing the same spawn's hooks twice must not duplicate"
-        );
-    }
-
-    #[test]
-    fn install_stop_failure_hooks_composes_with_the_write_guard_family() {
-        // THE HOOKS: exactly two hook families, assembled from their two owners - the
-        // reciprocal of install_write_guard_hook_composes_with_an_existing_stopfailure_family
-        // above.
-        let roots = vec!["/spawn/dir".to_string()];
-        let after_guard = install_write_guard_hook(b"", &roots, "rigger").unwrap();
-        let out = install_stop_failure_hooks(&after_guard, "u1/implementer#0", "rigger").unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["matcher"], "Edit|Write|NotebookEdit",
-            "the write-guard family must survive untouched"
-        );
-        assert_eq!(
-            v["hooks"]["StopFailure"].as_array().unwrap().len(),
-            AgentFailure::CATEGORIES.len()
-        );
     }
 
     // ---- classify_no_result: run-scoping + degrade-on-store-error ----
@@ -1556,9 +1253,8 @@ mod tests {
         };
         let o = opts("u/implementer#0");
         let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"stderr tail");
-        assert_eq!(
-            failure_class(&e),
-            AgentFailure::Overloaded,
+        assert!(
+            strip_failure_marker(&e).contains(&format!("class {}", AgentFailure::Overloaded)),
             "a failed progress-store read must still fall through to the api_retry \
              category, never fail the whole classification: {}",
             e.0
@@ -1587,9 +1283,8 @@ mod tests {
         let mut o = opts("u/implementer#0");
         o.run_id = "run-1".to_string();
         let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"tail");
-        assert_eq!(
-            failure_class(&e),
-            AgentFailure::Overloaded,
+        assert!(
+            strip_failure_marker(&e).contains(&format!("class {}", AgentFailure::Overloaded)),
             "the other run's StopFailure record must not outrank THIS run's api_retry \
              category: {}",
             e.0
@@ -1615,7 +1310,11 @@ mod tests {
         let mut o = opts("u/implementer#0");
         o.run_id = "run-1".to_string();
         let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"tail");
-        assert_eq!(failure_class(&e), AgentFailure::BillingError);
+        assert!(
+            strip_failure_marker(&e).contains(&format!("class {}", AgentFailure::BillingError)),
+            "{}",
+            e.0
+        );
     }
 
     #[test]
@@ -2024,213 +1723,5 @@ mod tests {
         assert_eq!(res.meta["usage"]["input"], 0);
         assert_eq!(res.meta["turns"], 0);
         assert_eq!(res.meta["cost_usd"], 0.0);
-    }
-
-    // ---- reconcile_on_start (spec 104 criterion 6, supervisor start-up reconciliation) ----
-
-    /// A long-lived process rooted at `dir`, standing in for a hand-off-left-behind agent
-    /// process - mirrors `reap::tests::sleeper_in`'s exact shape (that helper is private
-    /// to its own module, so this is the local copy this module's own tests need).
-    fn sleeper_in(dir: &Path) -> Child {
-        Command::new("sleep")
-            .arg("300")
-            .current_dir(dir)
-            .spawn()
-            .expect("spawn sleep")
-    }
-
-    /// Poll until `pred` holds or a generous timeout elapses; returns whether it held.
-    fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-        for _ in 0..200 {
-            if pred() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        false
-    }
-
-    fn open_launch(spawn: &str, launch: u32, session_id: &str) -> SpawnLaunched {
-        SpawnLaunched {
-            spawn: spawn.to_string(),
-            launch,
-            session_id: session_id.to_string(),
-            resumed_from: None,
-            started: 1,
-            ended: None,
-            class: None,
-        }
-    }
-
-    #[test]
-    fn reconcile_on_start_closes_every_open_launch_as_interrupted() {
-        let progress = Store::open(":memory:").unwrap();
-        progress_store::record_launch(
-            &progress,
-            "run-1",
-            &open_launch("u1/implementer#0", 0, "sess-a"),
-        )
-        .unwrap();
-
-        let driver = Driver {
-            progress_store: &progress,
-            ..Driver::default()
-        };
-        let events = progress
-            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-            .unwrap();
-        let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
-        assert_eq!(reconciled, vec!["u1/implementer#0".to_string()]);
-
-        let after = progress
-            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-            .unwrap();
-        assert_eq!(
-            after.len(),
-            2,
-            "the open record plus its new closing record"
-        );
-        assert!(
-            crate::progress::open_launches(&after).unwrap().is_empty(),
-            "the launch must no longer read as open"
-        );
-        let closing: SpawnLaunched = serde_json::from_slice(&after[1].data).unwrap();
-        assert_eq!(closing.ended.as_deref(), Some("interrupted"));
-        assert_eq!(closing.spawn, "u1/implementer#0");
-        assert_eq!(closing.launch, 0);
-    }
-
-    #[test]
-    fn reconcile_on_start_is_a_noop_when_nothing_is_open() {
-        let progress = Store::open(":memory:").unwrap();
-        let driver = Driver {
-            progress_store: &progress,
-            ..Driver::default()
-        };
-        let reconciled = driver.reconcile_on_start(&[], "run-1").unwrap();
-        assert!(reconciled.is_empty());
-        assert!(
-            progress
-                .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-                .unwrap()
-                .is_empty(),
-            "nothing open means nothing written"
-        );
-    }
-
-    #[test]
-    fn reconcile_on_start_leaves_an_already_closed_launch_alone() {
-        let progress = Store::open(":memory:").unwrap();
-        progress_store::record_launch(
-            &progress,
-            "run-1",
-            &open_launch("u1/implementer#0", 0, "sess-a"),
-        )
-        .unwrap();
-        progress_store::record_launch(
-            &progress,
-            "run-1",
-            &SpawnLaunched::closed("u1/implementer#0", 0, "sess-a", "completed", ""),
-        )
-        .unwrap();
-
-        let driver = Driver {
-            progress_store: &progress,
-            ..Driver::default()
-        };
-        let events = progress
-            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-            .unwrap();
-        let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
-        assert!(
-            reconciled.is_empty(),
-            "an already-closed launch is not re-closed"
-        );
-        assert_eq!(
-            progress
-                .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-                .unwrap()
-                .len(),
-            2,
-            "no third event was appended"
-        );
-    }
-
-    #[test]
-    fn reconcile_on_start_skips_reaping_a_malformed_spawn_id_but_still_closes_it() {
-        let progress = Store::open(":memory:").unwrap();
-        progress_store::record_launch(&progress, "run-1", &open_launch("bare-id", 0, "sess-a"))
-            .unwrap();
-
-        let scratch = tempfile::tempdir().unwrap();
-        let driver = Driver {
-            progress_store: &progress,
-            scratch_root: scratch.path().to_string_lossy().into_owned(),
-            ..Driver::default()
-        };
-        let events = progress
-            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-            .unwrap();
-        // Must not panic on an id with no `/unit` half (spawn::unit_of returns None).
-        let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
-        assert_eq!(reconciled, vec!["bare-id".to_string()]);
-    }
-
-    #[test]
-    fn reconcile_on_start_reaps_a_process_still_rooted_in_the_spawns_worktree() {
-        let scratch = tempfile::tempdir().unwrap();
-        let scratch_root = scratch.path().to_string_lossy().into_owned();
-        // The SAME deterministic path every other worktree caller derives (spec 104
-        // criterion 6's own decision: no new `dir` field, this pure fn is the authority).
-        let unit_dir = crate::conductor::unit_worktree_dir(&scratch_root, "u1");
-        std::fs::create_dir_all(&unit_dir).unwrap();
-        let mut left_behind = sleeper_in(Path::new(&unit_dir));
-
-        let progress = Store::open(":memory:").unwrap();
-        progress_store::record_launch(
-            &progress,
-            "run-1",
-            &open_launch("u1/implementer#0", 0, "sess-a"),
-        )
-        .unwrap();
-
-        let driver = Driver {
-            progress_store: &progress,
-            scratch_root: scratch_root.clone(),
-            ..Driver::default()
-        };
-        let events = progress
-            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-            .unwrap();
-        driver.reconcile_on_start(&events, "run-1").unwrap();
-
-        assert!(
-            wait_until(|| matches!(left_behind.try_wait(), Ok(Some(_)))),
-            "a process still rooted in the spawn's worktree must be reaped before relaunch"
-        );
-    }
-
-    #[test]
-    fn reconcile_on_start_reaps_nothing_when_no_scratch_root_is_configured() {
-        // An empty scratch_root (no scratch configured, or a test that does not care) must
-        // degrade to "close the record, reap nothing" - never guess a path to reap.
-        let progress = Store::open(":memory:").unwrap();
-        progress_store::record_launch(
-            &progress,
-            "run-1",
-            &open_launch("u1/implementer#0", 0, "sess-a"),
-        )
-        .unwrap();
-        let driver = Driver {
-            progress_store: &progress,
-            scratch_root: String::new(),
-            ..Driver::default()
-        };
-        let events = progress
-            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-            .unwrap();
-        // Must not panic reaping "/rigger-wt-u1" or any other guessed absolute path.
-        let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
-        assert_eq!(reconciled, vec!["u1/implementer#0".to_string()]);
     }
 }

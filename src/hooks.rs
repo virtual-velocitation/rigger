@@ -90,24 +90,6 @@ pub fn install_pretooluse_hook(
     merge_hook_block(existing, "PreToolUse", matcher, command)
 }
 
-/// Merge a `StopFailure` hook that runs `command` (matched by `matcher`, e.g. an error
-/// category) into the settings JSON (spec 104 criterion 5: THE HOOKS' `StopFailure` family -
-/// "one entry per error category", "criterion 5's, command, record and injection both"). A
-/// thin wrapper over [`merge_hook_block`] fixed to the `StopFailure` event - see there for
-/// the shared idempotence and other-settings-preserving guarantees, and
-/// [`install_pretooluse_hook`]'s own doc for why a general-purpose event's dedup-by-command
-/// behavior matters here too: [`crate::driver::claude_code::install_stop_failure_hooks`]
-/// calls this once PER CATEGORY, and each category's own distinct `command` text (it embeds
-/// `--class <category>`) is what keeps [`has_command`]'s dedup from merging two different
-/// categories into one block. `existing` may be empty.
-pub fn install_stopfailure_hook(
-    existing: &[u8],
-    matcher: &str,
-    command: &str,
-) -> Result<Vec<u8>, Error> {
-    merge_hook_block(existing, "StopFailure", matcher, command)
-}
-
 /// Merge one stdio MCP server entry into `.mcp.json`'s `mcpServers` object (spec 92,
 /// criterion 4: the operator's own Claude Code session gets `rigger_peers` /
 /// `rigger_ground` / `rigger_graph` the same way the loop's agents do). Unlike the
@@ -261,87 +243,6 @@ mod tests {
             v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
             "rigger grep-guard"
         );
-    }
-
-    #[test]
-    fn stopfailure_hook_installs_and_is_idempotent() {
-        let first = install_stopfailure_hook(
-            b"",
-            "rate_limit",
-            "'rigger' hook stop-failure --spawn u1/implementer#0 --class rate_limit",
-        )
-        .unwrap();
-        let s = String::from_utf8(first.clone()).unwrap();
-        assert!(s.contains("StopFailure") && s.contains("hook stop-failure"));
-        assert!(s.contains("\"matcher\": \"rate_limit\""));
-        let second = install_stopfailure_hook(
-            &first,
-            "rate_limit",
-            "'rigger' hook stop-failure --spawn u1/implementer#0 --class rate_limit",
-        )
-        .unwrap();
-        assert_eq!(
-            first, second,
-            "installing the same category twice must not duplicate"
-        );
-    }
-
-    #[test]
-    fn stopfailure_hook_composes_one_block_per_category() {
-        // "one entry per error category" (Design, THE HOOKS): a second category's call
-        // must APPEND alongside the first's, never replace it.
-        let after_rate_limit = install_stopfailure_hook(
-            b"",
-            "rate_limit",
-            "'rigger' hook stop-failure --spawn u1/implementer#0 --class rate_limit",
-        )
-        .unwrap();
-        let out = install_stopfailure_hook(
-            &after_rate_limit,
-            "overloaded",
-            "'rigger' hook stop-failure --spawn u1/implementer#0 --class overloaded",
-        )
-        .unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        let arr = v["hooks"]["StopFailure"].as_array().unwrap();
-        assert_eq!(arr.len(), 2, "both categories' blocks must survive");
-        assert!(arr.iter().any(|b| b["matcher"] == "rate_limit"
-            && b["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .contains("--class rate_limit")));
-        assert!(arr.iter().any(|b| b["matcher"] == "overloaded"
-            && b["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .contains("--class overloaded")));
-    }
-
-    #[test]
-    fn stopfailure_hook_composes_with_an_existing_pretooluse_family() {
-        // THE HOOKS: exactly two hook families, assembled from their two owners - the
-        // reciprocal of install_write_guard_hook_composes_with_an_existing_stopfailure_family
-        // in src/driver/claude_code.rs's own tests.
-        let existing = br#"{
-            "hooks": {
-                "PreToolUse": [
-                    {"matcher": "Edit|Write|NotebookEdit", "hooks": [{"type": "command", "command": "rigger guard-write --root /spawn/dir"}]}
-                ]
-            }
-        }"#;
-        let out = install_stopfailure_hook(
-            existing,
-            "rate_limit",
-            "rigger hook stop-failure --spawn u1/implementer#0 --class rate_limit",
-        )
-        .unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            "rigger guard-write --root /spawn/dir",
-            "the PreToolUse family must survive untouched"
-        );
-        assert_eq!(v["hooks"]["StopFailure"][0]["matcher"], "rate_limit");
     }
 
     #[test]

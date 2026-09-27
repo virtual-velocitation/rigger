@@ -5,7 +5,7 @@
 //! Two boundaries neither of those reaches:
 //!
 //!  - The Done-when, driven end to end through the crate's PUBLIC API (`build_index` ->
-//!    `index_events` -> `Projector` -> `dash::card`), from OUTSIDE the crate, over a fixture of its
+//!    `project_batches` -> `Projector` -> `dash::card`), from OUTSIDE the crate, over a fixture of its
 //!    own. The implementer's own `events.rs` unit test
 //!    (`a_product_entity_referenced_by_two_tests_carries_proven_by_2_and_renders_on_its_card`)
 //!    already proves this same pipeline, but IN-CRATE and over the implementer's OWN fixture - that
@@ -17,7 +17,7 @@
 //!    that arm (`sqlite.rs::proof_evidence_c2::an_unresolvable_test_reference_is_staged_and_
 //!    reconciled_once_its_definition_later_folds`) hand-builds the two events directly against the
 //!    fold, which proves the fold logic is correct IF handed such a sequence but never proves the
-//!    real sorted-path pipeline (`project_batches_paced`/`index_events` over `BTreeMap<String,
+//!    real sorted-path pipeline (`project_batches_paced` over `BTreeMap<String,
 //!    FileSymbols>`) ever PRODUCES one - a genuinely different fact this test pins by naming its
 //!    fixture files so a `tests/`-dir file sorts alphabetically BEFORE the product file it
 //!    references. Both tests live in the `symbols` lane only (they drive the real tree-sitter
@@ -52,6 +52,8 @@
 //!    ONE file that changed - mirroring what the real replay-key content-hash suppression
 //!    (`crate::ingest::key_batch`, driven by `RunCtx::ingest_project_batches` in production) does,
 //!    per [`events_for_file`]'s own doc below.
+
+mod common;
 
 // ---- the Done-when, end to end via the public API (symbols lane only) ----------------------
 
@@ -90,8 +92,6 @@ fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_f
     use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::{Projection, KIND_FILE};
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("combat.rs"), STRIKE_PRODUCT_SRC).unwrap();
@@ -103,8 +103,7 @@ fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_f
     )
     .unwrap();
 
-    let idx = build_index(root.path().to_str().unwrap(), None);
-    let mut events = index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -177,7 +176,7 @@ fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_f
 
 /// A `tests/`-dir file whose path sorts ALPHABETICALLY BEFORE the product file it references
 /// (`tests/aaa_check.rs` < `zzz_product.rs`), so the real sorted-path pipeline
-/// (`project_batches_paced`/`index_events` over `BTreeMap<String, FileSymbols>`) folds this
+/// (`project_batches_paced` over `BTreeMap<String, FileSymbols>`) folds this
 /// evidence event BEFORE `finisher`'s own definition exists - the forward-reference case
 /// `pending_proof`/`reconcile_pending_proof` exists for, produced here by the REAL pipeline rather
 /// than a hand-built event sequence.
@@ -200,7 +199,6 @@ fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_it
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
     use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("zzz_product.rs"), FINISHER_PRODUCT_SRC).unwrap();
@@ -217,7 +215,7 @@ fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_it
         idx.files().keys().collect::<Vec<_>>()
     );
 
-    let mut events = index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -261,7 +259,7 @@ fn root_write(root: &tempfile::TempDir, rel: &str, contents: &str) {
 }
 
 /// One file's own event batch at a given `SymbolIndex` snapshot - the SAME composition
-/// `index_events`/`project_batches_paced` use for every file (structural events, then this
+/// `project_batches_paced` uses for every file (structural events, then this
 /// file's own test-origin evidence via `proof_events`), but scoped to ONE named file so a
 /// round-2 re-extraction can be simulated by feeding only the file that actually changed. That
 /// is exactly what the real replay-key content-hash suppression accomplishes in production
@@ -552,7 +550,6 @@ fn a_real_ambiguous_same_named_pair_never_gets_confident_credit_through_either_r
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
     use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     let root = tempfile::tempdir().unwrap();
     root_write(&root, "alpha.rs", ALPHA_V1_SRC);
@@ -569,7 +566,11 @@ fn a_real_ambiguous_same_named_pair_never_gets_confident_credit_through_either_r
 
     let p = Projector::open(":memory:", "test").unwrap();
     let mut next_position = 1u64;
-    apply_events(&p, &mut index_events(&idx1), &mut next_position);
+    apply_events(
+        &p,
+        &mut common::project_events(root.path().to_str().unwrap()),
+        &mut next_position,
+    );
 
     let seeds = ["alpha.rs".to_string(), "beta.rs".to_string()];
     let before = p.subgraph(&seeds, 2).unwrap();

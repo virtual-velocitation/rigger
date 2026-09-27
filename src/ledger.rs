@@ -117,10 +117,10 @@ pub struct ResumeGrant {
 pub struct RunState {
     pub units: BTreeMap<String, Unit>,
     /// Whether the run flagged a spec defect (an uncovered criterion, §4.4). Folded
-    /// from the conductor's SpecDefect event; gates `fully_done`.
+    /// from the conductor's SpecDefect event; gates [`RunState::release_ready`].
     pub spec_defect: bool,
     /// Whether a deferred gate failed at the run's phase boundary. Folded from the
-    /// conductor's DeferredGateFailed event; gates both `done` and `fully_done` so a
+    /// conductor's DeferredGateFailed event; gates `done` so a
     /// deferred failure can never be reported as a finished run.
     pub deferred_gate_failed: bool,
     /// The run's live HALT reason when the spawn-budget breaker stopped this run process
@@ -361,8 +361,7 @@ pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
 /// The conductor's DeferredGateFailed event (kept in sync with
 /// `conductor::TYPE_DEFERRED_GATE_FAILED`): a deferred gate that failed when it ran
 /// at the run's phase boundary. A deferred failure is surfaced truthfully - it gates
-/// both `done` and `fully_done` so the run never reports finished with a red
-/// phase-boundary gate.
+/// `done` so the run never reports finished with a red phase-boundary gate.
 pub const TYPE_DEFERRED_GATE_FAILED: &str = "DeferredGateFailed";
 /// The conductor's ManualReview event (the conductor re-exports this as
 /// `conductor::TYPE_MANUAL_REVIEW`, the single source of the string): a Manual-autonomy
@@ -568,32 +567,6 @@ impl RunState {
             && self.units.values().all(|u| u.status == Status::Integrated)
     }
 
-    /// The full "done" predicate (§4.1, R6): every criterion covered + every unit
-    /// integrated + every gate green.
-    ///
-    /// The three conjuncts collapse to two checks here because the conductor already
-    /// enforces the others by construction:
-    /// - **every gate green** is implied by **every unit integrated**: a unit reaches
-    ///   `Integrated` only after `run_gates` returns all-pass (and an adjudicator
-    ///   verdict, when present, approves), so all-integrated already means gate-green.
-    /// - **every criterion covered** is enforced as a gate at the start of the run
-    ///   (and again after planning for a `produces` workflow); a remaining gap halts
-    ///   the run with a SpecDefect rather than reaching here. So the live witness that
-    ///   coverage held is the *absence* of a flagged spec defect.
-    ///
-    /// Hence: when there are criteria to satisfy, the run is fully done iff no spec
-    /// defect was flagged and every unit integrated. With no criteria there is nothing
-    /// to converge against, so this defers to the plain `done` predicate.
-    pub fn fully_done(&self, criteria: &[String]) -> bool {
-        if self.spec_defect || self.deferred_gate_failed {
-            return false;
-        }
-        if criteria.is_empty() {
-            return self.done();
-        }
-        !self.units.is_empty() && self.units.values().all(|u| u.status == Status::Integrated)
-    }
-
     /// The ready-to-release handoff for this run (spec 38, criterion 3), or `None` when the
     /// run has not FULLY finished the job - so an unfinished run (a unit still un-integrated,
     /// an empty run, a failed deferred phase-boundary gate, or a run halted on an uncovered
@@ -611,13 +584,15 @@ impl RunState {
     /// unique-head flow. Purely derived (no new event, no auto-merge, no network action taken
     /// by rigger itself): a resume-by-replay re-reaches the identical handoff.
     ///
-    /// The gate is [`Self::done`] AND no flagged spec defect - together exactly the
-    /// [`Self::fully_done`] predicate ("every criterion covered + every unit integrated +
-    /// every gate green"). A `spec_defect` means the run HALTED on a coverage gap (§4.4): even
+    /// The gate is [`Self::done`] AND no flagged spec defect - together the full "done"
+    /// predicate (§4.1, R6: "every criterion covered + every unit integrated + every gate
+    /// green"). Every gate green is implied by every unit integrated (a unit reaches
+    /// `Integrated` only after its gates pass), and every criterion covered is enforced by the
+    /// coverage gate, whose live witness is the absence of a flagged spec defect. A
+    /// `spec_defect` means the run HALTED on a coverage gap (§4.4): even
     /// though every unit it did plan integrated (so `done()` alone is true), the run has NOT
     /// finished the job, so it must not advertise a release PR. Spec-38-c3 binds release-ready
-    /// to the "every criterion covered" sense, which is the `fully_done` semantic, not the
-    /// narrower `done()`.
+    /// to the "every criterion covered" sense, not the narrower `done()`.
     pub fn release_ready(&self, run_branch: &str, base: &str) -> Option<ReleaseReady> {
         if !self.done() || self.spec_defect {
             return None;
@@ -657,14 +632,6 @@ impl RunState {
         matches!(
             self.units.get(id).map(|u| u.status),
             Some(Status::Integrated) | Some(Status::Escalated)
-        )
-    }
-
-    /// Whether a unit has been integrated (used by resume to skip completed work).
-    pub fn is_integrated(&self, id: &str) -> bool {
-        matches!(
-            self.units.get(id).map(|u| u.status),
-            Some(Status::Integrated)
         )
     }
 
@@ -756,7 +723,6 @@ mod tests {
             Some("54 passed")
         );
         assert!(r.done());
-        assert!(r.is_integrated("u"));
     }
 
     #[test]
@@ -855,7 +821,6 @@ mod tests {
             !r.done(),
             "a Failed unit is not Integrated, so the run is not done"
         );
-        assert!(!r.is_integrated("u"));
     }
 
     #[test]
@@ -897,42 +862,9 @@ mod tests {
     }
 
     #[test]
-    fn fully_done_holds_for_a_clean_run_and_fails_on_escalation() {
-        let criteria = vec!["crit".into()];
-
-        // Clean run: every unit integrated, no spec defect -> fully done (§4.1, R6).
-        let clean = project(&[
-            ev(TYPE_UNIT_STARTED, r#"{"id":"u","spec_criterion":"crit"}"#),
-            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"abc"}"#),
-        ])
-        .unwrap();
-        assert!(clean.fully_done(&criteria));
-
-        // An escalated unit is not integrated -> not fully done.
-        let escalated = project(&[
-            ev(TYPE_UNIT_STARTED, r#"{"id":"u","spec_criterion":"crit"}"#),
-            ev(TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#),
-        ])
-        .unwrap();
-        assert!(!escalated.fully_done(&criteria));
-
-        // A flagged spec defect gates fully_done even if every unit integrated.
-        let defect = project(&[
-            ev(TYPE_UNIT_STARTED, r#"{"id":"u","spec_criterion":"crit"}"#),
-            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"abc"}"#),
-            ev(TYPE_SPEC_DEFECT, r#"{"reason":"gap"}"#),
-        ])
-        .unwrap();
-        assert!(defect.spec_defect);
-        assert!(!defect.fully_done(&criteria));
-    }
-
-    #[test]
-    fn a_failing_deferred_gate_gates_done_and_fully_done() {
-        // A deferred gate that failed at the phase boundary must gate BOTH `done` and
-        // `fully_done`, even when every unit integrated - a deferred failure is never
-        // reported as a finished run.
-        let criteria = vec!["crit".into()];
+    fn a_failing_deferred_gate_gates_done() {
+        // A deferred gate that failed at the phase boundary must gate `done`, even when
+        // every unit integrated - a deferred failure is never reported as a finished run.
         let r = project(&[
             ev(TYPE_UNIT_STARTED, r#"{"id":"u","spec_criterion":"crit"}"#),
             ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"abc"}"#),
@@ -943,14 +875,6 @@ mod tests {
         // Every unit integrated, yet the run is not done because a deferred gate failed.
         assert!(r.units.values().all(|u| u.status == Status::Integrated));
         assert!(!r.done(), "a failing deferred gate must gate `done`");
-        assert!(
-            !r.fully_done(&criteria),
-            "a failing deferred gate must gate `fully_done` with criteria"
-        );
-        assert!(
-            !r.fully_done(&[]),
-            "a failing deferred gate must gate `fully_done` with no criteria"
-        );
     }
 
     #[test]
@@ -1101,7 +1025,7 @@ mod tests {
         // A run that HALTED on a coverage gap (a flagged SpecDefect) is never
         // release-ready, even though the one unit it did plan integrated: a
         // spec-defective run has NOT finished the job (spec-38-c3 binds release-ready to
-        // the "every criterion covered" sense the codebase implements as `fully_done`),
+        // the "every criterion covered" sense, not the narrower `done()`),
         // so it must surface NO release-ready signal. `done()` alone would let this
         // through and advertise a PR for a run that stopped on an uncovered criterion.
         let spec_defective = project(&[

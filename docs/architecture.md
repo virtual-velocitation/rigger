@@ -749,7 +749,7 @@ this document.
 ### 5.5 The ingest: parallel, incremental, project-scoped  **[AS-BUILT]**
 
 Populating the graph from a project's source is one walk-and-content-key authority
-(`src/ingest.rs`, `ingest::ingest_project`) that both the live run and the standalone
+(`src/ingest.rs`, `ingest::ingest_project_batched`) that both the live run and the standalone
 `rigger graph build` (a cold checkout, no run required) share, so the content key an event
 is deduped under can never drift between them. Four properties define it:
 

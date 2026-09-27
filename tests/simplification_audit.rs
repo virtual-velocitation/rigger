@@ -3833,12 +3833,11 @@ fn render_section_3() -> String {
     out
 }
 
-/// Section 4.3's per-file distribution table, rendered from [`real_dead_code_candidates`] (file
-/// order, already `(file, line)`-sorted) so it can never drift from the committed JSON.
-fn render_dead_code_distribution_table() -> String {
+/// Section 4.3's per-file distribution table, rendered from `candidates` (file order, already
+/// `(file, line)`-sorted) so it can never drift from the committed JSON.
+fn render_dead_code_distribution_table(candidates: &[DeadCodeCandidate]) -> String {
     let mut out = String::new();
     out.push_str("| File | Count |\n|---|---|\n");
-    let candidates = real_dead_code_candidates();
     let mut i = 0;
     while i < candidates.len() {
         let file = candidates[i].file.as_str();
@@ -3850,15 +3849,17 @@ fn render_dead_code_distribution_table() -> String {
     out
 }
 
-/// Section 4.3's full list, rendered from [`real_dead_code_candidates`] grouped by file - name,
-/// line, visibility and ambiguity. `lines` carries each candidate's own line data in the SAME
-/// order as `real_dead_code_candidates()` ([`dead_code_candidate_lines`] - joined by array
+/// Section 4.3's full list, rendered from `candidates` grouped by file - name, line, visibility
+/// and ambiguity. `lines` carries each candidate's own line data in the SAME order as
+/// `candidates` ([`dead_code_candidate_lines`] - joined by array
 /// position, exactly like [`DEAD_CODE_LINES_PATH`] itself), and every `file:line` citation
 /// below, `ambiguous_with`'s own included, reads from `lines`, never from a
 /// [`DeadCodeCandidate`]'s own `line`/`ambiguous_with`, mirroring [`render_section_2`]'s own
 /// `lines` param.
-fn render_dead_code_full_list(lines: &[DeadCodeCandidateLines]) -> String {
-    let candidates = real_dead_code_candidates();
+fn render_dead_code_full_list(
+    candidates: &[DeadCodeCandidate],
+    lines: &[DeadCodeCandidateLines],
+) -> String {
     assert_eq!(
         candidates.len(),
         lines.len(),
@@ -3894,13 +3895,14 @@ fn render_dead_code_full_list(lines: &[DeadCodeCandidateLines]) -> String {
 }
 
 /// Section 6 item 0's own per-file deletion list: each entry's name AND its own `(line N)`
-/// citation, rendered from [`real_dead_code_candidates`] (every entry is to be deleted), paired
-/// with `lines`
+/// citation, rendered from `candidates` (every entry is to be deleted), paired with `lines`
 /// ([`DeadCodeCandidateLines`], the SAME sidecar section 4.3 reads) so this list's own citation
 /// is never a second, independent read of the live scan - spec 90 criterion 2, mirroring
 /// [`render_dead_code_full_list`] exactly.
-fn render_dead_code_deletion_list(lines: &[DeadCodeCandidateLines]) -> String {
-    let candidates = real_dead_code_candidates();
+fn render_dead_code_deletion_list(
+    candidates: &[DeadCodeCandidate],
+    lines: &[DeadCodeCandidateLines],
+) -> String {
     assert_eq!(
         candidates.len(),
         lines.len(),
@@ -4039,8 +4041,13 @@ fn render_section_4() -> String {
     if real_dead_code_candidates().is_empty() {
         out.push_str("The ledger is empty.\n\n");
     } else {
-        out.push_str(&render_dead_code_distribution_table());
-        out.push_str(&render_dead_code_full_list(&real_dead_code_lines()));
+        out.push_str(&render_dead_code_distribution_table(
+            real_dead_code_candidates(),
+        ));
+        out.push_str(&render_dead_code_full_list(
+            real_dead_code_candidates(),
+            &real_dead_code_lines(),
+        ));
     }
     out.push_str("### 4.4 Retired-feature remnants and stale doc claims\n\n");
     out.push_str(
@@ -4194,34 +4201,34 @@ pub(crate) fn render_section_5() -> String {
     );
     out.push_str(
         "- `page_script` - a small JS snippet fixture - independently redefined in 19 \
-        different files (`dup-0354`, exact; e.g. \
+        different files (`dup-0433`, exact; e.g. \
         `tests/adaptive_labels_periphery.rs:52-61`, \
         `tests/code_lens_overview_collapse_viz.rs:26-35`, \
         `tests/concepts_lens_view_periphery.rs:689-698`, + 16 more), all inside the \
         Dashboard/viz subsystem (5.1) - cross-validates that grouping.\n",
     );
     out.push_str(
-        "- `node_available` - a viz-fixture predicate - independently redefined in 19 \
+        "- `node_available` - a viz-fixture predicate - independently redefined in 20 \
         files; the mechanical pass also clusters it together with the `gitsemver_available`/ \
         `npm_available` availability-check helpers (5 more sites across `src/main.rs` and \
-        three test files) into one 24-site cluster (`dup-0252`, exact).\n",
+        three test files) into one 25-site cluster (`dup-0313`, exact).\n",
     );
     out.push_str(
         "- `temp_project` - a scratch-project-directory fixture - independently \
-        redefined in 19 files (`dup-0380`, semantic; e.g. \
+        redefined in 28 files (`dup-0469`, semantic; e.g. \
         `tests/canary_model_drift_periphery.rs:39-46`, \
         `tests/cause_wire_periphery.rs:54-61`, `tests/cli.rs:19-29`), plus a \
-        near-identical 12-site variant (`dup-0379`) and a 13-site `run_rigger` \
-        companion helper that drives it (`dup-0381`).\n",
+        near-identical 21-site variant (`dup-0468`) and a 17-site `run_rigger` \
+        companion helper that drives it (`dup-0470`).\n",
     );
     out.push_str(
         "- `run_stream_identity` - a store-identity fixture - independently redefined \
-        in 18 files (`dup-0386`, semantic).\n\n",
+        in 27 files (`dup-0475`, semantic).\n\n",
     );
     out.push_str(
         "Proposed home for all four: `tests/common` (the catalog's own \
         `proposed_home` field already says so verbatim for each). Consolidating just \
-        these four collapses roughly 72 duplicate definitions into 4 shared ones - \
+        these four collapses roughly 99 duplicate definitions into 4 shared ones - \
         the single largest mechanical simplification this audit identifies anywhere \
         in the test suite.\n\n",
     );
@@ -4278,20 +4285,20 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "181 test-only clusters in the committed catalog have every site as an \
         ordinary (non-`#[test]`) helper function - the shared-fixture-extraction \
-        candidate class. Beyond the four in 5.2, the widest are: `dup-0357` \
-        (`architecture_text` / `eventstore_source` / `main_rs_source` - \
-        source-text-loading helpers for doc/architecture-integrity checks, 12 files, \
-        15 sites); `dup-0384` (a companion, 16-file/16-site variant of 5.2's \
-        `run_stream_identity` fixture, alongside `dup-0386`'s 18-file version); \
-        `dup-0413` (`write_two_stage_workflow` / \
+        candidate class. Beyond the four in 5.2, the widest are: `dup-0445` \
+        (`architecture_text` / `main_rs_source` - \
+        source-text-loading helpers for doc/architecture-integrity checks, 8 files, \
+        10 sites); `dup-0474` (a companion, 22-file/22-site variant of 5.2's \
+        `run_stream_identity` fixture, alongside `dup-0475`'s 27-file version); \
+        `dup-0521` (`write_two_stage_workflow` / \
         `write_budget_one_two_stage_workflow` / `write_standalone_review_workflow` - \
         workflow-YAML-literal builders duplicated across `tests/cli.rs` and \
-        `tests/step_attention_periphery.rs`, 4 files, 15 sites); \
-        `dup-0384`/`dup-0386` (`seed_run_events`, an event-seeding helper, 6-8 \
-        files); `dup-0477` (`apply_def_json` / `apply_ref_fresh`-shaped \
-        fold-application helpers, 5 files); `dup-0482` (`community` / `concept` / \
-        `def`-named single-field constructor helpers, 6 files); `dup-0485` \
-        (`code_lens` / `concepts_lens` two-line accessor helpers, 3 files). Every \
+        `tests/step_attention_periphery.rs`, 6 files, 17 sites); \
+        `dup-0476`/`dup-0477` (`seed_run_events`, an event-seeding helper, 9-13 \
+        files); `dup-0595` (`apply_def_json` / `apply_ref_fresh`-shaped \
+        fold-application helpers, 5 files); `dup-0602` (`community` / `concept` / \
+        `def`-named single-field constructor helpers, 6 files); `dup-0870` \
+        (`code_lens` / `concepts_lens` two-line accessor helpers, 4 files). Every \
         one of these 181 clusters, with its full site list and the catalog's own \
         `proposed_home`, is already machine-readable in the committed \
         `docs/audit/duplication-catalog.json` for a follow-up consolidation spec to \
@@ -4302,7 +4309,7 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "159 test-only clusters have every site as a `#[test]` function - a \
         literal-differs-only-in-input family, spec 85's own named table-driven-test \
-        candidate class. The single largest anywhere in the suite: `dup-0672` (near, \
+        candidate class. The single largest anywhere in the suite: `dup-0850` (near, \
         42 sites, all in `tests/spec_lint.rs`, e.g. \
         `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class:54-102`, \
         `validate_spec_attributes_a_prose_level_defect_to_no_criterion:120-163`, \
@@ -4312,14 +4319,14 @@ pub(crate) fn render_section_5() -> String {
         validate_spec_field_guide_defects() { for (fixture, expected) in CASES { ... \
         } }` retiring all 42 named tests into one parametrized loop over a `(&str, \
         &str)` (or richer struct) case table. Other large families: \
-        `dup-0613`/`dup-0615` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
+        `dup-0780`/`dup-0782` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
         \"one fixture function body, one exemption-coverage shape, assert \
         covered/not-covered\" - retires into one table keyed by exemption shape); \
-        `dup-0646` (11 sites, `tests/simplification_audit.rs` - this \
+        `dup-0816` (11 sites, `tests/simplification_audit.rs` - this \
         very unit's own scanner tests, a `(source, expected_tokens_or_clusters)` \
-        table candidate); `dup-0602`/`dup-0603` (11+4 sites, \
+        table candidate); `dup-0764`/`dup-0765` (11+4 sites, \
         `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test \
-        - a `(pattern, is_caught)` table); `dup-0605` (4 sites, \
+        - a `(pattern, is_caught)` table); `dup-0767` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`, \
         `terminate_pid_refuses_pid_zero` / `_pid_one` x `stop_pid_refuses_pid_zero` \
         / `_pid_one` - a 2x2 `(helper, pid)` table). As with 5.4, the full \
@@ -4484,7 +4491,10 @@ fn render_section_6() -> String {
         out.push_str("- Status: complete - the ledger is empty.\n");
     } else {
         out.push_str("- Deletion list:\n\n");
-        out.push_str(&render_dead_code_deletion_list(&real_dead_code_lines()));
+        out.push_str(&render_dead_code_deletion_list(
+            real_dead_code_candidates(),
+            &real_dead_code_lines(),
+        ));
         out.push('\n');
     }
     out.push_str(
@@ -4724,12 +4734,12 @@ fn render_section_6() -> String {
         mechanically regardless of the Jaccard pass, per spec 85's own Design.\n\n",
     );
     out.push_str(
-        "#### 10. Consolidate the 754 `.rigger`-path string-literal sites (`dup-0069`) - the \
+        "#### 10. Consolidate the 799 `.rigger`-path string-literal sites (`dup-0070`) - the \
         single largest cluster in the entire catalog by site count\n\n",
     );
     out.push_str(
         "- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
-        `proposed_home`) every one of the 754 sites routes through instead of building its \
+        `proposed_home`) every one of the 799 sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
@@ -4746,7 +4756,7 @@ fn render_section_6() -> String {
         duplication catalog.\n\n",
     );
     out.push_str(
-        "#### 11. Consolidate the 406 `Command::new` call sites (`dup-0006`) behind one \
+        "#### 11. Consolidate the 442 `Command::new` call sites (`dup-0006`) behind one \
         injected process-spawn port\n\n",
     );
     out.push_str(
@@ -4756,35 +4766,35 @@ fn render_section_6() -> String {
         `src/driver/cli.rs`, `src/gate.rs`, `src/main.rs`, `src/worktree.rs` plus many \
         `tests/` files - full site list in `docs/audit/duplication-catalog.json` under \
         `dup-0006`.\n\
-        - Expected line delta: negative, though smaller per-site than `dup-0069` since each \
+        - Expected line delta: negative, though smaller per-site than `dup-0070` since each \
         `Command::new` call already carries real configuration (args, env, cwd) that must \
         move with it, not just a literal.\n\
-        - Risk: medium-high - several of these 406 sites sit inside `src/budget.rs`'s and \
+        - Risk: medium-high - several of these 442 sites sit inside `src/budget.rs`'s and \
         `src/conductor.rs`'s already-hardened process-lifecycle code (spec 78's no-os-kill \
         discipline); the follow-up spec must preserve every existing handle-bound-kill \
         invariant at each site it touches, and the no-os-kill gate is the acceptance bar, \
         not merely `cargo test`.\n\
-        - Unblocks: one seam instead of 406 independent constructions - the next \
+        - Unblocks: one seam instead of 442 independent constructions - the next \
         process-spawning concern added anywhere in the crate reuses it instead of adding \
-        site 407.\n\n",
+        site 443.\n\n",
     );
     out.push_str(
-        "#### 12. Consolidate the 46 sqlite `Connection::open` call sites (`dup-0167`)\n\n",
+        "#### 12. Consolidate the 39 sqlite `Connection::open` call sites (`dup-0172`)\n\n",
     );
     out.push_str(
         "- Scope: one sqlite-connection-opening adapter function (the cluster's own \
         `proposed_home`) spanning `src/contextgraph/sqlite.rs`, `src/eventstore/sqlite.rs` \
         and `src/main.rs`, plus several `tests/` files.\n\
-        - Files: full site list in `docs/audit/duplication-catalog.json` under `dup-0167`.\n\
-        - Expected line delta: negative - 46 open calls collapse toward one function.\n\
+        - Files: full site list in `docs/audit/duplication-catalog.json` under `dup-0172`.\n\
+        - Expected line delta: negative - 39 open calls collapse toward one function.\n\
         - Risk: medium - touches the event store and context graph's own \
         connection-lifecycle code; needs the store-identity and store-resolution contract \
         tests green throughout.\n\
         - Unblocks: one place to change pragma/timeout/journal-mode settings instead of \
-        46.\n\n",
+        39.\n\n",
     );
     out.push_str(
-        "#### 13. Consolidate the 9 error-shaping helper sites (`dup-0039`) - caution, \
+        "#### 13. Consolidate the 12 error-shaping helper sites (`dup-0035`) - caution, \
         confirm before merging\n\n",
     );
     out.push_str(
@@ -4796,10 +4806,10 @@ fn render_section_6() -> String {
         claimed duplicate. This may be a threshold-gaming false cluster (spec 85's own \
         CONSTRAINTS WALK: \"the threshold is a floor for the mechanical pass; the reading \
         pass owns semantic duplicates\") rather than one real shared concern - the follow-up \
-        spec's first job is confirming by reading whether these nine sites share actual \
+        spec's first job is confirming by reading whether these twelve sites share actual \
         logic before proposing one helper, not assuming the cluster label proves it.\n\
         - Files: `src/grounder/mod.rs`, `src/worktree.rs`, `src/conductor.rs`, plus the \
-        five test files named in `docs/audit/duplication-catalog.json` under `dup-0039`.\n\
+        five test files named in `docs/audit/duplication-catalog.json` under `dup-0035`.\n\
         - Expected line delta: unknown pending the confirmation read above - potentially \
         zero if the cluster does not survive a human read.\n\
         - Risk: low (the smallest-site-count sweep), but with the stated precondition.\n\
@@ -4813,9 +4823,9 @@ fn render_section_6() -> String {
     );
     out.push_str("#### 14. Extract the four headline shared test fixtures into `tests/common` (section 5.2)\n\n");
     out.push_str(
-        "- Scope: `page_script` (`dup-0354`, 19 files), `node_available` (`dup-0252`, 23 \
+        "- Scope: `page_script` (`dup-0433`, 19 files), `node_available` (`dup-0313`, 24 \
         files - merged with two related availability-check helpers), `temp_project` \
-        (`dup-0380`, 19 files) and `run_stream_identity` (`dup-0386`, 18 files) - roughly 72 \
+        (`dup-0469`, 28 files) and `run_stream_identity` (`dup-0475`, 27 files) - roughly 99 \
         duplicate definitions collapsing into four shared ones, the \
         single largest mechanical simplification section 5 identifies anywhere in the test \
         suite.\n\
@@ -4850,10 +4860,10 @@ fn render_section_6() -> String {
         tables (section 5.5)\n\n",
     );
     out.push_str(
-        "- Scope, largest first: `dup-0672` (42 sites, `tests/spec_lint.rs`), \
-        `dup-0613`/`dup-0615` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
-        `dup-0602`/`dup-0603` (11+4 sites, `tests/no_os_kill_audit.rs`), \
-        `dup-0646` (11 sites, `tests/simplification_audit.rs` - this very \
+        "- Scope, largest first: `dup-0850` (42 sites, `tests/spec_lint.rs`), \
+        `dup-0780`/`dup-0782` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
+        `dup-0764`/`dup-0765` (11+4 sites, `tests/no_os_kill_audit.rs`), \
+        `dup-0816` (11 sites, `tests/simplification_audit.rs` - this very \
         generator's own scanner tests) - 90 sites across 6 clusters.\n\
         - Files: the four files named above.\n\
         - Expected line delta: negative - each family's near-identical test bodies collapse \
@@ -4871,7 +4881,7 @@ fn render_section_6() -> String {
         "- Scope: the 181 test-only, all-helper-function clusters section 5.4 names, minus \
         the 4 item 14 already covers - consumed directly from \
         `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own \
-        stated approach). Includes the `dup-0379`/`dup-0381` `temp_project` companion and \
+        stated approach). Includes the `dup-0468`/`dup-0470` `temp_project` companion and \
         variant clusters section 5.4 itself places in this \"beyond the four\" bucket.\n\
         - Files: per-cluster, from the committed catalog.\n\
         - Expected line delta: negative, cumulative across 177 clusters.\n\
@@ -4886,7 +4896,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: the 159 test-only, all-`#[test]` clusters section 5.5 names, minus the 6 \
         cluster ids item 16 already covers - consumed directly from \
-        `docs/audit/duplication-catalog.json`. Includes `dup-0605` (4 sites, \
+        `docs/audit/duplication-catalog.json`. Includes `dup-0767` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`), the smallest of section 5.5's own \
         named large families, left here rather than in item 16.\n\
         - Files: per-cluster, from the committed catalog.\n\
@@ -4907,8 +4917,8 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
-        above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0069`, `dup-0167`, \
-        `dup-0193`, `dup-0194`, `dup-0259`, `dup-0039`); the remaining 327 clusters touching \
+        above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0070`, `dup-0172`, \
+        `dup-0193`, `dup-0194`, `dup-0259`, `dup-0035`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -5313,14 +5323,8 @@ fn normalize_rel_path(dir: &Path, rel: &str) -> String {
     parts.join("/")
 }
 
-/// Every `.rs` file under `root/src`, read once, as repo-relative `(path, content)` pairs -
-/// deterministically ordered ([`collect_rs_files`] sorts within each directory).
-fn collect_src_files_with_content(root: &Path) -> Vec<(String, String)> {
-    collect_files_with_content(root, &["src".to_string()])
-}
-
 /// Every production source file of the whole workspace (the root `src/` and each member
-/// crate's `src/`), as [`collect_src_files_with_content`] reads them.
+/// crate's `src/`), as [`collect_files_with_content`] reads them.
 fn collect_workspace_src_files_with_content(root: &Path) -> Vec<(String, String)> {
     let mut dirs = vec!["src".to_string()];
     dirs.extend(
@@ -5331,6 +5335,9 @@ fn collect_workspace_src_files_with_content(root: &Path) -> Vec<(String, String)
     collect_files_with_content(root, &dirs)
 }
 
+/// Every `.rs` file under each of `dirs` (relative to `root`), read once, as repo-relative
+/// `(path, content)` pairs - deterministically ordered ([`collect_rs_files`] sorts within each
+/// directory).
 fn collect_files_with_content(root: &Path, dirs: &[String]) -> Vec<(String, String)> {
     let mut paths = Vec::new();
     for dir in dirs {
@@ -8996,27 +9003,38 @@ mod tests {
         );
     }
 
+    /// A synthetic tree's ledger: two dead free functions sharing one name in two files, so
+    /// every entry carries an `ambiguous_with` citation as well as its own span.
+    fn dead_code_fixture() -> Vec<DeadCodeCandidate> {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(dir.path(), "src/a.rs", "fn twin() {}\n");
+        write_fixture(dir.path(), "src/b.rs", "\nfn twin() {}\n");
+        let candidates = candidates_for(dir.path());
+        assert_eq!(candidates.len(), 2, "{candidates:?}");
+        candidates
+    }
+
     /// Shared machinery for the two CLAIM-4-equivalent decoy pin-bump tests below (section 4.3
-    /// and section 6 item 0): pick `probe`, override its own `lines` entry with a decoy line
-    /// found nowhere in `real_dead_code_candidates()`, render via `render`, and assert the
-    /// decoy citation (built by `citation`) is present while the stale (real) one is absent -
-    /// proving the renderer sources its citation from `lines`, never `DeadCodeCandidate`'s own
-    /// live `line` field. One helper, not two near-identical test bodies, since this file's own
+    /// and section 6 item 0): over [`dead_code_fixture`]'s ledger, override the first entry's
+    /// `lines` value with a decoy line, render via `render`, and assert the decoy citation
+    /// (built by `citation`) is present while the stale (real) one is absent - proving the
+    /// renderer sources its citation from `lines`, never `DeadCodeCandidate`'s own live `line`
+    /// field. One helper, not two near-identical test bodies, since this file's own
     /// duplication scanner catches test code too (spec 85 Goal: "no small enough to duplicate
     /// exemption").
     fn assert_dead_code_render_cites_the_unguarded_lines_value(
-        probe: usize,
-        render: impl Fn(&[DeadCodeCandidateLines]) -> String,
+        render: impl Fn(&[DeadCodeCandidate], &[DeadCodeCandidateLines]) -> String,
         citation: impl Fn(&DeadCodeCandidate, usize) -> String,
     ) {
-        let candidates = real_dead_code_candidates();
-        let mut lines = real_dead_code_lines();
-        let real_line = candidates[probe].line;
+        let candidates = dead_code_fixture();
+        let mut lines: Vec<DeadCodeCandidateLines> =
+            candidates.iter().map(dead_code_candidate_lines).collect();
+        let real_line = candidates[0].line;
         let decoy_line = real_line + 500_000;
-        lines[probe].line = decoy_line;
-        let rendered = render(&lines);
-        let decoy_citation = citation(&candidates[probe], decoy_line);
-        let stale_citation = citation(&candidates[probe], real_line);
+        lines[0].line = decoy_line;
+        let rendered = render(&candidates, &lines);
+        let decoy_citation = citation(&candidates[0], decoy_line);
+        let stale_citation = citation(&candidates[0], real_line);
         assert!(
             rendered.contains(&decoy_citation),
             "must cite the unguarded lines value {decoy_citation} - got {rendered:?}"
@@ -9029,16 +9047,11 @@ mod tests {
     }
 
     /// CLAIM-4 equivalent for section 4.3 (mirrors
-    /// `report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
-    /// proven at the DATA-FLOW level against the real committed candidate pool, since
-    /// `render_dead_code_full_list` (unlike `render_section_2`) sources its candidates
-    /// internally from `real_dead_code_candidates()` rather than a caller-supplied slice - a
-    /// synthetic single-candidate fixture is not this function's own shape (see
-    /// `assert_dead_code_render_cites_the_unguarded_lines_value`).
+    /// `report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`),
+    /// over a synthetic ledger (see `assert_dead_code_render_cites_the_unguarded_lines_value`).
     #[test]
     fn report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
         assert_dead_code_render_cites_the_unguarded_lines_value(
-            0,
             render_dead_code_full_list,
             |c, line| format!("`{}:{}`", c.file, line),
         );
@@ -9155,11 +9168,11 @@ mod tests {
         assert!(rendered.contains("THREE CANDIDATES, ONE HOME"));
         // Cites the mandatory-sweep duplication clusters by id.
         assert!(rendered.contains("dup-0006"));
-        assert!(rendered.contains("dup-0069"));
-        assert!(rendered.contains("dup-0167"));
+        assert!(rendered.contains("dup-0070"));
+        assert!(rendered.contains("dup-0172"));
         assert!(rendered.contains("dup-0193"));
         assert!(rendered.contains("dup-0194"));
-        assert!(rendered.contains("dup-0039"));
+        assert!(rendered.contains("dup-0035"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));
         assert!(rendered.contains("src/main.rs"));
@@ -9167,7 +9180,7 @@ mod tests {
         // Cites section 5's own headline test-suite consolidation items.
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
-        assert!(rendered.contains("dup-0672"));
+        assert!(rendered.contains("dup-0850"));
         // Item 0: the dead-code deletion, and the explicit no-further-follow-up category.
         assert!(rendered.contains("Delete the dead-code set"));
         assert!(rendered.contains("no further follow-up"));
@@ -9290,13 +9303,11 @@ mod tests {
 
     /// CLAIM-4 equivalent for section 6 item 0 (mirrors
     /// `report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
-    /// same shared machinery, applied to `render_dead_code_deletion_list` instead, probed at
-    /// the first real entry (see
+    /// same shared machinery, applied to `render_dead_code_deletion_list` instead (see
     /// `assert_dead_code_render_cites_the_unguarded_lines_value`).
     #[test]
     fn report_section_6_item_0_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
         assert_dead_code_render_cites_the_unguarded_lines_value(
-            0,
             render_dead_code_deletion_list,
             |c, line| format!("`{}` (line {})", c.name, line),
         );
@@ -9427,46 +9438,19 @@ mod tests {
     // Round 1 class 3 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`):
     // THE TWO RESOLVERS AGREE, PROVEN - `resolve_out_of_line_test_files` (this file's bespoke
     // text scan) against `out_of_line_test_module_files` (`src/grounder/symbols/events.rs`, spec
-    // 86's canonical production resolver - PRIVATE, so this stage-2/3-changes-no-production-code
-    // unit cannot call it directly). Compared through its OWN OBSERVABLE EFFECT via the public
-    // API (`build_index` -> `index_events`) instead: a file the production resolver excludes is
-    // HOLLOWED (`events::for_extraction`) before extraction, so it contributes ZERO
-    // `CodeEntityExtracted` events for any of its definitions - a file with at least one
-    // non-test definition that still emits none is therefore excluded. Every fixture below (and
-    // the real tree's own product code) gives each candidate file at least one always-live
-    // top-level item, so "did this file's own item reach the graph" is an unambiguous signal,
-    // never confused with a file that is merely, coincidentally, empty of product code. Reads
-    // `Event::type_`/`Event::data` generically (both `pub`) rather than the private
-    // `CodeEntityExtracted` type itself - `data` is its `serde_json::to_vec` wire form, so a
-    // plain `serde_json::Value` walk needs no knowledge of the private struct at all, mirroring
-    // how any other real consumer of this event log (a UI, another service) would read it.
+    // 86's canonical production resolver), compared directly over the same fixture trees and the
+    // real tree.
     // -------------------------------------------------------------------------------------
 
-    /// The production pipeline's own effective out-of-line-test-file exclusion set, scoped to
-    /// `src/` (matching [`resolve_out_of_line_test_files`]'s own scope) - see this section's own
-    /// banner comment for the derivation.
+    /// The production pipeline's own out-of-line-test-file exclusion set
+    /// (`events::out_of_line_test_module_files` over a fresh index), scoped to `src/` to match
+    /// [`resolve_out_of_line_test_files`]'s own scope.
     #[cfg(feature = "symbols")]
     fn production_out_of_line_exclusion_set(root: &Path) -> BTreeSet<String> {
         let idx = rigger::grounder::symbols::build_index(root.to_str().unwrap(), None);
-        let events = rigger::grounder::symbols::events::index_events(&idx);
-        let mut graphed: BTreeSet<String> = BTreeSet::new();
-        for e in &events {
-            if e.type_ != rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED {
-                continue;
-            }
-            let payload: serde_json::Value =
-                serde_json::from_slice(&e.data).expect("CodeEntityExtracted payload is valid JSON");
-            if let Some(file) = payload.get("file").and_then(|v| v.as_str()) {
-                graphed.insert(file.to_string());
-            }
-        }
-        idx.files()
-            .iter()
-            .filter(|(path, _)| path.starts_with("src/"))
-            .filter(|(path, fs)| {
-                fs.defs.iter().any(|d| !d.is_test) && !graphed.contains(path.as_str())
-            })
-            .map(|(path, _)| path.clone())
+        rigger::grounder::symbols::events::out_of_line_test_module_files(&idx)
+            .into_iter()
+            .filter(|path| path.starts_with("src/"))
             .collect()
     }
 
@@ -9550,7 +9534,10 @@ mod tests {
     #[test]
     fn resolvers_agree_on_the_real_tree() {
         let root = repo_root();
-        let bespoke = resolve_out_of_line_test_files(&collect_src_files_with_content(&root));
+        let bespoke = resolve_out_of_line_test_files(&collect_files_with_content(
+            &root,
+            &["src".to_string()],
+        ));
         let production = production_out_of_line_exclusion_set(&root);
         assert_eq!(
             bespoke, production,
@@ -10373,16 +10360,22 @@ mod tests {
         );
     }
 
-    /// Spec 90 criterion 2, CLAIM 1 for `docs/audit/dead-code.json`: structurally, no candidate
-    /// or test-only reference carries `line`, and every `content_hash` is non-empty. Also checks
+    /// Spec 90 criterion 2, CLAIM 1 for `docs/audit/dead-code.json`, over a synthetic ledger (the
+    /// real one is empty): structurally, no candidate or test-only reference carries `line`, and
+    /// every `content_hash` is non-empty. Also checks
     /// any `ambiguous_with` citation is `file#hash`-shaped, never `file:line`.
     #[test]
-    fn the_real_committed_dead_code_json_carries_no_line_number_fields() {
-        let candidates = real_dead_code_candidates();
-        let json = dead_code_to_json(candidates);
+    fn the_dead_code_json_carries_no_line_number_fields() {
+        let json = dead_code_to_json(&dead_code_fixture());
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         let arr = value.as_array().expect("a bare array");
         assert!(!arr.is_empty());
+        assert!(
+            arr.iter().all(|e| e["ambiguous_with"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty())),
+            "the fixture must exercise the ambiguous_with citation shape: {json}"
+        );
         for entry in arr {
             let obj = entry.as_object().expect("a candidate object");
             assert!(

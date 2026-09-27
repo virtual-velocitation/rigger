@@ -113,13 +113,7 @@
 //!     naming the dir and the `build.cache_dir` key at this SAME bypass-`config::load`
 //!     entry point.
 //!
-//! 11. `resolve_wrapper_name_reads_the_real_ambient_path_directly` (SDET addition): proves
-//!     `gate::resolve_wrapper_name` - the wrapper-only, ambient-PATH-reading public fn -
-//!     directly over the crate's public API boundary, since production code now reaches
-//!     the wrapper axis through `gate::resolve_build_layer` (composing `gate::
-//!     resolve_wrapper_name_from` directly) rather than through this fn.
-//!
-//! 12. `run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_library_
+//! 11. `run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_library_
 //!     entry_point` (SDET addition): the WRITABILITY sub-case counterpart to test 10. A
 //!     directory that ALREADY EXISTS - the realistic steady state for a persisted, shared
 //!     cache dir - makes `create_dir_all` a no-op success regardless of write permission;
@@ -155,7 +149,7 @@ use rigger::contextgraph::TYPE_GATE_VERDICT;
 use rigger::driver::cli;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
-use rigger::gate::{resolve_wrapper_name, BuildEnv, ExecRunner};
+use rigger::gate::{BuildEnv, ExecRunner};
 
 /// Write a minimal but real `.rigger/agents/worker.md` + `.rigger/workflow.yml` at
 /// `root`, so `config::load` reaches all the way through agent parsing and
@@ -203,8 +197,7 @@ fn as_map(env: &BuildEnv) -> std::collections::BTreeMap<String, String> {
 /// `run_propagates_a_named_but_absent_wrappers_error_at_the_library_entry_point` (unit 2)
 /// READS PATH too, transitively through the same `gate::resolve_build_layer` edge, reached
 /// this time via `conductor::run` directly rather than `config::load` - same hazard, same
-/// lock. `resolve_wrapper_name_reads_the_real_ambient_path_directly` (SDET addition) both
-/// READS and WRITES PATH calling the ambient-PATH pub fn itself. `cargo test` runs every
+/// lock. `cargo test` runs every
 /// test in this one binary as concurrent threads by default; a concurrent env read racing
 /// a concurrent env write is a genuine hazard at the POSIX `setenv`/`getenv` level
 /// regardless of which keys either side touches (the same hazard `registry::
@@ -1103,51 +1096,4 @@ fn run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_libra
          wasted work: {:?}",
         driver.outputs()
     );
-}
-
-/// `gate::resolve_wrapper_name` (the ambient-PATH edge of the WRAPPER-ONLY axis) has no
-/// production caller - `Config::validate`, `RunCtx::build_env`, and `cmd_validate` all go
-/// through `gate::resolve_build_layer` (which folds in the cache-dir axis and calls
-/// `gate::resolve_wrapper_name_from` directly, never `resolve_wrapper_name` itself). It
-/// remains `pub` - part of the crate's committed public surface - so this proves its one
-/// distinguishing line - the real `std::env::var_os("PATH")` read - directly, over the
-/// crate's public API boundary (this file compiles as a separate test crate with no access
-/// to gate.rs's private items).
-#[test]
-fn resolve_wrapper_name_reads_the_real_ambient_path_directly() {
-    // WRITES PATH (staging the fake wrapper, then filtering it back out) and READS it (the
-    // function under test) - same ENV_TEST_LOCK discipline as every other PATH-touching test
-    // in this file.
-    let _guard = env_test_lock();
-    let orig_path = std::env::var_os("PATH").unwrap_or_default();
-
-    // auto + a known wrapper present on PATH -> Ok(Some(name)), the real probe finding it.
-    {
-        let _bindir = stage_fake_sccache_on_path();
-        assert_eq!(
-            resolve_wrapper_name("auto"),
-            Ok(Some("sccache".to_string())),
-            "auto must resolve the real probed wrapper it finds on the real ambient PATH"
-        );
-    }
-
-    // auto + nothing known on PATH -> Ok(None), the discovered-implicit degrade.
-    std::env::set_var("PATH", path_with_neither_known_wrapper());
-    assert_eq!(
-        resolve_wrapper_name("auto"),
-        Ok(None),
-        "auto finding nothing on the real ambient PATH must degrade to None, never error"
-    );
-
-    // A NAMED wrapper absent from that same real PATH -> Err naming the binary, the
-    // configured-explicit failure this whole unit exists to prove never silently degrades.
-    let err = resolve_wrapper_name("definitely-not-a-real-wrapper-rigger-u2-nametest")
-        .expect_err("a named-but-absent wrapper must error, not silently resolve to None");
-    assert!(
-        err.to_string()
-            .contains("definitely-not-a-real-wrapper-rigger-u2-nametest"),
-        "the error must name the missing binary: {err}"
-    );
-
-    std::env::set_var("PATH", orig_path);
 }

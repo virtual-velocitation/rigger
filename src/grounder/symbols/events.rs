@@ -13,39 +13,6 @@ use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, Symb
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-/// Emit the whole index as events: for each file (in the index's sorted path order) its
-/// definitions and references, lowered through [`extract_events`]. Deterministic by construction -
-/// the index iterates a `BTreeMap`, so identical source yields byte-identical events. A file
-/// [`out_of_line_test_module_files`] resolves as the target of a `#[cfg(test)] mod name;`
-/// declaration elsewhere in `idx` still contributes a batch (round 5,
-/// adj-u86c3-r4-out-of-line-exclusion-still-unmigrated): its symbols are hollowed via
-/// [`for_extraction`] before the SAME [`extract_events`] every other file goes through runs on it,
-/// so that function's own already-existing empty-survivor boundary (spec 86 criterion 3) retires
-/// its prior structural edges too - never a second, caller-level sentinel path that drops the file
-/// before `extract_events` ever sees it, which is exactly the defect that let a legacy test-entity
-/// node reached only through an out-of-line declaration survive every re-ingest forever. Evidence
-/// (`proof_events`) is a separate concern with its own disclosed, non-blocking gap for this same
-/// shape - see that function's own doc - so it is skipped for an excluded file here, unchanged.
-pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
-    let excluded = out_of_line_test_module_files(idx);
-    idx.files()
-        .iter()
-        .flat_map(|(path, fs)| {
-            let is_excluded = excluded.contains(path.as_str());
-            let mut events = extract_events(path, &for_extraction(fs, is_excluded));
-            // Spec 86 criterion 2: alongside (never inside) the structural pass, emit this file's
-            // TEST-ORIGIN evidence too - except for an out-of-line-excluded file, which never
-            // reaches this call (see this function's own doc and [`proof_events`]'s disclosed
-            // gap). See [`proof_events`]'s own doc for why this rides a separate function rather
-            // than folding into `extract_events` itself.
-            if !is_excluded {
-                events.extend(proof_events(path, fs));
-            }
-            events
-        })
-        .collect()
-}
-
 /// Round 5 (adj-u86c3-r4-out-of-line-exclusion-still-unmigrated): the symbols [`extract_events`]
 /// actually sees for one file - `fs` unchanged, UNLESS `excluded` (this file is the resolved
 /// target of an out-of-line `#[cfg(test)] mod name;` declaration elsewhere,
@@ -99,8 +66,8 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 /// adj-u86c3-r4-out-of-line-exclusion-still-unmigrated) included - is lowered through the ONE
 /// [`extract_events`] authority (never a second parallel copy), which never returns empty (spec 86
 /// criterion 3), so every file's own batch is never empty. [`proof_events`] runs alongside it for a
-/// non-excluded file only, mirroring [`index_events`]'s identical composition - see that function's
-/// own doc and [`proof_events`]'s disclosed gap. Returns `(batches, workers_engaged)`.
+/// non-excluded file only, mirroring [`file_batches`]' identical composition - see
+/// [`proof_events`]'s disclosed gap. Returns `(batches, workers_engaged)`.
 pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
     let idx = crate::grounder::symbols::store::load(root)
         .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
@@ -112,7 +79,7 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
         let is_excluded = excluded.contains(path.as_str());
         let mut events = extract_events(path, &for_extraction(fs, is_excluded));
         // Spec 86 criterion 2: this file's test-origin evidence, alongside its structural
-        // events - see [`index_events`]'s identical composition and [`proof_events`]'s doc. Never
+        // events - see [`proof_events`]'s doc. Never
         // empty (round 3) when run, so a non-excluded file's batch is never dropped; skipped for
         // an out-of-line-excluded file (see this module's [`for_extraction`] doc).
         if !is_excluded {
@@ -376,8 +343,8 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// event THIS function returns is stamped via the SAME [`set_fresh`] `extract_events` uses,
 /// marking the boundary of THIS file's own evidence batch. Re-extraction supersession is
 /// criterion 2's OWN mechanism for evidence (`contextgraph::sqlite::supersede_file_proof`),
-/// distinct from `extract_events`'s structural boundary on the SAME event list (`index_events`/
-/// `project_batches_paced` concatenate both, so a file can carry two independent boundaries - one
+/// distinct from `extract_events`'s structural boundary on the SAME event list
+/// (`project_batches_paced` concatenates both, so a file can carry two independent boundaries - one
 /// per concern) - without it, editing a test file (adding an unrelated test, fixing a comment)
 /// re-extracts the whole file and re-records every unchanged is_test reference as brand-new
 /// evidence, permanently inflating `proven_by`.
@@ -387,7 +354,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// all, but ALSO the ordinary case of deleting or rewriting the one test that proved something -
 /// used to return an empty `Vec` here, so this function stamped no boundary. That was fine for a
 /// file that NEVER had evidence, but silently wrong for one TRANSITIONING from evidence to none: a
-/// file's WHOLE batch (`extract_events` alongside this function, concatenated by `index_events`/
+/// file's WHOLE batch (`extract_events` alongside this function, concatenated by
 /// `project_batches_paced`) can itself be empty - a `tests/`-dir file's structural side is ALWAYS
 /// empty - so the file's batch was dropped entirely and `fold_test_evidence`/`supersede_file_proof`
 /// never even ran, stranding this file's own prior `proof_evidence` contribution on whichever
@@ -406,7 +373,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// Disclosed, non-blocking scope limit (mirrors criterion 1's own disclosed Go-language gap): a
 /// file pulled in only by an OUT-OF-LINE `#[cfg(test)] mod name;` declaration elsewhere
 /// ([`out_of_line_test_module_files`]) still contributes a STRUCTURAL batch since round 5
-/// (`extract_events` runs on it hollowed, via `index_events`/`project_batches_paced`'s own
+/// (`extract_events` runs on it hollowed, via `project_batches_paced`'s own
 /// [`for_extraction`] - see either function's doc), but this function is deliberately never called
 /// for it (its own references carry no `is_test` marking of their own - the attribute lives on the
 /// DECLARING file's side, invisible to this per-file view, per [`out_of_line_test_module_files`]'s
@@ -731,7 +698,7 @@ fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) 
 ///    to gate, since the whole file it lives in is already test-only. A worklist walks newly
 ///    excluded files to a fixed point; `excluded.insert` returning `false` for an already-seen
 ///    target both terminates the closure and guards against a cycle looping forever.
-fn out_of_line_test_module_files(idx: &SymbolIndex) -> BTreeSet<String> {
+pub fn out_of_line_test_module_files(idx: &SymbolIndex) -> BTreeSet<String> {
     let mut excluded = BTreeSet::new();
     let mut worklist: Vec<String> = Vec::new();
 
@@ -802,8 +769,15 @@ mod tests {
         Projection, KIND_CODE_ENTITY, KIND_FILE, REL_CONTAINS, REL_REFERENCES,
         TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
     };
-    use crate::grounder::symbols::build_index;
-    use crate::grounder::symbols::events::index_events;
+
+    /// Every event the production whole-project ingest ([`super::project_batches`]) emits for
+    /// `root`, its per-file batches flattened in sorted file order.
+    fn project_events(root: &str) -> Vec<crate::eventstore::Event> {
+        super::project_batches(root)
+            .into_iter()
+            .flat_map(|(_, batch)| batch)
+            .collect()
+    }
 
     #[test]
     fn a_source_file_extraction_emits_events_the_fold_turns_into_a_code_graph() {
@@ -817,8 +791,7 @@ mod tests {
             "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
         )
         .unwrap();
-        let idx = build_index(dir.path().to_str().unwrap(), None);
-        let events = index_events(&idx);
+        let events = project_events(dir.path().to_str().unwrap());
 
         // The extraction pass emitted at least one definition event and one reference event.
         assert!(
@@ -1284,7 +1257,7 @@ mod tests {
     ) {
         // Spec 86 criterion 1's own Done-when, end to end: a fixture with product code, a
         // `tests/` file, a `#[cfg(test)]` module, and `#[test]` functions - ingested through the
-        // REAL extraction + emit + fold pipeline (`build_index` -> `index_events` -> `Projector`).
+        // REAL extraction + emit + fold pipeline (`project_batches` -> `Projector`).
         // The graph must hold a code-entity node for the product item and NONE for any test item;
         // the test file must carry no KIND_FILE container node at all (the concrete mechanism
         // behind "the files lens lists no test file as a subject" - the files lens folds each
@@ -1320,8 +1293,7 @@ fn an_integration_test() {
         )
         .unwrap();
 
-        let idx = build_index(dir.path().to_str().unwrap(), None);
-        let events = index_events(&idx);
+        let events = project_events(dir.path().to_str().unwrap());
 
         let p = Projector::open(":memory:", "test").unwrap();
         for (i, mut e) in events.into_iter().enumerate() {
@@ -1395,7 +1367,7 @@ fn an_integration_test() {
     /// functions - one in-file (`#[cfg(test)] mod tests`), one in a whole `tests/`-dir file -
     /// carries `proven_by: 2` with both `file:line`s in the graph payload and renders on its card,
     /// while an unreferenced entity in the SAME file renders the explicit no-test state. Runs the
-    /// REAL pipeline (`build_index` -> `index_events` -> `Projector` -> `dash::card`), never a
+    /// REAL pipeline (`project_batches` -> `Projector` -> `dash::card`), never a
     /// hand-built fixture, so it proves the whole chain - extraction, the `proof_events` emission
     /// pass, the fold, and the card - agree.
     #[test]
@@ -1432,8 +1404,7 @@ fn an_integration_test() {
         )
         .unwrap();
 
-        let idx = build_index(dir.path().to_str().unwrap(), None);
-        let events = index_events(&idx);
+        let events = project_events(dir.path().to_str().unwrap());
 
         let p = Projector::open(":memory:", "test").unwrap();
         for (i, mut e) in events.into_iter().enumerate() {
@@ -1505,7 +1476,7 @@ fn an_integration_test() {
         // was empty - the overwhelming common case (an ordinary product file with no
         // `#[cfg(test)]`/`#[test]` content at all, product_fs() below). Combined with
         // `extract_events` ALSO returning empty for a whole-file-test path, a file's WHOLE batch
-        // (`index_events`/`project_batches_paced`) could be empty and get DROPPED entirely, so
+        // (`project_batches_paced`) could be empty and get DROPPED entirely, so
         // `fold_test_evidence`/`supersede_file_proof` never even ran on a LATER re-extraction that
         // emptied a file's evidence - stranding stale proof forever. Mirroring criterion 3's own
         // already-established empty-after-exclusion pattern (a file that extracts to nothing still
@@ -1580,7 +1551,7 @@ fn an_integration_test() {
     {
         // Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
         // `adv-u2c2-partial-marker-unimplemented`): the SAME REAL pipeline
-        // (`build_index` -> `index_events` -> `Projector`) `a_source_file_extraction_emits_events_
+        // (`project_batches` -> `Projector`) `a_source_file_extraction_emits_events_
         // the_fold_turns_into_a_code_graph` above proves for Rust, run here over a REAL malformed
         // `.js` fixture the grammar cannot fully parse alongside a well-formed one, folding both
         // into ONE graph. `broken.js`'s file node must carry the degraded `partial` marker;
@@ -1599,8 +1570,7 @@ fn an_integration_test() {
         )
         .unwrap();
 
-        let idx = build_index(dir.path().to_str().unwrap(), None);
-        let events = index_events(&idx);
+        let events = project_events(dir.path().to_str().unwrap());
 
         let p = Projector::open(":memory:", "test").unwrap();
         for (i, mut e) in events.into_iter().enumerate() {

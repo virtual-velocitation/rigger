@@ -147,7 +147,7 @@ pub fn rigger_courier() -> Command {
 /// `require_store_dir` resolved the fenced scratch dir before ever reaching the real
 /// courier project passed as `current_dir`, so the installed hook command exited 0 while
 /// recording nothing - a false green outside a gate and a false red inside one, neither of
-/// which said anything about `install_stop_failure_hooks`/`stop_failure_command` itself.
+/// which said anything about the hook command itself.
 /// One shared helper keeps that env hygiene from drifting between the two call shapes,
 /// rather than a second hand-copied `env_remove` chain living beside `rigger_courier`'s.
 ///
@@ -405,4 +405,33 @@ pub fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     false
+}
+
+/// Every event the production whole-project ingest
+/// ([`rigger::grounder::symbols::events::project_batches`]) emits for the project at `root`, its
+/// per-file batches flattened in their sorted file order.
+#[cfg(feature = "symbols")]
+pub fn project_events(root: &str) -> Vec<rigger::eventstore::Event> {
+    rigger::grounder::symbols::events::project_batches(root)
+        .into_iter()
+        .flat_map(|(_, batch)| batch)
+        .collect()
+}
+
+/// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt` (so
+/// it cannot drift from the labels), every optional field empty.
+pub fn spawn_request(
+    unit: &str,
+    stage: &str,
+    role: &str,
+    attempt: u32,
+    prompt: &str,
+) -> rigger::spawn::SpawnRequest {
+    rigger::spawn::SpawnRequest {
+        id: rigger::spawn::spawn_id(unit, role, attempt),
+        unit: unit.to_string(),
+        stage: stage.to_string(),
+        prompt: prompt.to_string(),
+        ..Default::default()
+    }
 }

@@ -374,135 +374,6 @@ fn emit_review_finding_shows_in_peers() {
     );
 }
 
-/// Spec 27, criterion 2 - the raw events stay RETRIEVABLE via `rigger peers` after
-/// consolidation. The sleep-phase distiller folds OLDER-THAN-CURRENT-RUN
-/// findings/decisions into a per-file digest pool, but it is a PROJECTION over the
-/// append-only log: it introduces no event type and DELETES nothing, so the underlying
-/// `DecisionMade`/`ReviewFinding` events survive untouched and a real `rigger peers <file>`
-/// query still returns them. This is the load-bearing spec-27 decision - consolidation
-/// summarizes by AGE, it never scopes grounding away from the consolidated raw items.
-///
-/// Proven through the REAL paths, not a fabricated fold: an old run A records a decision +
-/// a finding ABOUT `combat.rs`, then the current run B starts, all seeded into the SAME
-/// `conductor::STREAM` the compiled `rigger peers` binary reads. Consolidation runs via the
-/// production `distiller::rebuild` entry over exactly that stream (writing the pool under
-/// `.rigger/digests`, as production would), and only THEN is the COMPILED `rigger peers
-/// combat.rs` asserted to still surface BOTH raw items - while the run itself is byte-for-byte
-/// unchanged (consolidation appended and deleted nothing).
-#[test]
-fn distiller_consolidation_leaves_the_raw_events_retrievable_via_peers() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let dir = temp_project();
-    let root = dir.path();
-
-    // A prior run A recorded a decision + a finding ABOUT combat.rs; then the CURRENT run B
-    // started. Run A's items are OLDER-THAN-CURRENT-RUN, so consolidation folds them. A
-    // `RunStarted` is a lifecycle event the `rigger emit` allowlist refuses, so seed the
-    // whole ordered run stream directly - byte-identical to what a real `rigger run` appends.
-    seed_run_events(
-        root,
-        &[
-            (rigger::run::TYPE_RUN_STARTED, r#"{"run":"A"}"#),
-            (
-                "DecisionMade",
-                r#"{"id":"d-old","summary":"guard the checked add","governs":["combat.rs"]}"#,
-            ),
-            (
-                "ReviewFinding",
-                r#"{"id":"f-old","by":"tech-lens","summary":"misses the buffer bound","about":["combat.rs"]}"#,
-            ),
-            (rigger::run::TYPE_RUN_STARTED, r#"{"run":"B"}"#),
-        ],
-    );
-
-    // Read the run stream exactly as production does (the same namespaced `conductor::STREAM`
-    // `rigger peers` reads), scoped so the read connection drops before the peers subprocess.
-    let read_run_stream = || -> Vec<rigger::eventstore::Event> {
-        let backend =
-            Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-        let store = Namespaced::new(&backend, &run_stream_identity(root));
-        store
-            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-            .unwrap()
-    };
-    let events = read_run_stream();
-
-    // CONSOLIDATE via the production distiller entry (there is no CLI subcommand for it by
-    // design - the distiller is a library projection). The pool lives under `.rigger/digests`,
-    // exactly where production would write it.
-    let pool_dir = root.join(".rigger").join(rigger::distiller::POOL_SUBDIR);
-    let digests = rigger::distiller::rebuild(&events, &pool_dir).unwrap();
-
-    // Consolidation ACTUALLY ran: run A's stale combat.rs items folded into ONE digest that
-    // SUMMARIZES both, so the retrievability claim below is over consolidated content, not a
-    // no-op. (Run B's items are current and would stay raw, but here B recorded none.)
-    assert_eq!(
-        digests.len(),
-        1,
-        "run A's stale combat.rs items consolidate into exactly one digest; got: {digests:?}"
-    );
-    let d = &digests[0];
-    assert_eq!(d.file, "combat.rs", "the digest keys by the trigger file");
-    assert!(
-        d.summary.contains("guard the checked add")
-            && d.summary.contains("misses the buffer bound"),
-        "the digest summarizes BOTH the stale decision and the stale finding; got: {}",
-        d.summary
-    );
-    assert!(
-        pool_dir.join(format!("{}.md", d.id)).exists(),
-        "the digest projection was written to the pool on disk"
-    );
-
-    // ...yet the RAW events are NOT deleted: a real `rigger peers combat.rs` still returns
-    // BOTH the underlying decision and finding. peers replays the raw event log, which the
-    // distiller never touches - so consolidation summarizes WITHOUT pruning the source, and
-    // grounding can still retrieve the raw items (they are older-run, hence labeled HISTORICAL,
-    // but still surfaced - the spec-27 guarantee that consolidation never scopes them away).
-    let (out, err, ok) = run_rigger(root, &["peers", "combat.rs"]);
-    assert!(ok, "peers must succeed after consolidation; stderr: {err}");
-    assert!(
-        out.contains("decision d-old") && out.contains("governs: combat.rs"),
-        "the raw decision must STILL be retrievable via peers after consolidation; got: {out:?}"
-    );
-    assert!(
-        out.contains("finding f-old")
-            && out.contains("by tech-lens")
-            && out.contains("about: combat.rs"),
-        "the raw finding must STILL be retrievable via peers after consolidation; got: {out:?}"
-    );
-
-    // And the log itself is byte-for-byte unchanged: consolidation is a projection over the
-    // append-only stream - it appended nothing and deleted nothing.
-    let after = read_run_stream();
-    assert_eq!(
-        after.len(),
-        events.len(),
-        "consolidation must append and delete NO events in the run log"
-    );
-    assert!(
-        after
-            .iter()
-            .zip(&events)
-            .all(|(a, b)| a.type_ == b.type_ && a.data == b.data),
-        "every raw event survives consolidation unchanged (type + payload)"
-    );
-    // The events the peers query returned are exactly the raw ones still present in the log.
-    assert!(
-        after.iter().any(|e| e.type_ == "DecisionMade"
-            && e.data
-                == br#"{"id":"d-old","summary":"guard the checked add","governs":["combat.rs"]}"#),
-        "the raw d-old DecisionMade is still physically in events.db after consolidation"
-    );
-    assert!(
-        after.iter().any(|e| e.type_ == "ReviewFinding"),
-        "the raw f-old ReviewFinding is still physically in events.db after consolidation"
-    );
-}
-
 /// Spec 25, criterion 1 - the DISCARD trigger, PROVEN through the REAL production result
 /// path (`rigger result` -> `cmd_result` -> `spawn_store::record_result`), not a direct
 /// `Projector::apply` on a hand-built event.
@@ -2911,7 +2782,7 @@ fn graph_build_exits_clean_and_creates_the_store_in_both_lanes() {
     );
 }
 
-/// API contract of the shared ingest authority (spec 45): `rigger::ingest::ingest_project` is
+/// API contract of the shared ingest authority (spec 45): `rigger::ingest::ingest_project_batched` is
 /// the ONE walk-and-content-key entry BOTH the live run (`conductor`) and the cold `graph build`
 /// (`main`) call, so the content key an event is deduped under can never fork between them.
 /// Proven at the API edge rather than only end-to-end through one caller: the function is a
@@ -2940,8 +2811,10 @@ fn ingest_project_emits_deterministic_content_keys() {
 
     let collect_keys = || {
         let mut keys: BTreeSet<String> = BTreeSet::new();
-        rigger::ingest::ingest_project(root_str, |key, _ev| {
-            keys.insert(key.to_string());
+        rigger::ingest::ingest_project_batched(root_str, |batch| {
+            for (key, _ev) in batch {
+                keys.insert(key.to_string());
+            }
         });
         keys
     };
@@ -2987,7 +2860,7 @@ fn ingest_project_emits_deterministic_content_keys() {
 
 /// Cross-module scope seam of the shared walk (spec 49, section 3): the ingest walk is scoped to the
 /// project's OWN sources, and because EVERY ingest half rides the ONE shared
-/// `grounder::walk_guarded` skeleton, the SHIPPED `rigger::ingest::ingest_project` authority scopes
+/// `grounder::walk_guarded` skeleton, the SHIPPED `rigger::ingest::ingest_project_batched` authority scopes
 /// BOTH halves at once - the code half (`gc`) AND the design half (`gd`). Proven at the shipped API
 /// edge over a real git repo (the way a live run and a cold `graph build` actually ingest). The
 /// fixture seeds an in-root source carrying BOTH a code entity and inline `// WHY:` rationale (so one
@@ -3037,19 +2910,21 @@ fn ingest_project_scopes_the_walk_to_the_project_across_both_halves() {
     // collect the FILE each emitted content key names, split by half.
     let mut gc_files: BTreeSet<String> = BTreeSet::new();
     let mut gd_files: BTreeSet<String> = BTreeSet::new();
-    rigger::ingest::ingest_project(root.to_str().unwrap(), |key, _ev| {
-        let (prefix, rest) = key
-            .split_once('/')
-            .unwrap_or_else(|| panic!("key {key:?} must be `<prefix>/<file>@<hash>#<idx>`"));
-        let file = rest.split('@').next().unwrap().to_string();
-        match prefix {
-            "gc" => {
-                gc_files.insert(file);
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
+        for (key, _ev) in batch {
+            let (prefix, rest) = key
+                .split_once('/')
+                .unwrap_or_else(|| panic!("key {key:?} must be `<prefix>/<file>@<hash>#<idx>`"));
+            let file = rest.split('@').next().unwrap().to_string();
+            match prefix {
+                "gc" => {
+                    gc_files.insert(file);
+                }
+                "gd" => {
+                    gd_files.insert(file);
+                }
+                other => panic!("unexpected key prefix {other:?} in {key:?}"),
             }
-            "gd" => {
-                gd_files.insert(file);
-            }
-            other => panic!("unexpected key prefix {other:?} in {key:?}"),
         }
     });
 
@@ -3086,7 +2961,7 @@ fn ingest_project_scopes_the_walk_to_the_project_across_both_halves() {
 }
 
 /// Light-lane contract of the shared ingest authority (spec 45 global constraint): with the
-/// extraction pass off (`--no-default-features`), `rigger::ingest::ingest_project` is a genuine
+/// extraction pass off (`--no-default-features`), `rigger::ingest::ingest_project_batched` is a genuine
 /// NO-OP - it emits NOTHING even over a tree that carries real `.rs` source, which is why
 /// `graph build` there degrades to an empty graph rather than erroring. This asserts strictly
 /// more than the empty-tree CLI test can: real source is present, yet the light-lane authority
@@ -3104,8 +2979,10 @@ fn ingest_project_is_a_noop_in_the_light_lane() {
     .unwrap();
 
     let mut emits = 0usize;
-    rigger::ingest::ingest_project(root.to_str().unwrap(), |_key, _ev| {
-        emits += 1;
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
+        for (_key, _ev) in batch {
+            emits += 1;
+        }
     });
     assert_eq!(
         emits, 0,
@@ -11122,15 +10999,15 @@ fn seed_spawn_events_at(root: &Path, project: &str, rows: &[(rigger::eventstore:
 /// exact rendered "X.Ys avg / N spawns / X.Ys total" text is asserted byte-for-byte.
 #[test]
 fn stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure() {
-    use rigger::spawn::{SpawnRequest, SpawnResult};
+    use rigger::spawn::SpawnResult;
 
     let dir = temp_project();
     let root = dir.path();
 
-    let implementer_req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
-    let adversary_req_a = SpawnRequest::new("u2", "review", "adversary", 0, "review it");
-    let adversary_req_b = SpawnRequest::new("u3", "review", "adversary", 0, "review it too");
-    let dead_req = SpawnRequest::new("u4", "impl", "implementer", 1, "never answered");
+    let implementer_req = common::spawn_request("u1", "impl", "implementer", 0, "do it");
+    let adversary_req_a = common::spawn_request("u2", "review", "adversary", 0, "review it");
+    let adversary_req_b = common::spawn_request("u3", "review", "adversary", 0, "review it too");
+    let dead_req = common::spawn_request("u4", "impl", "implementer", 1, "never answered");
 
     seed_spawn_events_at(
         root,
@@ -11209,13 +11086,13 @@ fn stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure() {
 /// request as unpaired, never a fabricated multi-day figure.
 #[test]
 fn stats_all_flag_never_pairs_a_cross_run_spawn_id_collision_into_a_bogus_duration() {
-    use rigger::spawn::{SpawnRequest, SpawnResult};
+    use rigger::spawn::SpawnResult;
 
     let dir = temp_project();
     let root = dir.path();
 
     // The SAME textual id in both runs.
-    let req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+    let req = common::spawn_request("u1", "impl", "implementer", 0, "do it");
     let run_started = |run: &str| {
         rigger::eventstore::Event::new(
             rigger::run::TYPE_RUN_STARTED,
@@ -11270,14 +11147,14 @@ fn stats_all_flag_never_pairs_a_cross_run_spawn_id_collision_into_a_bogus_durati
 /// it through the real binary before this one.
 #[test]
 fn stats_cli_excludes_suspect_non_positive_duration_pairs_as_unpaired_not_zero() {
-    use rigger::spawn::{SpawnRequest, SpawnResult};
+    use rigger::spawn::SpawnResult;
 
     let dir = temp_project();
     let root = dir.path();
 
-    let same_batch = SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
-    let skewed = SpawnRequest::new("u2", "impl", "implementer", 1, "skewed");
-    let genuine = SpawnRequest::new("u3", "impl", "implementer", 2, "genuine");
+    let same_batch = common::spawn_request("u1", "impl", "implementer", 0, "same batch");
+    let skewed = common::spawn_request("u2", "impl", "implementer", 1, "skewed");
+    let genuine = common::spawn_request("u3", "impl", "implementer", 2, "genuine");
 
     seed_spawn_events_at(
         root,
@@ -20233,9 +20110,7 @@ fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker(
     }
 
     // A definitely-unbound loopback port (reserved-then-released, per this file's own
-    // `free_loopback_port` convention) and an impossible pid (`u32::MAX`, the same
-    // "impossible pid" value `pid_is_alive_reports_self_and_rejects_an_impossible_pid`,
-    // src/dash.rs, already pins) - so nothing on this machine answers on the port and no
+    // `free_loopback_port` convention) and an impossible pid (`u32::MAX`) - so nothing on this machine answers on the port and no
     // process holds the pid. `cmd_watch` reads ONLY `.rigger/dash.marker` for this signal
     // (no `.rigger/dash.url` breadcrumb involved), so seeding just the marker exactly
     // matches what the compiled binary actually consumes.
@@ -22753,7 +22628,7 @@ fn run_step_dash_enabled(root: &Path, dash_port: u16) -> (String, String) {
 /// `.rigger/dash.marker`; every LATER step of the same run finds that live marker and starts
 /// NONE - never a second dash or a port fight. The unit tests prove the idempotency DECISION
 /// with an injected spawn; only driving the real binary proves the wiring, the on-disk marker
-/// round-trip across two separate step processes, and the `pid_is_alive` short-circuit against
+/// round-trip across two separate step processes, and the live-marker short-circuit against
 /// a genuinely-serving child.
 ///
 /// The started dash is a real, long-lived process, so this test REAPS it by pid BEFORE its
@@ -23639,7 +23514,7 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
 /// is DETACHED, not bound to a per-step [`rigger::dash::ReapedChild`]. `run_step_dash_enabled`
 /// waits on the step process before returning, so every observation below happens strictly
 /// AFTER that process is gone; were the dash guard-bound, its `ReapedChild::drop` would have
-/// killed+reaped it as the step's `main` returned and neither `pid_is_alive` nor an HTTP GET
+/// killed+reaped it as the step's `main` returned and neither a pid liveness check nor an HTTP GET
 /// would hold here. The main.rs/dash.rs unit tests inject the spawn and never fork a real step
 /// process, so this persistence-across-a-process-boundary is the layer they are structurally
 /// blind to.
@@ -23675,7 +23550,7 @@ fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
     // The step process has already been waited on, so it is GONE. A `ReapedChild`-bound dash
     // would have been reaped on that process's return; a detached one is still alive AND serving.
     // Probe both liveness (the pid) and reachability (the served page).
-    let alive_after_step1 = rigger::dash::pid_is_alive(pid);
+    let alive_after_step1 = common::is_alive(pid);
     let served_after_step1 = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
 
     // Drive a SECOND, independent step process to completion and let it too exit. The dash must
@@ -23690,7 +23565,7 @@ fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
             common::terminate_pid(pid2);
         }
     }
-    let alive_after_step2 = rigger::dash::pid_is_alive(pid);
+    let alive_after_step2 = common::is_alive(pid);
     let served_after_step2 = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
 
     // Reap the original detached dash BEFORE asserting, so a failure never leaves it orphaned.
@@ -25016,8 +24891,8 @@ fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
     use rigger::eventstore::sqlite::Store;
     use rigger::eventstore::{Direction, EventStore};
     use rigger::liveness::{marker_path, spawn_is_halted};
-    use rigger::spawn::{SpawnRequest, SpawnResult, ROLE_IMPLEMENTER};
-    use rigger::spawn_store::{park, record_result};
+    use rigger::spawn::{SpawnResult, ROLE_IMPLEMENTER};
+    use rigger::spawn_store::{park_in_run, record_result};
     use std::time::SystemTime;
 
     const RUN_ID: &str = "run-1";
@@ -25041,9 +24916,9 @@ fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
     );
 
     // Requested, no result, no marker at all - the classic silent halt.
-    let mut named = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task");
+    let mut named = common::spawn_request("u", "u", ROLE_IMPLEMENTER, 0, "task");
     named.max_wall_clock = Some(300);
-    park(&store, &named).unwrap();
+    park_in_run(&store, &named, "").unwrap();
     assert!(
         spawn_is_halted(
             &read(&store),
@@ -25077,12 +24952,12 @@ fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
     // A DIFFERENT, still-resultless spawn of the same unit, with a SIBLING spawn's own
     // liveness marker fresh right now: the unit has live work in flight, so this one must not
     // read as halted either, even though it individually looks silent.
-    let mut other = SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "task");
+    let mut other = common::spawn_request("v", "v", ROLE_IMPLEMENTER, 0, "task");
     other.max_wall_clock = Some(300);
-    park(&store, &other).unwrap();
-    let mut sibling = SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 1, "task");
+    park_in_run(&store, &other, "").unwrap();
+    let mut sibling = common::spawn_request("v", "v", ROLE_IMPLEMENTER, 1, "task");
     sibling.max_wall_clock = Some(300);
-    park(&store, &sibling).unwrap();
+    park_in_run(&store, &sibling, "").unwrap();
     let marker = marker_path(root, RUN_ID, &sibling.id).expect("a real spawn id always encodes");
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();

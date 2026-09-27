@@ -1291,7 +1291,7 @@ mod tests {
                 &[Event::new("UnitStarted", b"{\"id\":\"u\"}".to_vec())],
             )
             .unwrap();
-        let req = crate::spawn::SpawnRequest::new("u", "u", "implementer", 0, "do it");
+        let req = crate::spawn::test_request("u", "u", "implementer", 0, "do it");
         store
             .append("run", ExpectedRevision::Any, &[req.to_event().unwrap()])
             .unwrap();

@@ -14,25 +14,19 @@ use crate::conductor::STREAM;
 use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Position};
 use crate::spawn::{SpawnRequest, SpawnResult};
 
-/// Persist a parked spawn request to the run's event log as a
-/// [`crate::spawn::TYPE_SPAWN_REQUESTED`] event, returning its global position.
-///
-/// This is exactly what a step does when it reaches an UNRECORDED spawn at the
-/// frontier: the request becomes a durable fact, so the next step process (and the
-/// thin driver draining the wave) sees the identical call, and the budget breaker
-/// counts spawns from the log rather than an in-memory counter. A serialization
-/// failure is surfaced as a backend error rather than panicking.
-pub fn park(store: &dyn EventStore, req: &SpawnRequest) -> Result<Position, Error> {
-    park_in_run(store, req, "")
-}
-
 /// Park `req` as a [`crate::spawn::TYPE_SPAWN_REQUESTED`] event stamped with the run it
 /// belongs to, so the parked spawn is attributable to its run (spec 06, unit 1): the
 /// conductor threads the current run id onto every spawn and the replay driver parks
 /// through here, so a `SpawnRequested` carries the same `run_id` metadata as the
 /// unit/gate events the conductor emits for that run. An empty `run_id` stamps no
-/// metadata (a caller outside a run - e.g. the pure-fold tests), so [`park`] is exactly
-/// this with no run. This is the single park authority; [`park`] delegates to it.
+/// metadata (a caller outside a run - e.g. the pure-fold tests). This is the single park
+/// authority.
+///
+/// This is exactly what a step does when it reaches an UNRECORDED spawn at the frontier: the
+/// request becomes a durable fact, so the next step process (and the thin driver draining the
+/// wave) sees the identical call, and the budget breaker counts spawns from the log rather
+/// than an in-memory counter. A serialization failure is surfaced as a backend error rather
+/// than panicking.
 pub fn park_in_run(
     store: &dyn EventStore,
     req: &SpawnRequest,
@@ -150,11 +144,13 @@ mod tests {
     #[test]
     fn parking_persists_the_request_and_it_folds_back_from_the_log() {
         let store = Store::open(":memory:").unwrap();
-        let req = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
-            .with_model("sonnet")
-            .with_blast_radius(vec!["a.rs".into()]);
+        let req = SpawnRequest {
+            model: "sonnet".into(),
+            blast_radius: vec!["a.rs".into()],
+            ..crate::spawn::test_request("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
+        };
 
-        park(&store, &req).unwrap();
+        park_in_run(&store, &req, "").unwrap();
 
         // The parked request is a durable fact on the run stream and reads back
         // identically - the persistence the replay driver and budget breaker rely on.
@@ -476,21 +472,23 @@ mod tests {
 
     #[test]
     fn step_wave_reads_back_through_park_and_record_result_end_to_end() {
-        // Integration smoke test: `park`/`record_result` (this module) compose correctly
+        // Integration smoke test: `park_in_run`/`record_result` (this module) compose correctly
         // with `crate::spawn::step_result` (the pure fold) through a real store - the
         // seam the thin driver actually drives every step.
         let store = Store::open(":memory:").unwrap();
-        let old = SpawnRequest::new("plan", "plan", ROLE_IMPLEMENTER, 0, "plan it");
-        park(&store, &old).unwrap();
+        let old = crate::spawn::test_request("plan", "plan", ROLE_IMPLEMENTER, 0, "plan it");
+        park_in_run(&store, &old, "").unwrap();
         record_result(&store, &SpawnResult::ok(&old.id, "planned")).unwrap();
-        park(
+        park_in_run(
             &store,
-            &SpawnRequest::new("b", "implement", ROLE_IMPLEMENTER, 0, "b"),
+            &crate::spawn::test_request("b", "implement", ROLE_IMPLEMENTER, 0, "b"),
+            "",
         )
         .unwrap();
-        park(
+        park_in_run(
             &store,
-            &SpawnRequest::new("a", "implement", ROLE_IMPLEMENTER, 0, "a"),
+            &crate::spawn::test_request("a", "implement", ROLE_IMPLEMENTER, 0, "a"),
+            "",
         )
         .unwrap();
 

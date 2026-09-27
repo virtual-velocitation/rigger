@@ -365,7 +365,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
                 rigger::ledger::TYPE_UNIT_INTEGRATED,
                 br#"{"id":"fenced","commit":"deadbeef"}"#.to_vec(),
             ),
-            rigger::spawn::SpawnRequest::new("fenced", "fenced", "adversary", 0, "verify")
+            common::spawn_request("fenced", "fenced", "adversary", 0, "verify")
                 .to_event()
                 .unwrap(),
             rigger::eventstore::Event::new(
@@ -376,7 +376,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
                 rigger::ledger::TYPE_UNIT_INTEGRATED,
                 br#"{"id":"hung","commit":"deadbeef"}"#.to_vec(),
             ),
-            rigger::spawn::SpawnRequest::new("hung", "hung", "implementer", 0, "task")
+            common::spawn_request("hung", "hung", "implementer", 0, "task")
                 .to_event()
                 .unwrap(),
         ],
@@ -617,7 +617,7 @@ fn gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_regi
                 rigger::ledger::TYPE_UNIT_INTEGRATED,
                 br#"{"id":"settled","commit":"deadbeef"}"#.to_vec(),
             ),
-            rigger::spawn::SpawnRequest::new("settled", "settled", "adversary", 0, "verify")
+            common::spawn_request("settled", "settled", "adversary", 0, "verify")
                 .to_event()
                 .unwrap(),
             rigger::spawn::SpawnResult::ok("settled/adversary#0", "approve")
@@ -699,7 +699,6 @@ fn sweep_terminal_scoped_to_the_current_run_reclaims_a_dead_runs_abandoned_slug_
     use rigger::eventstore::sqlite::Store;
     use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
     use rigger::run::{current_run, TYPE_RUN_STARTED};
-    use rigger::spawn::SpawnRequest;
     use rigger::worktree::{scratch_root, sweep_terminal, Worktree};
 
     let repo = tempfile::tempdir().unwrap();
@@ -721,7 +720,7 @@ fn sweep_terminal_scoped_to_the_current_run_reclaims_a_dead_runs_abandoned_slug_
             )],
         )
         .unwrap();
-    let dead_req = SpawnRequest::new("orphan-slug", "orphan-slug", "implementer", 0, "task");
+    let dead_req = common::spawn_request("orphan-slug", "orphan-slug", "implementer", 0, "task");
     store
         .append(
             STREAM,

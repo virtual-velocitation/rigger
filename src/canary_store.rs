@@ -125,16 +125,6 @@ fn parse_item(s: &str) -> Result<CanaryItem, Error> {
     Ok(item)
 }
 
-/// The distinct planted defect classes a corpus catalogs (spec 13 unit 5 requires at
-/// least three). A known-good control (`planted:false`) contributes none.
-pub fn cataloged_classes(corpus: &[CanaryItem]) -> BTreeSet<String> {
-    corpus
-        .iter()
-        .filter(|c| c.planted && !c.defect_class.trim().is_empty())
-        .map(|c| c.defect_class.clone())
-        .collect()
-}
-
 /// A deterministic content hash over the loaded corpus (MODEL PINNING criterion's scorecard
 /// header): every item's scored fields, in the corpus's own id-sorted order ([`load_corpus`]
 /// already sorts it), fold through the crate's ONE stable content-hash primitive
@@ -1258,20 +1248,6 @@ mod tests {
     }
 
     #[test]
-    fn cataloged_classes_counts_only_planted_distinct_classes() {
-        let corpus = vec![
-            item("a", "off-by-one", true, "reject", "lens"),
-            item("b", "resource-leak", true, "reject", "adversary"),
-            item("c", "off-by-one", true, "reject", "lens"), // dup class
-            item("d", "none", false, "approve", ""),         // known-good, no class
-        ];
-        let classes = cataloged_classes(&corpus);
-        assert_eq!(classes.len(), 2);
-        assert!(classes.contains("off-by-one"));
-        assert!(classes.contains("resource-leak"));
-    }
-
-    #[test]
     fn the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes() {
         // The Done-when bar (spec 13, unit 5): the versioned corpus under `canaries/`
         // catalogs at least three planted defect classes, and every item is well-formed
@@ -1279,7 +1255,11 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("canaries");
         let corpus = load_corpus(&dir).expect("the shipped canary corpus must load");
         assert!(!corpus.is_empty(), "the shipped corpus must have items");
-        let classes = cataloged_classes(&corpus);
+        let classes: BTreeSet<&str> = corpus
+            .iter()
+            .filter(|c| c.planted && !c.defect_class.trim().is_empty())
+            .map(|c| c.defect_class.as_str())
+            .collect();
         assert!(
             classes.len() >= 3,
             "the shipped corpus must catalog at least three planted defect classes; got {classes:?}"

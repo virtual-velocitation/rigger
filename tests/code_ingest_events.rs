@@ -12,9 +12,11 @@
 //!   whole log (spec 29a's later rebuild criterion), and the code arms' `add_edge` does NOT dedup
 //!   at the row level, so replay-safety rests entirely on the applied-position ledger; this pins
 //!   that the code entity node and its structural edges honor it.
-//! - the emit API's determinism-and-ordering contract the doc comments promise: `index_events`
+//! - the emit API's determinism-and-ordering contract the doc comments promise: `project_batches`
 //!   yields byte-identical events for identical source, and definitions precede references.
 //!   Exercised through the real extraction pass, so it lives in the `symbols` lane only.
+
+mod common;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -240,8 +242,6 @@ fn the_file_container_holds_kind_file_in_the_integrated_graph_either_fold_order(
 #[test]
 fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() {
     use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     // Spec 29a criterion 2, through the REAL extraction pass (not hand-built events): a source tree
     // is extracted, emitted, and folded, and every structural edge lands at its confidence tier.
@@ -260,9 +260,11 @@ fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() 
     )
     .unwrap();
 
-    let idx = build_index(dir.path().to_str().unwrap(), None);
     let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in index_events(&idx).into_iter().enumerate() {
+    for (i, mut e) in common::project_events(dir.path().to_str().unwrap())
+        .into_iter()
+        .enumerate()
+    {
         e.position = (i + 1) as u64;
         p.apply(&e).unwrap();
     }
@@ -307,8 +309,6 @@ fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() 
 #[test]
 fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
     use rigger::contextgraph::{REL_CALLS, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     // Spec 37 criterion 3, through the WHOLE real chain (extractor attribution -> emit -> fold), not
     // hand-built events: a call inside `fn caller` folds a `combat.rs::caller --CALLS--> <callee>`
@@ -329,9 +329,11 @@ fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
     )
     .unwrap();
 
-    let idx = build_index(dir.path().to_str().unwrap(), None);
     let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in index_events(&idx).into_iter().enumerate() {
+    for (i, mut e) in common::project_events(dir.path().to_str().unwrap())
+        .into_iter()
+        .enumerate()
+    {
         e.position = (i + 1) as u64;
         p.apply(&e).unwrap();
     }
@@ -381,8 +383,6 @@ fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
 #[test]
 fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end() {
     use rigger::contextgraph::REL_CALLS;
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     // Spec 37 + spec 29a criterion 3, through the REAL pipeline: a CALLS edge hangs off
     // `<file>::<caller>` (the enclosing definition), NOT the bare file node, so the supersede must
@@ -397,7 +397,7 @@ fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end()
         "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
     )
     .unwrap();
-    let first = index_events(&build_index(dir.path().to_str().unwrap(), None));
+    let first = common::project_events(dir.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     let mut pos = 0u64;
     for mut e in first {
@@ -424,7 +424,7 @@ fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end()
         "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
     )
     .unwrap();
-    let second = index_events(&build_index(dir.path().to_str().unwrap(), None));
+    let second = common::project_events(dir.path().to_str().unwrap());
     for mut e in second {
         pos += 1;
         e.position = pos;
@@ -587,8 +587,6 @@ fn the_graph_answers_who_calls_g_by_function_through_the_fold_traversal() {
 #[test]
 fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
     use rigger::contextgraph::REL_CALLS;
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     // The full ACID chain the spec's Done-when names: INGEST a real source file (tree-sitter
     // attribution -> emit -> fold), then answer "who calls apply_damage" by function from ONE
@@ -608,9 +606,11 @@ fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
     )
     .unwrap();
 
-    let idx = build_index(dir.path().to_str().unwrap(), None);
     let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in index_events(&idx).into_iter().enumerate() {
+    for (i, mut e) in common::project_events(dir.path().to_str().unwrap())
+        .into_iter()
+        .enumerate()
+    {
         e.position = (i + 1) as u64;
         p.apply(&e).unwrap();
     }
@@ -654,9 +654,6 @@ fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
 #[cfg(feature = "symbols")]
 #[test]
 fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
-
     // Drive the real extraction pass over a source file with two definitions and two same-file
     // references, then lower it through the public emit API.
     let dir = tempfile::tempdir().unwrap();
@@ -670,8 +667,8 @@ fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
     // identical in type and payload. This exercises the full source -> extraction -> emit
     // pipeline, so a non-deterministic iteration order anywhere in it (e.g. a HashMap) would break
     // this, and with it the reproducible-rebuild guarantee spec 29a rests on.
-    let first = index_events(&build_index(dir.path().to_str().unwrap(), None));
-    let second = index_events(&build_index(dir.path().to_str().unwrap(), None));
+    let first = common::project_events(dir.path().to_str().unwrap());
+    let second = common::project_events(dir.path().to_str().unwrap());
     let shape = |evs: &[Event]| {
         evs.iter()
             .map(|e| (e.type_.clone(), e.data.clone()))
@@ -680,7 +677,7 @@ fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
     assert_eq!(
         shape(&first),
         shape(&second),
-        "index_events must be deterministic for identical source"
+        "project_batches must be deterministic for identical source"
     );
     assert!(
         !first.is_empty(),
@@ -709,9 +706,6 @@ fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
 #[cfg(feature = "symbols")]
 #[test]
 fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
-
     // Criterion 3, end to end through the REAL pipeline: extract a file, emit its events, fold; then
     // CHANGE the file (delete a symbol), re-extract, emit, and fold the second batch onto the SAME
     // projection. Because the emit pass stamps the batch boundary (`fresh`) on the first event of
@@ -729,7 +723,7 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
         "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
     )
     .unwrap();
-    let first = index_events(&build_index(dir.path().to_str().unwrap(), None));
+    let first = common::project_events(dir.path().to_str().unwrap());
 
     let p = Projector::open(":memory:", "test").unwrap();
     let mut pos = 0u64;
@@ -756,7 +750,7 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
         "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
     )
     .unwrap();
-    let second = index_events(&build_index(dir.path().to_str().unwrap(), None));
+    let second = common::project_events(dir.path().to_str().unwrap());
     for mut e in second {
         pos += 1;
         e.position = pos;
@@ -798,7 +792,7 @@ fn extract_events_emits_one_event_per_definition_and_reference_threading_the_fil
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::extract_events;
 
-    // Drive the per-file emit API DIRECTLY - `index_events` only reaches `extract_events`
+    // Drive the per-file emit API DIRECTLY - `project_batches` only reaches `extract_events`
     // transitively, so its own contract is otherwise unpinned. Criterion 1 says the pass emits
     // "one CodeEntityExtracted per definition" and "one EdgeInferred per reference"; that
     // CARDINALITY is the core of the extract-as-events pass, yet no other periphery test asserts
@@ -873,7 +867,7 @@ fn extract_events_emits_one_event_per_definition_and_reference_threading_the_fil
     }
 
     // Per-file ordering asserted directly on `extract_events` (the determinism test only exercises
-    // `index_events`): every definition event precedes every reference event, so a same-file
+    // `project_batches`): every definition event precedes every reference event, so a same-file
     // reference folds onto an already-folded definition entity.
     let last_def = events
         .iter()

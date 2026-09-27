@@ -585,32 +585,12 @@ pub struct Defaults {
     /// spec-07 infra-vs-product semantics.
     #[serde(default)]
     pub failure_rules: Vec<FailureRuleDef>,
-    /// Whether the always-on SDET periphery-test AUTHOR role is spawned (spec 32). The
-    /// sdet-author writes the periphery test layer (contract / API / integration) at the
-    /// build seam so no boundary surface a unit exposes lands untested; it self-scopes to a
-    /// fast no-op on a purely-internal unit. Read through the single resolution authority
-    /// [`sdet_author_enabled`](Self::sdet_author_enabled): `None` (the default, and every
-    /// workflow that omits the field) is ON, an explicit `false` opts a workflow out.
-    ///
-    /// Modeled as `Option<bool>` (not a bare `bool`) SO the on-by-default rule holds whether
-    /// the field OR the whole `defaults:` block is omitted. `Defaults` derives `Default` and
-    /// `Workflow.defaults` is `#[serde(default)]`, so a workflow with no `defaults:` block
-    /// constructs the DERIVED `Defaults::default()` - where a bare `bool` reads `false` and
-    /// would silently DISABLE the role. `Option::default()` is `None`, which
-    /// `sdet_author_enabled` maps to ON, so the derived default and a serde omission agree.
+    /// The SDET periphery-test author toggle (spec 32). Accepted so an existing workflow
+    /// file that sets it still parses; nothing reads it - the sdet-author role is always
+    /// spawned at the build seam, where it self-scopes to a fast no-op on a purely-internal
+    /// unit.
     #[serde(default)]
     pub sdet_author: Option<bool>,
-}
-
-impl Defaults {
-    /// Whether the SDET periphery-test author role is spawned (spec 32) - the single
-    /// resolution authority for the on-by-default toggle. Unset (`None`, the default) is ON;
-    /// only an explicit `sdet_author: false` disables it. The conductor's build-seam reads
-    /// through here, so the on-by-default rule lives in exactly one place and cannot drift
-    /// between the derived `Default` and a from-YAML omission.
-    pub fn sdet_author_enabled(&self) -> bool {
-        self.sdet_author.unwrap_or(true)
-    }
 }
 
 /// Stage is one node of the workflow DAG.

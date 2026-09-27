@@ -678,7 +678,7 @@ fn deferred_gate_verdict_key(gate: &str) -> String {
 
 /// The replay key for a deferred gate's DeferredGateFailed event. The failure is a
 /// SEPARATE append from the GateVerdict, and the deferred replay guard keys off the
-/// verdict while [`ledger::RunState::done`]/`fully_done` fold the FAILURE - so a crash
+/// verdict while [`ledger::RunState::done`] folds the FAILURE - so a crash
 /// between the two appends would leave the recorded verdict replayed but the failure
 /// lost, reporting a finished run with a red deferred gate (finding
 /// adv-deferred-failed-lost-on-crash). Keying the failure lets the step after the crash
@@ -1472,9 +1472,8 @@ pub struct SpawnOpts {
     /// [`SpawnRequest::reviews`](crate::spawn::SpawnRequest::reviews) for the thin
     /// driver to render inside the action phrase.
     pub reviews: Vec<String>,
-    /// The per-spawn `--settings` JSON string (spec 104 criterion 1): the PreToolUse
-    /// write-guard and StopFailure hooks, assembled by their two owning criteria (4 and
-    /// 5) - this struct only carries the finished string through to the argv. Empty
+    /// The per-spawn `--settings` JSON string (spec 104 criterion 1) - this struct only
+    /// carries the finished string through to the argv. Empty
     /// omits `--settings` entirely; the cli/workflow drivers ignore this field.
     pub settings_json: String,
     /// The 0-based ordinal of this launch within the spawn's current attempt (spec 104
@@ -1768,17 +1767,11 @@ fn is_land_refused(e: &Error) -> bool {
 // `driver::claude_code` ADAPTER - a port-crossing sentinel-plus-typed-class pair is exactly
 // `PARKED_MARKER`'s own shape, and spec 105's hold controller (every `AgentDriver`
 // implementation, not just this one host) will read this class the same way `is_parked`
-// already reads `PARKED_MARKER`. `driver::claude_code` keeps only what is genuinely
-// adapter-shaped: `stop_failure_command`/`install_stop_failure_hooks` (the hook injection,
-// this Claude-Code-specific host's own concern) import `AgentFailure` from here the same
-// direction they already import `AgentDriver`/`AgentResult`/`Error`/`SpawnOpts`.
+// already reads `PARKED_MARKER`.
 
 /// Claude Code's own error category (Design's FAILURE CLASS; architecture addendum §5.1),
 /// plus `Unknown` for a session that ends with none of the below ever observed. Every
-/// variant is API-side (Design: "Every class is API-side") - the SAME bound
-/// ([`should_relaunch`]) applies no matter which one a session ends on; spec 105's hold
-/// controller is what gives each variant its own disposition (§5.1's table), NOT this
-/// criterion.
+/// variant is API-side (Design: "Every class is API-side").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AgentFailure {
     RateLimit,
@@ -1797,11 +1790,8 @@ pub enum AgentFailure {
 }
 
 impl AgentFailure {
-    /// Every category the `StopFailure` hook family installs one entry per (Design's THE
-    /// HOOKS: "one entry per error category") - the fixed iteration order
-    /// [`crate::driver::claude_code::install_stop_failure_hooks`] walks, and the exhaustive
-    /// set [`from_category`] and the CLI's own `--class` validation both check membership
-    /// against.
+    /// Every error category, in a fixed order: the exhaustive set [`from_category`] and the
+    /// CLI's own `--class` validation both check membership against.
     pub const CATEGORIES: [AgentFailure; 12] = [
         AgentFailure::RateLimit,
         AgentFailure::Overloaded,
@@ -1875,18 +1865,6 @@ pub fn classify_failure(
         .unwrap_or(AgentFailure::Unknown)
 }
 
-/// THE BOUND (spec 104 criterion 5, Design's FAILURE CLASS): "the failure charges no
-/// remediation attempt, the spawn is relaunched at most twice, then the run halts naming
-/// the class." `prior_relaunches` is how many times THIS spawn has already been relaunched
-/// after an earlier fault (0 on the very first fault) - every [`AgentFailure`] variant
-/// shares this ONE bound (Design: "Every class is API-side"), so the class itself is not an
-/// input. PURE: spec 105's hold controller is the only production caller, once the
-/// composition root swaps onto this driver - this criterion only owns that the bound
-/// itself is correct and testable in isolation.
-pub fn should_relaunch(prior_relaunches: u32) -> bool {
-    prior_relaunches < 2
-}
-
 /// Sentinel embedding an [`AgentFailure`] class into a driver [`Error`] message so "the
 /// port returns the class as data" (Design, FAILURE CLASS) without widening
 /// `AgentDriver::spawn`'s `Result<AgentResult, Error>` signature - the SAME control-
@@ -1895,26 +1873,11 @@ pub fn should_relaunch(prior_relaunches: u32) -> bool {
 const FAILURE_MARKER: char = '\u{2}';
 
 /// Build the `Error` a `read_stream` call returns for a session that ended without a
-/// result, carrying `class` as recoverable data ([`failure_class`]) ahead of the
-/// human-readable `message`. `pub`: `driver::claude_code::Driver`'s own
+/// result, carrying `class` ahead of the human-readable `message`. `pub`: `driver::claude_code::Driver`'s own
 /// `classify_no_result` is this crate's one production caller today, on the adapter side
 /// of the port this marker lives on.
 pub fn no_result_error(class: AgentFailure, message: String) -> Error {
     Error(format!("{FAILURE_MARKER}{class}{FAILURE_MARKER}{message}"))
-}
-
-/// Recover the [`AgentFailure`] class [`no_result_error`] embedded in `e`, or
-/// [`AgentFailure::Unknown`] for an `Error` no `no_result_error` call produced (mirrors
-/// [`is_parked`]'s same graceful-default-on-absence contract). Spec 105's hold controller
-/// calls this on every `Err` from `Driver::spawn` to learn the class without parsing prose.
-pub fn failure_class(e: &Error) -> AgentFailure {
-    let Some(rest) = e.0.strip_prefix(FAILURE_MARKER) else {
-        return AgentFailure::Unknown;
-    };
-    let Some(end) = rest.find(FAILURE_MARKER) else {
-        return AgentFailure::Unknown;
-    };
-    AgentFailure::from_category(&rest[..end])
 }
 
 /// Drop the [`FAILURE_MARKER`]-bracketed class [`no_result_error`] embeds ahead of its
@@ -8866,7 +8829,7 @@ impl RunCtx<'_> {
                     if !res.pass {
                         // A lesson records WHY for the next run's grounding. It is
                         // advisory (unlike the DeferredGateFailed below, which gates
-                        // done/fully_done), so it is emitted only on the fresh run.
+                        // done), so it is emitted only on the fresh run.
                         self.emit_lesson(
                             None,
                             gid,
@@ -14152,31 +14115,6 @@ mod tests {
     }
 
     #[test]
-    fn should_relaunch_allows_up_to_two_relaunches_then_stops() {
-        assert!(should_relaunch(0));
-        assert!(should_relaunch(1));
-        assert!(!should_relaunch(2), "the bound is at most twice");
-        assert!(!should_relaunch(3));
-    }
-
-    #[test]
-    fn no_result_error_round_trips_through_failure_class() {
-        let e = no_result_error(AgentFailure::RateLimit, "boom".to_string());
-        assert_eq!(failure_class(&e), AgentFailure::RateLimit);
-        assert!(e.0.contains("boom"), "the human message survives: {}", e.0);
-    }
-
-    #[test]
-    fn failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced() {
-        // Mirrors `is_parked`'s graceful-default-on-absence contract: an ordinary Error
-        // from anywhere else in the crate carries no marker at all.
-        assert_eq!(
-            failure_class(&Error("some unrelated error".to_string())),
-            AgentFailure::Unknown
-        );
-    }
-
-    #[test]
     fn strip_failure_marker_drops_the_class_prefix_leaving_only_the_message() {
         // adj-u104c5 REQUIRED FIX 2: a plain `.replace(FAILURE_MARKER, "")` would leave
         // "rate_limit" (the class) glued onto the message's own later "class rate_limit"
@@ -14985,7 +14923,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            halted_wt.is_dirty().unwrap(),
+            crate::worktree::path_is_dirty(&halted_wt.dir).unwrap(),
             "the setup must leave the worktree genuinely dirty"
         );
 
@@ -15002,9 +14940,10 @@ mod tests {
         // exact spawn before leaving the tree dirty above - never recording its own
         // `SpawnResult` or a fresh liveness marker (neither exists in this fresh store),
         // exactly the shape the recovery guard requires before it will fire.
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("u-halt", "u-halt", ROLE_IMPLEMENTER, 0, "task"),
+            &crate::spawn::test_request("u-halt", "u-halt", ROLE_IMPLEMENTER, 0, "task"),
+            "",
         )
         .unwrap();
         let driver = Stub::new();
@@ -15133,7 +15072,10 @@ mod tests {
             "never a recorded spawn's edit\n",
         )
         .unwrap();
-        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+        assert!(
+            crate::worktree::path_is_dirty(&wt.dir).unwrap(),
+            "the setup must leave it dirty"
+        );
 
         // No `SpawnRequested` is parked for this unit anywhere in the store - the
         // deliberate contrast with the positive-path test above.
@@ -15210,7 +15152,10 @@ mod tests {
             "abandoned mid-edit\n",
         )
         .unwrap();
-        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+        assert!(
+            crate::worktree::path_is_dirty(&wt.dir).unwrap(),
+            "the setup must leave it dirty"
+        );
 
         let store = Store::open(":memory:").unwrap();
         // Learn the run id `run()` will adopt (same store, same empty criteria) so the
@@ -15219,20 +15164,21 @@ mod tests {
 
         // The named spawn (attempt 0) was requested and carries no result of its own -
         // by itself, a genuine halt.
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new(
+            &crate::spawn::test_request(
                 "u-halt-live-sibling",
                 "u-halt-live-sibling",
                 ROLE_IMPLEMENTER,
                 0,
                 "task",
             ),
+            "",
         )
         .unwrap();
         // A SIBLING spawn of the same unit (attempt 1), bounded, whose marker is touched
         // RIGHT NOW - still well inside its wall-clock bound.
-        let mut live = spawn::SpawnRequest::new(
+        let mut live = crate::spawn::test_request(
             "u-halt-live-sibling",
             "u-halt-live-sibling",
             ROLE_IMPLEMENTER,
@@ -15240,7 +15186,7 @@ mod tests {
             "task",
         );
         live.max_wall_clock = Some(3600);
-        spawn_store::park(&store, &live).unwrap();
+        spawn_store::park_in_run(&store, &live, "").unwrap();
         let marker = liveness::marker_path(&scratch, &run_id, &live.id)
             .expect("a non-degenerate spawn id always encodes");
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
@@ -15310,15 +15256,16 @@ mod tests {
         // A PRIOR, unrelated run: its own RunStarted, then a real SpawnRequested (no
         // result) for a unit of the SAME name this test's own run will also use.
         crate::run_store::ensure_started(&store, &["old criteria".to_string()]).unwrap();
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new(
+            &crate::spawn::test_request(
                 "u-halt-prior-run",
                 "u-halt-prior-run",
                 ROLE_IMPLEMENTER,
                 0,
                 "task",
             ),
+            "",
         )
         .unwrap();
 
@@ -15333,7 +15280,10 @@ mod tests {
             "never requested in THIS run\n",
         )
         .unwrap();
-        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+        assert!(
+            crate::worktree::path_is_dirty(&wt.dir).unwrap(),
+            "the setup must leave it dirty"
+        );
 
         let driver = Stub::new();
         let runner = ExecRunner;
@@ -20974,89 +20924,12 @@ mod tests {
     // ---- Spec 60 criterion 3 (THE CHANGE PATH, AND THE REVERT THAT IS ONE) ----
     //
     // What a re-ingest APPENDS when the tree moved, and what the graph then holds - proved over the
-    // FULL suppression stack, criterion 1's sink rule and criterion 4's storage guard both in place
-    // at once. The two layers are proved TOGETHER because the failure this contract forbids is
-    // invisible to either layer's own test: a revert that survives the sink and is swallowed by the
-    // store (or the reverse) leaves the log looking right to whichever layer is asked, and strands
-    // the graph on a superseded generation of that file with no recovery - re-folding the log
-    // replays the same suppression.
+    // real run, with criterion 1's sink rule in place. A revert the sink swallowed would leave the
+    // log looking right and strand the graph on a superseded generation of that file with no
+    // recovery - re-folding the log replays the same suppression.
     //
-    // This criterion adds NO production code. The rules it pins belong to criteria 1 and 4; the
-    // helpers below are the fixture that puts both of them in front of one run.
-
-    /// The content-identity policy a COMPOSITION ROOT injects into the store's guard, built ONCE
-    /// here so every fixture below judges the store by the policy the store actually carries - the
-    /// real metadata key, the real derived-index type set AND the real `<prefix>/<file>@<hash>#<i>`
-    /// split the ingest layer uses, so the second layer of the stack is the one that ships and not
-    /// a fixture of its own.
-    ///
-    /// The split is still CONFIGURATION handed IN - the store must never parse a key of its own
-    /// ([`crate::eventstore::ContentIdentity`]) - but the configuration is the key authority's OWN
-    /// published parse taken verbatim, never re-spelled here. [`crate::ingest`] BUILDS this format
-    /// in `key_batch` and publishes [`crate::ingest::derived_key_spans`] with exactly the
-    /// [`crate::eventstore::ContentKeySplit`] signature, so there is one parser and nothing to
-    /// drift. A hand-rolled copy used to sit in this fixture and had already drifted by one byte at
-    /// the identity boundary (it ended the subject THROUGH the `@`), which is what a second
-    /// spelling of one format buys; `spec60_guard_is_judging` below now asserts the equality that
-    /// fork slid past.
-    #[cfg(feature = "symbols")]
-    fn spec60_content_identity() -> crate::eventstore::ContentIdentity {
-        crate::eventstore::ContentIdentity::new(
-            crate::ingest::META_REPLAY_KEY,
-            crate::ingest::DERIVED_INDEX_TYPES,
-            crate::ingest::derived_key_spans,
-        )
-    }
-
-    /// The run's event log WITH criterion 4's storage guard configured on it, exactly as a
-    /// composition root would.
-    #[cfg(feature = "symbols")]
-    fn spec60_guarded_store() -> Store {
-        Store::open(":memory:")
-            .unwrap()
-            .with_content_identity(spec60_content_identity())
-    }
-
-    /// Assert the configured guard is REALLY JUDGING this store, so every claim about "the full
-    /// stack" below is about a stack that is actually there.
-    ///
-    /// Two things have to hold and neither is safe to assume. First the injected policy must agree
-    /// with the key authority: `sample` is a key the REAL walk emitted, and the policy must find a
-    /// subject and a generation in it. Second the guard must be INDEXED - it suppresses nothing until
-    /// its content-key index is committed, and a guard that is not suppressing reports exactly what
-    /// an unguarded store reports. So this re-appends an event whose key is its subject's LATEST
-    /// recorded generation and requires the store to write NOTHING: a positive control for the very
-    /// suppression the revert must escape.
-    #[cfg(feature = "symbols")]
-    fn spec60_guard_is_judging(store: &Store, latest: &Event, sample: &str) {
-        let identity = spec60_content_identity();
-        assert_eq!(
-            identity.subject_of(sample),
-            crate::ingest::derived_key_spans(sample).map(|(id, gen)| (&sample[id], &sample[gen])),
-            "the injected policy must split a key the REAL walk emitted ({sample}) EXACTLY as the \
-             ingest key authority does. `is_some()` is not that test and never was: it holds for \
-             ANY policy that finds SOME split, so two spellings of this one format can disagree at \
-             the identity boundary while it stays green. Fix the split, not this assertion"
-        );
-        let before = store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .unwrap()
-            .len();
-        store
-            .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(latest))
-            .unwrap();
-        let after = store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .unwrap()
-            .len();
-        assert_eq!(
-            after, before,
-            "positive control: re-appending an event whose key IS its subject's latest recorded \
-             generation must be a storage no-op. It appended, so the guard is not judging (no \
-             committed content-key index, or a policy that does not cover this event) and every \
-             claim below about surviving the storage layer would be vacuous"
-        );
-    }
+    // This criterion adds NO production code. The rule it pins belongs to criterion 1; the helpers
+    // below are the fixture that puts it in front of one run.
 
     /// A COLD REBUILD of the graph from the tree AS IT STANDS: a fresh log and a fresh projection,
     /// fed by the SAME walk / content-key / append-and-fold authority `rigger graph build` runs on an
@@ -21148,9 +21021,7 @@ mod tests {
     ///
     /// It drives the REAL [`run`] entry twice over one store, because a run's suppression decisions
     /// are taken against a seed read from the LOG at run start - a second walk inside one process is
-    /// weighed against the set that process extended instead, which is a different question. The
-    /// store carries criterion 4's content-identity guard throughout, so what the sink lets through
-    /// still has to get past the storage layer.
+    /// weighed against the set that process extended instead, which is a different question.
     ///
     /// "Exactly that file's whole batch" is not hand-listed: the expected key set is what a COLD
     /// REBUILD of the current tree records for that file, so the assertion cannot drift from what the
@@ -21184,7 +21055,7 @@ mod tests {
         .unwrap();
         let repo_path = root.to_str().unwrap().to_string();
 
-        let st = spec60_guarded_store();
+        let st = Store::open(":memory:").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let driver = Stub::new();
 
@@ -21290,7 +21161,7 @@ mod tests {
 
         // The changed file re-emits its WHOLE batch: exactly the keys a cold rebuild of the tree as
         // it now stands records for it - no more (nothing spurious) and no fewer (no half-landed
-        // batch, which is what a store guard applying its test to its own siblings would leave).
+        // batch).
         let (cold_store, cold_graph) = spec60_cold_rebuild(&repo_path);
         let cold_log = cold_store
             .read_stream(STREAM, 0, Direction::Forward)
@@ -21336,33 +21207,17 @@ mod tests {
                  rebuild from the current tree produces"
             );
         }
-
-        // The storage guard was in place the whole time - asserted, not assumed.
-        let latest = after_two
-            .iter()
-            .find(|e| {
-                is_derived(e)
-                    && e.meta
-                        .get(META_REPLAY_KEY)
-                        .is_some_and(|k| k == &re_emitted[0])
-            })
-            .cloned()
-            .expect("the re-emitted batch's first event is in the log");
-        spec60_guard_is_judging(&st, &latest, &re_emitted[0]);
     }
 
     /// Spec 60 criterion 3, second half (A REVERT IS A CHANGE): a file driven BACK to content it held
     /// at an earlier RECORDED generation re-ingests, and the live graph then equals a cold rebuild
     /// from the current tree.
     ///
-    /// This is the case an EVER-RECORDED suppression test wedges, at either layer. The reverted
-    /// file's content keys are BYTE-IDENTICAL to records the log still carries from its first
-    /// generation, so a set seeded with every key ever recorded matches them and emits nothing, and a
-    /// store guard that asked "has this key ever been recorded" swallows whatever the sink did let
-    /// through. Either way the graph stays on the SUPERSEDED generation forever - re-folding the log
-    /// replays the same suppression, so there is no recovery. Both layers are therefore in front of
-    /// this run at once: a revert that survives one and is swallowed by the other is exactly the
-    /// outcome Global constraint 4 forbids, and it is invisible to either layer's own test.
+    /// This is the case an EVER-RECORDED suppression test wedges. The reverted file's content keys
+    /// are BYTE-IDENTICAL to records the log still carries from its first generation, so a set
+    /// seeded with every key ever recorded matches them and emits nothing. The graph then stays on
+    /// the SUPERSEDED generation forever - re-folding the log replays the same suppression, so there
+    /// is no recovery - which is exactly the outcome Global constraint 4 forbids.
     #[cfg(feature = "symbols")]
     #[test]
     fn a_file_reverted_to_an_earlier_recorded_generation_re_ingests_and_matches_a_cold_rebuild() {
@@ -21380,7 +21235,7 @@ mod tests {
         std::fs::write(root.join("src/churn.rs"), GEN_A).unwrap();
         let repo_path = root.to_str().unwrap().to_string();
 
-        let st = spec60_guarded_store();
+        let st = Store::open(":memory:").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let driver = Stub::new();
 
@@ -21490,7 +21345,7 @@ mod tests {
                     .filter(|e| e.meta.get(META_REPLAY_KEY) == Some(key))
                     .count(),
                 2,
-                "the storage guard must let a reverted generation's key through - the log must \
+                "a reverted generation's key must get through - the log must \
                  carry {key} once from generation A and once from the revert"
             );
         }
@@ -21521,27 +21376,6 @@ mod tests {
                  the current tree produces"
             );
         }
-
-        // The storage guard was judging throughout: it never recorded a degradation, and it still
-        // suppresses an append of the generation the file is NOW at. So the revert got past a guard
-        // that was actually on, not past one that had quietly stopped defending.
-        assert!(
-            !after_three
-                .iter()
-                .any(|e| e.meta.contains_key(crate::eventstore::META_GUARD_DEGRADED)),
-            "no event may be stamped as written by a guard that was not judging"
-        );
-        let latest = after_three
-            .iter()
-            .find(|e| {
-                is_derived(e)
-                    && e.meta
-                        .get(META_REPLAY_KEY)
-                        .is_some_and(|k| k == &re_emitted[0])
-            })
-            .cloned()
-            .expect("the re-emitted batch's first event is in the log");
-        spec60_guard_is_judging(&st, &latest, &re_emitted[0]);
     }
 
     /// Spec 60 criterion 2 (RUN-SCOPING SURVIVES): the seeding above turned `replayed_keys` into a
@@ -23329,7 +23163,7 @@ mod tests {
                     ledger::TYPE_UNIT_INTEGRATED,
                     serde_json::to_vec(&json!({"id": "fenced", "commit": "f00"})).unwrap(),
                 ),
-                spawn::SpawnRequest::new("fenced", "fenced", "adversary", 0, "verify")
+                crate::spawn::test_request("fenced", "fenced", "adversary", 0, "verify")
                     .to_event()
                     .unwrap(),
             ],
@@ -23406,7 +23240,7 @@ mod tests {
                 ledger::TYPE_UNIT_INTEGRATED,
                 serde_json::to_vec(&json!({"id": "fenced", "commit": "f00"})).unwrap(),
             ),
-            spawn::SpawnRequest::new("fenced", "fenced", "adversary", 0, "verify")
+            crate::spawn::test_request("fenced", "fenced", "adversary", 0, "verify")
                 .to_event()
                 .unwrap(),
         ];
@@ -23500,7 +23334,7 @@ mod tests {
                 ledger::TYPE_UNIT_INTEGRATED,
                 serde_json::to_vec(&json!({"id": "answered", "commit": "a11"})).unwrap(),
             ),
-            spawn::SpawnRequest::new("answered", "answered", "adversary", 0, "verify")
+            crate::spawn::test_request("answered", "answered", "adversary", 0, "verify")
                 .to_event()
                 .unwrap(),
             spawn::SpawnResult::ok("answered/adversary#0", "approve")
@@ -23587,7 +23421,7 @@ mod tests {
                 ledger::TYPE_UNIT_INTEGRATED,
                 serde_json::to_vec(&json!({"id": "settled", "commit": "5e77"})).unwrap(),
             ),
-            spawn::SpawnRequest::new("settled", "settled", "adversary", 0, "verify")
+            crate::spawn::test_request("settled", "settled", "adversary", 0, "verify")
                 .to_event()
                 .unwrap(),
             spawn::SpawnResult::ok("settled/adversary#0", "approve")
@@ -23682,7 +23516,7 @@ mod tests {
                 ledger::TYPE_UNIT_INTEGRATED,
                 serde_json::to_vec(&json!({"id": "repeat", "commit": "2e97"})).unwrap(),
             ),
-            spawn::SpawnRequest::new("repeat", "repeat", "adversary", 0, "verify")
+            crate::spawn::test_request("repeat", "repeat", "adversary", 0, "verify")
                 .to_event()
                 .unwrap(),
             spawn::SpawnResult::ok("repeat/adversary#0", "approve")
@@ -30899,14 +30733,16 @@ mod tests {
         // of 2 it already sees the budget spent - even though its own counter started at
         // zero.
         let st = Store::open(":memory:").unwrap();
-        spawn_store::park(
+        spawn_store::park_in_run(
             &st,
-            &spawn::SpawnRequest::new("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
+            &crate::spawn::test_request("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
+            "",
         )
         .unwrap();
-        spawn_store::park(
+        spawn_store::park_in_run(
             &st,
-            &spawn::SpawnRequest::new("u2", "u2", ROLE_IMPLEMENTER, 0, "p"),
+            &crate::spawn::test_request("u2", "u2", ROLE_IMPLEMENTER, 0, "p"),
+            "",
         )
         .unwrap();
 
@@ -30967,9 +30803,10 @@ mod tests {
         // work, but it MUST trip once this process admits a NEW spawn that reaches the
         // budget (spawns > base_spawns). One spawn recorded, budget 2.
         let st = Store::open(":memory:").unwrap();
-        spawn_store::park(
+        spawn_store::park_in_run(
             &st,
-            &spawn::SpawnRequest::new("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
+            &crate::spawn::test_request("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
+            "",
         )
         .unwrap();
 
@@ -42334,8 +42171,8 @@ mod tests {
             "the deferred gate must emit a GateVerdict at the phase boundary"
         );
         assert!(
-            rs.done() && rs.fully_done(&[]),
-            "a passing deferred gate must leave the run reported fully done"
+            rs.done(),
+            "a passing deferred gate must leave the run reported done"
         );
     }
 
@@ -42395,14 +42232,10 @@ mod tests {
             }),
             "a failing deferred gate must emit a DeferredGateFailed event naming the gate"
         );
-        // ...and the run is reported NOT fully done despite every unit integrating.
+        // ...and the run is reported NOT done despite every unit integrating.
         assert!(
             !rs.done(),
             "a failing deferred gate must leave the run reported not done"
-        );
-        assert!(
-            !rs.fully_done(&[]),
-            "a failing deferred gate must leave the run reported not fully done"
         );
         assert!(
             rs.deferred_gate_failed,
@@ -43176,7 +43009,7 @@ mod tests {
             "the lost DeferredGateFailed is re-surfaced from the replayed verdict, exactly once"
         );
         assert!(
-            rs.deferred_gate_failed && !rs.done() && !rs.fully_done(&[]),
+            rs.deferred_gate_failed && !rs.done(),
             "a red deferred gate is never reported as a finished run, even after the crash"
         );
 
@@ -45678,7 +45511,7 @@ mod tests {
     /// is held to the same answer as every other one in the codebase.
     ///
     /// It reaches the store through the BATCHED authority, whose absence is a legitimate
-    /// answer (an empty batch, or a batch the content-identity guard suppressed entirely).
+    /// answer (an empty batch, or a batch the store recognised as already recorded).
     /// That is not this caller's case: it hands over exactly one event, of a run-lifecycle
     /// type no content-identity policy can reach, so an absence here means the write was
     /// LOST - a UnitStatus, a GateVerdict, or a spec-defect record the whole run is

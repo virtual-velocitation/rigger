@@ -376,69 +376,6 @@ pub struct SpawnRequest {
 }
 
 impl SpawnRequest {
-    /// Build a request, deriving its deterministic id from `unit` + `role` +
-    /// `attempt` so the id can never drift out of sync with the labels it is derived
-    /// from. Optional fields (persona, model, tools, dir, blast-radius) are filled in
-    /// with the builder setters.
-    pub fn new(unit: &str, stage: &str, role: &str, attempt: u32, prompt: &str) -> SpawnRequest {
-        SpawnRequest {
-            id: spawn_id(unit, role, attempt),
-            unit: unit.to_string(),
-            stage: stage.to_string(),
-            prompt: prompt.to_string(),
-            system_prompt: String::new(),
-            model: String::new(),
-            tools: Vec::new(),
-            dir: String::new(),
-            blast_radius: Vec::new(),
-            max_wall_clock: None,
-            title: String::new(),
-            reviews: Vec::new(),
-        }
-    }
-
-    /// Builder: set the agent's persona (system prompt).
-    pub fn with_system_prompt(mut self, persona: impl Into<String>) -> Self {
-        self.system_prompt = persona.into();
-        self
-    }
-
-    /// Builder: set the model alias.
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = model.into();
-        self
-    }
-
-    /// Builder: set the granted tools.
-    pub fn with_tools(mut self, tools: Vec<String>) -> Self {
-        self.tools = tools;
-        self
-    }
-
-    /// Builder: set the working dir.
-    pub fn with_dir(mut self, dir: impl Into<String>) -> Self {
-        self.dir = dir.into();
-        self
-    }
-
-    /// Builder: set the blast-radius (grounded seed files).
-    pub fn with_blast_radius(mut self, blast_radius: Vec<String>) -> Self {
-        self.blast_radius = blast_radius;
-        self
-    }
-
-    /// Builder: set the live work-line title (the unit's criterion, see [`SpawnRequest::title`]).
-    pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-
-    /// Builder: set the routed review roster (see [`SpawnRequest::reviews`]).
-    pub fn with_reviews(mut self, reviews: Vec<String>) -> Self {
-        self.reviews = reviews;
-        self
-    }
-
     /// Serialize this request as its [`TYPE_SPAWN_REQUESTED`] event, ready to append
     /// to the run stream.
     pub fn to_event(&self) -> Result<Event, serde_json::Error> {
@@ -448,6 +385,25 @@ impl SpawnRequest {
     /// Recover a request from a [`TYPE_SPAWN_REQUESTED`] event body.
     pub fn from_event(e: &Event) -> Result<SpawnRequest, serde_json::Error> {
         serde_json::from_slice(&e.data)
+    }
+}
+
+/// A minimal request for the crate's unit tests: the deterministic id derived from `unit` +
+/// `role` + `attempt` (so it cannot drift from the labels), every optional field empty.
+#[cfg(test)]
+pub(crate) fn test_request(
+    unit: &str,
+    stage: &str,
+    role: &str,
+    attempt: u32,
+    prompt: &str,
+) -> SpawnRequest {
+    SpawnRequest {
+        id: spawn_id(unit, role, attempt),
+        unit: unit.to_string(),
+        stage: stage.to_string(),
+        prompt: prompt.to_string(),
+        ..SpawnRequest::default()
     }
 }
 
@@ -1128,38 +1084,15 @@ mod tests {
     }
 
     #[test]
-    fn new_derives_the_id_from_the_labels_and_carries_the_prompt() {
-        let req = SpawnRequest::new("spawn-req", "implement", ROLE_IMPLEMENTER, 1, "do it");
-        assert_eq!(req.id, "spawn-req/implementer#1");
-        assert_eq!(req.unit, "spawn-req");
-        assert_eq!(req.stage, "implement");
-        assert_eq!(req.prompt, "do it");
-    }
-
-    #[test]
-    fn a_request_carries_every_field_the_thin_driver_needs() {
-        let req = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "prompt")
-            .with_system_prompt("You are the rust engineer.")
-            .with_model("sonnet")
-            .with_tools(vec!["Read".into(), "Edit".into()])
-            .with_dir("/wt")
-            .with_blast_radius(vec!["a.rs".into()]);
-
-        assert_eq!(req.system_prompt, "You are the rust engineer.");
-        assert_eq!(req.model, "sonnet");
-        assert_eq!(req.tools, ["Read", "Edit"]);
-        assert_eq!(req.dir, "/wt");
-        assert_eq!(req.blast_radius, ["a.rs"]);
-    }
-
-    #[test]
     fn a_request_round_trips_through_its_event() {
-        let req = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "prompt")
-            .with_system_prompt("persona")
-            .with_model("sonnet")
-            .with_tools(vec!["Read".into()])
-            .with_dir("/wt")
-            .with_blast_radius(vec!["a.rs".into()]);
+        let req = SpawnRequest {
+            system_prompt: "persona".into(),
+            model: "sonnet".into(),
+            tools: vec!["Read".into()],
+            dir: "/wt".into(),
+            blast_radius: vec!["a.rs".into()],
+            ..test_request("u", "implement", ROLE_IMPLEMENTER, 0, "prompt")
+        };
 
         let ev = req.to_event().unwrap();
         assert_eq!(ev.type_, TYPE_SPAWN_REQUESTED);
@@ -1170,7 +1103,7 @@ mod tests {
     fn empty_optional_fields_are_omitted_from_the_wire() {
         // A minimal request serializes to only the always-present fields, so a
         // persisted spawn event and a printed wave stay compact.
-        let req = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "prompt");
+        let req = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "prompt");
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();
         assert!(obj.contains_key("id"));
@@ -1194,11 +1127,13 @@ mod tests {
     fn recorded_keys_a_hand_built_wave_by_id_and_is_recorded_checks_membership() {
         // The pure fold's own coverage (spec 93, criterion 1): `recorded`/`is_recorded`
         // read a slice of already-serialized events, with no store involved - the store-
-        // backed persistence half (`spawn_store::park`) has its own integration coverage.
-        let a = SpawnRequest::new("a", "implement", ROLE_IMPLEMENTER, 0, "a");
-        let b = SpawnRequest::new("b", "implement", ROLE_IMPLEMENTER, 0, "b")
-            .with_model("sonnet")
-            .with_blast_radius(vec!["a.rs".into()]);
+        // backed persistence half (`spawn_store::park_in_run`) has its own integration coverage.
+        let a = test_request("a", "implement", ROLE_IMPLEMENTER, 0, "a");
+        let b = SpawnRequest {
+            model: "sonnet".into(),
+            blast_radius: vec!["a.rs".into()],
+            ..test_request("b", "implement", ROLE_IMPLEMENTER, 0, "b")
+        };
         let events = vec![a.to_event().unwrap(), b.to_event().unwrap()];
 
         let recorded = recorded(&events).unwrap();
@@ -1265,7 +1200,7 @@ mod tests {
     #[test]
     fn spawn_request_max_wall_clock_round_trips_and_omits_when_absent() {
         // Absent (the back-compatible common case): omitted from the wire.
-        let plain = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "task");
+        let plain = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "task");
         assert_eq!(plain.max_wall_clock, None);
         let json = serde_json::to_value(&plain).unwrap();
         assert!(
@@ -1273,7 +1208,7 @@ mod tests {
             "an unbounded spawn omits max_wall_clock from the persisted event"
         );
         // Present: persisted and recovered so the sweep reads it off the parked event.
-        let mut bounded = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "task");
+        let mut bounded = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "task");
         bounded.max_wall_clock = Some(1800);
         let ev = bounded.to_event().unwrap();
         assert_eq!(
@@ -1386,7 +1321,7 @@ mod tests {
         // must be skipped, not decoded as a spawn.
         let events = vec![
             Event::new("UnitStarted", br#"{"id":"u"}"#.to_vec()),
-            SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
+            test_request("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
                 .to_event()
                 .unwrap(),
         ];
@@ -1402,14 +1337,14 @@ mod tests {
         // A prior step parked `plan` and it was ANSWERED; this step parks two disjoint
         // units. The wave is every spawn still awaiting a result - the two new ones in
         // deterministic id order - and never the answered `plan`.
-        let old = SpawnRequest::new("plan", "plan", ROLE_IMPLEMENTER, 0, "plan it");
+        let old = test_request("plan", "plan", ROLE_IMPLEMENTER, 0, "plan it");
         let events = vec![
             old.to_event().unwrap(),
             SpawnResult::ok(&old.id, "planned").to_event().unwrap(),
-            SpawnRequest::new("b", "implement", ROLE_IMPLEMENTER, 0, "b")
+            test_request("b", "implement", ROLE_IMPLEMENTER, 0, "b")
                 .to_event()
                 .unwrap(),
-            SpawnRequest::new("a", "implement", ROLE_IMPLEMENTER, 0, "a")
+            test_request("a", "implement", ROLE_IMPLEMENTER, 0, "a")
                 .to_event()
                 .unwrap(),
         ];
@@ -1469,7 +1404,7 @@ mod tests {
         // `WaveItem::from` cannot know the scratch root or run id, so it leaves the resolved
         // marker path absent; `rigger step` stamps it. An absent marker path is omitted from
         // the wire (like an unbounded spawn's), so a slim manifest stays slim.
-        let req = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "task");
+        let req = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "task");
         let item = WaveItem::from(&req);
         assert_eq!(item.marker_path, None, "a pure fold leaves the path unset");
         let json = serde_json::to_value(&item).unwrap();
@@ -1492,17 +1427,15 @@ mod tests {
     }
 
     #[test]
-    fn spawn_request_carries_a_title_via_builder_and_omits_it_when_empty() {
+    fn a_spawn_requests_title_rides_the_wire_and_is_omitted_when_empty() {
         // The live work-line (spec 19a, c4): a spawn carries its unit's criterion as a
         // `title` so the thin driver can narrate the actual WORK, not just `<unit>:<stage>`.
-        // The builder sets it; an empty title (the back-compatible default) is omitted from
-        // the wire so a spawn that carries no criterion serializes exactly as before.
-        let titled = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task")
-            .with_title("a test over the production render asserts the blocker line");
-        assert_eq!(
-            titled.title, "a test over the production render asserts the blocker line",
-            "with_title sets the criterion the driver narrates"
-        );
+        // An empty title (the back-compatible default) is omitted from the wire so a spawn
+        // that carries no criterion serializes exactly as before.
+        let titled = SpawnRequest {
+            title: "a test over the production render asserts the blocker line".into(),
+            ..test_request("u", "u", ROLE_IMPLEMENTER, 0, "task")
+        };
         let json = serde_json::to_value(&titled).unwrap();
         assert_eq!(
             json.get("title").and_then(|v| v.as_str()),
@@ -1510,9 +1443,9 @@ mod tests {
             "a set title rides the wire so a wave read off the log carries the work-line"
         );
 
-        // The default (no builder call) leaves the title empty and omits it from the wire:
+        // The default leaves the title empty and omits it from the wire:
         // an untitled spawn's SpawnRequested event is byte-for-byte the historical shape.
-        let untitled = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task");
+        let untitled = test_request("u", "u", ROLE_IMPLEMENTER, 0, "task");
         assert!(untitled.title.is_empty(), "the default title is empty");
         let json = serde_json::to_value(&untitled).unwrap();
         assert!(
@@ -1527,8 +1460,10 @@ mod tests {
         // thin driver actually reads is a `Vec<WaveItem>`, NOT the SpawnRequest, so a title on
         // the request alone renders NOTHING. `WaveItem::from` MUST copy the title, and it must
         // ride the printed wire, or `rigger.js` has nothing to narrate.
-        let req =
-            SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task").with_title("do the work");
+        let req = SpawnRequest {
+            title: "do the work".into(),
+            ..test_request("u", "u", ROLE_IMPLEMENTER, 0, "task")
+        };
         let item = WaveItem::from(&req);
         assert_eq!(
             item.title, "do the work",
@@ -1542,7 +1477,7 @@ mod tests {
         );
 
         // An untitled request yields an untitled item, omitted from the slim manifest.
-        let bare = WaveItem::from(&SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"));
+        let bare = WaveItem::from(&test_request("u", "u", ROLE_IMPLEMENTER, 0, "task"));
         assert!(
             bare.title.is_empty(),
             "an untitled request yields an untitled item"
@@ -1561,8 +1496,10 @@ mod tests {
         // prints, must surface the title on the wave item - the exact wire `rigger.js` reads
         // to narrate the work. This fails if `WaveItem::from` drops the title (the class of
         // bug that shipped a title on the request but rendered nothing).
-        let req = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task")
-            .with_title("the live work-line shows the actual criterion");
+        let req = SpawnRequest {
+            title: "the live work-line shows the actual criterion".into(),
+            ..test_request("u", "u", ROLE_IMPLEMENTER, 0, "task")
+        };
         let events = vec![req.to_event().unwrap()];
         let step = step_result(&events).unwrap();
         let json = serde_json::to_value(&step).unwrap();
@@ -1614,24 +1551,16 @@ mod tests {
     }
 
     #[test]
-    fn spawn_request_carries_a_reviews_roster_via_builder_and_omits_it_when_empty() {
+    fn a_spawn_requests_reviews_roster_rides_the_wire_and_is_omitted_when_empty() {
         // REVIEW TIERS NAME THEIR TARGETS (spec 67, criterion 4): a review-tier spawn
         // (adversary/adjudicator) carries the unit's routed lens roster it judges, so the
-        // thin driver can name it in the action phrase. The builder sets it; an empty roster
+        // thin driver can name it in the action phrase. An empty roster
         // (the back-compatible default - a lens spawn, or an older conductor) is omitted from
         // the wire so a spawn that carries no roster serializes exactly as before.
-        let rostered = SpawnRequest::new("u", "u", ROLE_ADVERSARY, 1, "task").with_reviews(vec![
-            "lens:sdet".into(),
-            "lens:architecture-reviewer".into(),
-        ]);
-        assert_eq!(
-            rostered.reviews,
-            vec![
-                "lens:sdet".to_string(),
-                "lens:architecture-reviewer".to_string()
-            ],
-            "with_reviews sets the roster the driver renders"
-        );
+        let rostered = SpawnRequest {
+            reviews: vec!["lens:sdet".into(), "lens:architecture-reviewer".into()],
+            ..test_request("u", "u", ROLE_ADVERSARY, 1, "task")
+        };
         let json = serde_json::to_value(&rostered).unwrap();
         assert_eq!(
             json.get("reviews").and_then(|v| v.as_array()).cloned(),
@@ -1642,9 +1571,9 @@ mod tests {
             "a set roster rides the wire so a wave read off the log carries it"
         );
 
-        // The default (no builder call) leaves the roster empty and omits it from the wire: a
+        // The default leaves the roster empty and omits it from the wire: a
         // roster-less spawn's SpawnRequested event is byte-for-byte the historical shape.
-        let unrostered = SpawnRequest::new("u", "u", ROLE_ADVERSARY, 1, "task");
+        let unrostered = test_request("u", "u", ROLE_ADVERSARY, 1, "task");
         assert!(
             unrostered.reviews.is_empty(),
             "the default reviews roster is empty"
@@ -1662,8 +1591,10 @@ mod tests {
         // reads is a `Vec<WaveItem>`, NOT the SpawnRequest, so a roster on the request alone
         // renders NOTHING. `WaveItem::from` must copy the roster, and it must ride the printed
         // wire, or `rigger.js` has nothing to render inside the action phrase.
-        let req = SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "task")
-            .with_reviews(vec!["lens:sdet".into(), "adversary".into()]);
+        let req = SpawnRequest {
+            reviews: vec!["lens:sdet".into(), "adversary".into()],
+            ..test_request("u", "u", ROLE_ADJUDICATOR, 0, "task")
+        };
         let item = WaveItem::from(&req);
         assert_eq!(
             item.reviews,
@@ -1682,7 +1613,7 @@ mod tests {
 
         // A roster-less request yields a roster-less item, omitted from the slim manifest -
         // the "an older conductor" case the driver must render gracefully.
-        let bare = WaveItem::from(&SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "task"));
+        let bare = WaveItem::from(&test_request("u", "u", ROLE_ADJUDICATOR, 0, "task"));
         assert!(
             bare.reviews.is_empty(),
             "a roster-less request yields a roster-less item"
@@ -1700,8 +1631,10 @@ mod tests {
         // assert on the PRINTED Step wave. A parked request carrying a roster, folded through
         // `step_result` into the JSON `rigger step` prints, must surface the roster on the wave
         // item - the exact wire `rigger.js` reads to render it inside the action phrase.
-        let req = SpawnRequest::new("u", "u", ROLE_ADVERSARY, 0, "task")
-            .with_reviews(vec!["lens:sdet".into()]);
+        let req = SpawnRequest {
+            reviews: vec!["lens:sdet".into()],
+            ..test_request("u", "u", ROLE_ADVERSARY, 0, "task")
+        };
         let events = vec![req.to_event().unwrap()];
         let step = step_result(&events).unwrap();
         let json = serde_json::to_value(&step).unwrap();
@@ -1718,8 +1651,8 @@ mod tests {
         // printing must not orphan its spawns. A later step's wave re-prints every
         // spawn still awaiting a result, so a relaunched driver resumes the in-flight
         // wave; the answered spawn does not reappear.
-        let a = SpawnRequest::new("a", "implement", ROLE_IMPLEMENTER, 0, "a");
-        let b = SpawnRequest::new("b", "implement", ROLE_IMPLEMENTER, 0, "b");
+        let a = test_request("a", "implement", ROLE_IMPLEMENTER, 0, "a");
+        let b = test_request("b", "implement", ROLE_IMPLEMENTER, 0, "b");
 
         // `a` was answered; `b`'s wave JSON never reached a driver (killed step).
         let events = vec![
@@ -1758,11 +1691,9 @@ mod tests {
     #[test]
     fn step_serializes_to_a_wave_array_and_a_done_bool() {
         // The JSON `rigger step` prints: {"wave":[<SpawnRequest>...],"done":<bool>}.
-        let events = vec![
-            SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
-                .to_event()
-                .unwrap(),
-        ];
+        let events = vec![test_request("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
+            .to_event()
+            .unwrap()];
         let step = step_result(&events).unwrap();
 
         let json = serde_json::to_value(&step).unwrap();
@@ -1789,11 +1720,9 @@ mod tests {
     fn step_result_leaves_the_halt_reason_unset() {
         // Gap 13: a halt is a RUNTIME condition of the live run, stamped by `rigger step`
         // from the conductor's in-process breaker - the pure log seam never sets it.
-        let events = vec![
-            SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
-                .to_event()
-                .unwrap(),
-        ];
+        let events = vec![test_request("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
+            .to_event()
+            .unwrap()];
         assert_eq!(step_result(&events).unwrap().halted, None);
     }
 
@@ -1904,7 +1833,7 @@ mod tests {
 
     #[test]
     fn prompt_for_returns_persona_and_task_by_spawn_id() {
-        let mut req = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "do the task");
+        let mut req = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "do the task");
         req.system_prompt = "you are the implementer".into();
         let events = vec![req.to_event().unwrap()];
         assert_eq!(

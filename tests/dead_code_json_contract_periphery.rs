@@ -43,15 +43,15 @@
 //! `sdet-u87c2-surface-accounting` above): round 1's fix
 //! (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`) added a genuine NEW
 //! cross-module seam - a call from `tests/simplification_audit.rs` into the real production
-//! public API (`rigger::grounder::symbols::build_index` -> `events::index_events`) to prove the
-//! bespoke out-of-line-test-file resolver agrees with the canonical production one. The
+//! public API (`rigger::grounder::symbols::build_index` ->
+//! `events::out_of_line_test_module_files`) to prove the bespoke out-of-line-test-file resolver agrees with the canonical production one. The
 //! implementer's own 5 new tests already integration-test that PARITY property, on fixtures and
 //! on the real tree. What none of them pin is the COMMITTED ARTIFACT itself: a future edit to the
 //! generator's call site, or a stale regeneration, could reintroduce spec 87's own Goal-named
 //! misclassification (`src/eventstore/contract.rs`, `src/blast_radius_eval.rs` counted as
-//! production) even while the two resolvers still agree with each other in isolation. The four
-//! tests after the byte-for-byte round-trip proof below close that gap and pin round 0's three
-//! concrete fixed regressions (`adj-u87c2-r0-verdict-reject`) against the real committed file,
+//! production) even while the two resolvers still agree with each other in isolation. The tests
+//! after the byte-for-byte round-trip proof below close that gap and pin round 0's concrete fixed
+//! regressions (`adj-u87c2-r0-verdict-reject`) against the real committed file,
 //! not just the implementer's synthetic fixtures or a reviewer's throwaway manual grep.
 //!
 //! ROUND 2 ACCOUNTING (decision `sdet-u87c2-r2-surface-accounting`, superseding
@@ -129,9 +129,8 @@
 //! or periphery - `the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_
 //! records_them` below closes it for section 4.3, reading the PERSISTED report and the PERSISTED
 //! `DEAD_CODE_LINES_PATH` directly, joined by array position (never a `(file, name)` lookup -
-//! `src/ingest.rs`'s own `ingest_project` is ambiguous, two distinct candidates sharing one bare
-//! name in one file, so a lookup would silently resolve every citation to whichever entry comes
-//! first). ROUND 4 (`adj-u90c2-r3-verdict-reject` named section 6 item 0, the dead-code deletion
+//! two distinct candidates may share one bare name in one file, so a lookup would silently
+//! resolve every citation to whichever entry comes first). ROUND 4 (`adj-u90c2-r3-verdict-reject` named section 6 item 0, the dead-code deletion
 //! list, alongside sections 1/4.3 as needing the identical sidecar-sourcing fix - the producer
 //! delivered it, `render_dead_code_deletion_list` now takes an explicit `lines:
 //! &[DeadCodeCandidateLines]` param, but no periphery test closed CLAIM 4 for that site):
@@ -212,12 +211,7 @@ fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
 /// never exercise it against the real committed file, only a producer-internal string compare.
 #[test]
 fn the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would() {
-    let candidates = deserialize_committed_dead_code();
-    assert!(
-        !candidates.is_empty(),
-        "{DEAD_CODE_PATH} deserialized to zero candidates - a downstream consumer (criterion 3's \
-         report generator) reading this file would silently see nothing to disposition"
-    );
+    deserialize_committed_dead_code();
 }
 
 /// Spec 87 OUTPUT: "one entry per production fn ... name, file:line, visibility, the test-only
@@ -421,7 +415,7 @@ fn deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_
 
 // -----------------------------------------------------------------------------------------
 // ROUND 1: pinning the reference-class fixes against the REAL committed file, from outside.
-// See the module doc comment's "ROUND 1 ACCOUNTING" section for why these four exist as a
+// See the module doc comment's "ROUND 1 ACCOUNTING" section for why these exist as a
 // periphery layer distinct from the implementer's own fixture-driven unit tests.
 // -----------------------------------------------------------------------------------------
 
@@ -465,25 +459,6 @@ fn no_committed_candidate_comes_from_a_known_out_of_line_test_file() {
     }
 }
 
-/// Round 1 class 1 (mod-span test regions): `index_events` is spec 87's own Goal-cited worked
-/// example (a fn referenced only from a `use` sitting at a `#[cfg(test)] mod tests { .. }` top
-/// level, outside every fn body) - round 0 shipped a committed file where it was silently
-/// absent (`sdet-u87c2-mod-body-level-test-statements-leak-as-production-refs`). Checked by name
-/// and file only (not line): the fix this test guards is about mod-span test-region tracking,
-/// not about `index_events`'s own definition site, so asserting its line would make this test
-/// fail on any unrelated future edit that merely moves the function within its file.
-#[test]
-fn index_events_the_spec_goals_own_worked_example_is_present() {
-    let candidates = deserialize_committed_dead_code();
-    assert!(
-        candidates
-            .iter()
-            .any(|c| c.name == "index_events" && c.file == "src/grounder/symbols/events.rs"),
-        "index_events (src/grounder/symbols/events.rs) is absent from {DEAD_CODE_PATH} - a \
-         regression of the mod-span test-region fix, spec 87's own Goal-cited worked example"
-    );
-}
-
 /// Round 1 class 2 (attribute token trees are references): `default_build_config` is genuinely
 /// live via `#[serde(default = "default_build_config")]` in `src/config.rs` - round 0 shipped a
 /// false positive (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) that would
@@ -496,39 +471,6 @@ fn default_build_config_referenced_only_via_a_serde_default_attribute_is_absent(
         "default_build_config appears in {DEAD_CODE_PATH} - a regression of the \
          attribute-token-tree-reference fix: it is genuinely live via \
          #[serde(default = \"default_build_config\")] in src/config.rs"
-    );
-}
-
-/// Round 1 class 4 (ambiguity is one class for every fn kind, adversary-found): two production
-/// free fns named `rebuild` (`src/distiller.rs` and `src/playbooks.rs`) shared one bare-name
-/// bucket; only `distiller::rebuild` has zero attributable references and must surface as
-/// `ambiguous: true` naming its live namesake, rather than silently vanishing from the JSON
-/// (`adv-u87c2-r0-free-fn-bare-name-collision-hides-a-genuinely-dead-fn`) - checked by the
-/// `ambiguous_with` citation's FILE component only (not its content_hash, spec 90 criterion 2's
-/// line-free replacement for the citation's old line component), so an unrelated future edit
-/// that merely moves `rebuild` within `src/playbooks.rs` does not spuriously fail this test.
-#[test]
-fn distiller_rebuild_is_flagged_ambiguous_and_names_its_live_namesake_in_playbooks() {
-    let candidates = deserialize_committed_dead_code();
-    let rebuild = candidates
-        .iter()
-        .find(|c| c.name == "rebuild" && c.file == "src/distiller.rs")
-        .unwrap_or_else(|| {
-            panic!("rebuild (src/distiller.rs) is absent from {DEAD_CODE_PATH} entirely")
-        });
-    assert!(
-        rebuild.ambiguous,
-        "rebuild (src/distiller.rs) is not flagged ambiguous, but a same-named live free fn \
-         exists at src/playbooks.rs - a regression of the free-fn ambiguity fix"
-    );
-    assert!(
-        rebuild.ambiguous_with.iter().any(|c| c
-            .rsplit_once('#')
-            .is_some_and(|(file, _)| file == "src/playbooks.rs")),
-        "rebuild (src/distiller.rs)'s ambiguous_with {:?} does not cite src/playbooks.rs - a \
-         consumer reading this entry cannot find the live namesake that keeps it ambiguous \
-         rather than a confirmed deletion",
-        rebuild.ambiguous_with
     );
 }
 
@@ -751,9 +693,9 @@ fn section_4_3_citations(report: &str) -> Vec<(String, String, usize)> {
 /// ORDER, the PERSISTED `DEAD_CODE_LINES_PATH` - both are rendered from the SAME underlying
 /// candidate sequence with no re-sorting (`render_dead_code_full_list` iterates
 /// `real_dead_code_candidates()` untouched), so a position-wise zip is the correct join, not a
-/// `(file, name)` lookup: `src/ingest.rs`'s own `ingest_project` is ambiguous (two distinct
-/// candidates share one bare name in one file, ROUND 1's own `ambiguous_with` shape), so a lookup
-/// would silently resolve every citation to whichever entry happens to come first.
+/// `(file, name)` lookup: two distinct candidates may share one bare name in one file (ROUND 1's
+/// own `ambiguous_with` shape), so a lookup would silently resolve every citation to whichever
+/// entry happens to come first.
 #[test]
 fn the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_records_them() {
     let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
@@ -769,11 +711,12 @@ fn the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_r
         citations.len(),
         lines.len()
     );
-    assert!(
-        !citations.is_empty(),
-        "found zero section 4.3 citations in {REPORT_PATH} - the extraction regex or the \
-         section boundary is broken"
-    );
+    if lines.is_empty() {
+        assert!(
+            report.contains("### 4.3 The ledger\n\nThe ledger is empty.\n"),
+            "{DEAD_CODE_LINES_PATH} is empty, so section 4.3 of {REPORT_PATH} must say so"
+        );
+    }
     for (i, ((name, file, line), entry)) in citations.iter().zip(lines.iter()).enumerate() {
         assert_eq!(
             (file.as_str(), name.as_str()),
@@ -836,7 +779,7 @@ fn section_6_deletion_list_citations(report: &str) -> Vec<(String, String, usize
 /// position-joined and (file, line)-ascending committed files (proven by
 /// `the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_ascending_by_file_
 /// then_line` above) reproduces the identical sequence. A `(file, name)` lookup would be wrong for
-/// the same reason section 4.3's test avoids one: `src/ingest.rs`'s `ingest_project` is ambiguous.
+/// the same reason section 4.3's test avoids one: a bare name can be ambiguous within one file.
 #[test]
 fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactly_as_the_lines_sibling_records_them(
 ) {
@@ -856,10 +799,12 @@ fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactl
         .zip(lines.iter())
         .map(|(_, l)| (l.file.clone(), l.name.clone(), l.line))
         .collect();
-    assert!(
-        !expected.is_empty(),
-        "zero entries in {DEAD_CODE_PATH} - the committed data is broken"
-    );
+    if expected.is_empty() {
+        assert!(
+            report.contains("- Status: complete - the ledger is empty.\n"),
+            "{DEAD_CODE_PATH} is empty, so section 6 item 0 of {REPORT_PATH} must say so"
+        );
+    }
     assert_eq!(
         citations.len(),
         expected.len(),

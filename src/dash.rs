@@ -476,7 +476,7 @@ pub struct DashMarker {
 /// adj-u62c1r3-verdict-reject-idempotency-regression) - `spawn_run_dashboard_detached`'s only
 /// production write site for it. `0` is never a real OS pid (the kernel reserves it; no process
 /// is ever assigned it), so it can never collide with, or be mistaken for, an actual serving
-/// process, and [`pid_is_alive`] naturally reads it as not alive - the safe direction.
+/// process, so a liveness check naturally reads it as not alive - the safe direction.
 ///
 /// Recording THIS rather than refusing to write any marker at all is what keeps the step path's
 /// idempotent no-op working even when the winning dash's pid can never be named: the marker's
@@ -542,16 +542,6 @@ impl DashMarker {
     pub fn write(&self, path: &Path) -> io::Result<()> {
         std::fs::write(path, self.serialize())
     }
-}
-
-/// Whether process `pid` is still alive, Linux-first via `/proc/<pid>` existence
-/// (`std`-only - no `libc` - so it holds in BOTH feature lanes, exactly as
-/// [`crate::reap`] detects processes). Off a platform without `/proc` the directory is
-/// absent, so this reports `false`; the step path treats "not verifiably alive" as "no
-/// dash serving" and starts a fresh one rather than suppressing one on an unverifiable
-/// marker - the same safe direction [`DashMarker::parse`] takes for a corrupt record.
-pub fn pid_is_alive(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).is_dir()
 }
 
 /// The inode of the socket bound to `port` in `/proc/net/tcp` (the dash only ever binds IPv4
@@ -622,8 +612,7 @@ fn pid_holding_port(port: u16) -> Option<u32> {
 /// tracer, `Z` zombie, and so on (see `proc(5)`). Parses the same field layout every
 /// `/proc/<pid>/stat` reader in this codebase already relies on (`pid (comm) state ...`, split
 /// AFTER the last `)` since `comm` may itself embed spaces or parens) - `std`-only, no `libc`.
-/// `None` when the pid is gone or `/proc` is unreadable, the same graceful-degrade discipline
-/// as [`pid_is_alive`].
+/// `None` when the pid is gone or `/proc` is unreadable - a graceful degrade, never a guess.
 fn process_state(pid: u32) -> Option<char> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     stat.rsplit_once(')')?
@@ -3275,8 +3264,11 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 // The blocking server loop.
 // ---------------------------------------------------------------------------
 
-/// Serve the dash on `addr` until the process is stopped, re-reading fresh projection
-/// inputs from `provider` on each request (the run advances while the dash watches).
+/// Serve the dash on an ALREADY-BOUND `listener` until the process is stopped, re-reading
+/// fresh projection inputs from `provider` on each request (the run advances while the dash
+/// watches) - the singleton-aware entrypoint (spec 50, criterion 1). `cmd_dash` binds the
+/// fixed address itself via [`bind_singleton`] (so the AddrInUse that decides the singleton
+/// short-circuit is seen BEFORE this accept loop), then hands the bound listener here.
 ///
 /// Two providers, split by cadence (spec 45, criterion 1): `provider` yields the cheap
 /// run-scoped inputs (events, the run-seeded graph, progress, liveness) every `/api/*`
@@ -3290,47 +3282,6 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// async runtime. Only the `/api/*` paths consult a provider; the static page and the
 /// method/not-found guards need no store read, so the page still serves before a run has
 /// created the store.
-// The four injected providers plus the three run-context values put this one over clippy's
-// arg-count altitude (as the `route` dispatch already is); the providers are the composition
-// root's concretions and belong at this seam, so the lint is allowed rather than the seam bundled.
-#[allow(clippy::too_many_arguments)]
-pub fn serve<F, G, H, I>(
-    addr: SocketAddr,
-    provider: F,
-    graph_provider: G,
-    calls_provider: I,
-    instances_provider: H,
-    configured_max_retries: u32,
-    run_branch: &str,
-    base: &str,
-) -> io::Result<()>
-where
-    F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>) -> Graph,
-    H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
-{
-    let listener = TcpListener::bind(addr)?;
-    serve_on(
-        listener,
-        provider,
-        graph_provider,
-        calls_provider,
-        instances_provider,
-        configured_max_retries,
-        run_branch,
-        base,
-    )
-}
-
-/// Serve the dash on an ALREADY-BOUND `listener` - the singleton-aware entrypoint (spec 50,
-/// criterion 1). `cmd_dash` binds the fixed address itself via [`bind_singleton`] (so the
-/// AddrInUse that decides the singleton short-circuit is seen BEFORE this accept loop), then
-/// hands the bound listener here. [`serve`] is the thin wrapper that binds `addr` and delegates,
-/// preserving its existing bind-internally contract for callers that pass an address.
-///
-/// Identical serving semantics to [`serve`]: one connection at a time over the same
-/// cadence-split providers, re-reading fresh projection inputs each request.
 ///
 /// The ATTACH flow (spec 50, criterion 3) rides the SAME per-request providers: a request
 /// carrying `?instance=<id>` is served against THAT registered instance's stores (the
@@ -5543,8 +5494,7 @@ mod tests {
         // spec 14, unit 4: the present view carries each in-flight agent's live activity +
         // ages, folded by the consolidator from the frontier + this run's progress + the
         // marker ages the caller read, and it appears in the /api/state body the page consumes.
-        use crate::spawn::SpawnRequest;
-        let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+        let req = crate::spawn::test_request("u", "u", "implementer", 0, "do it");
         // A run: a unit started, its implementer parked (in-flight, no result).
         let events = positioned(vec![
             ev("UnitStarted", r#"{"id":"u"}"#),
@@ -5609,8 +5559,7 @@ mod tests {
         // counted by the metrics projection and carried in the dash's review-outcomes data.
         // The count reads the SEPARATE progress slice `build_state` already threads for the
         // live activity view - not the run stream - so ordinary narration does not count.
-        use crate::spawn::SpawnRequest;
-        let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+        let req = crate::spawn::test_request("u", "u", "implementer", 0, "do it");
         let events = positioned(vec![
             ev("UnitStarted", r#"{"id":"u"}"#),
             req.to_event().unwrap(),
@@ -5695,13 +5644,17 @@ mod tests {
 
         // Unit A (u30-c1): fully integrated - an implementer, four review agents, then
         // integration - so all four lifecycle stages appear with worker agents + driver lines.
-        let a_impl = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
-        let a_sdet = SpawnRequest::new("u30-c1", "review", &lens_role("sdet"), 0, "sdet A");
-        let a_arch = SpawnRequest::new("u30-c1", "review", &lens_role("arch"), 0, "arch A");
-        let a_adv = SpawnRequest::new("u30-c1", "review", ROLE_ADVERSARY, 0, "adv A");
-        let a_adj = SpawnRequest::new("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj A");
+        let a_impl =
+            crate::spawn::test_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
+        let a_sdet =
+            crate::spawn::test_request("u30-c1", "review", &lens_role("sdet"), 0, "sdet A");
+        let a_arch =
+            crate::spawn::test_request("u30-c1", "review", &lens_role("arch"), 0, "arch A");
+        let a_adv = crate::spawn::test_request("u30-c1", "review", ROLE_ADVERSARY, 0, "adv A");
+        let a_adj = crate::spawn::test_request("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj A");
         // Unit B (u30-c2): in-flight, its implementer parked with NO result yet (running).
-        let b_impl = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "impl B");
+        let b_impl =
+            crate::spawn::test_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "impl B");
 
         let events = positioned(vec![
             ev(
@@ -8750,22 +8703,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pid_is_alive_reports_self_and_rejects_an_impossible_pid() {
-        // These probes assume `/proc` (Linux, as CI and the operator run). Skip elsewhere.
-        if !Path::new("/proc").is_dir() {
-            return;
-        }
-        assert!(
-            pid_is_alive(std::process::id()),
-            "this very process must read as alive"
-        );
-        assert!(
-            !pid_is_alive(u32::MAX),
-            "an impossible pid must read as not alive"
-        );
-    }
-
     // --- Spec 62, criterion 3: HELD-PORT DIAGNOSIS ---
 
     #[test]
@@ -9689,7 +9626,7 @@ mod tests {
 /// per-node query returns the decisions/findings/lessons attached to a node (CONTENT only,
 /// deterministically ordered), a node with no rationale returns none, and the batch endpoint covers a
 /// set of visible nodes in one request. This criterion OWNS the overlay data. The served-boundary
-/// proof (one real HTTP GET over `dash::serve`) lives in `tests/rationale_overlay_data.rs`.
+/// proof (one real HTTP GET over `dash::serve_on`) lives in `tests/rationale_overlay_data.rs`.
 #[cfg(test)]
 mod rationale_overlay_c3 {
     use super::*;

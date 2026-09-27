@@ -30,8 +30,7 @@ use crate::eventstore::{Appended, Event, EventStore, ExpectedRevision};
 /// This function folds exactly the events [`Appended::placed`] names, at the positions the store
 /// reported, and it derives no position of its own. It used to compute them arithmetically as
 /// `base = last + 1 - n`, which is unsound twice over: an append may write FEWER events than it was
-/// handed (a store carrying a content-identity guard suppresses an already-recorded derived-index
-/// event), and the port has never promised a batch lands at CONSECUTIVE positions - only distinct,
+/// handed (a store may recognise an event as already recorded), and the port has never promised a batch lands at CONSECUTIVE positions - only distinct,
 /// strictly increasing ones, which a backend whose position is a byte offset satisfies with gaps.
 /// Either way the arithmetic stamps events at positions the store never issued, and the graph's
 /// applied ledger is keyed BY position: a wrong one marks a location applied forever and silently
@@ -98,10 +97,11 @@ pub struct IngestStats {
     pub workers_engaged: usize,
 }
 
-/// Walk the project tree at `root` and, for every extraction event the code (spec 29a), design
-/// (spec 29b), and workflow-definition (spec 92 criterion 2) passes emit, call `emit(key, event)`
-/// with the event's deterministic content key `<prefix>/<file>@<hash>#<i>` (`gc` for code, `gd`
-/// for design, `gw` for the workflow definition). The key is a pure function
+/// Walk the project tree at `root` and hand `on_batch` each file's WHOLE keyed batch of the
+/// extraction events the code (spec 29a), design (spec 29b), and workflow-definition (spec 92
+/// criterion 2) passes emit: the file's events, each paired with its deterministic content key
+/// `<prefix>/<file>@<hash>#<i>` (`gc` for code, `gd` for design, `gw` for the workflow
+/// definition), in `#i` order. The key is a pure function
 /// of the batch's bytes ALONE, so the same content always yields the same keys and different
 /// content always yields different ones. A key is therefore a CONTENT GENERATION of a file, not a
 /// mark that the file has been seen: whether a given key is redundant is a question about the
@@ -109,7 +109,9 @@ pub struct IngestStats {
 /// file reverted to content it held earlier re-emits its whole batch even though every one of its
 /// keys is already in the log. This function owns only the walk and the keying; the sink decides
 /// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the
-/// caller.
+/// caller. A sink appends the file's batch in ONE store append and folds it in ONE graph
+/// transaction (via [`append_and_fold_batch`]) - the batched-fold cadence spec 49 needs, since the
+/// measured cold-build throughput was transaction-cadence bound.
 ///
 /// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two
 /// halves differ: the design half reads the live tree, while the code half reuses the `symbols`
@@ -120,45 +122,7 @@ pub struct IngestStats {
 ///
 /// The code half's per-file parse/lower fans across a default-sized worker pool (one worker per
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
-/// invisible. The returned [`IngestStats`] is informational; existing callers discard it and are
-/// unaffected.
-#[cfg(feature = "symbols")]
-pub fn ingest_project(root: &str, emit: impl FnMut(&str, &Event)) -> IngestStats {
-    ingest_project_paced(root, crate::parallel::default_workers(), emit)
-}
-
-/// [`ingest_project`] at a chosen parse width, emitting one event at a time. The code half (spec
-/// 29a) parses/lowers its files across up to `workers` threads yet EMITS them in the index's sorted
-/// file-path order, so the event sequence a caller's sink observes is byte-identical to a serial
-/// walk's regardless of scheduling (the rebuild-byte-identical discipline). `workers <= 1` runs the
-/// lowering inline: it IS the serial walk a wider walk is proven byte-identical against - the same
-/// code path, not a hand-rolled twin. The design half (spec 29b) stays serial; its walk lives in
-/// `design/events.rs`, whose scoping a separate unit owns, so parallelizing it here would fork that
-/// file.
-///
-/// This is the per-EVENT view of the one walk: it FLATTENS each file's keyed batch into one
-/// `emit(key, event)` per event, in `#i` order, so it is a thin adapter over
-/// [`ingest_project_batched_paced`] - not a second walk. A sink that appends and folds a file's
-/// whole batch as a UNIT (the batched-fold cadence, spec 49) uses the batched entry instead.
-#[cfg(feature = "symbols")]
-pub fn ingest_project_paced(
-    root: &str,
-    workers: usize,
-    mut emit: impl FnMut(&str, &Event),
-) -> IngestStats {
-    walk_batches(root, workers, |keyed| {
-        for (key, ev) in keyed {
-            emit(key, ev);
-        }
-    })
-}
-
-/// [`ingest_project`] handing a sink each file's WHOLE keyed batch at once (the whole file's events,
-/// each paired with its `<prefix>/<file>@<hash>#<i>` content key, in `#i` order) rather than one
-/// event at a time. A sink appends the file's batch in ONE store append and folds it in ONE graph
-/// transaction (via [`append_and_fold_batch`]) - the batched-fold cadence spec 49 needs, since the
-/// measured cold-build throughput was transaction-cadence bound. Same default parse width as
-/// [`ingest_project`]; the per-event walk is this same core flattened.
+/// invisible. The returned [`IngestStats`] is informational.
 #[cfg(feature = "symbols")]
 pub fn ingest_project_batched(
     root: &str,
@@ -167,10 +131,14 @@ pub fn ingest_project_batched(
     ingest_project_batched_paced(root, crate::parallel::default_workers(), on_batch)
 }
 
-/// [`ingest_project_batched`] at a chosen parse width - the batched analogue of
-/// [`ingest_project_paced`]. Parse width changes only the code half's parallelism (criterion 1),
-/// never the batching: the same files still emit as the same per-file batches, in sorted file-path
-/// order.
+/// [`ingest_project_batched`] at a chosen parse width. The code half (spec 29a) parses/lowers its
+/// files across up to `workers` threads yet EMITS them in the index's sorted file-path order, so
+/// the batch sequence a caller's sink observes is byte-identical to a serial walk's regardless of
+/// scheduling (the rebuild-byte-identical discipline). `workers <= 1` runs the lowering inline: it
+/// IS the serial walk a wider walk is proven byte-identical against - the same code path, not a
+/// hand-rolled twin. Parse width changes only the code half's parallelism (criterion 1), never the
+/// batching: the same files still emit as the same per-file batches. The design half (spec 29b)
+/// stays serial; its walk lives in `design/events.rs`.
 #[cfg(feature = "symbols")]
 pub fn ingest_project_batched_paced(
     root: &str,
@@ -180,11 +148,9 @@ pub fn ingest_project_batched_paced(
     walk_batches(root, workers, on_batch)
 }
 
-/// The ONE walk both public views share: parse/lower the project at `root` and hand each file's
-/// WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first, then the
-/// design half, then the workflow-definition half), each batch in `#i` order. The per-event
-/// [`ingest_project_paced`] and the per-batch [`ingest_project_batched_paced`] are both thin views
-/// over this, so there is no forked walk to drift - the emit order is defined once, here.
+/// The walk behind [`ingest_project_batched_paced`]: parse/lower the project at `root` and hand
+/// each file's WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first,
+/// then the design half, then the workflow-definition half), each batch in `#i` order.
 #[cfg(feature = "symbols")]
 fn walk_batches(
     root: &str,
@@ -442,17 +408,11 @@ pub fn is_derived_index_type(type_: &str) -> bool {
 /// BATCH IDENTITY - which file's batch this is - , the byte range of that batch's CONTENT
 /// GENERATION)`, both indexing `key`. `None` when the key is not that shape.
 ///
-/// This is THE parser of the form [`key_batch`] builds, and it is PUBLISHED because the format has
-/// more than one reader: the suppression predicate below cuts its identity and generation from it,
-/// and a composition root configuring a store's content-identity guard
-/// ([`crate::eventstore::ContentIdentity`], whose [`crate::eventstore::ContentKeySplit`] is exactly
-/// this signature) hands it in verbatim - [`derived_index_identity`] below does exactly that, so
-/// the sink rule, the storage guard and the compaction can never come to disagree about where a
-/// key's generation begins. A reader that re-spells the format instead is not a style problem: a
-/// hand-rolled copy of this split had drifted by one byte at the identity boundary while the
-/// assertion written to catch that drift stayed green over both spellings, because it only asked
-/// whether SOME split was found. The store still parses no key of its own - the split is
-/// configuration handed IN, and this is the module that owns the format to hand.
+/// This is THE parser of the form [`key_batch`] builds: the suppression predicate below cuts its
+/// identity and generation from it. A reader that re-spells the format instead is not a style
+/// problem: a hand-rolled copy of this split had drifted by one byte at the identity boundary while
+/// the assertion written to catch that drift stayed green over both spellings, because it only
+/// asked whether SOME split was found.
 ///
 /// The identity deliberately carries the `<prefix>` segment, so one file's code (`gc`) and design
 /// (`gd`) batches are two independent identities that never overwrite each other's generation -
@@ -462,14 +422,8 @@ pub fn is_derived_index_type(type_: &str) -> bool {
 /// authority actually guarantees. `<file>` may itself contain `/`, `@` or `#`, so the tail and the
 /// hash are split from the RIGHT.
 ///
-/// The identity range ends BEFORE the `@` that separates it from the generation, which is exactly
-/// the property a store's range seek rests on and no more: the identity STARTS the key and every
-/// key naming this batch begins with it, so "this batch's history" is one bounded prefix range. It
-/// is not self-delimiting, so that range is a SUPERSET - `gc/README`'s range also covers
-/// `gc/README.md@h#0` - and that is the store's own documented case rather than a defect introduced
-/// here: a foreign subject nested in the range is skipped WHOLE by its own range in one step, and a
-/// walk that runs out of steps answers "undetermined", which appends. The excess can only ever cost
-/// steps, never a drop.
+/// The identity range ends BEFORE the `@` that separates it from the generation: the identity
+/// STARTS the key and every key naming this batch begins with it.
 pub fn derived_key_spans(key: &str) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
     let (prefix, remainder) = key.split_once('/')?;
     if prefix.is_empty() {
@@ -499,34 +453,19 @@ pub(crate) fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
 }
 
 /// The derived index's CONTENT-IDENTITY POLICY as one value: the metadata key a derived event
-/// carries its content key under, the four types that carry content identity, where a key splits
-/// into subject and generation, and WHICH of those types re-assert a fact in place rather than
-/// superseding the subject's prior recording.
+/// carries its content key under, the four types that carry content identity, and WHICH of those
+/// types re-assert a fact in place rather than superseding the subject's prior recording.
 ///
 /// It exists so no consumer has to re-spell the policy as loose parameters. Every field of it is a
 /// per-type or per-key rule that a caller would otherwise pass positionally: two strings can be
 /// handed over in the wrong order, a list can drift apart one call site at a time, and neither
-/// says anything about where a generation lies inside a key or which recording's date the
-/// projection holds. One value, built HERE beside the key authority that builds the key form and
+/// says anything about which recording's date the projection holds. One value, built HERE beside the key authority that builds the key form and
 /// beside the fold facts the partition is derived from, is what keeps every consumer on one story.
 ///
-/// TODAY'S ONE CONSUMER is the compacting prune (`rigger reset --derived`). The store-level
-/// idempotency guard takes the same value - that is what `Store::with_content_identity` is for -
-/// but the composition root does not yet configure it on the production store, so this is written
-/// as the policy BOTH consumers take rather than as one two consumers are already taking. The
-/// carry partition it declares is what the prune needs; the guard reads only the key and type
-/// halves, so wiring it later adds a consumer and changes nothing here.
-///
-/// THAT "not yet" IS A RECORDED DECISION, NOT AN OVERSIGHT, and it is recorded on the event log
-/// where a peer can read it rather than only here: `d60c5r5-guard-wiring-is-superseded-out-of-
-/// spec-60-and-routed-by-name` supersedes `d60u4b-guard-is-configuration-and-this-criterion-does-
-/// not-wire-it`, which had made the wiring conditional on this accessor being public - it now is.
-/// The wiring is one line in `main`'s `resolve_store` (the write-path composition root, never the
-/// shared read-only-attach constructor), and it is routed to a follow-up spec because switching
-/// the guard on changes production append behavior for these four types across every command that
-/// resolves a store, which no criterion of spec 60 owns and no gate of this run measures.
+/// Its consumers are the compacting prune (`rigger reset --derived`) and the derived-duplication
+/// measurement.
 pub fn derived_index_identity() -> crate::eventstore::ContentIdentity {
-    crate::eventstore::ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES, derived_key_spans)
+    crate::eventstore::ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES)
         .with_reasserting_types(reasserted_derived_types())
 }
 
@@ -621,15 +560,9 @@ pub(crate) fn project_scoped_latest_generations(
     latest
 }
 
-/// The light lane compiles no extraction pass, so there is nothing to walk - a no-op that emits
-/// nothing. `graph build` still opens (creating) the store and degrades to an empty graph, never
-/// an error, exactly as the run's ingest is a no-op here.
-#[cfg(not(feature = "symbols"))]
-pub fn ingest_project(_root: &str, _emit: impl FnMut(&str, &crate::eventstore::Event)) {}
-
-/// The light lane's batched entry: no extraction pass, so nothing to walk - a no-op that hands the
-/// sink no batches. Mirrors the light-lane [`ingest_project`], so a cold `graph build` degrades to
-/// an empty graph in either lane (the batched append-and-fold kernel above stays compiled in both).
+/// The light lane compiles no extraction pass, so there is nothing to walk - a no-op that hands the
+/// sink no batches. `graph build` still opens (creating) the store and degrades to an empty graph,
+/// never an error, in either lane (the batched append-and-fold kernel above stays compiled in both).
 #[cfg(not(feature = "symbols"))]
 pub fn ingest_project_batched(
     _root: &str,
@@ -788,15 +721,16 @@ mod dedup_tests {
 
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
-    use super::{ingest_project_paced, IngestStats};
-    use crate::eventstore::Event;
+    use super::{ingest_project_batched_paced, IngestStats};
 
     /// Drive a walk at `workers` width and capture the exact `(key, type, data)` triples the sink
     /// sees, in emit order - the observable the byte-identical contract is defined over.
     fn walk(root: &str, workers: usize) -> (Vec<(String, String, Vec<u8>)>, IngestStats) {
         let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
-        let stats = ingest_project_paced(root, workers, |key, ev: &Event| {
-            seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
+        let stats = ingest_project_batched_paced(root, workers, |batch| {
+            for (key, ev) in batch {
+                seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
+            }
         });
         (seq, stats)
     }
@@ -956,10 +890,12 @@ mod tests {
         // Ingest at width 1 (scope is width-independent) and collect the FILE each emitted content
         // key names (`<prefix>/<file>@<hash>#<i>`).
         let mut files: BTreeSet<String> = BTreeSet::new();
-        ingest_project_paced(root.to_str().unwrap(), 1, |key, _ev: &Event| {
-            if let Some((_, rest)) = key.split_once('/') {
-                if let Some(file) = rest.split('@').next() {
-                    files.insert(file.to_string());
+        ingest_project_batched_paced(root.to_str().unwrap(), 1, |batch| {
+            for (key, _ev) in batch {
+                if let Some((_, rest)) = key.split_once('/') {
+                    if let Some(file) = rest.split('@').next() {
+                        files.insert(file.to_string());
+                    }
                 }
             }
         });

@@ -17,7 +17,7 @@
 //!    index matches the pre-86 wire shape, and no unit test anywhere loads a hand-authored legacy
 //!    fixture missing the key. Parser-free, so this section runs in BOTH feature lanes.
 //!  - the exclusion rule's Done-when, driven end to end through the crate's PUBLIC API
-//!    (`build_index` -> `index_events` -> `Projector`) from OUTSIDE the crate: after ingesting a
+//!    (`project_batches` -> `Projector`) from OUTSIDE the crate: after ingesting a
 //!    fixture with product code, a `tests/` file, a `#[cfg(test)]` module and `#[test]`
 //!    functions, the graph holds a code-entity node for every product item and none for any test
 //!    item, and the `tests/` file carries no file container node at all - the concrete mechanism
@@ -35,7 +35,7 @@
 //!    product code-entity nodes. The implementer's own `extract.rs` unit test
 //!    (`negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test`) proves this at the
 //!    `FileSymbols` level, inside the crate; this test proves the SAME contract at the periphery,
-//!    end to end through `build_index` -> `index_events` -> `Projector`, so the guarantee that a
+//!    end to end through `project_batches` -> `Projector`, so the guarantee that a
 //!    dual-cfg mock's product half is never dropped does not rest on the author's own judgment.
 //!  - the round-3 fix for round 2's own recurrence (review REJECT `adj-u86c1-verdict-reject`
 //!    round 2, findings `arch-u86c1-r2-compound-not-predicate-still-marks-product-code-test` /
@@ -64,7 +64,7 @@
 //!    implementer's own `extract.rs` unit test
 //!    (`an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children`)
 //!    proves this at the `FileSymbols` level; this test proves the SAME contract at the
-//!    periphery, end to end through `build_index` -> `index_events` -> `Projector`.
+//!    periphery, end to end through `project_batches` -> `Projector`.
 //!  - the rest of `op-u86c1-r5-close-every-remaining-test-shape` (amending
 //!    `op-u86c1-r4-structural-attribute-walk-is-the-only-remedy`), which mandates round 5 close
 //!    every remaining test-shape item in one round, not one per round. Item 1 (the inner-attribute
@@ -88,6 +88,8 @@
 //!    `macro_definition`, plus the non-tagged `use_declaration`/`const_item`/`static_item`) are
 //!    verified ALREADY correct - the sibling walk is kind-agnostic by construction - and PASS
 //!    (`cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api`).
+
+mod common;
 
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use rigger::grounder::symbols::store;
@@ -653,8 +655,6 @@ const OUTSIDE_IN_TEST_SRC: &str =
 fn ingesting_product_and_test_code_through_the_public_api_graphs_only_the_product() {
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::{Projection, KIND_CODE_ENTITY, REL_CONTAINS, REL_REFERENCES};
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
     use std::collections::BTreeSet;
 
     let root = tempfile::tempdir().unwrap();
@@ -663,8 +663,7 @@ fn ingesting_product_and_test_code_through_the_public_api_graphs_only_the_produc
     std::fs::create_dir(&tests_dir).unwrap();
     std::fs::write(tests_dir.join("widget_periphery.rs"), OUTSIDE_IN_TEST_SRC).unwrap();
 
-    let idx = build_index(root.path().to_str().unwrap(), None);
-    let mut events = index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -764,8 +763,7 @@ fn cfg_not_test_and_cfg_attr_predicates_graph_as_product_through_the_public_api(
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("cfgpred.rs"), CFG_PREDICATE_SRC).unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -824,8 +822,7 @@ fn a_not_wrapping_a_non_test_atom_graphs_as_product_through_the_public_api() {
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -866,8 +863,7 @@ fn a_double_negation_of_test_excludes_the_item_through_the_public_api() {
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -917,8 +913,7 @@ fn compound_cfg_predicates_graph_as_product_through_the_public_api() {
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -974,8 +969,7 @@ fn a_trailing_comment_on_cfg_test_still_excludes_the_module_through_the_public_a
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1036,8 +1030,7 @@ fn a_url_bearing_attribute_between_test_and_the_item_does_not_leak_the_item_into
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("urlattr.rs"), URL_BEARING_ATTRIBUTE_SRC).unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1097,8 +1090,7 @@ fn a_multiline_cfg_test_attribute_still_excludes_the_module_through_the_public_a
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("multiline.rs"), MULTILINE_CFG_TEST_SRC).unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1156,8 +1148,7 @@ fn a_comment_mentioning_test_attribute_text_does_not_exclude_the_item_through_th
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1228,8 +1219,7 @@ fn a_trailing_comma_in_a_wrapped_cfg_predicate_still_excludes_the_module_through
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1299,8 +1289,7 @@ fn an_inner_cfg_test_attribute_excludes_its_module_through_the_public_api() {
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1383,8 +1372,7 @@ fn an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through
     std::fs::write(root.path().join("lib.rs"), PARENT_SRC).unwrap();
     std::fs::write(root.path().join("contract.rs"), OUT_OF_LINE_CHILD_SRC).unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1455,8 +1443,7 @@ fn an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sib
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1515,8 +1502,7 @@ fn an_out_of_line_test_mod_declaration_naming_no_real_file_neither_panics_nor_ex
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1549,7 +1535,7 @@ fn an_out_of_line_test_mod_declaration_naming_no_real_file_neither_panics_nor_ex
     assert_eq!(unrelated.kind, KIND_CODE_ENTITY);
 }
 
-/// sdet-author gap: every out-of-line-resolution test above drives `index_events`. The mandate
+/// sdet-author gap: the out-of-line-resolution tests above read the flattened event list. The mandate
 /// (`op-u86c1-r5-close-every-remaining-test-shape` item 2, quoted in this file's own module doc)
 /// names TWO production entry points needing the fix - `events.rs`'s `is_under_tests_dir` /
 /// `project_batches` - and `project_batches` is the ACTUAL entry point a live run drives
@@ -1557,7 +1543,7 @@ fn an_out_of_line_test_mod_declaration_naming_no_real_file_neither_panics_nor_ex
 /// `out_of_line_test_module_files` is computed and applied at BOTH call sites independently (two
 /// inline `.filter(|(path, _)| !excluded.contains(...))` sites over the SAME shared helper, per
 /// `events.rs`'s own source), so nothing so far proves `project_batches`'s OWN copy of that wiring
-/// is correct rather than merely the `index_events` one exercised everywhere else in this file.
+/// is correct per batch rather than only in the flattened list exercised everywhere else here.
 #[cfg(feature = "symbols")]
 #[test]
 fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_file() {
@@ -1594,7 +1580,7 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
             panic!(
                 "project_batches (the entry point a live run actually drives, spec 29c) must \
                      still contribute the out-of-line-excluded file's own boundary-sentinel \
-                     batch, not merely index_events's own copy of the same routing; files: \
+                     batch; files: \
                      {files:?}"
             )
         });
@@ -1687,8 +1673,7 @@ fn a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidenta
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1789,8 +1774,12 @@ fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exc
         "host/excluded_file/victim.rs".into(),
         one_def_file(Kind::Function, "victim_fn", false, false),
     );
+    // The production ingest reads the persisted index, so persist this hand-built one.
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().to_str().unwrap();
+    store::save(&idx, root).unwrap();
 
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root);
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1867,8 +1856,7 @@ fn a_cfg_test_impl_block_excludes_its_methods_through_the_public_api() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("widgetimpl.rs"), CFG_TEST_IMPL_SRC).unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -1956,8 +1944,7 @@ fn a_cfg_test_impl_block_using_the_inner_attribute_form_excludes_its_methods_thr
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("innerimpl.rs"), INNER_ATTR_IMPL_SRC).unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2040,8 +2027,7 @@ fn cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("kinds.rs"), OTHER_ITEM_KINDS_SRC).unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2127,8 +2113,7 @@ fn an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_c
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2201,8 +2186,7 @@ fn an_out_of_line_test_mod_declaration_falls_back_to_a_nested_mod_rs_when_no_fla
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2284,8 +2268,7 @@ fn a_path_attribute_override_redirects_out_of_line_resolution_through_the_public
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2368,8 +2351,7 @@ fn an_out_of_line_test_module_files_own_out_of_line_declarations_are_excluded_re
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2510,8 +2492,7 @@ fn an_out_of_line_test_mod_declaration_falls_back_to_a_root_level_nested_mod_rs_
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2592,8 +2573,7 @@ fn a_path_attribute_override_resolves_relative_to_a_declaring_files_own_subdirec
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2684,8 +2664,7 @@ fn a_path_attribute_override_that_walks_upward_with_dotdot_still_excludes_its_ta
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2750,8 +2729,7 @@ fn a_path_attribute_override_with_an_explicit_dot_slash_prefix_still_resolves_to
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2819,8 +2797,7 @@ fn a_path_attribute_override_with_chained_dotdot_walks_up_every_popped_level() {
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2896,8 +2873,7 @@ fn a_path_attribute_override_whose_dotdot_count_overflows_the_declaring_director
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -2985,8 +2961,7 @@ fn a_path_attribute_override_nested_inside_an_inline_module_resolves_under_the_d
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -3103,8 +3078,7 @@ fn a_path_attribute_override_nested_inside_chained_inline_modules_resolves_under
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -3186,8 +3160,7 @@ fn a_path_attribute_override_that_is_an_absolute_path_does_not_silently_collide_
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -3258,8 +3231,7 @@ fn a_path_attribute_override_naming_a_uri_scheme_does_not_silently_collide_with_
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -3326,8 +3298,7 @@ fn a_path_attribute_override_naming_a_windows_drive_letter_does_not_silently_col
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
@@ -3410,8 +3381,7 @@ fn a_path_attribute_override_on_a_mod_declared_inside_a_function_body_is_not_tre
     )
     .unwrap();
 
-    let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
-    let mut events = rigger::grounder::symbols::events::index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;

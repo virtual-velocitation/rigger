@@ -7,7 +7,7 @@
 //!  - the parallel primitive and the ingest entry points are actually EXPORTED and behave when
 //!    driven as an external consumer would drive them (an item that were accidentally `pub(crate)`
 //!    would still pass every in-crate test yet be unreachable here);
-//!  - the DEFAULT-width public entry `ingest_project` - the one the production sinks call, which
+//!  - the DEFAULT-width public entry `ingest_project_batched` - the one the production sinks call, which
 //!    picks the machine's core count via `default_workers()` and which no unit test drives - emits
 //!    the byte-identical sequence a serial walk would;
 //!  - the `project_batches_paced` grounder boundary is width-invariant and its output still equals
@@ -70,8 +70,10 @@ fn map_ordered_public_boundary_preserves_order_visits_once_and_fans_out() {
 #[cfg(feature = "symbols")]
 fn drive_default(root: &str) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
     let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
-    let stats = rigger::ingest::ingest_project(root, |key, ev| {
-        seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
+    let stats = rigger::ingest::ingest_project_batched(root, |batch| {
+        for (key, ev) in batch {
+            seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
+        }
     });
     (seq, stats)
 }
@@ -82,8 +84,10 @@ fn drive_paced(
     workers: usize,
 ) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
     let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
-    let stats = rigger::ingest::ingest_project_paced(root, workers, |key, ev| {
-        seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
+    let stats = rigger::ingest::ingest_project_batched_paced(root, workers, |batch| {
+        for (key, ev) in batch {
+            seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
+        }
     });
     (seq, stats)
 }
@@ -103,11 +107,11 @@ fn multi_file_fixture(n: usize) -> tempfile::TempDir {
     dir
 }
 
-/// The DEFAULT-width public entry `ingest_project` is what the production sinks (`main.rs`
+/// The DEFAULT-width public entry `ingest_project_batched` is what the production sinks (`main.rs`
 /// cmd_graph_build, `conductor.rs` ingest_project_batches) actually call, and it is what picks the
 /// machine's core count through `default_workers()`. The inside-out criterion-1 test drives only the
 /// PACED variant at a fixed width, so nothing pins the default entry. This proves it at the crate
-/// boundary: its emit is byte-identical to the serial oracle (`ingest_project_paced(root, 1)`), its
+/// boundary: its emit is byte-identical to the serial oracle (`ingest_project_batched_paced(root, 1)`), its
 /// engagement matches a paced walk at `default_workers()` width (so the default-width authority seam
 /// is honored), and on a multi-core host it genuinely fans out.
 #[cfg(feature = "symbols")]
@@ -136,11 +140,11 @@ fn ingest_project_default_entry_is_byte_identical_to_the_serial_oracle() {
     // copy of the policy.
     assert_eq!(
         default_seq, paced_default_seq,
-        "ingest_project == ingest_project_paced(root, default_workers()) as a full sequence"
+        "ingest_project_batched == ingest_project_batched_paced(root, default_workers()) as a full sequence"
     );
     assert_eq!(
         default_stats, paced_default_stats,
-        "ingest_project's stats match a paced walk at the default width (the default-width authority \
+        "ingest_project_batched's stats match a paced walk at the default width (the default-width authority \
          seam is honored)"
     );
 

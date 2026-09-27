@@ -2149,14 +2149,14 @@ mod tests {
     }
 
     /// A well-formed `SpawnRequested` event for `id`, recorded at `secs`. Rebuilds `id`'s
-    /// unit/role/attempt coordinates via [`SpawnRequest::new`] (the same deterministic
+    /// unit/role/attempt coordinates via `crate::spawn::test_request` (the same deterministic
     /// [`crate::spawn::spawn_id`] construction production code uses) so the event's `id`
     /// matches exactly; `stage`/`prompt` are irrelevant to the timing fold, so placeholders.
     fn spawn_requested(id: &str, secs: u64) -> Event {
         let unit = crate::spawn::unit_of(id).unwrap_or(id);
         let role = crate::spawn::spawn_role(id);
         let attempt = crate::spawn::attempt_of(id);
-        let req = SpawnRequest::new(unit, "s", role, attempt, "p");
+        let req = crate::spawn::test_request(unit, "s", role, attempt, "p");
         debug_assert_eq!(req.id, id, "helper must reproduce the exact spawn id");
         let mut e = req.to_event().unwrap();
         e.recorded_at = at(secs);

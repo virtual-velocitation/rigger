@@ -48,6 +48,8 @@
 //!   shape via the `rigger result <id>` positional's own lack of format validation and is
 //!   exactly what the round 3/5/7 regression tests in `tests/cli.rs` already close end to end.
 
+mod common;
+
 use std::io::Cursor;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -59,7 +61,6 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision, Filter};
 use rigger::mcpserver::Server;
 use rigger::sidecar::Sidecar;
-use rigger::spawn::SpawnRequest;
 
 /// Plant a real marker file at `path`, backdated by `secs_ago` seconds - mirrors `tests/cli.rs`'s
 /// `plant_stale_marker`, generalized to an arbitrary (non-stale) age so the test can assert the
@@ -102,7 +103,7 @@ fn rigger_activity_reports_a_real_markers_liveness_age_over_a_non_empty_scratch_
             &[Event::new("UnitStarted", b"{\"id\":\"u\"}".to_vec())],
         )
         .unwrap();
-    let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+    let req = common::spawn_request("u", "u", "implementer", 0, "do it");
     store
         .append("run", ExpectedRevision::Any, &[req.to_event().unwrap()])
         .unwrap();
@@ -174,7 +175,7 @@ fn rigger_activity_omits_liveness_age_when_no_marker_file_exists_yet() {
             &[Event::new("UnitStarted", b"{\"id\":\"u\"}".to_vec())],
         )
         .unwrap();
-    let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+    let req = common::spawn_request("u", "u", "implementer", 0, "do it");
     store
         .append("run", ExpectedRevision::Any, &[req.to_event().unwrap()])
         .unwrap();

@@ -314,14 +314,10 @@ fn count_derived_duplicates_needs_no_reasserting_declaration_unlike_the_prune_it
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .unwrap();
 
-    // The SAME meta key / covered types / split as the shipped policy, with the valid-time
+    // The SAME meta key / covered types as the shipped policy, with the valid-time
     // partition simply never declared.
     let shipped = rigger::ingest::derived_index_identity();
-    let undeclared = ContentIdentity::new(
-        shipped.meta_key().to_string(),
-        shipped.types().to_vec(),
-        shipped.split(),
-    );
+    let undeclared = ContentIdentity::new(shipped.meta_key().to_string(), shipped.types().to_vec());
     assert!(
         undeclared.reasserting().is_none(),
         "the fixture must actually be undeclared, or this test proves nothing"

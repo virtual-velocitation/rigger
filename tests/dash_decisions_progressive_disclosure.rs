@@ -4,7 +4,7 @@
 //! reasoning, so a multi-KB decision collapses to one line but expands whole (the dash charter: no
 //! framework, no inline multi-KB dumps).
 //!
-//! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve`), and
+//! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve_on`), and
 //! crosses the REAL loopback HTTP socket the operator's browser actually hits. The implementer's
 //! inside-out unit test in `dash.rs` greps `live_page()` IN-PROCESS: it is structurally blind to
 //! the serve path (the `route` dispatch of `GET /` -> `Response::html(200, live_page())` and the

@@ -18,10 +18,8 @@
 //!    DEFAULT `apply_batch` - the backend-agnostic contract any other `Projection` inherits - is
 //!    tested nowhere. A backend with no cheaper batch path must still fold every event through
 //!    `apply`, in order, short-circuiting on the first error;
-//!  - the criterion-1 periphery suite drives only the PER-EVENT `ingest_project`; the new BATCHED
-//!    public entries (`ingest_project_batched` / `_paced`) are driven nowhere, so nothing pins that a
-//!    file arrives as ONE whole keyed batch and that flattening the batched walk is byte-identical to
-//!    the per-event walk it is a thin view over.
+//!  - nothing else pins that the public ingest entries (`ingest_project_batched` / `_paced`) hand a
+//!    file over as ONE whole keyed batch.
 //!
 //! `append_and_fold_batch`, the trait method, and the sqlite/eventstore backends are all compiled
 //! UNCONDITIONALLY, so the append/fold/default-contract tests are UNGATED and run in BOTH feature
@@ -369,16 +367,14 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     );
 }
 
-/// The new BATCHED public entry `ingest_project_batched` hands the sink each file's WHOLE keyed
-/// batch at once, and flattening that walk is byte-identical to the PER-EVENT `ingest_project` it is
-/// a thin view over. The criterion-1 periphery suite drives only the per-event entry, so nothing
-/// else pins the batched entry: that a file arrives as ONE `on_batch` call carrying all its events,
+/// The BATCHED public entry `ingest_project_batched` hands the sink each file's WHOLE keyed
+/// batch at once: that a file arrives as ONE `on_batch` call carrying all its events,
 /// that the keys of a batch share one `<prefix>/<file>@<hash>` and enumerate `#0,#1,...`, that
 /// batches arrive in sorted file-path order, and that the batching is width-invariant (parse width
 /// changes only criterion 1's parallelism, never the per-file batching).
 #[cfg(feature = "symbols")]
 #[test]
-fn ingest_project_batched_hands_whole_file_batches_and_flattens_to_the_per_event_walk() {
+fn ingest_project_batched_hands_whole_file_batches() {
     use std::collections::BTreeSet;
 
     // Each file carries a def AND a reference to it, so its batch is MULTI-EVENT (a
@@ -406,23 +402,9 @@ fn ingest_project_batched_hands_whole_file_batches_and_flattens_to_the_per_event
     let mut batches: Vec<Vec<Triple>> = Vec::new();
     let bstats = rigger::ingest::ingest_project_batched(root, |keyed| batches.push(triples(keyed)));
 
-    // Drive the PER-EVENT public entry over the same tree.
-    let mut per_event: Vec<Triple> = Vec::new();
-    let pstats = rigger::ingest::ingest_project(root, |k, ev| {
-        per_event.push((k.to_string(), ev.type_.clone(), ev.data.clone()));
-    });
-
     assert!(
         !batches.is_empty(),
         "the four-file fixture yields code-ingest batches"
-    );
-
-    // The batched walk is the SAME walk the per-event view flattens.
-    let flattened: Vec<Triple> = batches.iter().flatten().cloned().collect();
-    assert_eq!(
-        flattened, per_event,
-        "ingest_project_batched flattened == ingest_project: same keys, types, and payload bytes, \
-         in the same order"
     );
 
     // One on_batch call PER FILE, and at least one file's batch is multi-event (a def + its
@@ -431,10 +413,6 @@ fn ingest_project_batched_hands_whole_file_batches_and_flattens_to_the_per_event
         batches.len(),
         bstats.batches_emitted,
         "ingest_project_batched calls on_batch exactly once per file batch"
-    );
-    assert_eq!(
-        bstats.batches_emitted, pstats.batches_emitted,
-        "the batched and per-event walks emit the same number of file batches"
     );
     assert!(
         batches.iter().any(|b| b.len() >= 2),
@@ -491,9 +469,8 @@ fn ingest_project_batched_hands_whole_file_batches_and_flattens_to_the_per_event
 }
 
 /// The light lane compiles no extraction pass, so its `ingest_project_batched` is a no-op that hands
-/// the sink NO batches - the batched analogue of the light-lane `ingest_project`, and what lets a
-/// cold `graph build` degrade to an empty graph in the light lane. Pinned directly at the public
-/// boundary in that lane.
+/// the sink NO batches - what lets a cold `graph build` degrade to an empty graph in the light
+/// lane. Pinned directly at the public boundary in that lane.
 #[cfg(not(feature = "symbols"))]
 #[test]
 fn light_lane_ingest_project_batched_hands_no_batches() {

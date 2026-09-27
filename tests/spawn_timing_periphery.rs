@@ -20,7 +20,7 @@
 //!  - THE WRITER -> STORE -> READER WIRE FORM. The unit tests never persist a `SpawnRequest`/
 //!    `SpawnResult` anywhere: they hand-set `Event.recorded_at` directly on an in-memory
 //!    value. This test builds the SAME events through the real writer path
-//!    (`SpawnRequest::new(..).to_event()` / `SpawnResult::ok(..).to_event()`), APPENDS them to
+//!    (`common::spawn_request(..).to_event()` / `SpawnResult::ok(..).to_event()`), APPENDS them to
 //!    a real `eventstore::sqlite::Store` (the real BLOB/INTEGER/TEXT columns, the real
 //!    store-STAMPED `recorded_at` clock - not a caller-set value), reads them back, and folds
 //!    the READ-BACK events - proving the SQLite round trip the pairing fold depends on in
@@ -54,12 +54,14 @@
 //! `metrics` and `eventstore::sqlite` are not feature-gated, so every test here runs
 //! identically on both the default and the `--no-default-features` lane.
 
+mod common;
+
 use std::time::Duration;
 
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore, ExpectedRevision};
 use rigger::metrics::{project, Metrics, SpawnTiming};
-use rigger::spawn::{SpawnRequest, SpawnResult};
+use rigger::spawn::SpawnResult;
 
 /// `SpawnTiming`'s two fields and `mean()` are constructible and computed exactly as
 /// documented, entirely from OUTSIDE the crate - the public-API half of spec 61 c9's surface.
@@ -106,9 +108,9 @@ fn spawn_timing_pairs_real_writer_events_through_a_real_store_by_role() {
     let db = dir.path().join("events.db");
     let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
 
-    let implementer_req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
-    let adversary_req = SpawnRequest::new("u2", "review", "adversary", 0, "review it");
-    let dead_req = SpawnRequest::new("u3", "impl", "implementer", 1, "never answered");
+    let implementer_req = common::spawn_request("u1", "impl", "implementer", 0, "do it");
+    let adversary_req = common::spawn_request("u2", "review", "adversary", 0, "review it");
+    let dead_req = common::spawn_request("u3", "impl", "implementer", 1, "never answered");
 
     store
         .append(
@@ -208,7 +210,7 @@ fn spawn_timing_never_pairs_a_request_and_result_from_different_run_windows() {
     };
     // The SAME textual spawn id is reused in both windows - a re-proposed/relaunched unit
     // reusing its auto-slugged id, the realistic collision this fix closes.
-    let req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+    let req = common::spawn_request("u1", "impl", "implementer", 0, "do it");
 
     // Window 1: parked, but never answered before window 2 begins.
     store
@@ -282,8 +284,8 @@ fn spawn_timing_excludes_a_real_same_batch_pair_as_suspect_not_a_silent_zero() {
     let db = dir.path().join("events.db");
     let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
 
-    let same_batch = SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
-    let genuine = SpawnRequest::new("u2", "impl", "implementer", 0, "genuine");
+    let same_batch = common::spawn_request("u1", "impl", "implementer", 0, "same batch");
+    let genuine = common::spawn_request("u2", "impl", "implementer", 0, "genuine");
 
     store
         .append(

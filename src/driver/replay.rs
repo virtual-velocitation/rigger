@@ -856,9 +856,10 @@ mod tests {
         // remediation), and appends no duplicate request.
         let store = Store::open(":memory:").unwrap();
         // The spawn was parked, then a liveness fault was recorded on it.
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"),
+            &crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 0, "task"),
+            "",
         )
         .unwrap();
         spawn_store::record_result(
@@ -903,9 +904,10 @@ mod tests {
         // hung agent PROCESS is infrastructure regardless of the label, so the unit is never
         // charged. This pins the corrected module doc (class is a label, treatment is uniform).
         let store = Store::open(":memory:").unwrap();
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"),
+            &crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 0, "task"),
+            "",
         )
         .unwrap();
         spawn_store::record_result(
@@ -1436,8 +1438,9 @@ mod tests {
         // begin the run before parking it - otherwise it sits before the boundary and the
         // cross-step budget fold never counts it.
         crate::run_store::ensure_started(&store, &[]).unwrap();
-        let prior = SpawnRequest::new("earlier", "earlier", ROLE_IMPLEMENTER, 0, "prior work");
-        spawn_store::park(&store, &prior).unwrap();
+        let prior =
+            crate::spawn::test_request("earlier", "earlier", ROLE_IMPLEMENTER, 0, "prior work");
+        spawn_store::park_in_run(&store, &prior, "").unwrap();
         spawn_store::record_result(&store, &spawn::SpawnResult::ok(&prior.id, "done")).unwrap();
 
         let mut cfg = config_with(vec![stage("u", "worker")]);
@@ -1979,9 +1982,10 @@ mod tests {
         // native courier's `rigger emit --spawn <id>`), then reported a substantive result
         // with NO verdict line. Seeded in that exact order (park < emit < result).
         let adj_id = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            &crate::spawn::test_request("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            "",
         )
         .unwrap();
         let approve = crate::eventstore::Event::new(
@@ -2075,9 +2079,10 @@ mod tests {
 
         // `u`'s adjudicator PARKS - the LOWER bracket of its window.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            &crate::spawn::test_request("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            "",
         )
         .unwrap();
 
@@ -2087,9 +2092,10 @@ mod tests {
         // park, u_adj result]. This is exactly the interleaving the shared store produces under
         // the parallel fan-out; the stamp is what keeps it the sibling's, not the position.
         let v_adj = spawn_id("v", ROLE_ADJUDICATOR, 0);
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("v", "v", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            &crate::spawn::test_request("v", "v", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            "",
         )
         .unwrap();
         let sibling_approve = crate::eventstore::Event::new(
@@ -2172,9 +2178,10 @@ mod tests {
 
         // `u`'s adjudicator PARKS.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            &crate::spawn::test_request("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            "",
         )
         .unwrap();
 
@@ -2182,9 +2189,10 @@ mod tests {
         // answered (result=None) - it emitted NOTHING. This is the parked-unanswered sibling
         // the adversary proved suppressed the backstop under the old is_none_or bracket; under
         // stamp attribution its window is simply irrelevant.
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
+            &crate::spawn::test_request("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
+            "",
         )
         .unwrap();
 
@@ -2272,18 +2280,20 @@ mod tests {
 
         // `u`'s adjudicator PARKS.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            &crate::spawn::test_request("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+            "",
         )
         .unwrap();
 
         // A CONCURRENT SIBLING unit `v`'s implementer PARKS below `u`'s coming approve (the LOWER
         // edge of a window that will OVERLAP it).
         let v_impl = spawn_id("v", ROLE_IMPLEMENTER, 0);
-        spawn_store::park(
+        spawn_store::park_in_run(
             &store,
-            &spawn::SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
+            &crate::spawn::test_request("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
+            "",
         )
         .unwrap();
 

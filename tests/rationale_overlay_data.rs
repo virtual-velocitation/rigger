@@ -3,7 +3,7 @@
 //! findings, and lessons attached to each requested node - CONTENT only, deterministically ordered,
 //! and only for the visible nodes that carry any. This criterion OWNS the overlay data.
 //!
-//! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve`), and crosses
+//! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve_on`), and crosses
 //! the REAL loopback HTTP socket the operator's browser actually hits. The implementer's inside-out
 //! unit tests in `dash.rs` (`mod rationale_overlay_c3`) call the pure `node_rationale` /
 //! `rationale_batch` / `route` IN-PROCESS: they are structurally blind to the serve path (the `route`
