@@ -52,42 +52,11 @@
 mod common;
 
 use common::fixtures::apply_ref;
+use common::fixtures::{apply_call, apply_def};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     CallGraph, Direction, Projection, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
 };
-use rigger::eventstore::Event;
-
-/// Fold a code DEFINITION (`file` defines the function `name` at `line`) from its raw on-log JSON at
-/// `pos`. `fresh` marks the FIRST event of a file's extraction batch (it supersedes the file's prior
-/// structural edges before folding). A successful `apply` is itself evidence the payload folded -
-/// `apply` returns `Err` on a fold failure.
-fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool) {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-        "fresh": fresh,
-    });
-    let mut e = Event::new(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&payload).unwrap(),
-    );
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// Fold a CALLER-ATTRIBUTED reference (spec 37): `file` references `name` from inside the enclosing
-/// definition `caller` - exactly the event the emit pass produces for a call in a function body,
-/// which the fold turns into `<file>::<caller> --CALLS--> <target>`. Built from raw JSON so the test
-/// pins the on-log contract, not the Rust payload type.
-fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "lang": "rust", "caller": caller,
-    });
-    let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
 
 /// The reached node ids of a `CallGraph`, sorted, for a stable membership assertion.
 fn node_ids(cg: &CallGraph) -> Vec<String> {

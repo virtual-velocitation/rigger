@@ -30,9 +30,8 @@ use rigger::contextgraph::{
     TIER_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
 };
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_json;
+mod common;
+use common::fixtures::apply_json;
 
 /// The kind of the node with `id` in `g`, if it folded at all.
 fn kind_of<'g>(g: &'g Graph, id: &str) -> Option<&'g str> {

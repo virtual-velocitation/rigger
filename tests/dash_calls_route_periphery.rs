@@ -46,13 +46,13 @@ use std::time::{Duration, Instant};
 
 use common::fixtures::calls_edge;
 use common::fixtures::plain;
+use common::fixtures::{apply_call, apply_def};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     CallGraph, CallNode, Direction, Edge, Graph, Projection, KIND_CODE_ENTITY, KIND_FILE,
-    REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs, DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH};
-use rigger::eventstore::Event;
 
 // ---------------------------------------------------------------------------
 // Constructors for the hand-built CallGraph a controlled provider returns. Every field is public, so
@@ -711,30 +711,6 @@ fn a_calls_view_response_carries_no_memory_rail_field() {
 // the controlled-provider tests (and the implementer's in-process unit tests) stub out.
 // ===========================================================================
 
-/// Fold a code DEFINITION (`file` defines `name`) from its raw on-log JSON - the wire form the always
-/// compiled fold reads, deliberately not an in-crate payload struct.
-fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust", "fresh": true,
-    });
-    let mut e = Event::new(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&payload).unwrap(),
-    );
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// Fold a CALLER-ATTRIBUTED reference (spec 37): `file`'s `caller` calls `name`, folded into
-/// `<file>::<caller> --CALLS--> <target>`.
-fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
-    let payload =
-        serde_json::json!({ "file": file, "name": name, "lang": "rust", "caller": caller });
-    let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
 #[test]
 fn the_served_calls_route_walks_the_real_projection_over_the_wire() {
     // A real graph.db from code ingest alone: b.rs::caller calls callee, DEFINED cross-file in a.rs.
@@ -743,8 +719,8 @@ fn the_served_calls_route_walks_the_real_projection_over_the_wire() {
     let identity = "callsroute";
     {
         let p = Projector::open(&graph_db, identity).unwrap();
-        apply_def(&p, 1, "src/a.rs", "callee", 1);
-        apply_def(&p, 2, "src/b.rs", "caller", 1);
+        apply_def(&p, 1, "src/a.rs", "callee", 1, true);
+        apply_def(&p, 2, "src/b.rs", "caller", 1, true);
         apply_call(&p, 3, "src/b.rs", "callee", "caller");
     }
 

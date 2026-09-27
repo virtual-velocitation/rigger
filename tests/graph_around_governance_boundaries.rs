@@ -25,8 +25,7 @@
 //!   `GOVERNS`/`ABOUT` edge) lets that inherited freshness rank the stale decision as if newest.
 
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
+use rigger::contextgraph::Projection;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
@@ -36,18 +35,7 @@ use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_store;
 use common::cli::temp_project;
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event directly (the ALWAYS-compiled fold), exactly as
-/// `graph_show_surface.rs` / `graph_around_code_first.rs` seed - feature-lane independent.
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"rust"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use common::fixtures::apply_code_entity;
 
 /// The bare ids from every `node <id> <kind>` line of a `rigger graph --around` transcript,
 /// parsed exactly (never substring-matched).
@@ -91,7 +79,7 @@ fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "solo", "function", 1);
+        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
@@ -123,7 +111,7 @@ fn around_shows_exactly_ten_with_no_trailing_count_at_the_cap_boundary() {
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "solo", "function", 1);
+        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
     }
 
     // Exactly AROUND_GOVERNANCE_CAP (10) governing items - the boundary itself, distinct from
@@ -168,7 +156,7 @@ fn around_never_prints_a_governs_or_about_edge_even_though_subgraph_returns_it()
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "guarded", "function", 1);
+        apply_code_entity(&p, 100_001, file, "guarded", "function", 1, "rust");
     }
 
     let payload =
@@ -241,7 +229,7 @@ fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_c
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "solo", "function", 1);
+        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
     }
 
     // d1: the OLDEST decision, governing `file` - about to be superseded.

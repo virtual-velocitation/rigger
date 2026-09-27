@@ -18,8 +18,6 @@
 //! signal under test - never a wall clock, which no node carries.
 
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
@@ -29,18 +27,7 @@ use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_store;
 use common::cli::temp_project;
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event directly (the ALWAYS-compiled fold), exactly as
-/// `graph_show_surface.rs` seeds - feature-lane independent, no `symbols` extractor required.
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"rust"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use common::fixtures::apply_code_entity;
 
 /// The `node <id> <kind>` lines of a `rigger graph --around` transcript, in the ORDER they
 /// printed (their 0-based line index) - parsed exactly, never substring-matched, so "code first,
@@ -72,8 +59,8 @@ fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() 
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "alpha", "function", 1);
-        seed_def(&p, 100_002, file, "beta", "function", 5);
+        apply_code_entity(&p, 100_001, file, "alpha", "function", 1, "rust");
+        apply_code_entity(&p, 100_002, file, "beta", "function", 5, "rust");
     }
 
     // THIRTEEN governing decisions/findings about the same file, through the REAL `rigger emit`

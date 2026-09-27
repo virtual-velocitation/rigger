@@ -39,6 +39,7 @@ use rigger::ingest::append_and_fold_batch;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::fixtures::{call_json, code_entity_json, event_of};
 #[path = "common/layer_cli.rs"]
 mod layer_cli;
 use layer_cli::{member_of, rigger_db, LayerCli};
@@ -53,12 +54,9 @@ const IDENTITY: &str = "commtest";
 /// `<file>::<name>` entity node (its `name` attr marks it a real definition - the canonicalization
 /// target), and their `CONTAINS` edge. The coupling structure detection runs over.
 fn def(file: &str, name: &str) -> Event {
-    Event::new(
+    event_of(
         TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&serde_json::json!({
-            "file": file, "name": name, "kind": "function", "line": 1, "lang": "rust"
-        }))
-        .unwrap(),
+        code_entity_json(file, name, "function", 1, "rust"),
     )
 }
 
@@ -66,13 +64,7 @@ fn def(file: &str, name: &str) -> Event {
 /// on a BARE same-file placeholder the detection pass resolves by unique name-suffix when `name` is
 /// defined in ANOTHER file - the cross-directory coupling detection spans.
 fn call(file: &str, name: &str, caller: &str) -> Event {
-    Event::new(
-        TYPE_EDGE_INFERRED,
-        serde_json::to_vec(&serde_json::json!({
-            "file": file, "name": name, "caller": caller, "lang": "rust"
-        }))
-        .unwrap(),
-    )
+    event_of(TYPE_EDGE_INFERRED, call_json(file, name, caller))
 }
 
 /// The subcommand under test: `rigger graph communities`, its live layer the `KIND_COMMUNITY`

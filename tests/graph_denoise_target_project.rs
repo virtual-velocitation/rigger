@@ -29,9 +29,8 @@ use rigger::contextgraph::{
 };
 use rigger::spawn::SpawnEvent;
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_json_as;
+mod common;
+use common::fixtures::apply_json_as;
 
 #[test]
 fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {

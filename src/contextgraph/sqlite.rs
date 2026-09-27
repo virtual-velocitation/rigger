@@ -2783,23 +2783,10 @@ mod tests {
         KIND_AGENT, KIND_GATE, KIND_UNIT, META_ACTOR, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED,
         REL_GATED_BY, REL_TOUCHES,
     };
-    use crate::test_support::apply_ref;
-
-    fn apply_decision(
-        p: &Projector,
-        pos: u64,
-        id: &str,
-        summary: &str,
-        governs: &[&str],
-        supersedes: &str,
-    ) {
-        let payload = serde_json::json!({
-            "id": id, "summary": summary, "governs": governs, "supersedes": supersedes,
-        });
-        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
+    use crate::test_support::{
+        apply_call, apply_code_entity, apply_decision, apply_def, apply_def_at, apply_governs_at,
+        apply_json, apply_json_as, apply_ref, decision_json,
+    };
 
     #[test]
     fn prune_drops_the_named_nodes_and_their_edges_and_a_replay_does_not_resurrect_them() {
@@ -3008,24 +2995,6 @@ mod tests {
             1,
             "after the rollback the good event still folds on its own (its position was not consumed)"
         );
-    }
-
-    /// Fold a `DecisionMade` (`id` GOVERNS `path`) from its raw on-log JSON at `pos`, with the
-    /// event's valid-from set to `secs`. GOVERNS (decision -> file) is the SURVIVING content edge
-    /// the spec-40 upsert-live dedup is demonstrated over: the fold no longer projects the old
-    /// `agent --TOUCHES--> file` machinery edge (spec 43 de-noise), but `add_edge`'s collapse-a-
-    /// re-assertion-into-the-one-live-edge behaviour is edge-agnostic, so a re-asserted
-    /// decision->file GOVERNS edge exercises it exactly as a re-touch once did. `secs` sets the
-    /// event's valid-from so a test can assert the collapsed edge keeps the EARLIEST assertion
-    /// time; `pos` becomes the edge's `source`, so the LATEST assertion wins.
-    fn apply_governs_at(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
-        let payload = serde_json::json!({
-            "id": id, "summary": "x", "governs": [path], "supersedes": "",
-        });
-        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap())
-            .with_valid_from(UNIX_EPOCH + std::time::Duration::from_secs(secs));
-        e.position = pos;
-        p.apply(&e).unwrap();
     }
 
     /// Every LIVE `GOVERNS` edge as `(from, to, source, valid_from)`, read straight from the
@@ -3309,31 +3278,13 @@ mod tests {
         );
     }
 
-    fn apply_code_entity(
-        p: &Projector,
-        pos: u64,
-        file: &str,
-        name: &str,
-        kind: &str,
-        line: u32,
-        lang: &str,
-    ) {
-        let payload = serde_json::json!({
-            "file": file, "name": name, "kind": kind, "line": line, "lang": lang,
-        });
-        let mut e = Event::new(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            serde_json::to_vec(&payload).unwrap(),
-        );
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
     fn apply_edge_inferred(p: &Projector, pos: u64, file: &str, name: &str, lang: &str) {
-        let payload = serde_json::json!({ "file": file, "name": name, "lang": lang });
-        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        p.apply(&e).unwrap();
+        apply_json(
+            p,
+            pos,
+            TYPE_EDGE_INFERRED,
+            serde_json::json!({ "file": file, "name": name, "lang": lang }),
+        );
     }
 
     /// Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
@@ -3353,16 +3304,15 @@ mod tests {
         lang: &str,
         partial: bool,
     ) {
-        let payload = serde_json::json!({
-            "file": file, "name": name, "kind": kind, "line": line, "lang": lang,
-            "partial": partial,
-        });
-        let mut e = Event::new(
+        apply_json(
+            p,
+            pos,
             TYPE_CODE_ENTITY_EXTRACTED,
-            serde_json::to_vec(&payload).unwrap(),
+            serde_json::json!({
+                "file": file, "name": name, "kind": kind, "line": line, "lang": lang,
+                "partial": partial,
+            }),
         );
-        e.position = pos;
-        p.apply(&e).unwrap();
     }
 
     /// Spec 86 criterion 2: one TEST-ORIGIN reference evidence event, built by hand (no
@@ -3370,10 +3320,12 @@ mod tests {
     /// (mirroring [`apply_edge_inferred`]'s own style), never through the [`super::EdgeInferred`]
     /// struct, so this exercises the exact wire shape a real emitter produces.
     fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
-        let payload = serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true });
-        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        p.apply(&e).unwrap();
+        apply_json(
+            p,
+            pos,
+            TYPE_EDGE_INFERRED,
+            serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true }),
+        );
     }
 
     /// A test-origin evidence event carrying an explicit `fresh` (round 2, spec 86 criterion 2):
@@ -3390,24 +3342,15 @@ mod tests {
         line: u32,
         fresh: bool,
     ) {
-        let payload = serde_json::json!({
-            "file": file, "name": name, "lang": "rust", "line": line, "is_test": true,
-            "fresh": fresh,
-        });
-        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
-    /// A caller-attributed reference (spec 37): folds a `<file>::<caller> --CALLS--> <file>::<name>`
-    /// edge alongside the file-level REFERENCES edge, so the community fixture builds real
-    /// structural coupling the deterministic label is computed over.
-    fn apply_ref_caller(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
-        let payload =
-            serde_json::json!({ "file": file, "name": name, "lang": "rust", "caller": caller });
-        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        p.apply(&e).unwrap();
+        apply_json(
+            p,
+            pos,
+            TYPE_EDGE_INFERRED,
+            serde_json::json!({
+                "file": file, "name": name, "lang": "rust", "line": line, "is_test": true,
+                "fresh": fresh,
+            }),
+        );
     }
 
     /// Construct and fold one `CommunityAssigned` event by hand (no detection-pass dependency), so
@@ -3421,16 +3364,15 @@ mod tests {
         hash: &str,
         fresh: bool,
     ) {
-        let payload = serde_json::json!({
-            "node": node, "community": community,
-            "resolution": resolution, "hash": hash, "fresh": fresh,
-        });
-        let mut e = Event::new(
+        apply_json(
+            p,
+            pos,
             TYPE_COMMUNITY_ASSIGNED,
-            serde_json::to_vec(&payload).unwrap(),
+            serde_json::json!({
+                "node": node, "community": community,
+                "resolution": resolution, "hash": hash, "fresh": fresh,
+            }),
         );
-        e.position = pos;
-        p.apply(&e).unwrap();
     }
 
     /// Fold the canonical spec-53 community fixture: a coupling graph whose `apply_damage` hub is
@@ -3456,9 +3398,9 @@ mod tests {
         // `apply_damage` calls three symbols, making it the highest-degree hub (1 CONTAINS + 3
         // CALLS = degree 4); `clamp` reaches degree 3 (CONTAINS + the CALLS + the REFERENCES twin);
         // `send` stays at degree 1 (its CONTAINS only).
-        apply_ref_caller(p, 6, "src/combat/hit.rs", "clamp", "apply_damage");
-        apply_ref_caller(p, 7, "src/combat/hit.rs", "min", "apply_damage");
-        apply_ref_caller(p, 8, "src/combat/hit.rs", "max", "apply_damage");
+        apply_call(p, 6, "src/combat/hit.rs", "clamp", "apply_damage");
+        apply_call(p, 7, "src/combat/hit.rs", "min", "apply_damage");
+        apply_call(p, 8, "src/combat/hit.rs", "max", "apply_damage");
         // Detection pass at resolution 1.0. The FIRST event carries `fresh` (the pass boundary).
         apply_community(
             p,
@@ -4224,13 +4166,12 @@ mod tests {
     /// on-log JSON at `pos`. Built by hand so the fold is exercised with the design-intent
     /// extraction pass absent - the always-compiled arm must run in BOTH feature lanes.
     fn apply_doc_concept(p: &Projector, pos: u64, kind: &str, id: &str, title: &str, doc: &str) {
-        let payload = serde_json::json!({ "kind": kind, "id": id, "title": title, "doc": doc });
-        let mut e = Event::new(
+        apply_json(
+            p,
+            pos,
             TYPE_DOC_CONCEPT_EXTRACTED,
-            serde_json::to_vec(&payload).unwrap(),
+            serde_json::json!({ "kind": kind, "id": id, "title": title, "doc": doc }),
         );
-        e.position = pos;
-        p.apply(&e).unwrap();
     }
 
     #[test]
@@ -4335,13 +4276,12 @@ mod tests {
     /// hand so the fold is exercised with the design-intent extraction pass absent - the
     /// always-compiled arm must run in BOTH feature lanes.
     fn apply_doc_link(p: &Projector, pos: u64, from: &str, rel: &str, to: &str) {
-        let payload = serde_json::json!({ "from": from, "to": to, "rel": rel });
-        let mut e = Event::new(
+        apply_json(
+            p,
+            pos,
             TYPE_DOC_LINK_EXTRACTED,
-            serde_json::to_vec(&payload).unwrap(),
+            serde_json::json!({ "from": from, "to": to, "rel": rel }),
         );
-        e.position = pos;
-        p.apply(&e).unwrap();
     }
 
     #[test]
@@ -4663,42 +4603,15 @@ mod tests {
         );
     }
 
-    /// Fold a code DEFINITION (`file` defines `name` at `line`) from its raw on-log JSON at `pos`.
-    /// `fresh` marks the FIRST event of an extraction batch: the fold supersedes the file's prior
-    /// structural edges before folding this one, so a re-extraction replaces rather than accretes.
-    fn apply_batch_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool) {
-        let payload = serde_json::json!({
-            "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-            "fresh": fresh,
-        });
-        let mut e = Event::new(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            serde_json::to_vec(&payload).unwrap(),
-        );
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
     /// Fold a code REFERENCE (`file` references `name`) from its raw on-log JSON at `pos`. `fresh`
-    /// marks the first event of an extraction batch, exactly as for [`apply_batch_def`].
+    /// marks the first event of an extraction batch, exactly as for [`apply_def`].
     fn apply_batch_ref(p: &Projector, pos: u64, file: &str, name: &str, fresh: bool) {
-        let payload =
-            serde_json::json!({ "file": file, "name": name, "lang": "rust", "fresh": fresh });
-        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
-    /// Fold a CALLER-ATTRIBUTED reference (spec 37): `file` references `name` from inside the
-    /// enclosing definition `caller`, exactly the event the emit pass produces for a call in a
-    /// function body. Mirrors [`apply_batch_ref`] but sets the `caller` field the c3 fold reads.
-    fn apply_batch_ref_caller(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
-        let payload = serde_json::json!({
-            "file": file, "name": name, "lang": "rust", "caller": caller,
-        });
-        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        p.apply(&e).unwrap();
+        apply_json(
+            p,
+            pos,
+            TYPE_EDGE_INFERRED,
+            serde_json::json!({ "file": file, "name": name, "lang": "rust", "fresh": fresh }),
+        );
     }
 
     /// Every edge from `from`, as `(to, rel, valid_to)`, read STRAIGHT from the table - INCLUDING
@@ -4733,8 +4646,8 @@ mod tests {
         let file = "src/a.rs";
 
         // Initial extraction: defs `foo` (line 5) and `bar` (line 9), plus a reference to `helper`.
-        apply_batch_def(&p, 1, file, "foo", 5, true); // first event of the batch: fresh
-        apply_batch_def(&p, 2, file, "bar", 9, false);
+        apply_def(&p, 1, file, "foo", 5, true); // first event of the batch: fresh
+        apply_def(&p, 2, file, "bar", 9, false);
         apply_batch_ref(&p, 3, file, "helper", false);
 
         // Precondition: the initial graph holds both definitions and the reference, all live.
@@ -4756,7 +4669,7 @@ mod tests {
 
         // The file CHANGES and is re-extracted: `foo` moved to line 12, `bar` was DELETED, the
         // `helper` reference is gone, and a new reference to `other` appears.
-        apply_batch_def(&p, 10, file, "foo", 12, true); // first event of the RE-extraction batch: fresh
+        apply_def(&p, 10, file, "foo", 12, true); // first event of the RE-extraction batch: fresh
         apply_batch_ref(&p, 11, file, "other", false);
 
         // LIVE view at the new position: foo is still contained (re-folded at its new line), the new
@@ -4852,9 +4765,9 @@ mod tests {
         let file = "src/a.rs";
 
         // A file defining caller `F` and callee `G`, with `G` called from inside `F`'s body.
-        apply_batch_def(&p, 1, file, "F", 1, true);
-        apply_batch_def(&p, 2, file, "G", 5, false);
-        apply_batch_ref_caller(&p, 3, file, "G", "F");
+        apply_def(&p, 1, file, "F", 1, true);
+        apply_def(&p, 2, file, "G", 5, false);
+        apply_call(&p, 3, file, "G", "F");
 
         let g = p.subgraph(&[file.to_string()], 2).unwrap();
 
@@ -4895,7 +4808,7 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         let file = "src/a.rs";
 
-        apply_batch_def(&p, 1, file, "G", 5, true);
+        apply_def(&p, 1, file, "G", 5, true);
         apply_batch_ref(&p, 2, file, "G", false); // caller-less: a top-level reference
 
         let g = p.subgraph(&[file.to_string()], 2).unwrap();
@@ -4923,9 +4836,9 @@ mod tests {
         let file = "src/a.rs";
 
         // Initial extraction: F calls G.
-        apply_batch_def(&p, 1, file, "F", 1, true);
-        apply_batch_def(&p, 2, file, "G", 5, false);
-        apply_batch_ref_caller(&p, 3, file, "G", "F");
+        apply_def(&p, 1, file, "F", 1, true);
+        apply_def(&p, 2, file, "G", 5, false);
+        apply_call(&p, 3, file, "G", "F");
         let g0 = p.subgraph(&[file.to_string()], 2).unwrap();
         assert!(
             g0.edges
@@ -4936,7 +4849,7 @@ mod tests {
         );
 
         // The file CHANGES: F no longer calls anything; the call is GONE.
-        apply_batch_def(&p, 10, file, "F", 1, true); // fresh: first event of the re-extraction batch
+        apply_def(&p, 10, file, "F", 1, true); // fresh: first event of the re-extraction batch
 
         // LIVE view: the stale CALLS edge is GONE from the live subgraph (superseded, not accreted).
         let g1 = p.subgraph(&[file.to_string()], 2).unwrap();
@@ -4957,31 +4870,6 @@ mod tests {
         );
     }
 
-    /// Like [`apply_batch_def`] but stamps the event's `valid_from` at `secs` past the epoch, so a
-    /// test can place each extraction batch in a distinct run and predict the `valid_to` a later
-    /// batch's supersession writes (`to_nanos(valid_from)`) - the retention boundary spec 41 keys on.
-    fn apply_batch_def_at(
-        p: &Projector,
-        pos: u64,
-        file: &str,
-        name: &str,
-        line: u32,
-        fresh: bool,
-        secs: u64,
-    ) {
-        let payload = serde_json::json!({
-            "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-            "fresh": fresh,
-        });
-        let mut e = Event::new(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            serde_json::to_vec(&payload).unwrap(),
-        )
-        .with_valid_from(UNIX_EPOCH + std::time::Duration::from_secs(secs));
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
     #[test]
     fn prune_reclaims_superseded_structural_edges_older_than_the_boundary_and_keeps_every_live_edge(
     ) {
@@ -4996,17 +4884,17 @@ mod tests {
         let file = "src/a.rs";
 
         // Run 1 (t=100s): first extraction of `foo` and `bar` - two live CONTAINS edges (vf=100s).
-        apply_batch_def_at(&p, 1, file, "foo", 5, true, 100);
-        apply_batch_def_at(&p, 2, file, "bar", 9, false, 100);
+        apply_def_at(&p, 1, file, "foo", 5, true, 100);
+        apply_def_at(&p, 2, file, "bar", 9, false, 100);
 
         // Run 2 (t=200s): re-extract `foo` only (bar deleted). The fresh event supersedes run-1's
         // CONTAINS(foo)+CONTAINS(bar) with valid_to=to_nanos(200s), then folds a new live CONTAINS(foo).
-        apply_batch_def_at(&p, 10, file, "foo", 12, true, 200);
+        apply_def_at(&p, 10, file, "foo", 12, true, 200);
 
         // Run 3 (t=300s, the ACTIVE run): re-extract `foo` and add `baz`. This supersedes run-2's
         // CONTAINS(foo) with valid_to=to_nanos(300s) and folds live CONTAINS(foo)+CONTAINS(baz).
-        apply_batch_def_at(&p, 20, file, "foo", 3, true, 300);
-        apply_batch_def_at(&p, 21, file, "baz", 7, false, 300);
+        apply_def_at(&p, 20, file, "foo", 3, true, 300);
+        apply_def_at(&p, 21, file, "baz", 7, false, 300);
 
         let boundary = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(300));
 
@@ -5150,22 +5038,22 @@ mod tests {
         //
         // Run 1 (t=100s): a.rs defines foo + bar and CALLS helper from inside foo; b.rs defines gadget
         // and CALLS widget from inside gadget.
-        apply_batch_def_at(&p, 1, a, "foo", 5, true, 100);
-        apply_batch_def_at(&p, 2, a, "bar", 9, false, 100);
-        apply_batch_ref_caller(&p, 3, a, "helper", "foo");
-        apply_batch_def_at(&p, 4, b, "gadget", 2, true, 100);
-        apply_batch_ref_caller(&p, 5, b, "widget", "gadget");
+        apply_def_at(&p, 1, a, "foo", 5, true, 100);
+        apply_def_at(&p, 2, a, "bar", 9, false, 100);
+        apply_call(&p, 3, a, "helper", "foo");
+        apply_def_at(&p, 4, b, "gadget", 2, true, 100);
+        apply_call(&p, 5, b, "widget", "gadget");
 
         // Run 2 (t=200s): re-extract a.rs (bar deleted). The fresh event supersedes run-1's a.rs edges
         // with valid_to=to_nanos(200s), then folds a.rs's new live structure.
-        apply_batch_def_at(&p, 10, a, "foo", 12, true, 200);
-        apply_batch_ref_caller(&p, 11, a, "helper", "foo");
+        apply_def_at(&p, 10, a, "foo", 12, true, 200);
+        apply_call(&p, 11, a, "helper", "foo");
 
         // Run 3 (t=300s, the ACTIVE run): re-extract a.rs adding baz. Supersedes run-2's a.rs edges
         // with valid_to=to_nanos(300s); folds a.rs's final live structure (foo, baz, helper).
-        apply_batch_def_at(&p, 20, a, "foo", 3, true, 300);
-        apply_batch_def_at(&p, 21, a, "baz", 7, false, 300);
-        apply_batch_ref_caller(&p, 22, a, "helper", "foo");
+        apply_def_at(&p, 20, a, "foo", 3, true, 300);
+        apply_def_at(&p, 21, a, "baz", 7, false, 300);
+        apply_call(&p, 22, a, "helper", "foo");
 
         let boundary = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(300));
 
@@ -5254,9 +5142,9 @@ mod tests {
             for r in 1..=runs {
                 let secs = 100 * r;
                 pos += 1;
-                apply_batch_def_at(&p, pos, file, "foo", 5, true, secs); // fresh: retires prior live
+                apply_def_at(&p, pos, file, "foo", 5, true, secs); // fresh: retires prior live
                 pos += 1;
-                apply_batch_def_at(&p, pos, file, "bar", 9, false, secs);
+                apply_def_at(&p, pos, file, "bar", 9, false, secs);
             }
             // Count the file's outgoing CONTAINS rows by liveness, straight from the table (the live
             // `subgraph` filter hides the superseded ones this bound is about).
@@ -5345,8 +5233,8 @@ mod tests {
         let b = "src/b.rs";
 
         // File A: `F` calls `G`, but `G` is NOT yet defined anywhere the graph knows -> AMBIGUOUS.
-        apply_batch_def(&p, 1, a, "F", 1, true);
-        apply_batch_ref_caller(&p, 2, a, "G", "F");
+        apply_def(&p, 1, a, "F", 1, true);
+        apply_call(&p, 2, a, "G", "F");
         let g_pre = p.subgraph(&[a.to_string()], 2).unwrap();
         let calls_pre = g_pre
             .edges
@@ -5359,7 +5247,7 @@ mod tests {
         );
 
         // File B DEFINES `G`: the convergent upgrade promotes A's cross-file edges to INFERRED.
-        apply_batch_def(&p, 3, b, "G", 9, true);
+        apply_def(&p, 3, b, "G", 9, true);
 
         let g_post = p.subgraph(&[a.to_string()], 2).unwrap();
         let calls_post = g_post
@@ -5395,14 +5283,14 @@ mod tests {
 
         // Definitions first (so the cross-file references fold INFERRED, not AMBIGUOUS): a.rs
         // defines `main` and `helper`; b.rs defines `work`.
-        apply_batch_def(&p, 1, a, "main", 1, true);
-        apply_batch_def(&p, 2, a, "helper", 5, false);
-        apply_batch_def(&p, 3, b, "work", 1, true);
+        apply_def(&p, 1, a, "main", 1, true);
+        apply_def(&p, 2, a, "helper", 5, false);
+        apply_def(&p, 3, b, "work", 1, true);
         // Calls: main -> helper (same-file), main -> work (single-candidate cross-file), and
         // work -> main (cross-file, closing a CYCLE back onto the seed).
-        apply_batch_ref_caller(&p, 4, a, "helper", "main");
-        apply_batch_ref_caller(&p, 5, a, "work", "main");
-        apply_batch_ref_caller(&p, 6, b, "main", "work");
+        apply_call(&p, 4, a, "helper", "main");
+        apply_call(&p, 5, a, "work", "main");
+        apply_call(&p, 6, b, "main", "work");
 
         let node_ids = |cg: &CallGraph| -> Vec<String> {
             let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
@@ -5547,25 +5435,25 @@ mod tests {
 
         // Definitions, folded before the calls so every cross-file reference tiers INFERRED (a
         // definition already exists), placing it at/above the default floor.
-        apply_batch_def(&p, 1, "src/caller.rs", "entry", 1, true); // the seed
-        apply_batch_def(&p, 2, "src/solo.rs", "solo", 1, true); // the SINGLE-candidate callee
-        apply_batch_def(&p, 3, "src/sink.rs", "sink", 1, true); // solo's own callee (proves descent)
-                                                                // `dup` is defined in TWO files - fold b.rs BEFORE a.rs so the pre-sort (rowid) order is
-                                                                // [b, a] and only `ORDER BY id` re-sorts it to [a, b].
-        apply_batch_def(&p, 4, "src/b.rs", "dup", 1, true);
-        apply_batch_def(&p, 5, "src/b.rs", "only_via_b", 2, false);
-        apply_batch_def(&p, 6, "src/a.rs", "dup", 1, true);
-        apply_batch_def(&p, 7, "src/a.rs", "only_via_a", 2, false);
+        apply_def(&p, 1, "src/caller.rs", "entry", 1, true); // the seed
+        apply_def(&p, 2, "src/solo.rs", "solo", 1, true); // the SINGLE-candidate callee
+        apply_def(&p, 3, "src/sink.rs", "sink", 1, true); // solo's own callee (proves descent)
+                                                          // `dup` is defined in TWO files - fold b.rs BEFORE a.rs so the pre-sort (rowid) order is
+                                                          // [b, a] and only `ORDER BY id` re-sorts it to [a, b].
+        apply_def(&p, 4, "src/b.rs", "dup", 1, true);
+        apply_def(&p, 5, "src/b.rs", "only_via_b", 2, false);
+        apply_def(&p, 6, "src/a.rs", "dup", 1, true);
+        apply_def(&p, 7, "src/a.rs", "only_via_a", 2, false);
 
         // Calls: entry -> solo (single-candidate cross-file) and entry -> dup (multi-candidate);
         // solo -> sink (so the followed single-candidate hop has somewhere to descend); and each
         // `dup` candidate calls a distinct sentinel that is reachable ONLY by descending that
         // candidate.
-        apply_batch_ref_caller(&p, 8, "src/caller.rs", "solo", "entry");
-        apply_batch_ref_caller(&p, 9, "src/caller.rs", "dup", "entry");
-        apply_batch_ref_caller(&p, 10, "src/solo.rs", "sink", "solo");
-        apply_batch_ref_caller(&p, 11, "src/a.rs", "only_via_a", "dup");
-        apply_batch_ref_caller(&p, 12, "src/b.rs", "only_via_b", "dup");
+        apply_call(&p, 8, "src/caller.rs", "solo", "entry");
+        apply_call(&p, 9, "src/caller.rs", "dup", "entry");
+        apply_call(&p, 10, "src/solo.rs", "sink", "solo");
+        apply_call(&p, 11, "src/a.rs", "only_via_a", "dup");
+        apply_call(&p, 12, "src/b.rs", "only_via_b", "dup");
 
         let cg = p
             .calls(
@@ -5669,10 +5557,10 @@ mod tests {
         // so the floor is lowered to reach it; the point proved here is the resolution OUTCOME (a
         // bare leaf, `frontier` None), not the floor itself.
         let p = Projector::open(":memory:", "test").unwrap();
-        apply_batch_def(&p, 1, "src/caller.rs", "entry", 1, true);
+        apply_def(&p, 1, "src/caller.rs", "entry", 1, true);
         // `ghost` is defined in no file the graph knows - the CALLS edge tiers ambiguous and, once
         // followed, resolves to zero candidates.
-        apply_batch_ref_caller(&p, 2, "src/caller.rs", "ghost", "entry");
+        apply_call(&p, 2, "src/caller.rs", "ghost", "entry");
 
         let cg = p
             .calls(
@@ -5737,10 +5625,10 @@ mod tests {
         // Definitions first, so every cross-file reference tiers INFERRED (a definition already
         // exists), placing it at/above the default floor. a.rs defines the SEED `target` and a
         // same-file caller `local`; b.rs defines `mid`; c.rs defines `top`.
-        apply_batch_def(&p, 1, a, "target", 1, true);
-        apply_batch_def(&p, 2, a, "local", 2, false);
-        apply_batch_def(&p, 3, b, "mid", 1, true);
-        apply_batch_def(&p, 4, c, "top", 1, true);
+        apply_def(&p, 1, a, "target", 1, true);
+        apply_def(&p, 2, a, "local", 2, false);
+        apply_def(&p, 3, b, "mid", 1, true);
+        apply_def(&p, 4, c, "top", 1, true);
         // Calls (each is a caller-attributed reference the emit pass produces for a call in a body):
         //   local  -> target  (SAME-FILE: lands directly on the seed def)
         //   mid    -> target  (CROSS-FILE single-candidate: through the bare b.rs::target placeholder)
@@ -5748,10 +5636,10 @@ mod tests {
         //   target -> mid     (the mutual call that closes a CYCLE - target both defines the seed and
         //                      calls mid, so walking UP from target reaches mid, whose callers include
         //                      target again: a BACK edge, deduped, not re-ascended)
-        apply_batch_ref_caller(&p, 5, a, "target", "local");
-        apply_batch_ref_caller(&p, 6, a, "mid", "target");
-        apply_batch_ref_caller(&p, 7, b, "target", "mid");
-        apply_batch_ref_caller(&p, 8, c, "mid", "top");
+        apply_call(&p, 5, a, "target", "local");
+        apply_call(&p, 6, a, "mid", "target");
+        apply_call(&p, 7, b, "target", "mid");
+        apply_call(&p, 8, c, "mid", "top");
         // d.rs imports/uses `target` at TOP LEVEL (no enclosing caller): a file-level REFERENCES edge
         // with NO CALLS twin - the "referenced but not called" site.
         apply_batch_ref(&p, 9, d, "target", true);
@@ -5925,14 +5813,14 @@ mod tests {
         // `target` is defined in TWO files, so a cross-file call to `target` is multi-candidate. Fold
         // e.rs BEFORE a.rs so the natural (rowid) order is [e, a]; only `ORDER BY id` in
         // `definitions_with_suffix` yields the asserted [a, b]-sorted candidate list.
-        apply_batch_def(&p, 1, "src/e.rs", "target", 1, true);
-        apply_batch_def(&p, 2, "src/a.rs", "target", 1, true); // the SEED
-        apply_batch_def(&p, 3, "src/f.rs", "amb", 1, true); // the ambiguous caller
-        apply_batch_def(&p, 4, "src/g.rs", "over", 1, true); // amb's own caller (must NOT be reached)
-                                                             // amb calls `target` cross-file (multi-candidate); over calls amb (only reachable by ascending
-                                                             // past the frontier).
-        apply_batch_ref_caller(&p, 5, "src/f.rs", "target", "amb");
-        apply_batch_ref_caller(&p, 6, "src/g.rs", "amb", "over");
+        apply_def(&p, 1, "src/e.rs", "target", 1, true);
+        apply_def(&p, 2, "src/a.rs", "target", 1, true); // the SEED
+        apply_def(&p, 3, "src/f.rs", "amb", 1, true); // the ambiguous caller
+        apply_def(&p, 4, "src/g.rs", "over", 1, true); // amb's own caller (must NOT be reached)
+                                                       // amb calls `target` cross-file (multi-candidate); over calls amb (only reachable by ascending
+                                                       // past the frontier).
+        apply_call(&p, 5, "src/f.rs", "target", "amb");
+        apply_call(&p, 6, "src/g.rs", "amb", "over");
 
         let cg = p
             .calls(
@@ -6299,10 +6187,12 @@ mod tests {
         // Production shape: the conductor emits `{"id": <unit>, "commit": ...}` at every
         // UNIT_INTEGRATED site (the `id` key, NOT `unit`). Building it this way proves the
         // fold parses what production actually records, not a hand-tuned `unit` payload.
-        let payload = serde_json::json!({"id": unit, "commit": commit});
-        let mut e = Event::new(TYPE_UNIT_INTEGRATED, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        p.apply(&e).unwrap();
+        apply_json(
+            p,
+            pos,
+            TYPE_UNIT_INTEGRATED,
+            serde_json::json!({"id": unit, "commit": commit}),
+        );
     }
 
     #[test]
@@ -7148,13 +7038,8 @@ mod tests {
         governs: &[&str],
         actor: &str,
     ) {
-        let payload = serde_json::json!({
-            "id": id, "summary": summary, "governs": governs, "supersedes": "",
-        });
-        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
-        e.position = pos;
-        e.meta.insert(META_ACTOR.to_string(), actor.to_string());
-        p.apply(&e).unwrap();
+        let decision = decision_json(id, summary, governs, "");
+        apply_json_as(p, pos, TYPE_DECISION_MADE, decision, Some(actor));
     }
 
     #[test]
@@ -7565,19 +7450,6 @@ mod tests {
 
     // ---- spec 29a criterion 2: the confidence tier on folded structural edges ----
 
-    /// Fold a code definition event (`file` defines `name`) at `pos`.
-    fn apply_def(p: &Projector, pos: u64, file: &str, name: &str) {
-        let payload = serde_json::json!({
-            "file": file, "name": name, "kind": "function", "line": 1, "lang": "rust",
-        });
-        let mut e = Event::new(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            serde_json::to_vec(&payload).unwrap(),
-        );
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
     /// The tier of the one edge with relation `rel` landing on `to`, out of a subgraph.
     fn edge_tier(g: &Graph, rel: &str, to: &str) -> String {
         let matches: Vec<&Edge> = g
@@ -7605,8 +7477,8 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         // combat.rs defines `apply_damage` and references it (same-file), references `shared` (a name
         // defined in util.rs), and references `magic` (defined nowhere).
-        apply_def(&p, 1, "util.rs", "shared");
-        apply_def(&p, 2, "combat.rs", "apply_damage");
+        apply_code_entity(&p, 1, "util.rs", "shared", "function", 1, "rust");
+        apply_code_entity(&p, 2, "combat.rs", "apply_damage", "function", 1, "rust");
         apply_ref(&p, 3, "combat.rs", "apply_damage");
         apply_ref(&p, 4, "combat.rs", "shared");
         apply_ref(&p, 5, "combat.rs", "magic");
@@ -7663,7 +7535,7 @@ mod tests {
 
         // Definition-first: util.rs defines `shared`, THEN combat.rs references it.
         let a = Projector::open(":memory:", "test").unwrap();
-        apply_def(&a, 1, "util.rs", "shared");
+        apply_code_entity(&a, 1, "util.rs", "shared", "function", 1, "rust");
         apply_ref(&a, 2, "combat.rs", "shared");
         let ga = a.subgraph(&["combat.rs".to_string()], 3).unwrap();
         assert_eq!(
@@ -7683,7 +7555,7 @@ mod tests {
             TIER_AMBIGUOUS,
             "reference-first, before any definition: the reference is AMBIGUOUS"
         );
-        apply_def(&b, 2, "util.rs", "shared");
+        apply_code_entity(&b, 2, "util.rs", "shared", "function", 1, "rust");
         let gb = b.subgraph(&["combat.rs".to_string()], 3).unwrap();
         assert_eq!(
             edge_tier(&gb, REL_REFERENCES, "combat.rs::shared"),
@@ -7706,9 +7578,9 @@ mod tests {
         // defined in another file too - the upgrade excludes the definition's own entity id, and the
         // EXTRACTED reference is not AMBIGUOUS, so it is doubly protected from being pulled down.
         let p = Projector::open(":memory:", "test").unwrap();
-        apply_def(&p, 1, "combat.rs", "shared");
+        apply_code_entity(&p, 1, "combat.rs", "shared", "function", 1, "rust");
         apply_ref(&p, 2, "combat.rs", "shared");
-        apply_def(&p, 3, "util.rs", "shared");
+        apply_code_entity(&p, 3, "util.rs", "shared", "function", 1, "rust");
         let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
         assert_eq!(
             edge_tier(&g, REL_REFERENCES, "combat.rs::shared"),
@@ -7832,8 +7704,8 @@ mod tests {
 
         let fold_log = |p: &Projector| {
             apply_ref(p, 1, "combat.rs", "shared"); // cross-file ref, folds AMBIGUOUS first
-            apply_def(p, 2, "util.rs", "shared"); // its definition promotes the ref to INFERRED
-            apply_def(p, 3, "combat.rs", "apply_damage");
+            apply_code_entity(p, 2, "util.rs", "shared", "function", 1, "rust"); // its definition promotes the ref to INFERRED
+            apply_code_entity(p, 3, "combat.rs", "apply_damage", "function", 1, "rust");
             apply_ref(p, 4, "combat.rs", "apply_damage"); // resolved to a same-file def -> EXTRACTED
             apply_ref(p, 5, "combat.rs", "magic"); // defined nowhere -> AMBIGUOUS
         };
@@ -8215,7 +8087,7 @@ mod tests {
             // line of product.rs should never make an unrelated test's proof vanish from the card.
             let p = Projector::open(":memory:", "test").unwrap();
             // Initial extraction (fresh = the file's first-ever batch).
-            apply_batch_def(&p, 1, "product.rs", "product_fn", 10, true);
+            apply_def(&p, 1, "product.rs", "product_fn", 10, true);
             // A DIFFERENT, unchanged file proves it.
             apply_edge_inferred_evidence(&p, 2, "tests/integration.rs", "product_fn", 4);
             let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
@@ -8228,7 +8100,7 @@ mod tests {
             // entity re-folds with `fresh = true`, exactly as project_batches_paced's real batch
             // composition would emit for a changed file. tests/integration.rs is NOT touched, so
             // (matching the real pipeline) its proof_events never re-emit here.
-            apply_batch_def(&p, 3, "product.rs", "product_fn", 10, true);
+            apply_def(&p, 3, "product.rs", "product_fn", 10, true);
             let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
             assert_eq!(
                 proven_by(&g, "product.rs::product_fn"),
@@ -8279,7 +8151,7 @@ mod tests {
             // NOT claim the still-pending, still-ambiguous evidence merely because it is the one
             // refolding right now, reopening the misattribution the resolved path above just
             // refused.
-            apply_batch_def(&p, 4, "product.rs", "helper", 1, true);
+            apply_def(&p, 4, "product.rs", "helper", 1, true);
             let after = p.subgraph(&seeds, 1).unwrap();
             assert_eq!(
                 proven_by(&after, "product.rs::helper"),
@@ -8510,7 +8382,7 @@ mod tests {
             let p = Projector::open(":memory:", "test").unwrap();
 
             // "Before": the legacy, pre-criterion-1 state.
-            apply_batch_def(
+            apply_def(
                 &p,
                 1,
                 "tests/integration.rs",
@@ -8518,7 +8390,7 @@ mod tests {
                 2,
                 true,
             );
-            apply_batch_def(&p, 2, "product.rs", "product_fn", 1, true);
+            apply_def(&p, 2, "product.rs", "product_fn", 1, true);
             assert_eq!(
                 p.retired_code_entity_count().unwrap(),
                 0,
@@ -8588,7 +8460,7 @@ mod tests {
             apply_batch_ref(&p, 1, "src/a.rs", "undefined_symbol", true);
             // src/a.rs re-extracts without the reference: its REFERENCES edge is retired via the
             // ordinary supersede boundary, with nothing added back for `undefined_symbol`.
-            apply_batch_def(&p, 2, "src/a.rs", "something_else", 1, true);
+            apply_def(&p, 2, "src/a.rs", "something_else", 1, true);
             assert_eq!(
                 p.retired_code_entity_count().unwrap(),
                 0,

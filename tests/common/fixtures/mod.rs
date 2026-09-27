@@ -27,10 +27,14 @@ mod canary;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod conductor;
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod fold;
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use canary::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use conductor::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use fold::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use store::*;

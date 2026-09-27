@@ -24,9 +24,7 @@ use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_json;
+use common::fixtures::apply_json;
 
 #[test]
 fn a_code_event_missing_the_optional_lang_field_still_folds_backcompat() {

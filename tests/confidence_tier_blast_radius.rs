@@ -42,9 +42,8 @@ use rigger::gate::ExecRunner;
 use rigger::grounder::{BlastRadius, Grounder, Ref};
 use serde_json::{json, Value};
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_next_json;
+mod common;
+use common::fixtures::apply_next_json;
 
 /// A driver that returns an empty result without doing anything. The blast radius is RECORDED before
 /// the spawn (`run_stage`), so the run's terminal disposition is irrelevant to what this periphery

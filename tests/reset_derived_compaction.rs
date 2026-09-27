@@ -28,6 +28,7 @@ use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::temp_project_with_rigger_dir;
+use common::fixtures::edge_inferred;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
@@ -115,11 +116,6 @@ fn code_entity(file: &str, name: &str, line: u32, fresh: bool) -> Vec<u8> {
         v["fresh"] = serde_json::Value::Bool(true);
     }
     serde_json::to_vec(&v).unwrap()
-}
-
-/// An `EdgeInferred` payload in the on-log JSON form.
-fn edge_inferred(file: &str, name: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "file": file, "name": name, "lang": "rust" })).unwrap()
 }
 
 /// A `DocLinkExtracted` payload in the on-log JSON form: one design-intent link, folded into a

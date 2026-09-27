@@ -19,8 +19,6 @@
 //! lane that cannot derive the extent (asserted by [`assert_light_lane_extent_note`]).
 
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
@@ -31,18 +29,7 @@ use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event (the ALWAYS-compiled fold), exactly as a real extraction pass
-/// would - so this seeding is feature-lane independent (no `symbols` extractor required).
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"rust"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use common::fixtures::apply_code_entity;
 
 /// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), the show
 /// surface cannot derive a body extent (no extraction grammar is linked), so a located entity
@@ -92,9 +79,9 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
     {
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 1, "a.rs", "alpha", "function", 1);
-        seed_def(&p, 2, "a.rs", "shared", "function", 3);
-        seed_def(&p, 3, "b.rs", "shared", "function", 1);
+        apply_code_entity(&p, 1, "a.rs", "alpha", "function", 1, "rust");
+        apply_code_entity(&p, 2, "a.rs", "shared", "function", 3, "rust");
+        apply_code_entity(&p, 3, "b.rs", "shared", "function", 1, "rust");
     }
 
     // (1) SHOW BY UNIQUE NAME: `alpha` has one definition -> its site + kind + degree + a

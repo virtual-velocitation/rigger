@@ -22,10 +22,6 @@
 //! "never wrong text" invariant it existed to prove is now the narrower, permanent one: a NEIGHBOUR
 //! at the recorded line is never shown under another entity's header, in EITHER lane).
 
-use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
@@ -36,20 +32,7 @@ use common::cli::open_graph;
 use common::cli::run_rigger;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event (the ALWAYS-compiled fold), exactly as a real extraction pass would -
-/// so this seeding is feature-lane independent (no `symbols` extractor required). Seeding the entity
-/// at a chosen `line` is how a drifted location is expressed: the graph records one site while the
-/// working tree holds another.
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"rust"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use common::fixtures::apply_code_entity;
 
 /// DRIFT SHAPE (a): the recorded FILE is missing from the working tree. The show surface still
 /// prints the recorded SITE header (the graph facts survive), replaces the body with a STALE note,
@@ -68,8 +51,8 @@ fn graph_show_degrades_gracefully_when_the_recorded_file_is_missing() {
     std::fs::write(root.join("present.rs"), "fn present() {}\n").unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "present.rs", "present", "function", 1);
-        seed_def(&p, 2, "gone.rs", "ghost", "function", 7);
+        apply_code_entity(&p, 1, "present.rs", "present", "function", 1, "rust");
+        apply_code_entity(&p, 2, "gone.rs", "ghost", "function", 7, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "ghost"]);
@@ -138,7 +121,7 @@ fn graph_show_never_presents_a_neighbours_body_when_the_line_drifted() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "drift.rs", "moved", "function", 1);
+        apply_code_entity(&p, 1, "drift.rs", "moved", "function", 1, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "moved"]);

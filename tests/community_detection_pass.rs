@@ -24,9 +24,8 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY};
 use rigger::eventstore::Event;
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::seed_two_subsystems;
+mod common;
+use common::fixtures::seed_two_subsystems;
 
 /// A deterministic snapshot of the whole community layer read over the PUBLIC surface: every
 /// `KIND_COMMUNITY` node (id, kind, ordered attrs) and every LIVE `IN_COMMUNITY` edge (from, to),

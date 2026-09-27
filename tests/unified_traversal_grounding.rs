@@ -42,9 +42,7 @@ use rigger::grounder::{Grounder, Ref};
 use rigger::spawn::ROLE_SDET_AUTHOR;
 use serde_json::{json, Value};
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_next_json;
+use common::fixtures::apply_next_json;
 
 /// A driver that captures every prompt it is asked to spawn, then returns an empty result. It is
 /// the observation channel for the periphery boundary: the prompt a spawn actually receives.

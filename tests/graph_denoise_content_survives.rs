@@ -27,9 +27,8 @@ use rigger::contextgraph::{
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 
-#[path = "common/graph_fold.rs"]
-mod graph_fold;
-use graph_fold::apply_json_as;
+mod common;
+use common::fixtures::apply_json_as;
 
 #[test]
 fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attribution() {

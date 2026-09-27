@@ -9148,12 +9148,10 @@ mod tests {
     mod calls_route_c4 {
         use super::*;
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::{
-            CallGraph, CallNode, Direction, Projection, TYPE_CODE_ENTITY_EXTRACTED,
-            TYPE_EDGE_INFERRED,
-        };
+        use crate::contextgraph::{CallGraph, CallNode, Direction, Projection};
         use crate::test_support::calls_edge;
         use crate::test_support::plain;
+        use crate::test_support::{apply_call, apply_def};
 
         /// One reached call node with a store-side (non-negative) hop `layer` and an optional
         /// multi-candidate `frontier`, as the traversal returns it.
@@ -9174,29 +9172,6 @@ mod tests {
         }
         fn ids(v: &Neighborhood) -> Vec<String> {
             v.nodes.iter().map(|n| n.id.clone()).collect()
-        }
-
-        /// Fold a code definition into a Projector, exactly as the store-side periphery tests do, so
-        /// the dispatch test drives the REAL `Projection::calls` through a store-backed provider.
-        fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool) {
-            let payload = serde_json::json!({
-                "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-                "fresh": fresh,
-            });
-            let mut e = Event::new(
-                TYPE_CODE_ENTITY_EXTRACTED,
-                serde_json::to_vec(&payload).unwrap(),
-            );
-            e.position = pos;
-            p.apply(&e).unwrap();
-        }
-        fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
-            let payload = serde_json::json!({
-                "file": file, "name": name, "lang": "rust", "caller": caller,
-            });
-            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-            e.position = pos;
-            p.apply(&e).unwrap();
         }
 
         /// DOWN: the callee layers stay POSITIVE (seed at the left), the frontier candidate ids ride
