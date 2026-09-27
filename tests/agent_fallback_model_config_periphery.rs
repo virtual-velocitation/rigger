@@ -16,18 +16,11 @@
 //! file does not re-litigate that (it asserts the SAME flag, but only ever downstream of a
 //! REAL parse, which is the one link in the chain nothing else exercises).
 
-use rigger::conductor::SpawnOpts;
+mod common;
+use common::fixtures::implementer_opts as opts;
+
 use rigger::config::parse_agent;
 use rigger::driver::claude_code::build_args;
-
-fn opts(id: &str) -> SpawnOpts {
-    SpawnOpts {
-        id: id.to_string(),
-        attempt: 0,
-        system_prompt: "You implement findings.".to_string(),
-        ..Default::default()
-    }
-}
 
 /// The real parser (`parse_agent`, YAML frontmatter into `AgentDef`'s `#[serde(default)]`
 /// field - `AgentDef` carries no `deny_unknown_fields`, so this proves the key is actually

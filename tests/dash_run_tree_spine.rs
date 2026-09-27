@@ -36,6 +36,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 
 use common::fixtures::ev;
+use common::fixtures::positioned;
 use common::served::connect_with_retry;
 use rigger::conductor::META_REPLAY_KEY;
 use rigger::contextgraph::{Graph, TYPE_GATE_VERDICT};
@@ -50,15 +51,6 @@ use serde_json::Value;
 // ---------------------------------------------------------------------------
 // Fixtures: build the exact serialized events a real run folds, over the public API only.
 // ---------------------------------------------------------------------------
-
-/// Stamp 1-based stream positions the way the store would, so the snapshot's cursor and any
-/// position-ordered fold see a realistic monotonic stream.
-fn positioned(mut events: Vec<Event>) -> Vec<Event> {
-    for (i, e) in events.iter_mut().enumerate() {
-        e.position = (i + 1) as u64;
-    }
-    events
-}
 
 /// A recorded SUCCESS result answering a spawn (so its agent leaf reads `done`, not `running`).
 fn ok_result(req: &SpawnRequest) -> Event {

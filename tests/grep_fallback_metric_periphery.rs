@@ -40,10 +40,11 @@ mod common;
 use std::collections::HashMap;
 
 use common::fixtures::ev;
+use common::fixtures::positioned;
 use rigger::contextgraph::Graph;
 use rigger::dash::{build_state, state_json};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, Position};
+use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::metrics::grep_fallbacks;
 use rigger::progress::{self, AgentProgress, GREP_FALLBACK_PREFIX};
 use rigger::progress_store;
@@ -61,15 +62,6 @@ fn progress_ev(id: &str, activity: &str) -> Event {
         progress::TYPE_AGENT_PROGRESS,
         serde_json::to_vec(&ap).unwrap(),
     )
-}
-
-/// Give a slice 1-based positions, as the store would on append, so position-sensitive reads
-/// (`consolidate`, `/api/events?since=`) are exercised realistically.
-fn positioned(mut events: Vec<Event>) -> Vec<Event> {
-    for (i, e) in events.iter_mut().enumerate() {
-        e.position = (i + 1) as Position;
-    }
-    events
 }
 
 // --- (4) + (5) prefix single-source-of-truth + public reachability -------------------------------

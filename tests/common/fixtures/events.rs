@@ -14,6 +14,16 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
+/// `events` stamped with 1-based log positions, as the store stamps them on append, so a
+/// position-sensitive read (a cursor, `?since=`, a position-ordered fold) sees a realistic
+/// monotonic stream.
+pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
+    for (i, e) in events.iter_mut().enumerate() {
+        e.position = (i + 1) as u64;
+    }
+    events
+}
+
 /// The four read and subscribe methods of an `EventStore` decorator that intercepts only
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
 /// decorator's `impl EventStore` block.

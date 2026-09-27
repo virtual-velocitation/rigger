@@ -10,6 +10,15 @@ pub fn agent(id: &str) -> AgentDef {
     }
 }
 
+/// An agent definition `id` whose persona (the markdown body of its definition) is `prompt`.
+pub fn agent_with_prompt(id: &str, prompt: &str) -> AgentDef {
+    AgentDef {
+        id: id.to_string(),
+        prompt: prompt.to_string(),
+        ..Default::default()
+    }
+}
+
 /// A config declaring one bare [`agent`] per id.
 pub fn cfg_for(ids: &[&str]) -> Config {
     let mut c = Config::default();

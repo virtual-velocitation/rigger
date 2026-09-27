@@ -14014,9 +14014,11 @@ mod tests {
     use crate::spawn::attempt_of;
     use crate::spawn::SpawnEvent;
     use crate::test_support::agent;
+    use crate::test_support::agent_with_prompt;
     use crate::test_support::gate_def;
     use crate::test_support::gate_def_inputs;
     use crate::test_support::git_ok;
+    use crate::test_support::has_status_marker as has_status;
     use crate::test_support::temp_git_project_with_commit;
     use std::path::Path;
 
@@ -15792,17 +15794,6 @@ mod tests {
                     .cloned()
                     .unwrap_or_default(),
             })
-        }
-    }
-
-    /// An agent with a persona (the markdown body of its definition) - its role
-    /// instructions, which the conductor must thread to the driver as the system
-    /// prompt.
-    fn agent_with_prompt(id: &str, prompt: &str) -> AgentDef {
-        AgentDef {
-            id: id.to_string(),
-            prompt: prompt.to_string(),
-            ..Default::default()
         }
     }
 
@@ -23781,13 +23772,6 @@ mod tests {
             },
         );
         cfg
-    }
-
-    fn has_status(events: &[Event], status: &str) -> bool {
-        events.iter().any(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
-        })
     }
 
     #[test]

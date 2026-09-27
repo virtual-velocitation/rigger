@@ -47,7 +47,9 @@
 mod common;
 
 use common::fixtures::agent;
+use common::fixtures::count_status_marker;
 use common::fixtures::gate_def;
+use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
 use common::git::git_commit_all;
@@ -156,25 +158,6 @@ impl EventStore for FailAfterContaining<'_> {
         Ok(out)
     }
     crate::delegate_event_store_reads!();
-}
-
-/// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status`.
-/// Mirrors `tests/integrate_conflict_merge_periphery.rs::has_status_marker`.
-fn has_status_marker(events: &[Event], status: &str) -> bool {
-    events.iter().any(|e| {
-        e.type_ == ledger::TYPE_UNIT_STATUS
-            && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
-    })
-}
-
-fn count_status_marker(events: &[Event], status: &str) -> usize {
-    events
-        .iter()
-        .filter(|e| {
-            e.type_ == ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
-        })
-        .count()
 }
 
 /// Whether `events` carries a real, non-cached-hit-or-otherwise `GateVerdict` for the

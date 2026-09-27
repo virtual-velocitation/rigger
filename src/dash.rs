@@ -3928,16 +3928,8 @@ mod tests {
     use crate::spawn::SpawnEvent;
     use crate::test_support::chain_graph;
     use crate::test_support::ev;
+    use crate::test_support::positioned;
     use crate::test_support::star_graph;
-
-    /// Give a slice of events 1-based positions, as the store would on append, so
-    /// position-sensitive reads (`/api/events?since=`) are exercised realistically.
-    fn positioned(mut events: Vec<Event>) -> Vec<Event> {
-        for (i, e) in events.iter_mut().enumerate() {
-            e.position = (i + 1) as Position;
-        }
-        events
-    }
 
     fn seeded_run() -> Vec<Event> {
         positioned(vec![

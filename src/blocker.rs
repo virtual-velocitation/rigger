@@ -309,15 +309,9 @@ pub fn lines(blockers: &[Blocker]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eventstore::Event;
-    use crate::test_support::ev;
 
-    fn positioned(mut events: Vec<Event>) -> Vec<Event> {
-        for (i, e) in events.iter_mut().enumerate() {
-            e.position = (i + 1) as u64;
-        }
-        events
-    }
+    use crate::test_support::ev;
+    use crate::test_support::positioned;
 
     #[test]
     fn effective_max_retries_falls_back_when_unset() {
