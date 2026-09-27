@@ -22,25 +22,10 @@ mod common;
 use common::fixtures::edge;
 use common::fixtures::summarized_node as node;
 use common::served::body_of;
-use common::served::{fetch_with_retry, graph_provider_of, try_fetch_over};
+use common::served::fetch_served_split as fetch_served;
 use rigger::contextgraph::{
     Graph, KIND_DECISION, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, TIER_INFERRED,
 };
-
-/// Drive the dash server over a REAL loopback socket with two DISTINCT graphs - `whole_graph`
-/// behind the lazy whole-graph provider (`/api/graph` reads it) and `poll_graph` behind the
-/// state-poll provider (every `/api/*` request rides it), so whatever crosses the wire proves
-/// which provider it read - RETRYING the whole port handoff on a connection-level transient
-/// (see [`try_fetch_over`]).
-fn fetch_served(path: &str, whole_graph: &Graph, poll_graph: &Graph) -> String {
-    fetch_with_retry(path, || {
-        try_fetch_over(
-            path,
-            graph_provider_of(whole_graph.clone()),
-            poll_graph.clone(),
-        )
-    })
-}
 
 /// The served `/api/graph?explain=` overlay reads the LAZY WHOLE-GRAPH provider, NEVER the state poll.
 ///

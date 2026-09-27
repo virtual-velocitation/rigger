@@ -14023,7 +14023,9 @@ mod tests {
     use crate::test_support::{
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
-    use crate::test_support::{critique_stage, fan_out_stage, mk_stage, plan_stage, workflow_cfg};
+    use crate::test_support::{
+        critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
+    };
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -23424,16 +23426,6 @@ mod tests {
         );
     }
 
-    /// Build a single implement+review stage `s` (worker implements, one lens, one
-    /// adjudicator), returning the config. The adjudicator's canned verdict is `verdict`.
-    fn sha_stamp_cfg() -> Config {
-        workflow_cfg(
-            &["worker", "lens", "judge"],
-            &[("ok", "true")],
-            vec![mk_stage("s", "ok")],
-        )
-    }
-
     #[test]
     fn review_boundary_events_carry_the_worktree_sha() {
         // spec 11, unit 1: the `verified` and `reviewed` review-boundary statuses carry the
@@ -23441,7 +23433,7 @@ mod tests {
         // carries), so the flip-flop fold can tell a verdict reversal on the SAME code from
         // a legitimate remediation on new code.
         let repo = temp_git_project_with_commit();
-        let cfg = sha_stamp_cfg();
+        let cfg = review_stage_cfg("ok");
         let st = Store::open(":memory:").unwrap();
         let driver = Stub {
             write_file: Some("feature.rs".into()),
@@ -23493,7 +23485,7 @@ mod tests {
         // spec 11, unit 1: the review-reject `UnitFailed` also carries the reviewed sha, so
         // the fold can pair a reject with a later approve on the same sha.
         let repo = temp_git_project_with_commit();
-        let cfg = sha_stamp_cfg();
+        let cfg = review_stage_cfg("ok");
         let st = Store::open(":memory:").unwrap();
         // The adjudicator rejects every attempt, so the unit fails (and eventually
         // escalates); each review-reject UnitFailed must carry the sha.
@@ -23548,7 +23540,7 @@ mod tests {
         // merge conflict (nothing was ever merged) and never a review reject (the
         // adjudicator approved). The UnitFailed it records must name the actual gate.
         let repo = temp_git_project_with_commit();
-        let mut cfg = sha_stamp_cfg();
+        let mut cfg = review_stage_cfg("ok");
         // "door" is scoped to a file the implementer never touches, so the narrowed
         // inner loop SKIPS it inline - but it is RED at the exhaustive integrate door.
         cfg.workflow
@@ -32252,7 +32244,7 @@ mod tests {
         // really builds into the per-unit cache before the assertions below run.
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let cfg = sha_stamp_cfg();
+        let cfg = review_stage_cfg("ok");
         let store = Store::open(":memory:").unwrap();
         let driver = Stub {
             write_file: Some("feature.rs".into()),
@@ -37565,16 +37557,6 @@ mod tests {
         }
     }
 
-    /// A single implement + review stage `s` (worker implements, one lens, one
-    /// adjudicator, `on_pass: merge`) over gate `g`, for the content-address cache tests.
-    fn content_cache_cfg() -> Config {
-        workflow_cfg(
-            &["worker", "lens", "judge"],
-            &[("g", "true")],
-            vec![mk_stage("s", "g")],
-        )
-    }
-
     /// A driver for the content-address cache tests: the IMPLEMENTER writes `work.rs` with
     /// the content for its attempt (`contents[attempt]`, falling back to the last entry), so
     /// a test controls whether attempt 1's tree is IDENTICAL to attempt 0's (a cache hit) or
@@ -37695,7 +37677,7 @@ mod tests {
         // content cache holds attempt 0's green for the identical digest - so the gate is a
         // cache-hit, not a second command run.
         let repo = temp_git_project_with_commit();
-        let cfg = content_cache_cfg();
+        let cfg = review_stage_cfg("g");
         let store = Store::open(":memory:").unwrap();
         let runner = RecordingRunner::new(&[]);
         let driver = CacheDriver {
@@ -37760,7 +37742,7 @@ mod tests {
         // input digest differs from attempt 0's green, so the content cache MISSES and the
         // gate RUNS AGAIN - a stale green never answers changed inputs.
         let repo = temp_git_project_with_commit();
-        let cfg = content_cache_cfg();
+        let cfg = review_stage_cfg("g");
         let store = Store::open(":memory:").unwrap();
         let runner = RecordingRunner::new(&[]);
         let driver = CacheDriver {
@@ -37806,7 +37788,7 @@ mod tests {
         // fails on attempt 0 (red); remediation re-runs it on attempt 1 over the IDENTICAL
         // tree, and the red does NOT answer it - the gate runs a second time (and passes).
         let repo = temp_git_project_with_commit();
-        let cfg = content_cache_cfg();
+        let cfg = review_stage_cfg("g");
         let store = Store::open(":memory:").unwrap();
         let runner = FailFirstRunner::new("g");
         let driver = CacheDriver {

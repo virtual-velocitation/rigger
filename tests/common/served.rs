@@ -172,8 +172,19 @@ pub fn graph_provider_of(graph: Graph) -> impl Fn(Option<&str>) -> Graph + Send 
 /// `GET path` over a real loopback socket against a dash whose whole-graph and state-poll
 /// providers both serve `graph`.
 pub fn fetch_served(path: &str, graph: &Graph) -> String {
+    fetch_served_split(path, graph, graph)
+}
+
+/// `GET path` over a real loopback socket against a dash serving two DISTINCT graphs -
+/// `whole_graph` behind the lazy whole-graph provider and `poll_graph` behind the state-poll
+/// provider - so whatever crosses the wire proves which provider it read.
+pub fn fetch_served_split(path: &str, whole_graph: &Graph, poll_graph: &Graph) -> String {
     fetch_with_retry(path, || {
-        try_fetch_over(path, graph_provider_of(graph.clone()), graph.clone())
+        try_fetch_over(
+            path,
+            graph_provider_of(whole_graph.clone()),
+            poll_graph.clone(),
+        )
     })
 }
 

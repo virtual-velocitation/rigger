@@ -134,3 +134,13 @@ pub fn fan_out_stage(name: &str, needs: &[&str], gates: &[&str]) -> Stage {
         ..Default::default()
     }
 }
+
+/// A single implement + review stage `s` ([`mk_stage`]: worker implements, one lens, one
+/// adjudicator, `on_pass: merge`) over the always-passing gate `gate`.
+pub fn review_stage_cfg(gate: &str) -> Config {
+    workflow_cfg(
+        &["worker", "lens", "judge"],
+        &[(gate, "true")],
+        vec![mk_stage("s", gate)],
+    )
+}
