@@ -23,6 +23,7 @@ use common::cli::read_run_events;
 use common::cli::reported_reclaimed_bytes;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::run_rigger_ok;
 use common::cli::run_stream_identity;
 use common::cli::seed_order_signature;
 use common::cli::seed_run_events;
@@ -17557,14 +17558,6 @@ fn dash_breadcrumb_project(url: Option<&str>, marker: Option<(u16, u32)>) -> tem
     proj
 }
 
-/// `rigger watch --once` over `root`, which must exit 0 whatever dash breadcrumbs it finds;
-/// returns its stdout.
-fn watch_once(root: &Path) -> String {
-    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
-    assert!(ok, "rigger watch --once must exit 0; stderr:\n{err}");
-    out
-}
-
 /// A marker carrying the [`rigger::dash::UNATTRIBUTED_PID`] sentinel on a dead port, beside
 /// `url` (or no `dash.url` at all): the dead marker port is still reported, but the sentinel is
 /// never printed as a fabricated dead process - it renders exactly like the no-matching-marker
@@ -17573,7 +17566,7 @@ fn assert_watch_once_never_names_the_sentinel_pid(url: Option<&str>) {
     let dead_port = free_loopback_port();
     let proj = dash_breadcrumb_project(url, Some((dead_port, rigger::dash::UNATTRIBUTED_PID)));
 
-    let out = watch_once(proj.path());
+    let out = run_rigger_ok(proj.path(), &["watch", "--once"]);
     assert!(
         out.contains("dash liveness") && out.contains(&dead_port.to_string()),
         "the dead marker port itself is a genuine anomaly and must still be reported, sentinel \
@@ -17622,7 +17615,7 @@ fn assert_watch_once_reports_a_dead_marker_less_url(path: &str) {
     let dead_port = free_loopback_port();
     let proj = dash_breadcrumb_project(Some(&format!("http://127.0.0.1:{dead_port}{path}")), None);
 
-    let out = watch_once(proj.path());
+    let out = run_rigger_ok(proj.path(), &["watch", "--once"]);
     assert!(
         out.contains("dash liveness") && out.contains(&dead_port.to_string()),
         "a dash.url naming a dead port with NO marker must still be reported, its port parsed \
@@ -17697,7 +17690,7 @@ fn assert_watch_once_names_the_urls_port_over_a_mismatched_marker(path: &str) {
         Some((marker_port, impossible_pid)),
     );
 
-    let out = watch_once(proj.path());
+    let out = run_rigger_ok(proj.path(), &["watch", "--once"]);
     assert!(
         out.contains("dash liveness") && out.contains(&format!("port {url_port}")),
         "the dash liveness report must probe and name the recorded dash.url's own port \
@@ -17858,7 +17851,7 @@ fn watch_once_over_a_dead_marker(
             .expect("seed the dash attempt marker");
     }
 
-    watch_once(root)
+    run_rigger_ok(root, &["watch", "--once"])
 }
 
 /// The dead marker is NOT the watched run's own breadcrumb - it belongs to a run that

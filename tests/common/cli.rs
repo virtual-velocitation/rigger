@@ -77,6 +77,14 @@ pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     run_rigger_envs(cwd, args, &[])
 }
 
+/// Run `rigger <args...>` in `cwd`, asserting it exits 0 (naming its stderr when it does not),
+/// and return its stdout.
+pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {
+    let (out, err, ok) = run_rigger(cwd, args);
+    assert!(ok, "rigger {} must exit 0; stderr:\n{err}", args.join(" "));
+    out
+}
+
 /// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
 /// (stdout, stderr, success).
 pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
