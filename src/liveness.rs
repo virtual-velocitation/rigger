@@ -192,6 +192,27 @@ pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<s
     scratch_subpath(scratch_root, MARKER_SUBDIR, run_id, spawn_id)
 }
 
+/// Each `wave` spawn's liveness-marker age in whole seconds since its last touch at `now`, keyed
+/// by spawn id - the ONE marker-age read every surface that presents agent liveness (`rigger
+/// status`, `rigger watch`, the dash, the `rigger_activity` MCP tool) calls. A spawn with no
+/// marker (absent, or a degenerate id [`marker_path`] refuses) is simply missing, and an empty
+/// `scratch_root` (a repo-less invocation) yields no ages at all.
+pub fn marker_ages(
+    scratch_root: &str,
+    run_id: &str,
+    wave: &[spawn::WaveItem],
+    now: SystemTime,
+) -> std::collections::BTreeMap<String, u64> {
+    wave.iter()
+        .filter_map(|w| {
+            let path = marker_path(scratch_root, run_id, &w.id)?;
+            let mtime = std::fs::metadata(path).and_then(|md| md.modified()).ok()?;
+            let age = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
+            Some((w.id.clone(), age))
+        })
+        .collect()
+}
+
 /// Whether ANY per-spawn liveness marker under `scratch_root` - any run, any spawn - has been
 /// touched more recently than `max_age` ago (spec 62, criterion 5: the machine-level
 /// singleton's self-reap watcher must see agent liveness, not just the instance registry).

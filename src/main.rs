@@ -7398,28 +7398,17 @@ fn dash_read_liveness(
     scratch_root: &str,
     run_id: &str,
 ) -> std::collections::HashMap<String, u64> {
-    let mut ages = std::collections::HashMap::new();
-    if scratch_root.is_empty() {
-        return ages;
-    }
     let Ok(step) = spawn::step_result(events) else {
-        return ages;
+        return std::collections::HashMap::new();
     };
-    let now = std::time::SystemTime::now();
-    for w in &step.wave {
-        // A degenerate id (never a real spawn id rigger itself mints) has no marker path at
-        // all - skip it exactly like a marker that is absent for any other reason.
-        let Some(path) = rigger::liveness::marker_path(scratch_root, run_id, &w.id) else {
-            continue;
-        };
-        if let Ok(age) = std::fs::metadata(&path)
-            .and_then(|md| md.modified())
-            .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-        {
-            ages.insert(w.id.clone(), age);
-        }
-    }
-    ages
+    rigger::liveness::marker_ages(
+        scratch_root,
+        run_id,
+        &step.wave,
+        std::time::SystemTime::now(),
+    )
+    .into_iter()
+    .collect()
 }
 
 /// Which registered instance a dash request ATTACHES to (spec 50, criterion 3), resolved from the
@@ -7850,25 +7839,13 @@ fn liveness_ages_for_wave(
     wave: &[spawn::WaveItem],
     now: std::time::SystemTime,
 ) -> std::collections::BTreeMap<String, u64> {
-    let mut ages = std::collections::BTreeMap::new();
     if repo.is_empty() {
-        return ages;
+        return std::collections::BTreeMap::new();
     }
     // A read-only report resolves the root without creating it: `rigger status` must never
     // conjure a scratch root, nor run the orphan-root reclaim that creating one does.
     let root = rigger::worktree::scratch_root_path_from_env(repo, workdir);
-    for w in wave {
-        let Some(path) = rigger::liveness::marker_path(&root, run_id, &w.id) else {
-            continue;
-        };
-        if let Ok(age) = std::fs::metadata(&path)
-            .and_then(|md| md.modified())
-            .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-        {
-            ages.insert(w.id.clone(), age);
-        }
-    }
-    ages
+    rigger::liveness::marker_ages(&root, run_id, wave, now)
 }
 
 /// Spec 94 CONSTRAINTS WALK's own empty-store text ("no run recorded; start one with `rigger

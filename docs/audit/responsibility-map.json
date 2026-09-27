@@ -7637,7 +7637,7 @@
     "is_test": false,
     "proposed_module": "main::dash_glue",
     "reason": "name contains \"dash_\" (dash registry/marker glue); grouped under `main::dash_glue`.",
-    "content_hash": "0d852570adf6ed9a"
+    "content_hash": "4e2dab238030a177"
   },
   {
     "file": "src/main.rs",
@@ -7733,7 +7733,7 @@
     "is_test": false,
     "proposed_module": "main::liveness",
     "reason": "name contains \"live\" (liveness/heartbeat reporting); grouped under `main::liveness`.",
-    "content_hash": "c1d942caef3d9420"
+    "content_hash": "3e3e39ad737c6757"
   },
   {
     "file": "src/main.rs",
