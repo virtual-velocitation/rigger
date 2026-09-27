@@ -1357,7 +1357,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "c153196a7292118d"
+    "content_hash": "47ff5d0ddc32bcf0"
   },
   {
     "file": "src/conductor.rs",
@@ -1677,7 +1677,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"build\" (generic construction helper); grouped under `conductor::support`.",
-    "content_hash": "5fd12ea918b92fc5"
+    "content_hash": "70323910c36695f6"
   },
   {
     "file": "src/conductor.rs",
@@ -4149,7 +4149,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9c4dff72bd33fd06"
+    "content_hash": "5066700c0ce02eb4"
   },
   {
     "file": "src/conductor.rs",
@@ -4165,7 +4165,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ed6d6da33f79dae6"
+    "content_hash": "3ff37a528d0eca60"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "operator_instructions_reach_every_spawned_agent_between_persona_and_discipline",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e5bedfa43c9d297d"
   },
   {
     "file": "src/conductor.rs",
@@ -6661,7 +6669,15 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "3ae3c2c4fddb69f1"
+    "content_hash": "3c7d9fff73d637d5"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "push_definition_section",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "e07db2592b3aa111"
   },
   {
     "file": "src/main.rs",
@@ -6733,7 +6749,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "704596fc7ee44533"
+    "content_hash": "9b718f52c014310f"
   },
   {
     "file": "src/main.rs",
@@ -8397,7 +8413,7 @@
     "is_test": false,
     "proposed_module": "main::scaffold_report",
     "reason": "method inside `impl ScaffoldReport`; grouped with its other `ScaffoldReport` methods.",
-    "content_hash": "8e53b830a2485028"
+    "content_hash": "6ec551cf1965d1b4"
   },
   {
     "file": "src/main.rs",
@@ -8405,7 +8421,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "3cebc2e8e5bf8110"
+    "content_hash": "97a5a14dd9ae49c5"
   },
   {
     "file": "src/main.rs",
@@ -8445,7 +8461,7 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"scaffold\" (project setup); grouped under `main::setup`.",
-    "content_hash": "ce761a9c3bafea72"
+    "content_hash": "5f8e7449bde2c2e3"
   },
   {
     "file": "src/main.rs",
@@ -8737,11 +8753,27 @@
   },
   {
     "file": "src/main.rs",
+    "name": "instructions_in_force_line",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "d36c612bee9ed006"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "cmd_instructions",
+    "is_test": false,
+    "proposed_module": "main::commands",
+    "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
+    "content_hash": "819d677eb6b0deb1"
+  },
+  {
+    "file": "src/main.rs",
     "name": "cmd_prime",
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "189ba44c231a5c95"
+    "content_hash": "ceef41ef47da2212"
   },
   {
     "file": "src/main.rs",
@@ -10381,7 +10413,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "21b8307d7621e796"
+    "content_hash": "884272ed49e87b0a"
   },
   {
     "file": "src/main.rs",

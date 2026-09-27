@@ -10409,8 +10409,9 @@ impl RunCtx<'_> {
     }
 
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
-    /// PERSONA (its role - the markdown body of its definition) followed by the
-    /// rigger-authored communication discipline ([`RIGGER_COMMUNICATION`]). This is
+    /// PERSONA (its role - the markdown body of its definition), the built-in and operator
+    /// instruction layers (`cfg.instructions`), and the rigger-authored communication
+    /// discipline ([`RIGGER_COMMUNICATION`]). This is
     /// the SINGLE persona-source path - every spawn site builds the system prompt
     /// here, so BOTH drivers (the cli `--system-prompt`, the workflow shim's
     /// `options.systemPrompt`) receive an identical persona + discipline and cannot
@@ -12077,18 +12078,21 @@ work; superseding explicitly keeps every agent on one story.\n\
 The exact JSON shapes for these emits are given in your task instructions; this \
 section governs the DISCIPLINE and cadence - follow it on every turn.";
 
-/// Compose an agent's SYSTEM prompt: its `persona` (its role body) followed by the
-/// rigger-authored [`RIGGER_COMMUNICATION`] discipline. An agent with no persona
-/// (empty body) still receives the discipline, so every spawned agent gets it; the
-/// persona, when present, leads so the role frames the discipline. This is the one
-/// place persona and discipline are joined, keeping both driver paths identical.
+/// Compose an agent's SYSTEM prompt: its `persona` (its role body), then the built-in and
+/// `operator` instruction layers ([`crate::instructions::compose`]), then the
+/// rigger-authored [`RIGGER_COMMUNICATION`] discipline. An agent with no persona (empty
+/// body) still receives every layer and the discipline, so every spawned agent gets them;
+/// the persona, when present, leads so the role frames the rest. This is the one place
+/// persona, instructions and discipline are joined, keeping both driver paths identical.
 ///
 /// `pub(crate)` so the canary runner (spec 13, unit 5) composes a canary reviewer's
 /// system prompt through the SAME single authority, rather than a second copy that
 /// could drift from the discipline every live spawn receives.
 pub(crate) fn build_system_prompt(persona: &str, operator: &[Instruction]) -> String {
-    let _ = operator;
-    format!("{persona}{RIGGER_COMMUNICATION}")
+    format!(
+        "{}{RIGGER_COMMUNICATION}",
+        crate::instructions::compose(persona, operator)
+    )
 }
 
 /// The protocol a REVIEW agent (a lens or the adversary) follows so its findings
@@ -28012,11 +28016,13 @@ mod tests {
         // system prompt - the implementer and all three review tiers - after the persona and
         // the built-in law, and before the communication discipline. An agent with no
         // persona still carries the built-in engineering principles.
-        let mut cfg = Config::default();
-        cfg.instructions = vec![Instruction {
-            name: "10-house".into(),
-            body: "House rule: every public fn carries a doc comment.".into(),
-        }];
+        let mut cfg = Config {
+            instructions: vec![Instruction {
+                name: "10-house".into(),
+                body: "House rule: every public fn carries a doc comment.".into(),
+            }],
+            ..Default::default()
+        };
         for (id, persona) in [
             ("worker", "You are the rust engineer."),
             ("lensA", "You are the architecture lens."),

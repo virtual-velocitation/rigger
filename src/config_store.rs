@@ -57,9 +57,41 @@ pub fn load(dir: &str) -> Result<Config, Error> {
 /// is not part of it. An absent directory is an empty layer; any other read failure is an
 /// error naming the path, never a silently thinner layer.
 pub fn load_instructions(dir: &Path) -> Result<Vec<Instruction>, Error> {
-    let _ = dir;
-    Ok(Vec::new())
+    let ins_dir = dir.join(".rigger").join("instructions");
+    let entries = match std::fs::read_dir(&ins_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(err(format!("read {}: {e}", ins_dir.display()))),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| err(format!("read {}: {e}", ins_dir.display())))?
+            .path();
+        let is_md = path.extension().and_then(|x| x.to_str()) == Some("md");
+        if is_md && path.file_name().and_then(|x| x.to_str()) != Some(INSTRUCTIONS_README) {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+        .into_iter()
+        .map(|path| {
+            let body = std::fs::read_to_string(&path)
+                .map_err(|e| err(format!("read {}: {e}", path.display())))?;
+            let name = path
+                .file_stem()
+                .and_then(|x| x.to_str())
+                .unwrap_or_default()
+                .to_string();
+            Ok(Instruction { name, body })
+        })
+        .collect()
 }
+
+/// The file that documents `.rigger/instructions/` (scaffolded by `rigger init`); it
+/// describes the operator layer and is never itself part of it.
+pub const INSTRUCTIONS_README: &str = "README.md";
 
 fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
     index_agents(read_agents_dir(dir)?)

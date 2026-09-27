@@ -38,6 +38,7 @@ use rigger::gate::{
     MUTATION_GATE_ID, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
+use rigger::instructions;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
@@ -1031,8 +1032,9 @@ fn canonical_definition_text(s: &str) -> String {
 }
 
 /// The definition hash a run PINS (spec 13, unit 1): a stable FNV-1a digest over the on-disk
-/// definition - the `.rigger/workflow.yml` plus the FULL agent-prompt set (every
-/// `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter) - canonicalized
+/// definition - the `.rigger/workflow.yml`, the FULL agent-prompt set (every
+/// `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter) and the operator
+/// instruction layer (every `.rigger/instructions/*.md`, absent means empty) - canonicalized
 /// ([`canonical_definition_text`]) and folded in sorted-filename order. So the same definition
 /// hashes identically across machines and checkouts (the [`fnv1a_64`] idiom is fixed-seed and
 /// build-stable), while ANY content change - a mid-campaign prompt edit above all - changes it.
@@ -1049,9 +1051,7 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
     // from an empty workflow.
     let workflow = std::fs::read_to_string(base.join("workflow.yml"))
         .map_err(|e| format!("definition hash: read {RIGGER_DIR}/workflow.yml: {e}"))?;
-    buf.push_str("workflow.yml\n");
-    buf.push_str(&canonical_definition_text(&workflow));
-    buf.push('\n');
+    push_definition_section(&mut buf, "workflow.yml", &workflow);
     // Every agent definition, folded in sorted-filename order so the hash is independent of
     // directory iteration order.
     let agents_dir = base.join("agents");
@@ -1074,13 +1074,24 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
     }
     agents.sort();
     for (name, content) in agents {
-        buf.push_str("agent:");
-        buf.push_str(&name);
-        buf.push('\n');
-        buf.push_str(&canonical_definition_text(&content));
-        buf.push('\n');
+        push_definition_section(&mut buf, &format!("agent:{name}"), &content);
+    }
+    // The operator instruction layer, through the ONE loader that decides which files are
+    // instructions (filename order); an absent directory contributes nothing.
+    for ins in config_store::load_instructions(Path::new(dir))
+        .map_err(|e| format!("definition hash: {e}"))?
+    {
+        push_definition_section(&mut buf, &format!("instruction:{}.md", ins.name), &ins.body);
     }
     Ok(format!("{:016x}", fnv1a_64(buf.as_bytes())))
+}
+
+/// Fold one tagged, canonicalized definition file into the [`definition_hash`] buffer.
+fn push_definition_section(buf: &mut String, tag: &str, content: &str) {
+    buf.push_str(tag);
+    buf.push('\n');
+    buf.push_str(&canonical_definition_text(content));
+    buf.push('\n');
 }
 
 /// Enforce the run's definition pin (spec 13, unit 1) at the CLI boundary, BEFORE the
@@ -1411,6 +1422,7 @@ const SUBCOMMANDS: &[&str] = &[
     "setup",
     "docs",
     "prime",
+    "instructions",
     "mcp",
     "grep-guard",
     "guard-write",
@@ -1455,6 +1467,7 @@ fn main() {
         "setup" => cmd_setup(&args[2..]),
         "docs" => cmd_docs(&args[2..]),
         "prime" => cmd_prime(&args[2..]),
+        "instructions" => cmd_instructions(&args[2..]),
         "mcp" => cmd_mcp(&args[2..]),
         "grep-guard" => cmd_grep_guard(&args[2..]),
         "guard-write" => cmd_guard_write(&args[2..]),
@@ -1641,6 +1654,9 @@ Code (primary), or `rigger workflow` as a fallback\n  \
 rigger prime [<spec>]       print recent decisions (what the hook runs); given a spec\n                              \
 path, also names `rigger validate <spec>` (the pre-launch\n                              \
 spec lint) as a next step\n  \
+rigger instructions         print the instructions every spawned agent is held to:\n                              \
+the built-in engineering law, then each operator file\n                              \
+in .rigger/instructions/ (filename order)\n  \
 rigger version              print the crate version and the build-provenance id\n                              \
 (a git commit/describe embedded at build time) so an\n                              \
 agent can identify the exact binary. Also `--version`\n\n\
@@ -11782,6 +11798,8 @@ struct ScaffoldReport {
     /// The durable project id this run newly MINTED into `.rigger/project.id` (spec 09),
     /// or `None` when the file already existed and was left untouched.
     minted_id: Option<String>,
+    /// True when this run newly wrote `.rigger/instructions/README.md` (it was absent).
+    wrote_instructions_readme: bool,
 }
 
 impl ScaffoldReport {
@@ -11793,6 +11811,7 @@ impl ScaffoldReport {
             || self.wrote_hook
             || !self.gitignore_added.is_empty()
             || self.minted_id.is_some()
+            || self.wrote_instructions_readme
     }
 }
 
@@ -11805,6 +11824,12 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
     let wrote_workflow = write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW)?;
+    let instructions_dir = rigger_dir.join("instructions");
+    std::fs::create_dir_all(&instructions_dir)?;
+    let wrote_instructions_readme = write_if_absent(
+        &instructions_dir.join(config_store::INSTRUCTIONS_README),
+        SCAFFOLD_INSTRUCTIONS_README,
+    )?;
 
     // 1b. Mint the durable project identity when absent (spec 09, Gap 20): a tracked
     // `.rigger/project.id` line so the identity survives directory renames and machine
@@ -11914,6 +11939,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         wrote_hook,
         gitignore_added,
         minted_id,
+        wrote_instructions_readme,
     })
 }
 
@@ -12074,6 +12100,9 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
     }
     if report.wrote_workflow {
         lines.push("scaffolded .rigger/workflow.yml".to_string());
+    }
+    if report.wrote_instructions_readme {
+        lines.push("scaffolded .rigger/instructions/README.md".to_string());
     }
     if !report.new_agents.is_empty() {
         lines.push(format!(
@@ -13453,6 +13482,33 @@ fn spec_lint_reminder_should_print() -> bool {
     }
 }
 
+/// The first line `rigger prime` prints: the instruction layers in force for this project,
+/// counting its `operator` files, so a session starts knowing which law its agents are held to.
+fn instructions_in_force_line(operator: usize) -> String {
+    let builtin = instructions::BUILTIN
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let extra = if operator == 0 {
+        String::new()
+    } else {
+        format!(" (+{operator} operator files)")
+    };
+    format!(
+        "{} in force: {builtin}{extra} - see rigger instructions",
+        instructions::HEADING
+    )
+}
+
+/// `rigger instructions` - print the composed instruction layers every spawned agent
+/// receives: the built-in law, then the operator files in `.rigger/instructions/`.
+fn cmd_instructions(_args: &[String]) -> Res {
+    let ops = config_store::load_instructions(Path::new("."))?;
+    print!("{}", instructions::render(&ops));
+    Ok(())
+}
+
 /// `rigger prime [<spec>]` - print recent decisions (what the SessionStart hook runs), and,
 /// when a spec path is given, the DISCOVERABILITY next step naming the spec lint (spec 66,
 /// criterion 5) so an operator or agent about to drive `/rigger <spec>` finds `rigger
@@ -13461,6 +13517,10 @@ fn spec_lint_reminder_should_print() -> bool {
 /// exactly as it was - no lint mention.
 fn cmd_prime(args: &[String]) -> Res {
     let spec_path = args.first();
+    println!(
+        "{}",
+        instructions_in_force_line(config_store::load_instructions(Path::new("."))?.len())
+    );
     let path = db_path("events.db");
     let selection = store_selection(None, None)?;
     if selection.is_sqlite() && !Path::new(&path).exists() {
@@ -14389,6 +14449,22 @@ fn write_if_absent(path: &Path, content: &str) -> Result<bool, Box<dyn std::erro
         .map_err(|e| format!("rigger: could not write {}: {e}", path.display()))?;
     Ok(true)
 }
+
+/// The README `rigger init` scaffolds into `.rigger/instructions/`, explaining the operator
+/// instruction layer. The loader skips it, so documenting the layer never injects it.
+const SCAFFOLD_INSTRUCTIONS_README: &str = "\
+# Operator instructions
+
+Every `*.md` file in this directory (except this README) is appended, in filename order,
+to the system prompt of every agent rigger spawns: after the agent's persona and the
+built-in engineering principles, before rigger's communication discipline. Name files with
+a numeric prefix (`10-house.md`, `20-team.md`) to control their order.
+
+Run `rigger instructions` to read exactly what your agents are held to.
+
+These files are part of a run's definition pin: editing one mid-run halts the next step
+as a definition drift. Edit them between runs, or continue with `--rebase-definition`.
+";
 
 /// The scaffolded workflow (§3.2): a worked plan -> implement pipeline where the
 /// review is PER UNIT. It demonstrates the documented shape - a `defaults:` block
