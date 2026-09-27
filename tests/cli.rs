@@ -3486,13 +3486,12 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
     write_reviewless_git_unit_workflow(root);
 
     let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
 
     // Step 1: the "solo" unit's implementer parks - a real, git-backed unit worktree is
     // created now, checked out on `rigger/u/solo` at whatever `rigger-run` currently
     // points to. Nothing has landed yet, so the branch tip trivially equals the run tip -
     // the empty-diff shape this criterion targets.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "the first step must succeed; stderr:\n{err}");
     assert!(
         out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
@@ -3533,7 +3532,7 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
     // Step 2: no courier result was recorded for "solo/implementer#0", so it is still the
     // very same outstanding spawn - and the run's `current_run_units` fold still reads it
     // as LIVE. This step's OWN step-start sweep is the one under test.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "the second step must succeed; stderr:\n{err}");
     assert!(
         out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
@@ -3776,7 +3775,7 @@ fn step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree(
 
     // A REAL parked unit: a live worktree under the scratch root that a wrongly-scoped sweep
     // must never remove.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "the seeding step must succeed; stderr:\n{err}");
     assert!(
         out.contains(r#""id":"solo/implementer#0""#),
@@ -6808,6 +6807,69 @@ stages:
     );
 }
 
+/// Step 1 (bootstrap) of a resumed-`reviewed` fixture: mints the run's `RunStarted` and
+/// creates the `solo` unit's real, git-backed worktree/branch at their deterministic path (its
+/// parked implementer is simply abandoned, standing in for a prior window whose OWN later steps
+/// carried it to `reviewed` and then died before the merge), then commits that window's work
+/// into the worktree - the durable checkpoint a real interrupted window leaves on the unit's
+/// branch. Returns the worktree and its HEAD, captured while the worktree is known to exist:
+/// `run_stage`'s caller removes a unit's worktree DIR (never its branch) on any terminal,
+/// non-parked return, and this sha is what a re-`ensure_present` checks the branch back out to.
+fn bootstrap_a_prior_windows_committed_checkpoint(root: &Path) -> (std::path::PathBuf, String) {
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the bootstrap step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#),
+        "the bootstrap step must park the implementer, creating the unit's worktree; got: \
+         {out:?}"
+    );
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "premise: the bootstrap step must already have created the unit's worktree: {}",
+        wt_dir.display()
+    );
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    git_ok(&wt_dir, &["add", "-A"]);
+    git_ok(
+        &wt_dir,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "prior window: implemented and reviewed",
+        ],
+    );
+    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
+        .expect("the committed worktree must resolve its own HEAD");
+    (wt_dir, expected_sha)
+}
+
+/// The resumed unit's red `gate` recorded a `UnitFailed` stamped with the RESTORED tree's
+/// real HEAD `expected_sha` - never the empty sentinel a read taken during the deletion window
+/// would silently stamp - and never integrated.
+fn assert_the_resumed_unit_failed_at_the_restored_sha(root: &Path, expected_sha: &str, gate: &str) {
+    let events = read_run_events(root);
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .unwrap_or_else(|| panic!("the resumed unit's red {gate} must record a UnitFailed"));
+    assert_a_real_worktree_sha(
+        failed,
+        expected_sha,
+        "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
+         read taken during the deletion window would silently stamp",
+        "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
+         the deletion window",
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
+        "a red {gate} on resume must never integrate"
+    );
+}
+
 /// Spec 64, criterion 3, adjudication round 5 finding
 /// `sdet-u3c3r5-resumed-reviewed-gate-failure-failed-sha-still-empty-sentinel` (UPHELD; fixed
 /// round 6 with the identical one-line guard already used at six sibling sites - `if let
@@ -6863,46 +6925,7 @@ stages:
     )
     .unwrap();
 
-    // Step 1 (bootstrap): mints the run's `RunStarted` and creates the unit's real,
-    // git-backed worktree/branch at their deterministic path. Its own parked implementer is
-    // never resulted - it is simply abandoned, standing in for the prior window this test's
-    // premise depends on (a window whose OWN later steps carried it to `reviewed` and then
-    // died before the merge).
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the bootstrap step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#),
-        "the bootstrap step must park the implementer, creating the unit's worktree; got: \
-         {out:?}"
-    );
-    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
-    assert!(
-        wt_dir.exists(),
-        "premise: the bootstrap step must already have created the unit's worktree: {}",
-        wt_dir.display()
-    );
-
-    // The prior window's own committed work, written directly into the ALREADY-CREATED
-    // worktree and committed - the durable checkpoint a real interrupted window leaves on the
-    // unit's branch.
-    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    git_ok(&wt_dir, &["add", "-A"]);
-    git_ok(
-        &wt_dir,
-        &[
-            "commit",
-            "-q",
-            "-m",
-            "prior window: implemented and reviewed",
-        ],
-    );
-    // Captured NOW, while the worktree is known to exist: `run_stage`'s own caller removes a
-    // unit's worktree DIR (never its branch) on any TERMINAL, non-parked return - including
-    // the `UnitFailed` this test drives - so the dir this test's own commit landed in will
-    // itself be gone again by the time the step below returns. The branch is the durable
-    // checkpoint; this sha is what a re-`ensure_present` checks the SAME branch back out to.
-    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
-        .expect("the committed worktree must resolve its own HEAD");
+    let (_wt_dir, expected_sha) = bootstrap_a_prior_windows_committed_checkpoint(root);
 
     // The prior window's own recorded verdict: the unit is `reviewed`, only the merge is
     // outstanding. Seeded AFTER the bootstrap step's `RunStarted`, so it lands in the SAME
@@ -6932,25 +6955,7 @@ stages:
          wholesale, or this test proves nothing about a restore: {marker_content:?}"
     );
 
-    let events = read_run_events(root);
-    let failed = events
-        .iter()
-        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
-        .expect("the resumed unit's red exhaustive re-gate must record a UnitFailed");
-    assert_a_real_worktree_sha(
-        failed,
-        &expected_sha,
-        "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
-         read taken during the deletion window would silently stamp",
-        "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
-         the deletion window",
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
-        "a red exhaustive re-gate on resume must never integrate"
-    );
+    assert_the_resumed_unit_failed_at_the_restored_sha(root, &expected_sha, "exhaustive re-gate");
 }
 
 /// Spec 64, criterion 3, adjudication round 5 finding
@@ -7022,45 +7027,7 @@ stages:
     )
     .unwrap();
 
-    // Step 1 (bootstrap): mints the run's `RunStarted` and creates the unit's real,
-    // git-backed worktree/branch at their deterministic path. Its own parked implementer is
-    // never resulted - it is simply abandoned, standing in for the prior window this test's
-    // premise depends on (a window whose OWN later steps carried it to `reviewed` and then
-    // died before the merge).
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the bootstrap step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#),
-        "the bootstrap step must park the implementer, creating the unit's worktree; got: \
-         {out:?}"
-    );
-    assert!(
-        wt_dir.exists(),
-        "premise: the bootstrap step must already have created the unit's worktree: {}",
-        wt_dir.display()
-    );
-
-    // The prior window's own committed work, written directly into the ALREADY-CREATED
-    // worktree and committed - the durable checkpoint a real interrupted window leaves on the
-    // unit's branch.
-    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    git_ok(&wt_dir, &["add", "-A"]);
-    git_ok(
-        &wt_dir,
-        &[
-            "commit",
-            "-q",
-            "-m",
-            "prior window: implemented and reviewed",
-        ],
-    );
-    // Captured NOW, while the worktree is known to exist: `run_stage`'s own caller removes a
-    // unit's worktree DIR (never its branch) on any TERMINAL, non-parked return - including
-    // the `UnitFailed` this test drives - so the dir this test's own commit landed in will
-    // itself be gone again by the time the step below returns. The branch is the durable
-    // checkpoint; this sha is what a re-`ensure_present` checks the SAME branch back out to.
-    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
-        .expect("the committed worktree must resolve its own HEAD");
+    let (_, expected_sha) = bootstrap_a_prior_windows_committed_checkpoint(root);
 
     // Advance the BASE repo's own checkout with an unrelated commit, so the unit's merge is a
     // genuine three-way merge (both sides added a distinct file since their common ancestor)
@@ -7111,25 +7078,7 @@ stages:
          base repo's working tree"
     );
 
-    let events = read_run_events(root);
-    let failed = events
-        .iter()
-        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
-        .expect("the resumed unit's red post-merge re-gate must record a UnitFailed");
-    assert_a_real_worktree_sha(
-        failed,
-        &expected_sha,
-        "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
-         read taken during the deletion window would silently stamp",
-        "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
-         the deletion window",
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
-        "a rolled-back post-merge re-gate on resume must never integrate"
-    );
+    assert_the_resumed_unit_failed_at_the_restored_sha(root, &expected_sha, "post-merge re-gate");
 }
 
 /// Spec 64, criterion 3, adjudication round 5 finding
@@ -7380,75 +7329,60 @@ fn step_registers_the_instance_in_the_machine_global_registry() {
     );
 }
 
-/// Spec 50, criterion 2 on the IN-PROCESS run drivers + the SECRETS invariant on the SERVER arm: a
-/// native `rigger run` drives the WHOLE run in-process (a single `conductor::run`), NOT through the
-/// stepwise loop, so it must register its instance at its OWN call site (`run_cli`) - a missing call
-/// here is an independent boundary bug the `rigger step` test cannot catch. And when the run reports
-/// to a SHARED server, the persisted store identity must be CREDENTIAL-FREE: the exact end-to-end
-/// Server-arm coverage the module unit tests cannot give (they never drive the binary's wiring).
-///
-/// Drives `rigger run` against a well-formed but UNREACHABLE server URL whose userinfo AND query
-/// hide a credential (nothing listens on this loopback port, so the eager connect is refused fast).
-/// `--base HEAD` resolves in the committed repo, so the run clears its base/anchor gates and reaches
-/// the register + store-open seam; it then FAILS at connect - AFTER `run_cli` has registered. The
-/// registry is redirected into a temp `XDG_STATE_HOME` and read back through the dash's own reader:
-/// exactly one Shared entry, its endpoint the bare `scheme://host:port`, with NO credential fragment
-/// anywhere on disk. A regression that registered only from `rigger step` finds zero entries here; a
-/// regression that persisted the raw connection string finds `admin`/`hunter2` on disk.
-#[test]
-fn run_registers_a_credential_free_shared_instance() {
+/// Drives `rigger run <driver_args...> --base HEAD --conn <url>` against a well-formed but
+/// UNREACHABLE server URL on loopback `port` whose userinfo AND query hide a credential (nothing
+/// listens there, so the eager connect is refused fast): the run fails at store-open - expected -
+/// AFTER its own call site registered its instance, and never echoes the credential. The
+/// registry, redirected into a temp `XDG_STATE_HOME` (never the operator's ~/.local/state), is
+/// read back through the dash's own reader: exactly one live Shared entry whose endpoint is the
+/// bare `scheme://host:port` (the single redaction authority `eventstore::endpoint_label` ran
+/// over the conn), with NO credential or query fragment anywhere on disk. `path` names the
+/// driver path in failure messages.
+fn assert_a_run_registers_a_credential_free_shared_instance(
+    driver_args: &[&str],
+    port: u16,
+    path: &str,
+) {
     use rigger::registry;
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
-
-    // Redirect the machine-global state dir into a temp home (never the operator's ~/.local/state).
     let state = tempfile::tempdir().unwrap();
     let xdg = state.path().to_str().unwrap();
 
-    // A credential in the userinfo, plus a query, on an unreachable loopback port so the eager
-    // connect is refused fast (the port pattern the crate's own tests use for "nothing listens").
-    let conn = "kurrentdb://admin:hunter2@127.0.0.1:65533?tls=false";
-    let (_out, err, ok) = run_rigger_envs(
-        root,
-        &["run", "--base", "HEAD", "--conn", conn],
-        &[("XDG_STATE_HOME", xdg)],
-    );
-    // The run itself fails at store-open (the server is unreachable) - expected. The assertion is on
-    // the registration side effect that fired BEFORE that failure, and on stderr never leaking the
-    // credential (the store-open error redacts the conn through the same single authority).
+    let conn = format!("kurrentdb://admin:hunter2@127.0.0.1:{port}?tls=false");
+    let mut args = vec!["run"];
+    args.extend_from_slice(driver_args);
+    args.extend_from_slice(&["--base", "HEAD", "--conn", &conn]);
+    let (_out, err, ok) = run_rigger_envs(root, &args, &[("XDG_STATE_HOME", xdg)]);
     assert!(
         !ok,
-        "the unreachable server makes the run fail at store-open (expected); stderr: {err}"
+        "the unreachable server makes the {path} fail at store-open (expected); stderr: {err}"
     );
     assert!(
         !err.contains("admin") && !err.contains("hunter2"),
         "the store-open error must redact the credential, never echo it; stderr: {err}"
     );
 
-    // The dash's own reader returns exactly this instance (a fresh heartbeat, so nothing prunes).
+    // A fresh heartbeat, so nothing prunes.
     let regdir = registry::instances_dir(state.path());
     let live = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
     assert_eq!(
         live.len(),
         1,
-        "a native `rigger run` registers its instance too (not only `rigger step`); got {live:?}"
+        "the {path} registers its instance at its own call site; got {live:?}"
     );
     let inst = &live[0];
     assert!(inst.heartbeat_ms > 0, "a live heartbeat is stamped");
-
-    // The Server arm persisted the CREDENTIAL-FREE endpoint: scheme + host:port only, no userinfo,
-    // no query - the single redaction authority (`eventstore::endpoint_label`) ran over the conn.
     match &inst.store {
         registry::StoreIdentity::Shared { endpoint } => assert_eq!(
-            endpoint, "kurrentdb://127.0.0.1:65533",
+            endpoint,
+            &format!("kurrentdb://127.0.0.1:{port}"),
             "the shared store identity is the bare scheme://host:port"
         ),
-        other => panic!("a --conn run registers a Shared store identity; got {other:?}"),
+        other => panic!("a --conn {path} registers a Shared store identity; got {other:?}"),
     }
-
-    // The secrets invariant, end to end: NO credential or query fragment reaches the on-disk entry.
     let entry = regdir.join(format!("{}.json", inst.id()));
     let body = std::fs::read_to_string(&entry).unwrap();
     for secret in ["admin", "hunter2", "tls=false"] {
@@ -7459,89 +7393,47 @@ fn run_registers_a_credential_free_shared_instance() {
     }
 }
 
-/// Spec 50, criterion 2 on the THIRD registration path - the in-process SERVED conductor
-/// (`rigger serve` / `rigger run --driver workflow`, i.e. `run_workflow`) - plus the SECRETS
-/// invariant on its Server arm. `run_workflow` drives the whole run in-process on a background
-/// thread while it serves the MCP bridge, so - exactly like `run_cli` and unlike the stepwise
-/// loop - it must register its instance at its OWN call site. That call site is DISTINCT from the
-/// two the sibling tests cover (`cmd_step`, `run_cli`): a regression that dropped
-/// `register_run_instance` from `run_workflow` alone (keeping it in `run_cli`) stays green in
-/// `run_registers_a_credential_free_shared_instance` yet finds ZERO entries here. This closes the
-/// "wire ALL THREE paths" seam, the last of which no other test drives.
-///
-/// Drives `rigger run --driver workflow` against a well-formed but UNREACHABLE server URL whose
-/// userinfo AND query hide a credential. `run_workflow` registers BEFORE it opens the store, so the
-/// registration side effect fires and THEN the eager connect is refused fast (nothing listens on
-/// this loopback port) - the run returns the store-open error before ever reaching its MCP serve
-/// loop, so the invocation terminates without a live server. The registry is redirected into a temp
-/// `XDG_STATE_HOME` and read back through the dash's own reader: exactly one Shared entry, its
-/// endpoint the bare `scheme://host:port`, with NO credential fragment anywhere on disk.
-#[test]
-fn run_driver_workflow_registers_a_credential_free_shared_instance() {
-    use rigger::registry;
-
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-
-    // Redirect the machine-global state dir into a temp home (never the operator's ~/.local/state).
-    let state = tempfile::tempdir().unwrap();
-    let xdg = state.path().to_str().unwrap();
-
-    // A credential in the userinfo, plus a query, on an unreachable loopback port so the eager
-    // connect is refused fast. A distinct port from the sibling test's, purely for readability
-    // (both merely connect to a dead port, so they could never collide).
-    let conn = "kurrentdb://admin:hunter2@127.0.0.1:65532?tls=false";
-    let (_out, err, ok) = run_rigger_envs(
-        root,
-        &[
-            "run", "--driver", "workflow", "--base", "HEAD", "--conn", conn,
-        ],
-        &[("XDG_STATE_HOME", xdg)],
-    );
-    // The served path fails at store-open (the server is unreachable) - expected. The assertion is
-    // on the registration side effect that fired BEFORE that failure, and on stderr never leaking
-    // the credential (the store-open error redacts the conn through the same single authority).
-    assert!(
-        !ok,
-        "the unreachable server makes the served run fail at store-open (expected); stderr: {err}"
-    );
-    assert!(
-        !err.contains("admin") && !err.contains("hunter2"),
-        "the store-open error must redact the credential, never echo it; stderr: {err}"
-    );
-
-    // The dash's own reader returns exactly this instance (a fresh heartbeat, so nothing prunes).
-    let regdir = registry::instances_dir(state.path());
-    let live = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
-    assert_eq!(
-        live.len(),
-        1,
-        "the served path (`rigger run --driver workflow`) registers its instance too, at its own \
-         call site distinct from `rigger step` and plain `rigger run`; got {live:?}"
-    );
-    let inst = &live[0];
-    assert!(inst.heartbeat_ms > 0, "a live heartbeat is stamped");
-
-    // The Server arm persisted the CREDENTIAL-FREE endpoint: scheme + host:port only, no userinfo,
-    // no query - the single redaction authority (`eventstore::endpoint_label`) ran over the conn.
-    match &inst.store {
-        registry::StoreIdentity::Shared { endpoint } => assert_eq!(
-            endpoint, "kurrentdb://127.0.0.1:65532",
-            "the shared store identity is the bare scheme://host:port"
-        ),
-        other => panic!("a --conn served run registers a Shared store identity; got {other:?}"),
-    }
-
-    // The secrets invariant, end to end: NO credential or query fragment reaches the on-disk entry.
-    let entry = regdir.join(format!("{}.json", inst.id()));
-    let body = std::fs::read_to_string(&entry).unwrap();
-    for secret in ["admin", "hunter2", "tls=false"] {
-        assert!(
-            !body.contains(secret),
-            "no credential/query fragment ({secret:?}) may reach the registry entry; got {body}"
+rigger::test_cases! {
+    /// Spec 50, criterion 2 on the IN-PROCESS run drivers + the SECRETS invariant on the SERVER arm: a
+    /// native `rigger run` drives the WHOLE run in-process (a single `conductor::run`), NOT through the
+    /// stepwise loop, so it must register its instance at its OWN call site (`run_cli`) - a missing call
+    /// here is an independent boundary bug the `rigger step` test cannot catch. And when the run reports
+    /// to a SHARED server, the persisted store identity must be CREDENTIAL-FREE: the exact end-to-end
+    /// Server-arm coverage the module unit tests cannot give (they never drive the binary's wiring).
+    ///
+    /// Drives `rigger run` against a well-formed but UNREACHABLE server URL whose userinfo AND query
+    /// hide a credential (nothing listens on this loopback port, so the eager connect is refused fast).
+    /// `--base HEAD` resolves in the committed repo, so the run clears its base/anchor gates and reaches
+    /// the register + store-open seam; it then FAILS at connect - AFTER `run_cli` has registered. The
+    /// registry is redirected into a temp `XDG_STATE_HOME` and read back through the dash's own reader:
+    /// exactly one Shared entry, its endpoint the bare `scheme://host:port`, with NO credential fragment
+    /// anywhere on disk. A regression that registered only from `rigger step` finds zero entries here; a
+    /// regression that persisted the raw connection string finds `admin`/`hunter2` on disk.
+    run_registers_a_credential_free_shared_instance:
+        assert_a_run_registers_a_credential_free_shared_instance(&[], 65533, "native run");
+    /// Spec 50, criterion 2 on the THIRD registration path - the in-process SERVED conductor
+    /// (`rigger serve` / `rigger run --driver workflow`, i.e. `run_workflow`) - plus the SECRETS
+    /// invariant on its Server arm. `run_workflow` drives the whole run in-process on a background
+    /// thread while it serves the MCP bridge, so - exactly like `run_cli` and unlike the stepwise
+    /// loop - it must register its instance at its OWN call site. That call site is DISTINCT from the
+    /// two the sibling tests cover (`cmd_step`, `run_cli`): a regression that dropped
+    /// `register_run_instance` from `run_workflow` alone (keeping it in `run_cli`) stays green in
+    /// `run_registers_a_credential_free_shared_instance` yet finds ZERO entries here. This closes the
+    /// "wire ALL THREE paths" seam, the last of which no other test drives.
+    ///
+    /// Drives `rigger run --driver workflow` against a well-formed but UNREACHABLE server URL whose
+    /// userinfo AND query hide a credential. `run_workflow` registers BEFORE it opens the store, so the
+    /// registration side effect fires and THEN the eager connect is refused fast (nothing listens on
+    /// this loopback port) - the run returns the store-open error before ever reaching its MCP serve
+    /// loop, so the invocation terminates without a live server. The registry is redirected into a temp
+    /// `XDG_STATE_HOME` and read back through the dash's own reader: exactly one Shared entry, its
+    /// endpoint the bare `scheme://host:port`, with NO credential fragment anywhere on disk.
+    run_driver_workflow_registers_a_credential_free_shared_instance:
+        assert_a_run_registers_a_credential_free_shared_instance(
+            &["--driver", "workflow"],
+            65532,
+            "served run",
         );
-    }
 }
 
 /// A single-unit workflow whose ONLY gate always FAILS (`bad: false`) with a remediation
@@ -8593,7 +8485,7 @@ fn step_reclaims_orphaned_scratch_while_sparing_the_live_worker_area() {
     std::fs::create_dir_all(&worker_area).unwrap();
     std::fs::write(worker_area.join("Cargo.toml"), b"[package]").unwrap();
 
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "the step must succeed; stderr:\n{err}");
     assert!(
         !out.trim().is_empty(),
@@ -8673,14 +8565,12 @@ fn run_teardown_reclaims_run_level_scratch_at_an_escalation_terminal_state() {
     let root = dir.path();
     write_failing_gate_escalating_workflow(root);
 
-    let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
-    std::fs::create_dir_all(&scratch).unwrap();
+    let scratch = scratch_root_under(root);
     plant_run_level_scratch(&scratch);
 
     // Step 1: the unit's implementer parks in flight - a LIVE spawn (no recorded result yet),
     // so the run is NOT terminal and the teardown must NOT fire: every planted area is spared.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "the first step must succeed; stderr:\n{err}");
     assert!(
         out.contains(r#""done":false"#),
@@ -8701,7 +8591,7 @@ fn run_teardown_reclaims_run_level_scratch_at_an_escalation_terminal_state() {
     // Step 2: the run reaches a fixpoint AROUND the escalated unit - terminal, no live spawn.
     // The teardown reclaims every run-level shared area, including the SHARED build cache the
     // orphan-sweep spares.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(
         ok,
         "an escalation-fixpoint step still exits 0; stderr:\n{err}"
@@ -8724,14 +8614,12 @@ fn run_teardown_reclaims_run_level_scratch_at_a_budget_halt_terminal_state() {
     let root = dir.path();
     write_budget_one_two_stage_workflow(root);
 
-    let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
-    std::fs::create_dir_all(&scratch).unwrap();
+    let scratch = scratch_root_under(root);
     plant_run_level_scratch(&scratch);
 
     // Step 1: one unit's implementer is admitted and parks (a LIVE spawn); the other is refused
     // and the breaker trips. A pending wave means a live spawn: the areas are SPARED.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "the first step must succeed; stderr:\n{err}");
     let admitted = json_string_field(&out, "id")
         .filter(|id| id.ends_with("/implementer#0"))
@@ -8749,7 +8637,7 @@ fn run_teardown_reclaims_run_level_scratch_at_a_budget_halt_terminal_state() {
             &format!(r#"{{"id":"{admitted}","output":"did the unit"}}"#),
         )],
     );
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "a budget-halted step still exits 0; stderr:\n{err}");
     assert!(
         out.contains(r#""done":true"#) && out.contains(r#""halted":"#),
@@ -8758,121 +8646,27 @@ fn run_teardown_reclaims_run_level_scratch_at_a_budget_halt_terminal_state() {
     assert_run_level_scratch_reclaimed(&scratch, "the budget-halt terminal state");
 }
 
-/// Spec 34 (criterion 3), done-when line 68: RUN TEARDOWN reclaims run-level scratch for a
-/// DEFINITION-DRIFT halt. A live run pins its definition at start; a mid-campaign prompt edit
-/// drifts it and the next plain `rigger step` HALTS loudly (spec 13, unit 1). That halt is a
-/// terminal state for the run process, so - when no spawn is still in flight - rigger reclaims
-/// the run-level shared scratch before propagating the loud halt, leaving no build cache behind.
-#[test]
-fn run_teardown_reclaims_run_level_scratch_at_a_definition_drift_halt() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-
+/// A fresh `RIGGER_TMPDIR` scratch root under `root`, created on disk.
+fn scratch_root_under(root: &Path) -> std::path::PathBuf {
     let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
     std::fs::create_dir_all(&scratch).unwrap();
-
-    // Step 1 pins the run's definition and parks both units' implementers.
-    let (_out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
-    assert!(ok, "the first step must pin the definition; stderr:\n{err}");
-
-    // Drain both implementers so the frontier is EMPTY, then step to a clean fixpoint (both units
-    // are terminal-by-design). This clears any prior scratch via the clean-fixpoint teardown.
-    seed_run_events(
-        root,
-        &[
-            (
-                "SpawnResult",
-                r#"{"id":"a/implementer#0","output":"did a"}"#,
-            ),
-            (
-                "SpawnResult",
-                r#"{"id":"b/implementer#0","output":"did b"}"#,
-            ),
-        ],
-    );
-    let (_out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
-    assert!(ok, "step 2 reaches a clean fixpoint; stderr:\n{err}");
-
-    // Re-plant the run-level scratch, THEN drift the on-disk definition. The frontier is empty
-    // (every spawn answered), so the drift halt is a genuine terminal state - no live spawn.
-    plant_run_level_scratch(&scratch);
-    edit_worker_prompt(root, "Do the unit, but differently now.");
-
-    // Step 3 (no flag) HALTS on the drift (non-zero exit naming it). Before propagating the halt,
-    // the terminal teardown reclaims the re-planted run-level scratch.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
-    assert!(
-        !ok,
-        "a drifted live-run step must HALT (non-zero exit); stdout: {out:?}"
-    );
-    assert!(
-        err.contains("definition drift"),
-        "the halt must name the definition drift; stderr:\n{err}"
-    );
-    assert_run_level_scratch_reclaimed(&scratch, "the definition-drift halt");
+    scratch
 }
 
-/// Spec 34 (criterion 3), the NEVER-DELETE-LIVE rail on the definition-drift teardown path. A
-/// definition-drift halt reclaims run-level scratch ONLY when no worker is live - the SAME guard
-/// the terminal fixpoint uses, so the two teardown sites can never diverge. The subtle live
-/// worker is a HUNG-but-possibly-alive spawn: a marker-stale sweep recorded a liveness FAULT on
-/// its id (an infra stall the worker never reported itself), which counts as "answered" so the
-/// pending frontier is EMPTY (`done`) - yet the worker PROCESS may still be alive and writing
-/// under the shared scratch, and the operator may yet recover it (record a real result, then
-/// resume with `--rebase-definition`). So a drift halt while such a spawn exists must SPARE the
-/// run-level scratch, exactly as the terminal fixpoint does (both gate on `hung.is_empty()`).
-///
-/// Regression guard for the drift path that once gated on the empty frontier ALONE: it would have
-/// reclaimed the shared build cache and agent scratch out from under the hung-but-alive worker.
-/// This case is what the earlier drift test (which drains every spawn to a CLEAN fixpoint, so no
-/// hung spawn ever exists) could never exercise - the empty-frontier arm always fired there.
-#[test]
-fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_be_alive() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-
-    let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
-    std::fs::create_dir_all(&scratch).unwrap();
-
-    // Step 1 pins the run's definition and parks both units' implementers (a/implementer#0,
-    // b/implementer#0) as in-flight, recorded spawns.
-    let (_out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
-    assert!(ok, "the first step must pin the definition; stderr:\n{err}");
-
-    // Answer BOTH parked spawns so the pending frontier is EMPTY (`done`) - but answer ONE with a
-    // LIVENESS FAULT (the `meta.liveness_class` outcome a marker-stale sweep synthesizes for a
-    // hung agent, spec 10 unit 3), not a worker-reported result. A fault counts as "answered" (so
-    // the frontier is empty and the drift halt reads as terminal BY THE FRONTIER test alone), yet
-    // `hung_spawns` still flags a/implementer#0 because its LATEST result is a liveness fault - the
-    // exact asymmetry the never-delete-live guard exists for. b is answered with a real success.
-    seed_run_events(
+/// `rigger step` in `root` with its scratch root (`RIGGER_TMPDIR`) at `scratch`; returns
+/// (stdout, stderr, success).
+fn step_with_scratch_root(root: &Path, scratch: &Path) -> (String, String, bool) {
+    run_rigger_envs(
         root,
-        &[
-            (
-                "SpawnResult",
-                r#"{"id":"a/implementer#0","error":"a/implementer#0 hung past its max_wall_clock (no per-spawn heartbeat)","meta":{"liveness_class":"infra"}}"#,
-            ),
-            (
-                "SpawnResult",
-                r#"{"id":"b/implementer#0","output":"did b"}"#,
-            ),
-        ],
-    );
+        &["step"],
+        &[("RIGGER_TMPDIR", scratch.to_str().unwrap())],
+    )
+}
 
-    // Plant the run-level scratch a still-alive worker may be writing into, THEN drift the on-disk
-    // definition. The frontier is empty, so the OLD (buggy) drift teardown - gated on the empty
-    // frontier ALONE - would reclaim it; but the hung-but-alive spawn means a worker may still be
-    // live, so the shared never-delete-live guard SPARES every run-level area.
-    plant_run_level_scratch(&scratch);
-    edit_worker_prompt(root, "Do the unit, but differently now.");
-
-    // Step 3 (no flag) HALTS on the drift (non-zero exit naming it). Because a hung-but-alive
-    // spawn is present, the terminal never-delete-live guard SPARES the run-level scratch.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+/// A `rigger step` (scratch root at `scratch`) over a live run whose on-disk definition drifted
+/// HALTS with a non-zero exit naming the drift.
+fn assert_a_step_halts_on_definition_drift(root: &Path, scratch: &Path) {
+    let (out, err, ok) = step_with_scratch_root(root, scratch);
     assert!(
         !ok,
         "a drifted live-run step must HALT (non-zero exit); stdout: {out:?}"
@@ -8880,11 +8674,112 @@ fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_
     assert!(
         err.contains("definition drift"),
         "the halt must name the definition drift; stderr:\n{err}"
+    );
+}
+
+/// The definition-drift teardown: step 1 pins the run's definition and parks both units'
+/// implementers; both are then answered - `a` with `a_result` (a `SpawnResult` body), `b` with
+/// a real success - so the pending frontier is EMPTY. With `reclaimed` a clean-fixpoint step
+/// runs first (clearing any prior scratch). The run-level scratch is (re-)planted, the on-disk
+/// definition drifted, and the next plain step HALTS on the drift; its teardown then reclaims
+/// the run-level scratch when `reclaimed`, or SPARES it (`why`) when a worker may be live.
+fn assert_the_definition_drift_teardown(a_result: &str, reclaimed: bool, why: &str) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let scratch = scratch_root_under(root);
+
+    let (_out, err, ok) = step_with_scratch_root(root, &scratch);
+    assert!(ok, "the first step must pin the definition; stderr:\n{err}");
+    seed_run_events(
+        root,
+        &[
+            ("SpawnResult", a_result),
+            (
+                "SpawnResult",
+                r#"{"id":"b/implementer#0","output":"did b"}"#,
+            ),
+        ],
+    );
+    if reclaimed {
+        let (_out, err, ok) = step_with_scratch_root(root, &scratch);
+        assert!(ok, "step 2 reaches a clean fixpoint; stderr:\n{err}");
+    }
+
+    plant_run_level_scratch(&scratch);
+    edit_worker_prompt(root, "Do the unit, but differently now.");
+    assert_a_step_halts_on_definition_drift(root, &scratch);
+    if reclaimed {
+        assert_run_level_scratch_reclaimed(&scratch, why);
+    } else {
+        assert_run_level_scratch_spared(&scratch, why);
+    }
+}
+
+rigger::test_cases! {
+    /// Spec 34 (criterion 3), done-when line 68: RUN TEARDOWN reclaims run-level scratch for a
+    /// DEFINITION-DRIFT halt. A live run pins its definition at start; a mid-campaign prompt edit
+    /// drifts it and the next plain `rigger step` HALTS loudly (spec 13, unit 1). That halt is a
+    /// terminal state for the run process, so - when no spawn is still in flight - rigger reclaims
+    /// the run-level shared scratch before propagating the loud halt, leaving no build cache behind.
+    run_teardown_reclaims_run_level_scratch_at_a_definition_drift_halt:
+        assert_the_definition_drift_teardown(
+            r#"{"id":"a/implementer#0","output":"did a"}"#,
+            true,
+            "the definition-drift halt",
+        );
+    /// Spec 34 (criterion 3), the NEVER-DELETE-LIVE rail on the definition-drift teardown path. A
+    /// definition-drift halt reclaims run-level scratch ONLY when no worker is live - the SAME guard
+    /// the terminal fixpoint uses, so the two teardown sites can never diverge. The subtle live
+    /// worker is a HUNG-but-possibly-alive spawn: a marker-stale sweep recorded a liveness FAULT on
+    /// its id (an infra stall the worker never reported itself), which counts as "answered" so the
+    /// pending frontier is EMPTY (`done`) - yet the worker PROCESS may still be alive and writing
+    /// under the shared scratch, and the operator may yet recover it (record a real result, then
+    /// resume with `--rebase-definition`). So a drift halt while such a spawn exists must SPARE the
+    /// run-level scratch, exactly as the terminal fixpoint does (both gate on `hung.is_empty()`).
+    ///
+    /// Regression guard for the drift path that once gated on the empty frontier ALONE: it would have
+    /// reclaimed the shared build cache and agent scratch out from under the hung-but-alive worker.
+    /// This case is what the earlier drift test (which drains every spawn to a CLEAN fixpoint, so no
+    /// hung spawn ever exists) could never exercise - the empty-frontier arm always fired there.
+    ///
+    /// `a/implementer#0` is answered with a LIVENESS FAULT (the `meta.liveness_class` outcome a
+    /// marker-stale sweep synthesizes for a hung agent, spec 10 unit 3): it counts as "answered"
+    /// (so the frontier is empty and the drift halt reads as terminal BY THE FRONTIER alone), yet
+    /// `hung_spawns` still flags it because its LATEST result is a liveness fault.
+    run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_be_alive:
+        assert_the_definition_drift_teardown(
+            r#"{"id":"a/implementer#0","error":"a/implementer#0 hung past its max_wall_clock (no per-spawn heartbeat)","meta":{"liveness_class":"infra"}}"#,
+            false,
+            "a definition-drift halt while a hung-but-possibly-alive spawn exists",
+        );
+}
+
+/// Step 1 of a manual-review run (`write_manual_review_workflow`) over planted run-level
+/// scratch: the manual-autonomy gate PAUSES the stage - a `ManualReview` is emitted and the unit
+/// returns pending WITHOUT parking an implementer spawn, so the frontier is empty and no spawn is
+/// hung - and, the run being manual-review-pending (not converged, still advancing), the
+/// terminal teardown SPARES every run-level shared area including the build cache. Returns the
+/// scratch root.
+fn pause_a_manual_review_over_planted_scratch(root: &Path) -> std::path::PathBuf {
+    write_manual_review_workflow(root);
+    let scratch = scratch_root_under(root);
+    plant_run_level_scratch(&scratch);
+
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
+    assert!(
+        ok,
+        "a manual-review pause step still exits 0; stderr:\n{err}"
+    );
+    assert!(
+        !out.contains(r#""id":"solo/implementer#0""#),
+        "a manual-review pause parks NO implementer spawn; got: {out:?}"
     );
     assert_run_level_scratch_spared(
         &scratch,
-        "a definition-drift halt while a hung-but-possibly-alive spawn exists",
+        "a manual-review pause (the run is still advancing)",
     );
+    scratch
 }
 
 /// Spec 34 (criterion 3), the NEVER-DELETE-LIVE rail on the terminal-fixpoint teardown for a
@@ -8910,31 +8805,7 @@ fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_
 #[test]
 fn run_teardown_spares_run_level_scratch_at_a_manual_review_pause() {
     let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_manual_review_workflow(root);
-
-    let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
-    std::fs::create_dir_all(&scratch).unwrap();
-    plant_run_level_scratch(&scratch);
-
-    // One step: the manual-autonomy gate PAUSES the stage - a `ManualReview` is emitted and the
-    // unit returns pending WITHOUT parking an implementer spawn, so the frontier is empty and no
-    // spawn is hung. The run is manual-review-pending (not converged, still advancing), so the
-    // terminal teardown must SPARE every run-level shared area including the build cache.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
-    assert!(
-        ok,
-        "a manual-review pause step still exits 0; stderr:\n{err}"
-    );
-    assert!(
-        !out.contains(r#""id":"solo/implementer#0""#),
-        "a manual-review pause parks NO implementer spawn; got: {out:?}"
-    );
-    assert_run_level_scratch_spared(
-        &scratch,
-        "a manual-review pause (the run is still advancing)",
-    );
+    pause_a_manual_review_over_planted_scratch(dir.path());
 }
 
 /// Spec 34 (criterion 3), the NEVER-DELETE-LIVE rail on the DEFINITION-DRIFT teardown path for a
@@ -8963,27 +8834,9 @@ fn run_teardown_spares_run_level_scratch_at_a_manual_review_pause() {
 fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_manual_review_is_pending() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_manual_review_workflow(root);
-
-    let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
-    std::fs::create_dir_all(&scratch).unwrap();
-    plant_run_level_scratch(&scratch);
-
-    // Step 1 pins the run's definition and PAUSES the solo stage for manual review: a `ManualReview`
-    // is emitted and the unit returns pending WITHOUT parking an implementer spawn, so the frontier
-    // is empty and no spawn is hung. The run is manual-review-pending, so the terminal teardown
-    // spares every run-level area (proven by its own test above); the scratch survives step 1.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
-    assert!(
-        ok,
-        "the first step must pin the definition and pause for review; stderr:\n{err}"
-    );
-    assert!(
-        !out.contains(r#""id":"solo/implementer#0""#),
-        "a manual-review pause parks NO implementer spawn; got: {out:?}"
-    );
-    assert_run_level_scratch_spared(&scratch, "step 1 (a manual-review pause pins then pauses)");
+    // Step 1 pins the run's definition and PAUSES the solo stage for manual review; the run is
+    // manual-review-pending, so the scratch survives step 1.
+    let scratch = pause_a_manual_review_over_planted_scratch(root);
 
     // Re-plant the run-level scratch, THEN drift the on-disk definition. The pause from step 1 is
     // still pending (no human has integrated the unit), and the frontier is empty (no spawn ever
@@ -8995,15 +8848,7 @@ fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_manual_review_i
     // Step 2 (no flag) HALTS on the drift (non-zero exit naming it). Because a manual-review pause
     // is still pending, the drift early-return teardown SPARES the re-planted run-level scratch -
     // exactly as the terminal fixpoint does (both now gate on the folded manual-review exclusion).
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
-    assert!(
-        !ok,
-        "a drifted live-run step must HALT (non-zero exit); stdout: {out:?}"
-    );
-    assert!(
-        err.contains("definition drift"),
-        "the halt must name the definition drift; stderr:\n{err}"
-    );
+    assert_a_step_halts_on_definition_drift(root, &scratch);
     assert_run_level_scratch_spared(
         &scratch,
         "a definition-drift halt while a manual-review pause is still pending",
@@ -9021,24 +8866,9 @@ fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_manual_review_i
 fn run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_manual_review_workflow(root);
-
-    let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
-    std::fs::create_dir_all(&scratch).unwrap();
-    plant_run_level_scratch(&scratch);
-
-    // Step 1: the solo stage pauses for manual review (a `ManualReview` is emitted, the unit stays
-    // pending). The run is still advancing, so the teardown spares the run-level scratch.
-    let (_out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
-    assert!(
-        ok,
-        "the first step must pause the unit for manual review; stderr:\n{err}"
-    );
-    assert_run_level_scratch_spared(
-        &scratch,
-        "step 1 (the manual-review pause is still pending)",
-    );
+    // Step 1: the solo stage pauses for manual review; the run is still advancing, so the
+    // teardown spares the run-level scratch.
+    let scratch = pause_a_manual_review_over_planted_scratch(root);
 
     // The human approves and integrates the paused unit: a `UnitIntegrated` lands it. This is the
     // action-needed inbox emptying - `fold_manual_review_inbox` drops the now-terminal unit, so the
@@ -9053,7 +8883,7 @@ fn run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated()
     // manual-review inbox is empty, and the run is genuinely done - so the terminal teardown
     // reclaims every run-level area, including the SHARED build cache.
     plant_run_level_scratch(&scratch);
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(
         ok,
         "a step after the manual review is integrated still exits 0; stderr:\n{err}"
@@ -9178,7 +9008,7 @@ fn a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integ
     let tmp = scratch.to_str().unwrap();
 
     // Step 1: "solo"'s implementer parks - a real, git-backed worktree exists now.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    let (out, err, ok) = step_with_scratch_root(root, &scratch);
     assert!(ok, "the first step must succeed; stderr: {err}");
     assert!(
         out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
@@ -9917,6 +9747,37 @@ fn seed_spawn_events_at(root: &Path, project: &str, rows: &[(rigger::eventstore:
     }
 }
 
+/// `rigger stats` over a fresh project (identity `project`) whose run stream holds, per
+/// `(request, requested_at, answered_at)`, the request at `requested_at` seconds and - unless
+/// `None` (a dead worker) - its `ok` result at `answered_at`; asserts stats succeeds and returns
+/// its stdout.
+fn rigger_stats_over_timed_spawns(
+    project: &str,
+    spawns: &[(rigger::spawn::SpawnRequest, i64, Option<i64>)],
+) -> String {
+    let dir = temp_project();
+    let root = dir.path();
+    let mut rows = Vec::new();
+    for (req, requested_at, answered_at) in spawns {
+        rows.push((req.to_event().unwrap(), *requested_at));
+        if let Some(at) = answered_at {
+            rows.push((
+                rigger::spawn::SpawnResult::ok(&req.id, "done")
+                    .to_event()
+                    .unwrap(),
+                *at,
+            ));
+        }
+    }
+    seed_spawn_events_at(root, project, &rows);
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(
+        ok,
+        "stats must succeed over a store with only spawn events; stderr: {err}"
+    );
+    out
+}
+
 /// Spec 61 c9, SPAWN TIMING, at the REAL compiled-binary boundary: `rigger stats` pairs each
 /// recorded spawn request with its result by spawn id and reports duration aggregates per
 /// role (count, total, mean), covering a role outside the review tiers (`implementer`) exactly
@@ -9929,49 +9790,30 @@ fn seed_spawn_events_at(root: &Path, project: &str, rows: &[(rigger::eventstore:
 /// exact rendered "X.Ys avg / N spawns / X.Ys total" text is asserted byte-for-byte.
 #[test]
 fn stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure() {
-    use rigger::spawn::SpawnResult;
-
-    let dir = temp_project();
-    let root = dir.path();
-
-    let implementer_req = common::spawn_request("u1", "impl", "implementer", 0, "do it");
-    let adversary_req_a = common::spawn_request("u2", "review", "adversary", 0, "review it");
-    let adversary_req_b = common::spawn_request("u3", "review", "adversary", 0, "review it too");
-    let dead_req = common::spawn_request("u4", "impl", "implementer", 1, "never answered");
-
-    seed_spawn_events_at(
-        root,
+    let out = rigger_stats_over_timed_spawns(
         "spawn-timing-proj",
         &[
-            (implementer_req.to_event().unwrap(), 0),
             (
-                SpawnResult::ok(&implementer_req.id, "done")
-                    .to_event()
-                    .unwrap(),
-                12,
+                common::spawn_request("u1", "impl", "implementer", 0, "do it"),
+                0,
+                Some(12),
             ),
-            (adversary_req_a.to_event().unwrap(), 100),
             (
-                SpawnResult::ok(&adversary_req_a.id, "done")
-                    .to_event()
-                    .unwrap(),
-                103,
+                common::spawn_request("u2", "review", "adversary", 0, "review it"),
+                100,
+                Some(103),
             ),
-            (adversary_req_b.to_event().unwrap(), 200),
             (
-                SpawnResult::ok(&adversary_req_b.id, "done")
-                    .to_event()
-                    .unwrap(),
-                205,
+                common::spawn_request("u3", "review", "adversary", 0, "review it too"),
+                200,
+                Some(205),
             ),
-            (dead_req.to_event().unwrap(), 300),
+            (
+                common::spawn_request("u4", "impl", "implementer", 1, "never answered"),
+                300,
+                None,
+            ),
         ],
-    );
-
-    let (out, err, ok) = run_rigger(root, &["stats"]);
-    assert!(
-        ok,
-        "stats must succeed over a store with only spawn events; stderr: {err}"
     );
 
     let implementer_line = format!("{:<20} 12.0s avg / 1 spawns / 12.0s total", "implementer");
@@ -10077,39 +9919,29 @@ fn stats_all_flag_never_pairs_a_cross_run_spawn_id_collision_into_a_bogus_durati
 /// it through the real binary before this one.
 #[test]
 fn stats_cli_excludes_suspect_non_positive_duration_pairs_as_unpaired_not_zero() {
-    use rigger::spawn::SpawnResult;
-
-    let dir = temp_project();
-    let root = dir.path();
-
-    let same_batch = common::spawn_request("u1", "impl", "implementer", 0, "same batch");
-    let skewed = common::spawn_request("u2", "impl", "implementer", 1, "skewed");
-    let genuine = common::spawn_request("u3", "impl", "implementer", 2, "genuine");
-
-    seed_spawn_events_at(
-        root,
+    let out = rigger_stats_over_timed_spawns(
         "spawn-timing-suspect-proj",
         &[
             // Same timestamp: an exact, error-free zero duration.
-            (same_batch.to_event().unwrap(), 100),
             (
-                SpawnResult::ok(&same_batch.id, "done").to_event().unwrap(),
+                common::spawn_request("u1", "impl", "implementer", 0, "same batch"),
                 100,
+                Some(100),
             ),
             // Result recorded BEFORE its request: clock skew, a negative duration.
-            (skewed.to_event().unwrap(), 200),
-            (SpawnResult::ok(&skewed.id, "done").to_event().unwrap(), 190),
-            // A genuine, measurably positive pair in the SAME role bucket.
-            (genuine.to_event().unwrap(), 300),
             (
-                SpawnResult::ok(&genuine.id, "done").to_event().unwrap(),
-                307,
+                common::spawn_request("u2", "impl", "implementer", 1, "skewed"),
+                200,
+                Some(190),
+            ),
+            // A genuine, measurably positive pair in the SAME role bucket.
+            (
+                common::spawn_request("u3", "impl", "implementer", 2, "genuine"),
+                300,
+                Some(307),
             ),
         ],
     );
-
-    let (out, err, ok) = run_rigger(root, &["stats"]);
-    assert!(ok, "stats must succeed; stderr: {err}");
 
     let implementer_line = format!("{:<20} 7.0s avg / 1 spawns / 7.0s total", "implementer");
     assert!(
@@ -10474,6 +10306,30 @@ rigger::test_cases! {
     step_rejects_base_without_a_value: assert_step_rejects(&["step", "--base"], "--base expects a ref");
 }
 
+/// `rigger step --base <base>` over the two-unit workflow succeeds without disturbing its
+/// `{wave,done}` JSON (both disjoint units still park, run not done), and leaves the
+/// `rigger-run` branch created, checked out and anchored at `anchor_sha`. Returns stderr.
+fn assert_a_step_anchors_the_run_branch(root: &Path, base: &str, anchor_sha: &str) -> String {
+    let (out, err, ok) = run_rigger(root, &["step", "--base", base]);
+    assert!(ok, "step --base {base} must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.matches(r#""id":"#).count() == 2 && line.contains(r#""done":false"#),
+        "the two-unit wave still parks with --base {base}; got: {line:?}"
+    );
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+        "rigger step --base {base} must create and check out the run branch"
+    );
+    assert_eq!(
+        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        Some(anchor_sha),
+        "the run branch must be anchored on {anchor_sha}"
+    );
+    err
+}
+
 /// `rigger step --base <ref>` anchors a NEW run branch: it creates the `rigger-run`
 /// branch off the base ref and checks it out (so the conductor branches every unit
 /// worktree off it), without disturbing the step's `{wave,done}` JSON on stdout.
@@ -10485,27 +10341,7 @@ fn step_accepts_base_and_anchors_the_run_branch() {
     let base_sha =
         git_out(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
 
-    let (out, err, ok) = run_rigger(root, &["step", "--base", "HEAD"]);
-    assert!(ok, "step --base must succeed; stderr: {err}");
-
-    // --base does not disturb the wave: both disjoint units still park, run not done.
-    let line = out.trim();
-    assert!(
-        line.matches(r#""id":"#).count() == 2 && line.contains(r#""done":false"#),
-        "the two-unit wave still parks with --base; got: {line:?}"
-    );
-
-    // The run branch was created off the base and checked out.
-    assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
-        Some("rigger-run"),
-        "rigger step --base must create and check out the run branch"
-    );
-    assert_eq!(
-        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
-        Some(base_sha.as_str()),
-        "the run branch must be anchored on the --base commit"
-    );
+    assert_a_step_anchors_the_run_branch(root, "HEAD", &base_sha);
 }
 
 /// BLOCKER regression: when the base ref does NOT resolve (a repo with no remote, a
@@ -10523,36 +10359,14 @@ fn step_creates_run_branch_off_head_when_base_unresolvable() {
         git_out(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
     let operator_branch = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"])
         .expect("the seeded repo is on a named branch");
-
-    // The default-style base that does not exist here.
-    let (out, err, ok) = run_rigger(root, &["step", "--base", "origin/does-not-exist"]);
-    assert!(
-        ok,
-        "step must still succeed on an unresolvable base; stderr: {err}"
-    );
-
-    // The {wave,done} JSON is undisturbed on stdout.
-    let line = out.trim();
-    assert!(
-        line.matches(r#""id":"#).count() == 2 && line.contains(r#""done":false"#),
-        "the two-unit wave still parks despite the base fallback; got: {line:?}"
-    );
-
-    // The run branch was created off HEAD (not the operator's branch) and checked out.
     assert_ne!(
         operator_branch, "rigger-run",
         "guard: seed is not already on the run branch"
     );
-    assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
-        Some("rigger-run"),
-        "an unresolvable base must still create and check out the run branch, off HEAD"
-    );
-    assert_eq!(
-        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
-        Some(head_sha.as_str()),
-        "the fallback run branch is anchored on the HEAD it was created from"
-    );
+
+    // The default-style base that does not exist here: the run branch is created off HEAD
+    // (not the operator's branch) and checked out.
+    let err = assert_a_step_anchors_the_run_branch(root, "origin/does-not-exist", &head_sha);
 
     // The fallback is announced, not silent.
     assert!(
@@ -10562,138 +10376,73 @@ fn step_creates_run_branch_off_head_when_base_unresolvable() {
 }
 
 /// Loop-readiness gate (spec 38, criterion 2): on a repo with NO reachable base at all - an
-/// UNBORN HEAD (no commit to fall back to) AND an unresolvable base - `rigger step` must FAIL
-/// LOUDLY rather than mint a run branch that branches from nowhere (an orphan history a pull
-/// request cannot apply to). This is the deliberate contrast to
-/// `step_creates_run_branch_off_head_when_base_unresolvable`: there a REAL HEAD is a reachable
-/// base and the run PROCEEDS off it; here there is nothing to base on, so the run stops. The
-/// refusal is side-effect-free - no run branch is created - so a corrected retry anchors fresh.
-#[test]
-fn step_refuses_when_there_is_no_reachable_base() {
-    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch from.
+/// UNBORN HEAD (`temp_project()` is a `git init` with NO commit, nothing to branch from) AND an
+/// unresolvable base - `rigger <args...> --base origin/does-not-exist` must FAIL LOUDLY, naming
+/// the missing base, pointing at `--base` and carrying the entry point's own `label` (when it
+/// has one), rather than mint a run branch that branches from nowhere. The refusal is
+/// side-effect-free: no run branch is minted, so HEAD is untouched (still the unborn default
+/// branch, never rigger-run) and a corrected retry anchors the run fresh.
+fn assert_no_reachable_base_is_refused(args: &[&str], label: Option<&str>) {
     let dir = temp_project();
     let root = dir.path();
     write_two_stage_workflow(root);
     let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
 
-    // An unresolvable base + the unborn HEAD => no reachable base at all.
-    let (out, err, ok) = run_rigger(root, &["step", "--base", "origin/does-not-exist"]);
+    let mut argv = args.to_vec();
+    argv.extend_from_slice(&["--base", "origin/does-not-exist"]);
+    let (out, err, ok) = run_rigger(root, &argv);
     assert!(
         !ok,
-        "a run with no reachable base must fail loudly; stdout: {out:?} stderr: {err:?}"
+        "`rigger {args:?}` with no reachable base must fail loudly; stdout: {out:?} stderr: {err:?}"
     );
     assert!(
-        err.contains("no reachable base") && err.contains("--base"),
-        "the refusal must name the missing base and point at --base; got: {err:?}"
-    );
-
-    // Side-effect-free: no run branch was minted, so HEAD is untouched (still the unborn
-    // default branch, never rigger-run) and the corrected retry can anchor the run fresh.
-    assert_ne!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
-        Some("rigger-run"),
-        "a refused run must NOT have created or checked out the run branch"
-    );
-    assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
-        head_branch_before,
-        "the refused run leaves HEAD exactly where it was"
-    );
-}
-
-/// Loop-readiness gate (spec 38, criterion 2), periphery wiring for `rigger run`: the same
-/// no-reachable-base refusal `rigger step` enforces is wired into the default `cli` driver's
-/// entry (`run_cli`), labelled `rigger run`. On a repo with an UNBORN HEAD (no commit to fall
-/// back to) AND an unresolvable base, `rigger run` must FAIL LOUDLY instead of minting a run
-/// branch that branches from nowhere. The gate is one shared function, but each entry point
-/// calls it at its OWN site: a missing call here is an independent boundary bug the shared
-/// unit test cannot catch, so this drives the built binary through `rigger run` and pins the
-/// `rigger run` label to prove that this call-site - not another - fired.
-#[test]
-fn run_refuses_when_there_is_no_reachable_base() {
-    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch from.
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
-
-    // An unresolvable base + the unborn HEAD => no reachable base at all.
-    let (out, err, ok) = run_rigger(root, &["run", "--base", "origin/does-not-exist"]);
-    assert!(
-        !ok,
-        "`rigger run` with no reachable base must fail loudly; stdout: {out:?} stderr: {err:?}"
-    );
-    assert!(
-        err.contains("rigger run") && err.contains("no reachable base") && err.contains("--base"),
-        "the refusal must carry the `rigger run` label, name the missing base, and point at \
-         --base; got: {err:?}"
-    );
-
-    // Side-effect-free: no run branch was minted, so HEAD is untouched (still the unborn
-    // default branch, never rigger-run) and the corrected retry can anchor the run fresh.
-    assert_ne!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
-        Some("rigger-run"),
-        "a refused `rigger run` must NOT have created or checked out the run branch"
-    );
-    assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
-        head_branch_before,
-        "the refused `rigger run` leaves HEAD exactly where it was"
-    );
-}
-
-/// Loop-readiness gate (spec 38, criterion 2), periphery wiring for the workflow driver: the
-/// `run_workflow` entry (reached by `rigger run --driver workflow`, the served-conductor path
-/// `rigger workflow` funnels through) enforces the SAME no-reachable-base refusal, labelled
-/// `rigger workflow`. The refusal fires BEFORE the workflow driver, store, or sidecar start,
-/// so it is provable through the binary WITHOUT the Node driver. A missing call at this third
-/// call-site is an independent boundary bug; this drives the binary through the workflow
-/// driver and pins the `rigger workflow` label to prove that this call-site fired.
-#[test]
-fn run_workflow_refuses_when_there_is_no_reachable_base() {
-    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch from.
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
-
-    // An unresolvable base + the unborn HEAD => no reachable base at all.
-    let (out, err, ok) = run_rigger(
-        root,
-        &[
-            "run",
-            "--driver",
-            "workflow",
-            "--base",
-            "origin/does-not-exist",
-        ],
-    );
-    assert!(
-        !ok,
-        "`rigger run --driver workflow` with no reachable base must fail loudly; \
-         stdout: {out:?} stderr: {err:?}"
-    );
-    assert!(
-        err.contains("rigger workflow")
+        label.is_none_or(|l| err.contains(l))
             && err.contains("no reachable base")
             && err.contains("--base"),
-        "the refusal must carry the `rigger workflow` label, name the missing base, and point \
-         at --base; got: {err:?}"
+        "the refusal must carry the {label:?} label, name the missing base, and point at \
+         --base; got: {err:?}"
     );
-
-    // Side-effect-free: no run branch was minted and the workflow driver never started, so
-    // HEAD is untouched (never rigger-run) and the corrected retry anchors the run fresh.
     assert_ne!(
         git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
         Some("rigger-run"),
-        "a refused workflow run must NOT have created or checked out the run branch"
+        "a refused `rigger {args:?}` must NOT have created or checked out the run branch"
     );
     assert_eq!(
         git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
         head_branch_before,
-        "the refused workflow run leaves HEAD exactly where it was"
+        "the refused `rigger {args:?}` leaves HEAD exactly where it was"
     );
+}
+
+rigger::test_cases! {
+    /// Loop-readiness gate (spec 38, criterion 2): on a repo with NO reachable base at all - an
+    /// UNBORN HEAD (no commit to fall back to) AND an unresolvable base - `rigger step` must FAIL
+    /// LOUDLY rather than mint a run branch that branches from nowhere (an orphan history a pull
+    /// request cannot apply to). This is the deliberate contrast to
+    /// `step_creates_run_branch_off_head_when_base_unresolvable`: there a REAL HEAD is a reachable
+    /// base and the run PROCEEDS off it; here there is nothing to base on, so the run stops. The
+    /// refusal is side-effect-free - no run branch is created - so a corrected retry anchors fresh.
+    step_refuses_when_there_is_no_reachable_base:
+        assert_no_reachable_base_is_refused(&["step"], None);
+    /// Loop-readiness gate (spec 38, criterion 2), periphery wiring for `rigger run`: the same
+    /// no-reachable-base refusal `rigger step` enforces is wired into the default `cli` driver's
+    /// entry (`run_cli`), labelled `rigger run`. On a repo with an UNBORN HEAD (no commit to fall
+    /// back to) AND an unresolvable base, `rigger run` must FAIL LOUDLY instead of minting a run
+    /// branch that branches from nowhere. The gate is one shared function, but each entry point
+    /// calls it at its OWN site: a missing call here is an independent boundary bug the shared
+    /// unit test cannot catch, so this drives the built binary through `rigger run` and pins the
+    /// `rigger run` label to prove that this call-site - not another - fired.
+    run_refuses_when_there_is_no_reachable_base:
+        assert_no_reachable_base_is_refused(&["run"], Some("rigger run"));
+    /// Loop-readiness gate (spec 38, criterion 2), periphery wiring for the workflow driver: the
+    /// `run_workflow` entry (reached by `rigger run --driver workflow`, the served-conductor path
+    /// `rigger workflow` funnels through) enforces the SAME no-reachable-base refusal, labelled
+    /// `rigger workflow`. The refusal fires BEFORE the workflow driver, store, or sidecar start,
+    /// so it is provable through the binary WITHOUT the Node driver. A missing call at this third
+    /// call-site is an independent boundary bug; this drives the binary through the workflow
+    /// driver and pins the `rigger workflow` label to prove that this call-site fired.
+    run_workflow_refuses_when_there_is_no_reachable_base:
+        assert_no_reachable_base_is_refused(&["run", "--driver", "workflow"], Some("rigger workflow"));
 }
 
 /// Spec 47 - KurrentDB is always available (the CLI/binary edge). Before spec 47 the
@@ -11657,6 +11406,48 @@ stages:
     on_pass: none
 "#;
 
+/// `rigger replay latest --against HEAD` after a baseline run of the gated, reviewed workflow
+/// (`drive_baseline_run`), with that config committed and then `candidate` (a workflow body)
+/// committed on top as HEAD - the candidate rev. Asserts the replay succeeds (a fail-safe gate
+/// or a parked uncovered spawn halts a unit, never errors the command) and returns its diff.
+fn replay_against_a_committed_candidate(candidate: &str) -> String {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_gated_reviewed_workflow(root);
+    drive_baseline_run(root);
+
+    git_ok(root, &["init", "-q"]);
+    git_ok(root, &["config", "user.email", "t@example.com"]);
+    git_ok(root, &["config", "user.name", "t"]);
+    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
+    git_ok(root, &["commit", "-q", "-m", "baseline config"]);
+    write_candidate_workflow(root, candidate);
+    git_ok(root, &["add", ".rigger/workflow.yml"]);
+    git_ok(root, &["commit", "-q", "-m", "candidate config"]);
+
+    let (diff, err, ok) = run_rigger(root, &["replay", "latest", "--against", "HEAD"]);
+    assert!(
+        ok,
+        "rigger replay must succeed; stderr:\n{err}\nstdout:\n{diff}"
+    );
+    diff
+}
+
+/// The replay `diff` moves `metric` from the baseline 1 to a candidate 0, and flags the changed
+/// row with the `*` marker so a reader spots the regression.
+fn assert_a_flagged_one_to_zero_drop(diff: &str, metric: &str) {
+    assert_eq!(
+        replay_diff_values(diff, metric),
+        vec!["1".to_string(), "0".to_string()],
+        "the candidate `{metric}` must drop from the baseline 1 to 0; got:\n{diff}"
+    );
+    let row = diff.lines().find(|l| l.contains(metric)).unwrap();
+    assert!(
+        row.trim_end().ends_with('*'),
+        "a changed metric row is flagged with `*`; got row: {row:?}"
+    );
+}
+
 /// spec 13, unit 2: the candidate COLUMN reacts to the config - a config edit measurably
 /// changes the re-driven metrics, which is the whole point of the eval ("did that change
 /// regress the run?"). Re-driving the same recorded trajectory (a review approve) under a
@@ -11665,41 +11456,9 @@ stages:
 /// re-drive and not a copy of the baseline.
 #[test]
 fn replay_candidate_column_reacts_to_a_changed_config() {
-    let dir = temp_repoless_project();
-    let root = dir.path();
-    write_gated_reviewed_workflow(root);
-    drive_baseline_run(root);
-
-    // Commit the reviewed config, then a review-less variant as HEAD (the candidate rev).
-    git_ok(root, &["init", "-q"]);
-    git_ok(root, &["config", "user.email", "t@example.com"]);
-    git_ok(root, &["config", "user.name", "t"]);
-    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
-    git_ok(root, &["commit", "-q", "-m", "reviewed config"]);
-    write_candidate_workflow(root, NO_REVIEW_WORKFLOW);
-    git_ok(root, &["add", ".rigger/workflow.yml"]);
-    git_ok(root, &["commit", "-q", "-m", "review removed"]);
-
-    let (diff, err, ok) = run_rigger(root, &["replay", "latest", "--against", "HEAD"]);
-    assert!(
-        ok,
-        "rigger replay must succeed; stderr:\n{err}\nstdout:\n{diff}"
-    );
+    let diff = replay_against_a_committed_candidate(NO_REVIEW_WORKFLOW);
     // Baseline recorded one approve; the review-less candidate re-drives to zero approves.
-    assert_eq!(
-        replay_diff_values(&diff, "review approved"),
-        vec!["1".to_string(), "0".to_string()],
-        "removing review must move the candidate column from the baseline 1 to 0; got:\n{diff}"
-    );
-    // The changed row is flagged with the `*` marker so a reader spots the regression.
-    let review_row = diff
-        .lines()
-        .find(|l| l.contains("review approved"))
-        .unwrap();
-    assert!(
-        review_row.trim_end().ends_with('*'),
-        "a changed metric row is flagged with `*`; got row: {review_row:?}"
-    );
+    assert_a_flagged_one_to_zero_drop(&diff, "review approved");
 }
 
 /// A candidate variant of `write_gated_reviewed_workflow` with the `check` GATE removed from
@@ -11728,38 +11487,10 @@ stages:
 /// baseline (candidate = 1 for a gate-less config), shipping a false contract.
 #[test]
 fn replay_removing_a_gate_lowers_the_candidate_gate_runs() {
-    let dir = temp_repoless_project();
-    let root = dir.path();
-    write_gated_reviewed_workflow(root);
-    drive_baseline_run(root);
-
-    // Commit the gated config, then a gate-less variant as HEAD (the candidate rev).
-    git_ok(root, &["init", "-q"]);
-    git_ok(root, &["config", "user.email", "t@example.com"]);
-    git_ok(root, &["config", "user.name", "t"]);
-    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
-    git_ok(root, &["commit", "-q", "-m", "gated config"]);
-    write_candidate_workflow(root, NO_GATE_WORKFLOW);
-    git_ok(root, &["add", ".rigger/workflow.yml"]);
-    git_ok(root, &["commit", "-q", "-m", "gate removed"]);
-
-    let (diff, err, ok) = run_rigger(root, &["replay", "latest", "--against", "HEAD"]);
-    assert!(
-        ok,
-        "rigger replay must succeed; stderr:\n{err}\nstdout:\n{diff}"
-    );
-    // The whole point: removing the gate lowers the candidate gate-runs column to 0.
-    assert_eq!(
-        replay_diff_values(&diff, "gate runs"),
-        vec!["1".to_string(), "0".to_string()],
-        "removing the gate must drop the candidate `gate runs` from the baseline 1 to 0, not \
-         echo the seeded verdict; got:\n{diff}"
-    );
-    let gate_row = diff.lines().find(|l| l.contains("gate runs")).unwrap();
-    assert!(
-        gate_row.trim_end().ends_with('*'),
-        "the changed gate-runs row is flagged with `*`; got row: {gate_row:?}"
-    );
+    let diff = replay_against_a_committed_candidate(NO_GATE_WORKFLOW);
+    // The whole point: removing the gate lowers the candidate gate-runs column to 0, never
+    // echoing the seeded verdict.
+    assert_a_flagged_one_to_zero_drop(&diff, "gate runs");
     // Only the gate column moved: the review panel is kept, so its approve stays 1 in BOTH
     // columns (the re-scoping drops the removed gate, never the rest of the candidate metrics).
     assert_eq!(
@@ -11800,26 +11531,8 @@ stages:
 /// (2: the replayed `check` plus the fail-safe `extra`).
 #[test]
 fn replay_an_added_gate_fails_safe_and_never_fabricates_a_pass() {
-    let dir = temp_repoless_project();
-    let root = dir.path();
-    write_gated_reviewed_workflow(root);
-    drive_baseline_run(root);
-
-    git_ok(root, &["init", "-q"]);
-    git_ok(root, &["config", "user.email", "t@example.com"]);
-    git_ok(root, &["config", "user.name", "t"]);
-    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
-    git_ok(root, &["commit", "-q", "-m", "gated config"]);
-    write_candidate_workflow(root, ADDED_GATE_WORKFLOW);
-    git_ok(root, &["add", ".rigger/workflow.yml"]);
-    git_ok(root, &["commit", "-q", "-m", "gate added"]);
-
-    let (diff, err, ok) = run_rigger(root, &["replay", "latest", "--against", "HEAD"]);
-    assert!(
-        ok,
-        "rigger replay must succeed (a fail-safe gate halts the unit, it does not error the \
-         command); stderr:\n{err}\nstdout:\n{diff}"
-    );
+    // A fail-safe gate halts the unit; it does not error the command.
+    let diff = replay_against_a_committed_candidate(ADDED_GATE_WORKFLOW);
     // The baseline unit cleared its one gate and got its approve (review approved = 1). The
     // candidate's added `extra` gate is red (fail-safe), so the unit never clears its gates,
     // never reaches review, and the candidate approve collapses to 0 - NOT a fabricated pass.
@@ -11869,25 +11582,7 @@ stages:
 /// prints with the candidate `units started` at 2 - the partial column the contract promises.
 #[test]
 fn replay_an_uncovered_candidate_spawn_parks_and_still_prints_a_partial_column() {
-    let dir = temp_repoless_project();
-    let root = dir.path();
-    write_gated_reviewed_workflow(root);
-    drive_baseline_run(root);
-
-    git_ok(root, &["init", "-q"]);
-    git_ok(root, &["config", "user.email", "t@example.com"]);
-    git_ok(root, &["config", "user.name", "t"]);
-    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
-    git_ok(root, &["commit", "-q", "-m", "single-stage config"]);
-    write_candidate_workflow(root, EXTRA_STAGE_WORKFLOW);
-    git_ok(root, &["add", ".rigger/workflow.yml"]);
-    git_ok(root, &["commit", "-q", "-m", "extra stage added"]);
-
-    let (diff, err, ok) = run_rigger(root, &["replay", "latest", "--against", "HEAD"]);
-    assert!(
-        ok,
-        "rigger replay must succeed even when a candidate spawn parks; stderr:\n{err}\nstdout:\n{diff}"
-    );
+    let diff = replay_against_a_committed_candidate(EXTRA_STAGE_WORKFLOW);
     // The diff still prints a full header + both columns despite the uncovered `probe` parking.
     assert!(
         diff.contains("replay stats diff") && diff.contains("baseline") && diff.contains("candidate"),
