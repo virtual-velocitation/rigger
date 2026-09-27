@@ -18,6 +18,7 @@ use std::process::Command;
 mod common;
 
 use common::cli::plant_stale_marker;
+use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
@@ -264,6 +265,27 @@ fn emit_review_finding_shows_in_peers() {
             && out.contains("by tech-lens")
             && out.contains("about: combat.rs"),
         "peers must render the finding's id/by/about; got: {out:?}"
+    );
+}
+
+/// Record a LIVENESS fault on `spawn_id`'s behalf in exactly the courier shape the native
+/// driver's outer wall-clock (or the sweep) records a hung agent with - `rigger result <id>
+/// <why> --error --meta '{"liveness_class":"infra"}'` - asserting it lands.
+fn record_liveness_fault(root: &Path, spawn_id: &str, why: &str) {
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            spawn_id,
+            why,
+            "--error",
+            "--meta",
+            r#"{"liveness_class":"infra"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the liveness fault on {spawn_id} must succeed; stderr: {err}"
     );
 }
 
@@ -618,25 +640,17 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
     );
 }
 
-/// `rigger reset --runs` COMPACTS the on-disk graph after reclaiming (spec 46, criterion 3).
-/// The documented pre-run hygiene command must reclaim DISK, not just rows: the prune's DELETE
-/// only frees pages inside the file (SQLite keeps them for reuse), so without a VACUUM the graph
-/// file stays as LARGE on disk as before even after a prune (VACUUM reclaims disk only - it changes
-/// no query result and gives no query or fold speedup). This drives the COMPILED binary end to end
-/// and proves the file actually SHRINKS: seed a bloated `graph.db`
-/// (thousands of SUPERSEDED structural edges retired before the active run's boundary, plus ONE
-/// LIVE edge), run `rigger reset --runs`, then assert the on-disk `graph.db` is STRICTLY smaller,
-/// the live edge survived, and the event log is byte-for-byte the same length. Seeded directly
-/// through the graph's own edge table (thousands of `rigger emit`s would be far slower) after
-/// `Projector::open` lays down the canonical, fully-migrated schema so the binary re-opens it
-/// with every migration a no-op. Owns the reset COMPACTION (it does NOT own the operator
-/// guidance, criterion 2, nor the reclaimed-row semantics the spec-41 test already pins).
-#[test]
-fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
+/// How many superseded structural edges [`bloated_graph_project`] seeds.
+const BLOATED_SUPERSEDED: usize = 8_000;
+
+/// A project whose `graph.db` is bloated for the `reset --runs` compaction tests: an active
+/// run's `RunStarted` boundary, [`BLOATED_SUPERSEDED`] structural edges retired before it, and
+/// ONE live edge (`keep-from -> keep-to`). Seeded directly through the graph's own edge table
+/// (thousands of `rigger emit`s would be far slower) after `Projector::open` lays down the
+/// canonical, fully-migrated schema so the binary re-opens it with every migration a no-op.
+/// Returns the project dir, its `graph.db` path and its run-stream identity.
+fn bloated_graph_project() -> (tempfile::TempDir, std::path::PathBuf, String) {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
 
     let dir = temp_project();
     let root = dir.path();
@@ -660,7 +674,6 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
     // before the boundary) the reclamation deletes, plus ONE LIVE edge (`valid_to` NULL) it must
     // preserve. One transaction, then a TRUNCATE checkpoint so the whole pile folds into the MAIN db
     // file (not the WAL side-file) before we measure its on-disk size.
-    const SUPERSEDED: usize = 8_000;
     {
         let conn = rusqlite::Connection::open(&graph_path).unwrap();
         conn.execute_batch("BEGIN").unwrap();
@@ -671,7 +684,7 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'extracted')",
                 )
                 .unwrap();
-            for i in 0..SUPERSEDED {
+            for i in 0..BLOATED_SUPERSEDED {
                 stmt.execute(rusqlite::params![
                     format!("dead-from-{i}"),
                     format!("dead-to-{i}"),
@@ -704,6 +717,38 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
             .unwrap();
     }
 
+    (dir, graph_path, id)
+}
+
+/// How many LIVE `keep-from -> keep-to` edges [`bloated_graph_project`]'s graph holds for `id`.
+fn live_keep_edge_count(conn: &rusqlite::Connection, id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM edges WHERE from_id = 'keep-from' AND to_id = 'keep-to' \
+         AND valid_to IS NULL AND project = ?1",
+        rusqlite::params![id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// `rigger reset --runs` COMPACTS the on-disk graph after reclaiming (spec 46, criterion 3).
+/// The documented pre-run hygiene command must reclaim DISK, not just rows: the prune's DELETE
+/// only frees pages inside the file (SQLite keeps them for reuse), so without a VACUUM the graph
+/// file stays as LARGE on disk as before even after a prune (VACUUM reclaims disk only - it changes
+/// no query result and gives no query or fold speedup). This drives the COMPILED binary end to end
+/// and proves the file actually SHRINKS: seed a bloated `graph.db`
+/// (thousands of SUPERSEDED structural edges retired before the active run's boundary, plus ONE
+/// LIVE edge), run `rigger reset --runs`, then assert the on-disk `graph.db` is STRICTLY smaller,
+/// the live edge survived, and the event log is byte-for-byte the same length. Seeded directly
+/// through the graph's own edge table (thousands of `rigger emit`s would be far slower) after
+/// `Projector::open` lays down the canonical, fully-migrated schema so the binary re-opens it
+/// with every migration a no-op. Owns the reset COMPACTION (it does NOT own the operator
+/// guidance, criterion 2, nor the reclaimed-row semantics the spec-41 test already pins).
+#[test]
+fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
+    let (dir, graph_path, id) = bloated_graph_project();
+    let root = dir.path();
+
     let before = std::fs::metadata(&graph_path).unwrap().len();
 
     // Drive the real reset: it reclaims every pre-boundary superseded edge, then VACUUMs so the file
@@ -714,8 +759,10 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
         "reset --runs must succeed; stderr: {err}\nstdout: {out}"
     );
     assert!(
-        out.contains(&format!("reclaimed {SUPERSEDED} superseded edge(s)")),
-        "reset --runs must reclaim all {SUPERSEDED} seeded superseded edges; got: {out:?}"
+        out.contains(&format!(
+            "reclaimed {BLOATED_SUPERSEDED} superseded edge(s)"
+        )),
+        "reset --runs must reclaim all {BLOATED_SUPERSEDED} seeded superseded edges; got: {out:?}"
     );
     assert!(
         out.contains("compact"),
@@ -732,14 +779,7 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
 
     // LIVE is sacrosanct and every superseded edge is gone: the reclamation removed only history.
     let conn = rusqlite::Connection::open(&graph_path).unwrap();
-    let live: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM edges WHERE from_id = 'keep-from' AND to_id = 'keep-to' \
-             AND valid_to IS NULL AND project = ?1",
-            rusqlite::params![id],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let live = live_keep_edge_count(&conn, &id);
     assert_eq!(
         live, 1,
         "the one LIVE edge must survive the compacting prune"
@@ -759,13 +799,8 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
 
     // The event log is UNTOUCHED - the compaction rewrites only the graph projection file, never the
     // store: the seeded RunStarted is still the one and only event.
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &id);
-    let log = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
     assert_eq!(
-        log.len(),
+        common::cli::read_run_events(root).len(),
         1,
         "reset --runs must not touch the event log - the seeded RunStarted is still the only event"
     );
@@ -800,72 +835,8 @@ fn reported_reclaimed_bytes(reset_line: &str) -> Option<u64> {
 /// binary re-opens it with every migration a no-op.
 #[test]
 fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempotent_no_op() {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let dir = temp_project();
+    let (dir, graph_path, id) = bloated_graph_project();
     let root = dir.path();
-    seed_store(root);
-    let id = run_stream_identity(root);
-
-    // The ACTIVE run's boundary; every edge seeded at `valid_to = 1` is strictly before it and
-    // thus reclaimable on the FIRST pass, while nothing seeded after it survives to a second pass.
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
-
-    let graph_path = root.join(".rigger").join("graph.db");
-
-    // Lay down the canonical, fully-migrated schema exactly as the binary opens it, so the binary's
-    // own `Projector::open` re-runs every migration as a no-op and never rewrites the file itself.
-    {
-        let _p = Projector::open(graph_path.to_str().unwrap(), &id).unwrap();
-    }
-
-    // Bloat `graph.db`: a big pile of SUPERSEDED structural edges the first reset reclaims, plus ONE
-    // LIVE edge (`valid_to` NULL) it must preserve across BOTH passes. One transaction, then a
-    // TRUNCATE checkpoint so the whole pile lands in the MAIN file before it is measured.
-    const SUPERSEDED: usize = 8_000;
-    {
-        let conn = rusqlite::Connection::open(&graph_path).unwrap();
-        conn.execute_batch("BEGIN").unwrap();
-        {
-            let mut stmt = conn
-                .prepare(
-                    "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'extracted')",
-                )
-                .unwrap();
-            for i in 0..SUPERSEDED {
-                stmt.execute(rusqlite::params![
-                    format!("dead-from-{i}"),
-                    format!("dead-to-{i}"),
-                    "GOVERNS",
-                    1i64,
-                    1i64, // retired at t=1, strictly before the active-run boundary
-                    i as i64,
-                    id,
-                ])
-                .unwrap();
-            }
-            stmt.execute(rusqlite::params![
-                "keep-from",
-                "keep-to",
-                "GOVERNS",
-                2i64,
-                None::<i64>,
-                999i64,
-                id,
-            ])
-            .unwrap();
-        }
-        conn.execute_batch("COMMIT").unwrap();
-        let _: (i64, i64, i64) = conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
-            .unwrap();
-    }
 
     let before = std::fs::metadata(&graph_path).unwrap().len();
 
@@ -876,8 +847,10 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
         "first reset --runs must succeed; stderr: {err1}\n{out1}"
     );
     assert!(
-        out1.contains(&format!("reclaimed {SUPERSEDED} superseded edge(s)")),
-        "first reset --runs must reclaim all {SUPERSEDED} superseded edges; got: {out1:?}"
+        out1.contains(&format!(
+            "reclaimed {BLOATED_SUPERSEDED} superseded edge(s)"
+        )),
+        "first reset --runs must reclaim all {BLOATED_SUPERSEDED} superseded edges; got: {out1:?}"
     );
     let reclaimed1 = reported_reclaimed_bytes(&out1)
         .unwrap_or_else(|| panic!("first reset --runs must REPORT a compaction; got: {out1:?}"));
@@ -921,26 +894,14 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
 
     // The one LIVE edge is still there after both passes, and no superseded edge lingers.
     let conn = rusqlite::Connection::open(&graph_path).unwrap();
-    let live: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM edges WHERE from_id = 'keep-from' AND to_id = 'keep-to' \
-             AND valid_to IS NULL AND project = ?1",
-            rusqlite::params![id],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let live = live_keep_edge_count(&conn, &id);
     assert_eq!(live, 1, "the LIVE edge must survive both reset passes");
     drop(conn);
 
     // The event log is byte-for-byte the same length after both passes: compaction rewrites only
     // the projection file, never the store (the seeded RunStarted is still the one and only event).
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &id);
-    let log = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
     assert_eq!(
-        log.len(),
+        common::cli::read_run_events(root).len(),
         1,
         "two reset --runs passes must not touch the event log - the seeded RunStarted is still the only event"
     );
@@ -1044,7 +1005,7 @@ fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_que
     let pruned = graph.prune(&[], Some(2)).unwrap();
     assert_eq!(
         pruned.superseded_edges, SUPERSEDED,
-        "prune must free all {SUPERSEDED} superseded edges onto the freelist before compaction"
+        "prune must free all {BLOATED_SUPERSEDED} superseded edges onto the freelist before compaction"
     );
 
     let before = std::fs::metadata(&graph_path).unwrap().len();
@@ -1205,10 +1166,8 @@ fn scratch_prints_the_spawns_own_rigger_assigned_container() {
 /// silently fall back to the pre-relocation `<repo>/.rigger/tmp` default.
 #[test]
 fn scratch_falls_back_to_home_dot_cache_when_xdg_cache_home_is_unset_end_to_end() {
-    let dir = temp_project();
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     let home = tempfile::tempdir().expect("create a throwaway HOME");
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
@@ -1278,10 +1237,8 @@ fn scratch_falls_back_to_home_dot_cache_when_xdg_cache_home_is_unset_end_to_end(
 /// reverting the change.
 #[test]
 fn scratch_falls_back_to_the_repo_nested_default_when_genuinely_homeless_end_to_end() {
-    let dir = temp_project();
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
     let out = common::rigger_courier()
@@ -1366,10 +1323,8 @@ fn scratch_requires_exactly_one_spawn_id() {
 /// agreeing with each other, not merely with a shared piece of prose.
 #[test]
 fn scratch_prints_the_exact_container_rigger_result_reclaims() {
-    let dir = temp_project();
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     let (out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
     assert!(ok, "scratch must succeed for a live run; stderr: {err}");
@@ -1408,10 +1363,8 @@ fn scratch_prints_the_exact_container_rigger_result_reclaims() {
 /// config load failed.
 #[test]
 fn scratch_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_fleet_present() {
-    let dir = temp_project();
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     let relocated = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -1468,10 +1421,8 @@ fn scratch_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_fle
 /// printed path a worker could go on to `cd` into or point `CARGO_TARGET_DIR` at.
 #[test]
 fn scratch_refuses_a_degenerate_empty_spawn_id() {
-    let dir = temp_project();
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     let (out, err, ok) = run_rigger(root, &["scratch", ""]);
     assert!(!ok, "scratch must refuse a degenerate empty spawn id");
@@ -1544,36 +1495,23 @@ fn result_walks_up_to_a_parent_store_from_a_subdirectory() {
     );
 }
 
-/// The PRIMARY named threat (adv-u9-walkup-namespace-misfile-default-layout), re-proven for
-/// the RELOCATED shape (spec 89, criterion 2 - SCRATCH IS OUTSIDE THE STORE TREE): a real
-/// spawn's own courier calls now run from a git-linked worktree that lives OUTSIDE the
-/// repo's own directory tree entirely (the cache-home default,
-/// [`common::default_scratch_root`]) rather than nested under `<repo>/.rigger/tmp` as
-/// before this criterion - and the record must still land in the SAME namespaced stream
-/// the conductor reads, not misfile it under `proj-<worktree>-run` while the spawn stays
-/// parked. Walking up alone is not enough: the walked-up write lands in the real store
-/// FILE, but the stream is chosen by the identity, and `git rev-parse --show-toplevel` from
-/// inside a linked worktree returns the WORKTREE path (basename `rigger-wt-x`), so a
-/// cwd-anchored identity misfiles the append. A plain subdir shares the git top-level and
-/// hides this; only a real linked worktree exposes the divergence. Proven end-to-end:
-/// `rigger result` from inside the worktree, then `rigger reported` FROM THE REPO ROOT must
-/// see the recorded result (it reads `proj-<repo>-run`, the conductor's stream). The sibling
-/// test below (`result_from_a_configured_nested_git_worktree_records_into_the_repo_stream`)
-/// re-proves the SAME contract for the OTHER shape `walk_stores_from` still honors
-/// unchanged, namely a worktree that stays a filesystem descendant of the repo, still
-/// reachable for a caller that configures scratch back under it.
-#[test]
-fn result_from_a_relocated_git_worktree_outside_the_repo_records_into_the_repo_stream() {
+/// Records a result from inside a real git-linked worktree `wt_of(root)` of a seeded repo and
+/// proves it landed in the repo's own namespaced stream - the one the conductor reads - rather
+/// than a fabricated store inside the worktree or a stream misfiled under the worktree's own
+/// identity (`git rev-parse --show-toplevel` from a linked worktree names the WORKTREE, so a
+/// cwd-anchored identity misfiles the append; a plain subdir shares the top-level and hides it).
+/// `shape` names the worktree's placement in the failure messages.
+fn assert_a_worktree_result_records_into_the_repo_stream(
+    shape: &str,
+    wt_of: fn(&Path) -> std::path::PathBuf,
+) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     // A prior run created the store the conductor reads (identity = the repo basename).
     seed_store(root);
 
-    // A REAL git-linked worktree living OUTSIDE the repo's own directory tree entirely -
-    // the relocated cache-home default a real spawn's own courier calls now run from
-    // (spec 89, criterion 2). `git worktree add` needs a committed HEAD, which
-    // `temp_git_project_with_commit` provides.
-    let wt = common::default_scratch_root(root).join("rigger-wt-x");
+    // `git worktree add` needs a committed HEAD, which `temp_git_project_with_commit` provides.
+    let wt = wt_of(root);
     std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
     let ok = Command::new("git")
         .args(["worktree", "add", "-q"])
@@ -1584,91 +1522,58 @@ fn result_from_a_relocated_git_worktree_outside_the_repo_records_into_the_repo_s
         .success();
     assert!(
         ok,
-        "git worktree add must succeed for the relocated-worktree test"
+        "git worktree add must succeed for the {shape}-worktree test"
     );
 
-    // Record a result from INSIDE the relocated worktree.
     let (_out, err, ok) = run_rigger(&wt, &["result", "u/implementer#0", "did the work"]);
     assert!(
         ok,
-        "result from inside a relocated git worktree (outside the repo) must succeed; \
-         stderr: {err}"
+        "result from inside a {shape} git worktree must succeed; stderr: {err}"
     );
     // It walked up to the repo store - it did NOT fabricate a store inside the worktree.
     assert!(
         !wt.join(".rigger").join("events.db").exists(),
-        "result must NOT fabricate a store inside the worktree; it resolves the repo's own"
+        "result must NOT fabricate a store inside the {shape} worktree; it resolves the repo's own"
     );
 
-    // The write landed in the stream the CONDUCTOR reads (identity = repo root, not the
-    // worktree), so `reported` FROM THE REPO ROOT sees it. Before the identity fix, the
-    // append misfiled under `proj-rigger-wt-x-run` and this read returned exit-non-zero
-    // "no recorded result yet" while the spawn stayed parked - the exact charter defect.
+    // `reported` FROM THE REPO ROOT reads `proj-<repo>-run`, the conductor's stream; a misfiled
+    // append would leave it exit-non-zero "no recorded result yet" while the spawn stays parked.
     let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
     assert!(
         ok,
-        "the worktree's result must be readable from the repo root (the conductor's \
+        "the {shape} worktree's result must be readable from the repo root (the conductor's \
          stream); stderr: {err}, stdout: {out}"
     );
     assert!(
         out.contains("u/implementer#0") && out.contains("ok"),
-        "reported from the repo root must confirm the worktree's recorded result; got: {out:?}"
+        "reported from the repo root must confirm the {shape} worktree's recorded result; \
+         got: {out:?}"
     );
 }
 
-/// Spec 89, criterion 2's `walk_stores_from` doc comment names TWO shapes reaching the
-/// boundary: the relocated (non-descendant) shape the sibling test above proves, and a
-/// worktree that stays a filesystem DESCENDANT of the repo - "the pre-relocation nested
-/// worktree... still reachable for a caller that configures scratch back under the repo" -
-/// whose original, UNCHANGED `.parent()`-climb code path this test re-proves end-to-end.
-/// Deliberately independent of `common::default_scratch_root` (which now resolves OUTSIDE
-/// the repo): a nested worktree can live anywhere under `root`'s own directory tree
-/// regardless of where the crate's own scratch-root default points, so this fixture plants
-/// one at a literal repo-relative path, exactly the shape the OTHER untouched nested-worktree
-/// periphery fixtures in this suite still use for their own (non-store) concerns.
-#[test]
-fn result_from_a_configured_nested_git_worktree_records_into_the_repo_stream() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    seed_store(root);
-
-    // A REAL git-linked worktree nested under the repo - the pre-relocation shape, still
-    // sanctioned for a caller that configures scratch back under it.
-    let wt = root.join(".rigger").join("tmp").join("rigger-wt-nested");
-    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
-    let ok = Command::new("git")
-        .args(["worktree", "add", "-q"])
-        .arg(&wt)
-        .current_dir(root)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(
-        ok,
-        "git worktree add must succeed for the nested-worktree test"
-    );
-
-    let (_out, err, ok) = run_rigger(&wt, &["result", "u/implementer#0", "did the work"]);
-    assert!(
-        ok,
-        "result from inside a nested git worktree must succeed; stderr: {err}"
-    );
-    assert!(
-        !wt.join(".rigger").join("events.db").exists(),
-        "result must NOT fabricate a store inside the worktree; it walks up to the repo"
-    );
-
-    let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
-    assert!(
-        ok,
-        "the nested worktree's result must be readable from the repo root (the conductor's \
-         stream); stderr: {err}, stdout: {out}"
-    );
-    assert!(
-        out.contains("u/implementer#0") && out.contains("ok"),
-        "reported from the repo root must confirm the nested worktree's recorded result; \
-         got: {out:?}"
-    );
+rigger::test_cases! {
+    /// The PRIMARY named threat (adv-u9-walkup-namespace-misfile-default-layout), re-proven for
+    /// the RELOCATED shape (spec 89, criterion 2 - SCRATCH IS OUTSIDE THE STORE TREE): a real
+    /// spawn's own courier calls now run from a git-linked worktree that lives OUTSIDE the
+    /// repo's own directory tree entirely (the cache-home default,
+    /// [`common::default_scratch_root`]) rather than nested under `<repo>/.rigger/tmp`, and the
+    /// record must still land in the SAME namespaced stream the conductor reads, not misfile it
+    /// under `proj-<worktree>-run` while the spawn stays parked.
+    result_from_a_relocated_git_worktree_outside_the_repo_records_into_the_repo_stream:
+        assert_a_worktree_result_records_into_the_repo_stream("relocated", |root| {
+            common::default_scratch_root(root).join("rigger-wt-x")
+        });
+    /// Spec 89, criterion 2's `walk_stores_from` doc comment names TWO shapes reaching the
+    /// boundary: the relocated (non-descendant) shape the row above proves, and a worktree that
+    /// stays a filesystem DESCENDANT of the repo - "the pre-relocation nested worktree... still
+    /// reachable for a caller that configures scratch back under the repo" - whose original,
+    /// UNCHANGED `.parent()`-climb code path this row re-proves end-to-end. Deliberately
+    /// independent of `common::default_scratch_root` (which resolves OUTSIDE the repo): the
+    /// fixture plants the worktree at a literal repo-relative path.
+    result_from_a_configured_nested_git_worktree_records_into_the_repo_stream:
+        assert_a_worktree_result_records_into_the_repo_stream("nested", |root| {
+            root.join(".rigger").join("tmp").join("rigger-wt-nested")
+        });
 }
 
 /// Spec 08 item 6: within the bounded walk scope the OUTERMOST store wins. A courier run
@@ -1806,181 +1711,201 @@ fn result_prints_a_supersede_advisory_when_a_result_already_exists() {
     );
 }
 
-/// Spec 34, criterion 1 (per-spawn reclamation ON COMPLETION): rigger DELETES a spawn's
-/// dedicated, rigger-assigned scratch dir under `.rigger/tmp` the MOMENT its result is
-/// recorded - for EVERY outcome (a success, a reject verdict, an `--error`, and a
-/// liveness/infra fault) - while a sibling spawn with NO recorded result keeps its scratch
-/// untouched. All four outcomes reach the store through the SAME courier (`rigger result`,
-/// [`cmd_result`]): the driver records even a liveness/infra fault as `--error` + `--meta
-/// '{"liveness_class":"infra"}'` (see
-/// `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`), so
-/// the reclaim keys off "a result was recorded", never the outcome TYPE. The scratch path is
-/// the single authority `driver::replay::spawn_scratch_path`
-/// (`<scratch_root>/agent-scratch/<run>/<sanitized id>`); the reclaim is `cmd_result`'s. The
-/// "keeps its scratch" half falls out by construction: `cmd_result` only ever runs for the
-/// spawn being reported, so a spawn with no result is never touched.
-#[test]
-fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome() {
-    // Each case is one terminal outcome in the exact courier shape the driver records it
-    // with. A REJECT verdict is a plain (non-error) result whose text carries the verdict;
-    // an `--error` is a charged failure; a liveness/infra fault is `--error` plus the
-    // `liveness_class` meta that marks it no-charge.
-    let cases: &[(&str, &[&str])] = &[
-        ("success", &["result", "u/implementer#0", "did the work"]),
-        (
-            "reject-verdict",
-            &["result", "u/implementer#0", r#"{"verdict":"reject"}"#],
-        ),
-        ("error", &["result", "u/implementer#0", "boom", "--error"]),
-        (
-            "liveness-fault",
-            &[
-                "result",
-                "u/implementer#0",
-                "worker hung past its wall clock",
-                "--error",
-                "--meta",
-                r#"{"liveness_class":"infra"}"#,
-            ],
-        ),
-    ];
+/// Populate one registered mutation-scratch leaf per spawn under `cache_home`
+/// (`rigger-mutants/<encoded spawn>`, each holding debris), standing in for real `cargo
+/// mutants` runs in progress under each spawn's own TMPDIR; returns the leaves in order.
+fn populated_mutation_scratch<const N: usize>(
+    cache_home: &Path,
+    leaves: [&str; N],
+) -> [std::path::PathBuf; N] {
+    leaves.map(|leaf| {
+        let d = cache_home.join("rigger-mutants").join(leaf);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
+        d
+    })
+}
 
-    for (label, args) in cases {
-        let dir = temp_project();
+/// Write persona `id` to `<root>/.rigger/agents/<id>.md` - a sonnet agent with `tools` (the
+/// inside of the `[...]` list) whose prompt body is `body` - creating the agents dir as needed.
+fn write_agent(root: &Path, id: &str, tools: &str, body: &str) {
+    let agents = root.join(".rigger").join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join(format!("{id}.md")),
+        format!("---\nid: {id}\nmodel: sonnet\ntools: [{tools}]\n---\n{body}\n"),
+    )
+    .unwrap();
+}
+
+/// A throwaway project whose store already holds a live run's `RunStarted` (run `r1`), so
+/// run-scoped paths - per-spawn scratch, printed containers - resolve exactly as in production,
+/// from the store's latest `RunStarted`.
+fn run_started_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    seed_store(dir.path());
+    seed_run_events(
+        dir.path(),
+        &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)],
+    );
+    dir
+}
+
+/// Run `rigger <args...>` in `root` with `XDG_CACHE_HOME` pointed at `cache_home`, so a
+/// scratch reclaim resolves its cache-home roots there and never under the operator's real
+/// `~/.cache`; returns (stdout, stderr, success).
+fn run_rigger_with_cache_home(
+    root: &Path,
+    cache_home: &Path,
+    args: &[&str],
+) -> (String, String, bool) {
+    run_rigger_envs(
+        root,
+        args,
+        &[("XDG_CACHE_HOME", cache_home.to_str().unwrap())],
+    )
+}
+
+/// Record a result for a typo'd or hostile `spawn_id` with `XDG_CACHE_HOME` at `cache_home`,
+/// asserting it still succeeds: scratch reclaim is best-effort and never fails a recorded
+/// result, whatever the id resolves to.
+fn record_hostile_spawn_result(root: &Path, cache_home: &Path, spawn_id: &str) {
+    let (out, err, ok) = run_rigger_with_cache_home(
+        root,
+        cache_home,
+        &["result", spawn_id, "typo'd or hostile spawn id"],
+    );
+    assert!(
+        ok,
+        "recording the result must still succeed (scratch reclaim is best-effort and never \
+         fails a recorded result); stdout: {out:?} stderr: {err}"
+    );
+}
+
+/// Every terminal outcome in the exact courier shape the driver records it with: a success,
+/// a REJECT verdict (a plain, non-error result whose text carries the verdict), an `--error`
+/// (a charged failure), and a liveness/infra fault (`--error` plus the `liveness_class` meta
+/// that marks it no-charge). The per-spawn scratch reclaim keys off "a result was recorded",
+/// never the outcome TYPE, so each reclaim test runs every row.
+const EVERY_REPORTED_OUTCOME: &[(&str, &[&str])] = &[
+    ("success", &["result", "u/implementer#0", "did the work"]),
+    (
+        "reject-verdict",
+        &["result", "u/implementer#0", r#"{"verdict":"reject"}"#],
+    ),
+    ("error", &["result", "u/implementer#0", "boom", "--error"]),
+    (
+        "liveness-fault",
+        &[
+            "result",
+            "u/implementer#0",
+            "worker hung past its wall clock",
+            "--error",
+            "--meta",
+            r#"{"liveness_class":"infra"}"#,
+        ],
+    ),
+];
+
+/// The run `r1`'s per-spawn `agent-scratch` root the binary resolves for `root` when its
+/// `XDG_CACHE_HOME` is `cache_home` (spec 89, criterion 2: no longer nested under
+/// `<repo>/.rigger/tmp`) - the layout of the single authority `spawn_scratch_path`.
+fn agent_scratch_run_root(root: &Path, cache_home: &Path) -> std::path::PathBuf {
+    rigger::worktree::cache_scratch_root_from(
+        root.to_str().unwrap(),
+        Some(cache_home.as_os_str().to_owned()),
+        None,
+    )
+    .expect("a non-empty repo with an explicit cache home always resolves")
+    .join("agent-scratch")
+    .join("r1")
+}
+
+/// The registered spawn-scoped mutation-scratch root (`driver::replay::mutation_scratch_path`:
+/// `$XDG_CACHE_HOME/rigger-mutants/<spawn>`) under `cache_home`.
+fn mutation_scratch_root(_root: &Path, cache_home: &Path) -> std::path::PathBuf {
+    cache_home.join("rigger-mutants")
+}
+
+/// For EVERY outcome ([`EVERY_REPORTED_OUTCOME`]), in a fresh live-run project: the reporting
+/// spawn `u/implementer#0`'s own populated leaf under the registered scratch root
+/// `scratch_root(root, cache_home)` is GONE the moment its result lands, while a different
+/// spawn `v/implementer#0` with no recorded result keeps its own leaf untouched. Leaves are
+/// keyed by the FULL injectively-encoded spawn id (spec 77 Design
+/// `d77-injective-scratch-naming`: `/` -> `_2f`, `#` -> `_23`); a dedicated cache home keeps
+/// `XDG_CACHE_HOME` off the operator's real `~/.cache`. `what` names the root in messages.
+fn assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
+    what: &str,
+    scratch_root: fn(&Path, &Path) -> std::path::PathBuf,
+) {
+    for (label, args) in EVERY_REPORTED_OUTCOME {
+        let dir = run_started_project();
         let root = dir.path();
-        seed_store(root);
-        // A run is live, so the per-spawn scratch is run-scoped exactly as in production -
-        // the reclaim recovers the run id from the store's latest `RunStarted`.
-        seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
-
-        // The dedicated scratch rigger assigned each spawn, each populated with build debris.
-        // The layout is the single authority `spawn_scratch_path`:
-        // `<root>/.rigger/tmp/agent-scratch/<run>/<encoded id>` (the injective byte-hex
-        // encoding, spec 77 Design `d77-injective-scratch-naming`: `/` -> `_2f`, `#` -> `_23`).
-        // One spawn will report (its scratch must be reclaimed); the sibling never reports
-        // (its scratch must be untouched).
-        let run_scratch = common::default_scratch_root(root)
-            .join("agent-scratch")
-            .join("r1");
-        let done = run_scratch.join("u_2fimplementer_230");
-        let live = run_scratch.join("v_2fimplementer_230");
+        let cache_home = tempfile::tempdir().unwrap();
+        let registered = scratch_root(root, cache_home.path());
+        let done = registered.join("u_2fimplementer_230");
+        let live = registered.join("v_2fimplementer_230");
         for d in [&done, &live] {
             std::fs::create_dir_all(d).unwrap();
-            std::fs::write(d.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
+            std::fs::write(d.join("scratch-debris"), [0u8; 64]).unwrap();
         }
 
-        // Record the outcome for the DONE spawn through the real courier.
-        let (out, err, ok) = run_rigger(root, args);
+        let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), args);
         assert!(
             ok,
             "[{label}] recording the result must succeed; stdout: {out:?} stderr: {err}"
         );
-
-        // The just-completed spawn's scratch is GONE the moment its result landed...
         assert!(
             !done.exists(),
-            "[{label}] a spawn's rigger-assigned scratch must be reclaimed the moment its \
-             result is recorded; {} still exists",
+            "[{label}] a spawn's {what} must be reclaimed the moment its own result is \
+             recorded; {} still exists",
             done.display()
         );
-        // ...while the sibling with NO recorded result keeps its scratch untouched.
         assert!(
-            live.exists() && live.join("cargo-target-debris.rlib").exists(),
-            "[{label}] a spawn with no recorded result must keep its scratch; {} was wrongly \
-             reclaimed",
+            live.exists() && live.join("scratch-debris").exists(),
+            "[{label}] a spawn with no recorded result must keep its own {what}; {} was \
+             wrongly reclaimed",
             live.display()
         );
     }
 }
 
-/// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED): `cmd_result`'s per-spawn reclaim (spec
-/// 34, criterion 1) gains a REGISTERED SCRATCH ROOT beyond `agent-scratch` - the SPAWN-scoped
-/// mutation-testing dir the seeded implementer persona points `cargo mutants`' `TMPDIR` at
-/// (`driver::replay::mutation_scratch_path`: `$XDG_CACHE_HOME/rigger-mutants/<spawn>`, per spec
-/// 77 Design "mutation scratch is spawn-scoped, never unit-scoped"). The moment a spawn reports
-/// its OWN result (for every outcome, the same four shapes spec 34's own per-spawn test proves)
-/// its OWN mutation-scratch dir is deleted, while a sibling spawn with no recorded result keeps
-/// its own dir untouched, exactly like agent-scratch. A different spawn entirely, whether a
-/// different unit or a different lane/attempt/role of the SAME unit, is covered separately
-/// (see `two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs` and
-/// `a_reviewers_result_never_reclaims_the_implementers_mutation_scratch`), since same-unit
-/// same-spawn cross-role/cross-lane sharing is exactly the axis the round-7 review reject found
-/// uncovered.
-#[test]
-fn a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome() {
-    let cases: &[(&str, &[&str])] = &[
-        ("success", &["result", "u/implementer#0", "did the work"]),
-        (
-            "reject-verdict",
-            &["result", "u/implementer#0", r#"{"verdict":"reject"}"#],
-        ),
-        ("error", &["result", "u/implementer#0", "boom", "--error"]),
-        (
-            "liveness-fault",
-            &[
-                "result",
-                "u/implementer#0",
-                "worker hung past its wall clock",
-                "--error",
-                "--meta",
-                r#"{"liveness_class":"infra"}"#,
-            ],
-        ),
-    ];
-
-    for (label, args) in cases {
-        let dir = temp_project();
-        let root = dir.path();
-        seed_store(root);
-        seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
-
-        // A dedicated cache home for this test case, so XDG_CACHE_HOME never points at the
-        // operator's real ~/.cache. Two DIFFERENT spawns' mutation-scratch dirs, each
-        // populated with build debris, keyed by their own FULL injectively-encoded spawn id
-        // (`u/implementer#0` and `v/implementer#0`).
-        let cache_home = tempfile::tempdir().unwrap();
-        let done_spawn_scratch = cache_home
-            .path()
-            .join("rigger-mutants")
-            .join("u_2fimplementer_230");
-        let live_spawn_scratch = cache_home
-            .path()
-            .join("rigger-mutants")
-            .join("v_2fimplementer_230");
-        for d in [&done_spawn_scratch, &live_spawn_scratch] {
-            std::fs::create_dir_all(d).unwrap();
-            std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-        }
-
-        // Record the outcome for spawn `u/implementer#0` through the real courier, with
-        // XDG_CACHE_HOME pointed at this case's throwaway cache home.
-        let (out, err, ok) = run_rigger_envs(
-            root,
-            args,
-            &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+rigger::test_cases! {
+    /// Spec 34, criterion 1 (per-spawn reclamation ON COMPLETION): rigger DELETES a spawn's
+    /// dedicated, rigger-assigned scratch dir the MOMENT its result is recorded - for EVERY
+    /// outcome (a success, a reject verdict, an `--error`, and a liveness/infra fault) - while a
+    /// sibling spawn with NO recorded result keeps its scratch untouched. All four outcomes reach
+    /// the store through the SAME courier (`rigger result`, [`cmd_result`]): the driver records
+    /// even a liveness/infra fault as `--error` + `--meta '{"liveness_class":"infra"}'` (see
+    /// `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`), so
+    /// the reclaim keys off "a result was recorded", never the outcome TYPE. The scratch path is
+    /// the single authority `driver::replay::spawn_scratch_path`
+    /// (`<scratch_root>/agent-scratch/<run>/<sanitized id>`); the reclaim is `cmd_result`'s. The
+    /// "keeps its scratch" half falls out by construction: `cmd_result` only ever runs for the
+    /// spawn being reported, so a spawn with no result is never touched.
+    a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome:
+        assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
+            "rigger-assigned scratch",
+            agent_scratch_run_root,
         );
-        assert!(
-            ok,
-            "[{label}] recording the result must succeed; stdout: {out:?} stderr: {err}"
+    /// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED): `cmd_result`'s per-spawn reclaim (spec
+    /// 34, criterion 1) gains a REGISTERED SCRATCH ROOT beyond `agent-scratch` - the
+    /// SPAWN-scoped mutation-testing dir the seeded implementer persona points `cargo mutants`'
+    /// `TMPDIR` at (`driver::replay::mutation_scratch_path`: `$XDG_CACHE_HOME/rigger-mutants/
+    /// <spawn>`, per spec 77 Design "mutation scratch is spawn-scoped, never unit-scoped"). The
+    /// moment a spawn reports its OWN result (for every outcome) its OWN mutation-scratch dir is
+    /// deleted, while a sibling spawn with no recorded result keeps its own dir untouched,
+    /// exactly like agent-scratch. A different spawn entirely, whether a different unit or a
+    /// different lane/attempt/role of the SAME unit, is covered separately (see
+    /// `two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs` and
+    /// `a_reviewers_result_never_reclaims_the_implementers_mutation_scratch`), since same-unit
+    /// same-spawn cross-role/cross-lane sharing is exactly the axis the round-7 review reject
+    /// found uncovered.
+    a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome:
+        assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
+            "registered mutation-scratch dir",
+            mutation_scratch_root,
         );
-
-        // The reporting spawn's own mutation-scratch dir is GONE the moment its result
-        // landed...
-        assert!(
-            !done_spawn_scratch.exists(),
-            "[{label}] a spawn's registered mutation-scratch dir must be reclaimed the moment \
-             its own result is recorded; {} still exists",
-            done_spawn_scratch.display()
-        );
-        // ...while a DIFFERENT spawn, with no recorded result, keeps its own mutation-scratch
-        // untouched.
-        assert!(
-            live_spawn_scratch.exists() && live_spawn_scratch.join("mutants-debris.out").exists(),
-            "[{label}] a spawn with no recorded result must keep its own mutation-scratch; {} \
-             was wrongly reclaimed",
-            live_spawn_scratch.display()
-        );
-    }
 }
 
 /// Sibling of `a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`,
@@ -1996,10 +1921,8 @@ fn a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_
 /// happen by construction, not merely by luck of test ordering.
 #[test]
 fn a_reviewers_result_never_reclaims_the_implementers_mutation_scratch() {
-    let dir = temp_project();
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     let cache_home = tempfile::tempdir().unwrap();
     // The IMPLEMENTER's own populated mutation-scratch dir, standing in for a real `cargo
@@ -2013,10 +1936,10 @@ fn a_reviewers_result_never_reclaims_the_implementers_mutation_scratch() {
 
     // The ADVERSARY role of the SAME unit+attempt reports - not the implementer role that ran
     // mutants, and not a role that ever populated a mutation-scratch dir of its own.
-    let (out, err, ok) = run_rigger_envs(
+    let (out, err, ok) = run_rigger_with_cache_home(
         root,
+        cache_home.path(),
         &["result", "u/adversary#0", "no blocking findings"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
     );
     assert!(
         ok,
@@ -2032,60 +1955,82 @@ fn a_reviewers_result_never_reclaims_the_implementers_mutation_scratch() {
     );
 }
 
-/// Regression for the spec-77 review reject (ADJUDICATOR VERDICT u77c2, diff d6aa314..b9dd0dd):
-/// `cmd_result`'s positional spawn id carries NO format validation beyond non-empty, and
-/// `unit = spawn_id.split('/').next()` (main.rs, `reclaim_spawn_scratch`) can itself equal
-/// `".."`- directly reachable as `rigger result ".." "<text>"`, no crafted event needed. Both
-/// `spawn_scratch_path` and `mutation_scratch_path` used to derive `<root>.join(marker_filename(
-/// id))` with `marker_filename` passing `.` through unchanged, so a `..` id resolved to the
-/// PARENT of the registered scratch root, and `reap_then_remove_dir`'s bare `remove_dir_all`
-/// deleted everything there - an unrelated sibling directory under the operator's real cache
-/// home, included. Prove the fix holds end to end, through the real binary: a `..` spawn id
-/// must reclaim only a `__`-named leaf UNDER the registered roots, never escape past them.
-#[test]
-fn a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots() {
-    let dir = temp_project();
+/// Records a result for the hostile `spawn_id` in a live-run project whose dedicated cache
+/// home already holds the registered `rigger-mutants/` root (it must exist on disk for the OS
+/// to resolve a path THROUGH it - an absent intermediate directory makes `remove_dir_all` fail
+/// closed regardless of any escape, passing for the wrong reason) plus a populated `sibling`
+/// dir (path components under the cache home), and proves the reclaim deleted neither the
+/// `survivor` dir (components under the cache home; empty = the cache home itself) nor the
+/// sibling: whatever the id resolves to, the reclaim stays a leaf UNDER the registered roots.
+fn assert_a_hostile_spawn_id_spares_its_neighbours(
+    spawn_id: &str,
+    survivor: &[&str],
+    sibling: &[&str],
+) {
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
-
-    // A dedicated cache home, so XDG_CACHE_HOME never points at the operator's real
-    // ~/.cache. `rigger-mutants/` must exist on disk (a prior unit's `cargo mutants` run
-    // would have created it) for the OS to even resolve a `..` path THROUGH it - an
-    // absent intermediate directory makes `remove_dir_all` fail closed regardless of any
-    // escape, which would make this regression pass for the wrong reason. An unrelated
-    // sibling directory under `cache_home` stands in for real ambient cache data (some
-    // OTHER tool's cache) that a reaper must never touch.
     let cache_home = tempfile::tempdir().unwrap();
+    let under_cache = |parts: &[&str]| {
+        parts
+            .iter()
+            .fold(cache_home.path().to_path_buf(), |p, c| p.join(c))
+    };
     let mutants_root = cache_home.path().join("rigger-mutants");
     std::fs::create_dir_all(&mutants_root).unwrap();
     std::fs::write(mutants_root.join("mutants-debris.out"), [0u8; 8]).unwrap();
-    let sibling = cache_home.path().join("some-other-tools-cache");
+    let sibling = under_cache(sibling);
     std::fs::create_dir_all(&sibling).unwrap();
     std::fs::write(sibling.join("keep-me.txt"), b"do not delete").unwrap();
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["result", "..", "typo'd or hostile spawn id"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
-    assert!(
-        ok,
-        "recording the result must still succeed (scratch reclaim is best-effort and never \
-         fails a recorded result); stdout: {out:?} stderr: {err}"
-    );
+    record_hostile_spawn_result(root, cache_home.path(), spawn_id);
 
+    let survivor = under_cache(survivor);
     assert!(
-        cache_home.path().exists(),
-        "cache_home itself must never be deleted by a `..`-derived reclaim path"
+        survivor.exists(),
+        "{} must never be deleted by the reclaim of spawn id {spawn_id:?}",
+        survivor.display()
     );
     assert!(
         sibling.exists() && sibling.join("keep-me.txt").exists(),
-        "a `..` spawn id must never let the reclaim walk up out of the registered \
-         mutation-scratch root and delete an unrelated sibling under cache_home; {} was \
-         wrongly removed",
+        "spawn id {spawn_id:?} must never let the reclaim escape its own leaf and delete the \
+         live sibling {}",
         sibling.display()
     );
+}
+
+rigger::test_cases! {
+    /// Regression for the spec-77 review reject (ADJUDICATOR VERDICT u77c2, diff d6aa314..b9dd0dd):
+    /// `cmd_result`'s positional spawn id carries NO format validation beyond non-empty, and
+    /// `unit = spawn_id.split('/').next()` (main.rs, `reclaim_spawn_scratch`) can itself equal
+    /// `".."`- directly reachable as `rigger result ".." "<text>"`, no crafted event needed. Both
+    /// `spawn_scratch_path` and `mutation_scratch_path` used to derive `<root>.join(marker_filename(
+    /// id))` with `marker_filename` passing `.` through unchanged, so a `..` id resolved to the
+    /// PARENT of the registered scratch root, and `reap_then_remove_dir`'s bare `remove_dir_all`
+    /// deleted everything there - an unrelated sibling directory under the operator's real cache
+    /// home, included. Prove the fix holds end to end, through the real binary: a `..` spawn id
+    /// must reclaim only a `__`-named leaf UNDER the registered roots, never escape past them.
+    a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots:
+        assert_a_hostile_spawn_id_spares_its_neighbours("..", &[], &["some-other-tools-cache"]);
+    /// Regression for the spec-77 review reject round 4 (ADJUDICATOR VERDICT u77c2 round 4): round
+    /// 3's fix only neutralized an all-dots `marker_filename` result; at the time, a spawn id
+    /// starting with `/` (e.g. `rigger result "/foo" "text"`, directly reachable - the `id`
+    /// positional carries no format validation beyond non-empty) made `reclaim_spawn_scratch`'s
+    /// OWN `unit = spawn_id.split('/').next()` extraction (main.rs) resolve to the EMPTY string,
+    /// and `mutation_scratch_path(cache_home, "")` then collapsed via the documented
+    /// `PathBuf::join("")` no-op to `cache_home/rigger-mutants` - the REGISTERED ROOT ITSELF, not a
+    /// per-unit leaf under it - so `reap_then_remove_dir`'s reap-then-`remove_dir_all` wiped every
+    /// OTHER unit's mutation scratch (and killed any of their still-running `cargo mutants`
+    /// subprocesses) alongside the reporting unit's.
+    ///
+    /// Round 8's spawn-scoped redesign (spec 77 Design "mutation scratch is spawn-scoped, never
+    /// unit-scoped") removes the whole `unit = ...` extraction step this class of bug lived in:
+    /// `reclaim_spawn_scratch` now feeds `mutation_scratch_path` the raw, always-non-empty
+    /// `spawn_id` directly (`"/foo"` itself, not a substring extracted from it), so the failure
+    /// mode this test regresses is now structurally unreachable through this call site, not merely
+    /// guarded. Kept as a live end-to-end pin anyway: a leading-slash spawn id must still reclaim
+    /// only its own distinct leaf, never the registered root itself.
+    a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root:
+        assert_a_hostile_spawn_id_spares_its_neighbours("/foo", &["rigger-mutants"], &["rigger-mutants", "v"]);
 }
 
 /// Sibling of `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`, proving the SAME
@@ -2104,10 +2049,8 @@ fn a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots() {
 /// the real CLI.
 #[test]
 fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() {
-    let dir = temp_project();
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     // A dedicated cache home, so the SAME call's mutation-scratch half (reclaim_spawn_scratch
     // always runs both halves) never touches the operator's real ~/.cache while this test
@@ -2133,16 +2076,7 @@ fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() 
     std::fs::create_dir_all(&sibling).unwrap();
     std::fs::write(sibling.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["result", "..", "typo'd or hostile spawn id"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
-    assert!(
-        ok,
-        "recording the result must still succeed (scratch reclaim is best-effort and never \
-         fails a recorded result); stdout: {out:?} stderr: {err}"
-    );
+    record_hostile_spawn_result(root, cache_home.path(), "..");
 
     assert!(
         run_scratch.exists(),
@@ -2154,65 +2088,6 @@ fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() 
         "a `..` spawn id must never let reclaim_spawn_scratch's pre-existing agent-scratch call \
          walk up out of the run's agent-scratch root and delete a sibling unit's live scratch; \
          {} was wrongly removed",
-        sibling.display()
-    );
-}
-
-/// Regression for the spec-77 review reject round 4 (ADJUDICATOR VERDICT u77c2 round 4): round
-/// 3's fix only neutralized an all-dots `marker_filename` result; at the time, a spawn id
-/// starting with `/` (e.g. `rigger result "/foo" "text"`, directly reachable - the `id`
-/// positional carries no format validation beyond non-empty) made `reclaim_spawn_scratch`'s
-/// OWN `unit = spawn_id.split('/').next()` extraction (main.rs) resolve to the EMPTY string,
-/// and `mutation_scratch_path(cache_home, "")` then collapsed via the documented
-/// `PathBuf::join("")` no-op to `cache_home/rigger-mutants` - the REGISTERED ROOT ITSELF, not a
-/// per-unit leaf under it - so `reap_then_remove_dir`'s reap-then-`remove_dir_all` wiped every
-/// OTHER unit's mutation scratch (and killed any of their still-running `cargo mutants`
-/// subprocesses) alongside the reporting unit's.
-///
-/// Round 8's spawn-scoped redesign (spec 77 Design "mutation scratch is spawn-scoped, never
-/// unit-scoped") removes the whole `unit = ...` extraction step this class of bug lived in:
-/// `reclaim_spawn_scratch` now feeds `mutation_scratch_path` the raw, always-non-empty
-/// `spawn_id` directly (`"/foo"` itself, not a substring extracted from it), so the failure
-/// mode this test regresses is now structurally unreachable through this call site, not merely
-/// guarded. Kept as a live end-to-end pin anyway: a leading-slash spawn id must still reclaim
-/// only its own distinct leaf, never the registered root itself.
-#[test]
-fn a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
-
-    // A dedicated cache home, standing in for the operator's real ~/.cache. A sibling unit's
-    // LIVE mutation-scratch dir (as a genuine `cargo mutants` run would have left it) stands in
-    // for "every other unit's registered scratch" a collapsed-to-root reclaim would wipe.
-    let cache_home = tempfile::tempdir().unwrap();
-    let mutants_root = cache_home.path().join("rigger-mutants");
-    let sibling = mutants_root.join("v");
-    std::fs::create_dir_all(&sibling).unwrap();
-    std::fs::write(sibling.join("outcomes.json"), b"{}").unwrap();
-
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["result", "/foo", "typo'd or hostile spawn id"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
-    assert!(
-        ok,
-        "recording the result must still succeed (scratch reclaim is best-effort and never \
-         fails a recorded result); stdout: {out:?} stderr: {err}"
-    );
-
-    assert!(
-        mutants_root.exists(),
-        "the registered rigger-mutants root itself must never be deleted by a leading-slash \
-         spawn id's reclaim"
-    );
-    assert!(
-        sibling.exists() && sibling.join("outcomes.json").exists(),
-        "a leading-slash spawn id must never let the empty extracted unit collapse the reclaim \
-         to the registered root and delete a sibling unit's live mutation scratch; {} was \
-         wrongly removed",
         sibling.display()
     );
 }
@@ -2250,10 +2125,8 @@ fn a_real_underscore_run_spawns_mutation_scratch_survives_an_unrelated_degenerat
     ];
 
     for (label, args) in cases {
-        let dir = temp_project();
+        let dir = run_started_project();
         let root = dir.path();
-        seed_store(root);
-        seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
         // A real spawn id literally three underscores, with a live mutation-scratch dir at the
         // path `mutation_scratch_path` actually computes for it under the injective encoding
@@ -2265,11 +2138,7 @@ fn a_real_underscore_run_spawns_mutation_scratch_survives_an_unrelated_degenerat
         std::fs::create_dir_all(&real_spawn_scratch).unwrap();
         std::fs::write(real_spawn_scratch.join("outcomes.json"), b"{}").unwrap();
 
-        let (out, err, ok) = run_rigger_envs(
-            root,
-            args,
-            &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-        );
+        let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), args);
         assert!(
             ok,
             "[{label}] recording the result must still succeed (scratch reclaim is \
@@ -2306,34 +2175,24 @@ fn a_real_underscore_run_spawns_mutation_scratch_survives_an_unrelated_degenerat
 /// keeps its dir") for a sibling spawn of the SAME unit, not just a different unit.
 #[test]
 fn two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs() {
-    let dir = temp_project();
+    let dir = run_started_project();
     let root = dir.path();
-    seed_store(root);
-    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
     // Two lanes of unit `u` (spawn_id(unit, role, lane) - identical unit, different
     // attempt/lane, so their FULL spawn ids differ only in the trailing digit), each with a
     // populated mutation-scratch dir standing in for a real `cargo mutants` run in progress
     // under this lane's own TMPDIR.
     let cache_home = tempfile::tempdir().unwrap();
-    let lane0_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("u_2fimplementer_230");
-    let lane1_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("u_2fimplementer_231");
-    for d in [&lane0_scratch, &lane1_scratch] {
-        std::fs::create_dir_all(d).unwrap();
-        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    }
+    let [lane0_scratch, lane1_scratch] = populated_mutation_scratch(
+        cache_home.path(),
+        ["u_2fimplementer_230", "u_2fimplementer_231"],
+    );
 
     // Lane 0 reports first - the fast-finishing candidate in a first-green-wins race.
-    let (out, err, ok) = run_rigger_envs(
+    let (out, err, ok) = run_rigger_with_cache_home(
         root,
+        cache_home.path(),
         &["result", "u/implementer#0", "did the work"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
     );
     assert!(
         ok,
@@ -2911,6 +2770,29 @@ fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
     );
 }
 
+/// `rigger ground <query_args...>` over a fresh project holding `files` (`(name, source)`)
+/// with `defaults.grounder: symbols` pinned (the pinning helper also creates the `agents/` dir
+/// `config::load` needs, so the pinned grounder takes effect rather than falling back to the
+/// default); asserts the ground succeeds and returns its stdout.
+#[cfg(feature = "symbols")]
+fn ground_via_symbols(files: &[(&str, &str)], query_args: &[&str]) -> String {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+    for (name, source) in files {
+        std::fs::write(root.join(name), source).unwrap();
+    }
+    let args: Vec<&str> = std::iter::once("ground")
+        .chain(query_args.iter().copied())
+        .collect();
+    let (out, err, ok) = run_rigger(root, &args);
+    assert!(
+        ok,
+        "ground via the symbols grounder must succeed; stderr: {err}"
+    );
+    out
+}
+
 /// End-to-end selection wiring (spec 15, unit 4): with `defaults.grounder: symbols`, `rigger
 /// ground` resolves the real `Symbols` grounder through `select_grounder` - building + persisting
 /// the structural index over the project - and ranks a DEFINITION above an incidental prose
@@ -2919,27 +2801,16 @@ fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
 #[cfg(feature = "symbols")]
 #[test]
 fn ground_via_symbols_grounder_ranks_a_definition_first() {
-    let dir = temp_project();
-    let root = dir.path();
-    // Pin `defaults.grounder: symbols` (the helper also creates the `agents/` dir `config::load`
-    // needs, so the pinned grounder actually takes effect rather than falling back to the default).
-    write_grounder_workflow(root, "symbols");
     // combat.rs DEFINES apply_damage; notes.rs only mentions it in a comment (prose, not a symbol).
-    std::fs::write(
-        root.join("combat.rs"),
-        "fn apply_damage(x: u8) -> u8 { x }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("notes.rs"),
-        "// TODO: revisit apply_damage later\nfn unrelated() {}\n",
-    )
-    .unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
-    assert!(
-        ok,
-        "ground via the symbols grounder must succeed; stderr: {err}"
+    let out = ground_via_symbols(
+        &[
+            ("combat.rs", "fn apply_damage(x: u8) -> u8 { x }\n"),
+            (
+                "notes.rs",
+                "// TODO: revisit apply_damage later\nfn unrelated() {}\n",
+            ),
+        ],
+        &["apply_damage", "5"],
     );
     let first_line = out.lines().next().unwrap_or_default();
     assert!(
@@ -3031,24 +2902,20 @@ fn ground_ranks_by_intent_dedupes_by_entity_and_admits_a_weak_query() {
 #[test]
 fn ground_via_symbols_grounder_ranks_a_genuinely_rare_contains_tier_entity_above_common_ones_sharing_its_substring(
 ) {
-    let dir = temp_project();
-    let root = dir.path();
-    write_grounder_workflow(root, "symbols");
-
-    std::fs::write(
-        root.join("entities.rs"),
-        "fn cfg_one() {}\nfn cfg_two() {}\nfn cfg_three() {}\nfn cfg_four() {}\nfn zorble_alone() {}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("callers.rs"),
-        "fn go() {\n    cfg_one();\n    cfg_one();\n    cfg_two();\n    cfg_two();\n    \
-         cfg_three();\n    cfg_three();\n    cfg_four();\n    cfg_four();\n}\n",
-    )
-    .unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["ground", "cfg zorble", "10"]);
-    assert!(ok, "ground must succeed; stderr: {err}");
+    let out = ground_via_symbols(
+        &[
+            (
+                "entities.rs",
+                "fn cfg_one() {}\nfn cfg_two() {}\nfn cfg_three() {}\nfn cfg_four() {}\nfn zorble_alone() {}\n",
+            ),
+            (
+                "callers.rs",
+                "fn go() {\n    cfg_one();\n    cfg_one();\n    cfg_two();\n    cfg_two();\n    \
+                 cfg_three();\n    cfg_three();\n    cfg_four();\n    cfg_four();\n}\n",
+            ),
+        ],
+        &["cfg zorble", "10"],
+    );
     let first = out.lines().next().unwrap_or_default();
     assert!(
         first.contains("zorble_alone"),
@@ -3508,6 +3375,20 @@ fn emit_spawn_flag_stamps_the_emitting_spawn_id() {
     );
 }
 
+/// `cmd_step`'s body within `main_rs` (its declaration up to the next top-level `fn`), so a
+/// source-order pin on the `rigger step` lifecycle stays pointed at that seam and is immune to
+/// the same calls made elsewhere in main.rs (`cmd_run`, the workflow entry).
+fn cmd_step_source(main_rs: &str) -> &str {
+    let step_at = main_rs
+        .find("fn cmd_step(args: &[String]) -> Res {")
+        .expect("main.rs must still define cmd_step, the `rigger step` lifecycle");
+    let step_end = main_rs[step_at..]
+        .find("\nfn ")
+        .map(|off| step_at + off)
+        .expect("cmd_step must be followed by another top-level fn");
+    &main_rs[step_at..step_end]
+}
+
 /// Spec 51, criterion 5 (SWEEP-BEFORE-ADD ORDERING): within one `rigger step`, no worktree ADD
 /// begins until the terminal-worktree SWEEP has completed, and both worktree mutations happen
 /// UNDER the step's serialization (the step lock). This pins the lifecycle SEAM where `cmd_step`'s
@@ -3532,14 +3413,7 @@ fn worktree_sweep_completes_before_any_add_within_one_step() {
     // assertions stay pointed at the step lifecycle and are immune to the OTHER
     // `conductor::run(&cfg, &deps)` call sites elsewhere in main.rs (`cmd_run` and the workflow
     // entry), which are not the stepwise seam under test.
-    let step_at = src
-        .find("fn cmd_step(args: &[String]) -> Res {")
-        .expect("main.rs must still define cmd_step, the `rigger step` lifecycle");
-    let step_end = src[step_at..]
-        .find("\nfn ")
-        .map(|off| step_at + off)
-        .expect("cmd_step must be followed by another top-level fn");
-    let cmd_step = &src[step_at..step_end];
+    let cmd_step = cmd_step_source(&src);
 
     // The three load-bearing worktree-lifecycle anchors, by BYTE OFFSET within cmd_step:
     //   (1) the step lock - the serialization that makes "one step at a time" hold, so the sweep
@@ -3697,6 +3571,62 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
     );
 }
 
+/// A seeded repo plus a LINKED git worktree of it, from inside which a `rigger` verb was just
+/// refused - kept alive so a caller can assert the refusal left no side effect behind.
+struct LinkedWorktreeRefusal {
+    dir: tempfile::TempDir,
+    _wt_parent: tempfile::TempDir,
+    wt_path: std::path::PathBuf,
+}
+
+/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): `rigger <verb>` invoked from inside a
+/// LINKED git worktree must refuse with rigger's OWN message naming both the main tree and the
+/// linked one - never proceed, and never surface `not_before` (the opaque downstream error the
+/// refusal must pre-empt, e.g. git's own "already used by worktree").
+fn assert_a_linked_worktree_refuses(verb: &str, not_before: &str) -> LinkedWorktreeRefusal {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
+    let wt_path = wt_parent.path().join(format!("rigger-wt-linked-{verb}"));
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().expect("utf8 worktree path"),
+            "-b",
+            &format!("linked-{verb}-branch"),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(&wt_path, &[verb]);
+    assert!(
+        !ok,
+        "`rigger {verb}` invoked from inside a linked worktree must refuse, not proceed; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        !err.contains(not_before),
+        "the refusal must be rigger's OWN clear message, firing before {not_before:?} can; \
+         stderr: {err:?}"
+    );
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
+    assert!(
+        err.contains(root_canon.to_str().unwrap()) && err.contains(wt_canon.to_str().unwrap()),
+        "the refusal must name both the main tree ({}) and the linked tree ({}); stderr: {err:?}",
+        root_canon.display(),
+        wt_canon.display()
+    );
+    LinkedWorktreeRefusal {
+        dir,
+        _wt_parent: wt_parent,
+        wt_path,
+    }
+}
+
 /// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): `rigger step` invoked from inside a
 /// LINKED git worktree must refuse, naming both the main tree and the linked one - never
 /// proceed and let git's own opaque "'rigger-run' is already used by worktree ..." surface deep
@@ -3705,140 +3635,32 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
 /// git already holds it there in the main tree).
 #[test]
 fn step_from_a_linked_worktree_refuses_naming_both_trees() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
-
-    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
-    let wt_path = wt_parent.path().join("rigger-wt-linked");
-    git_ok(
-        root,
-        &[
-            "worktree",
-            "add",
-            wt_path.to_str().expect("utf8 worktree path"),
-            "-b",
-            "linked-branch",
-        ],
-    );
-
-    let (out, err, ok) = run_rigger(&wt_path, &["step"]);
-    assert!(
-        !ok,
-        "`rigger step` invoked from inside a linked worktree must refuse, not proceed; \
-         stdout: {out:?} stderr: {err:?}"
-    );
-    assert!(
-        !err.contains("already used by worktree"),
-        "the refusal must be rigger's OWN clear message, never git's raw opaque error; \
-         stderr: {err:?}"
-    );
-    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
-    assert!(
-        err.contains(root_canon.to_str().unwrap()),
-        "the refusal must name the MAIN tree ({}); stderr: {err:?}",
-        root_canon.display()
-    );
-    assert!(
-        err.contains(wt_canon.to_str().unwrap()),
-        "the refusal must name the LINKED tree it was invoked from ({}); stderr: {err:?}",
-        wt_canon.display()
-    );
-
+    let refused = assert_a_linked_worktree_refuses("step", "already used by worktree");
     // Side-effect-free: no rigger-run history was touched from the linked worktree.
     assert!(
-        !root.join(".rigger").join("events.db").exists(),
+        !refused
+            .dir
+            .path()
+            .join(".rigger")
+            .join("events.db")
+            .exists(),
         "a refused step must not have gone on to open/create the store"
     );
 }
 
-/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): the identical refusal for `rigger
-/// run`, the standalone one-shot entry - each entry point calls the shared resolver at its OWN
-/// site, so this drives the built binary to prove THIS call site fires too, not only `rigger
-/// step`'s.
-#[test]
-fn run_from_a_linked_worktree_refuses_naming_both_trees() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
-
-    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
-    let wt_path = wt_parent.path().join("rigger-wt-linked-run");
-    git_ok(
-        root,
-        &[
-            "worktree",
-            "add",
-            wt_path.to_str().expect("utf8 worktree path"),
-            "-b",
-            "linked-run-branch",
-        ],
-    );
-
-    let (out, err, ok) = run_rigger(&wt_path, &["run"]);
-    assert!(
-        !ok,
-        "`rigger run` invoked from inside a linked worktree must refuse, not proceed; \
-         stdout: {out:?} stderr: {err:?}"
-    );
-    assert!(
-        !err.contains("already used by worktree"),
-        "the refusal must be rigger's OWN clear message, never git's raw opaque error; \
-         stderr: {err:?}"
-    );
-    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
-    assert!(
-        err.contains(root_canon.to_str().unwrap()) && err.contains(wt_canon.to_str().unwrap()),
-        "the refusal must name both the main tree ({}) and the linked tree ({}); stderr: {err:?}",
-        root_canon.display(),
-        wt_canon.display()
-    );
-}
-
-/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): `rigger workflow`'s Rust entry point
-/// resolves the repository the same way BEFORE it ever locates or launches the Node shim, so a
-/// linked worktree is refused up front instead of (at best) failing to find a per-project shim
-/// that was only ever provisioned in the main checkout, or (at worst) driving a stray one.
-#[test]
-fn workflow_from_a_linked_worktree_refuses_naming_both_trees() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
-
-    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
-    let wt_path = wt_parent.path().join("rigger-wt-linked-workflow");
-    git_ok(
-        root,
-        &[
-            "worktree",
-            "add",
-            wt_path.to_str().expect("utf8 worktree path"),
-            "-b",
-            "linked-workflow-branch",
-        ],
-    );
-
-    let (out, err, ok) = run_rigger(&wt_path, &["workflow"]);
-    assert!(
-        !ok,
-        "`rigger workflow` invoked from inside a linked worktree must refuse, not proceed; \
-         stdout: {out:?} stderr: {err:?}"
-    );
-    assert!(
-        !err.contains("the per-project JS driver is not provisioned"),
-        "the linked-worktree refusal must fire BEFORE the shim-lookup error even has a \
-         chance to; stderr: {err:?}"
-    );
-    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
-    assert!(
-        err.contains(root_canon.to_str().unwrap()) && err.contains(wt_canon.to_str().unwrap()),
-        "the refusal must name both the main tree ({}) and the linked tree ({}); stderr: {err:?}",
-        root_canon.display(),
-        wt_canon.display()
-    );
+rigger::test_cases! {
+    /// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): the identical refusal for `rigger
+    /// run`, the standalone one-shot entry - each entry point calls the shared resolver at its OWN
+    /// site, so this drives the built binary to prove THIS call site fires too, not only `rigger
+    /// step`'s.
+    run_from_a_linked_worktree_refuses_naming_both_trees:
+        assert_a_linked_worktree_refuses("run", "already used by worktree");
+    /// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): `rigger workflow`'s Rust entry point
+    /// resolves the repository the same way BEFORE it ever locates or launches the Node shim, so a
+    /// linked worktree is refused up front instead of (at best) failing to find a per-project shim
+    /// that was only ever provisioned in the main checkout, or (at worst) driving a stray one.
+    workflow_from_a_linked_worktree_refuses_naming_both_trees:
+        assert_a_linked_worktree_refuses("workflow", "the per-project JS driver is not provisioned");
 }
 
 /// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE) round 2: `rigger serve` (and,
@@ -3853,51 +3675,15 @@ fn workflow_from_a_linked_worktree_refuses_naming_both_trees() {
 /// failure class this criterion exists to close, just on the one entry point round 1 missed.
 #[test]
 fn serve_from_a_linked_worktree_refuses_naming_both_trees() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
-
-    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
-    let wt_path = wt_parent.path().join("rigger-wt-linked-serve");
-    git_ok(
-        root,
-        &[
-            "worktree",
-            "add",
-            wt_path.to_str().expect("utf8 worktree path"),
-            "-b",
-            "linked-serve-branch",
-        ],
-    );
-
-    let (out, err, ok) = run_rigger(&wt_path, &["serve"]);
-    assert!(
-        !ok,
-        "`rigger serve` invoked from inside a linked worktree must refuse, not proceed; \
-         stdout: {out:?} stderr: {err:?}"
-    );
-    assert!(
-        !err.contains("already used by worktree"),
-        "the refusal must be rigger's OWN clear message, never git's raw opaque error; \
-         stderr: {err:?}"
-    );
-    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
-    assert!(
-        err.contains(root_canon.to_str().unwrap()) && err.contains(wt_canon.to_str().unwrap()),
-        "the refusal must name both the main tree ({}) and the linked tree ({}); stderr: {err:?}",
-        root_canon.display(),
-        wt_canon.display()
-    );
-
+    let refused = assert_a_linked_worktree_refuses("serve", "already used by worktree");
     // Side-effect-free: no rigger-run history was touched from the linked worktree, and the
     // enclosing main tree never gained a run branch as a side effect of the refused serve.
     assert!(
-        !wt_path.join(".rigger").join("events.db").exists(),
+        !refused.wt_path.join(".rigger").join("events.db").exists(),
         "a refused serve must not have gone on to open/create the store"
     );
     assert!(
-        !git_out(root, &["branch", "--list", "rigger-run"])
+        !git_out(refused.dir.path(), &["branch", "--list", "rigger-run"])
             .unwrap_or_default()
             .contains("rigger-run"),
         "the main tree must not gain a rigger-run branch as a side effect of a refused serve"
@@ -4726,11 +4512,7 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
 fn write_standalone_review_workflow(root: &Path) {
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("lens.md"),
-        "---\nid: lens\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n",
-    )
-    .unwrap();
+    write_agent(root, "lens", "Read", "Review it.");
     std::fs::write(
         rigger.join("workflow.yml"),
         r#"name: reviewparktest
@@ -4945,11 +4727,7 @@ stages:
 fn write_unit_review_lenses_workflow(root: &Path) {
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
     for id in ["a", "b"] {
         std::fs::write(
             rigger.join("agents").join(format!("{id}.md")),
@@ -5137,11 +4915,7 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
 fn write_reviewless_git_unit_workflow(root: &Path) {
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
     std::fs::write(
         rigger.join("workflow.yml"),
         r#"name: terminalintegratetest
@@ -5168,11 +4942,7 @@ stages:
 fn write_reviewless_git_escalating_unit_workflow(root: &Path) {
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
     std::fs::write(
         rigger.join("workflow.yml"),
         r#"name: terminalescalatetest
@@ -5190,6 +4960,43 @@ stages:
 "#,
     )
     .unwrap();
+}
+
+/// Step 1 of a single-unit (`solo`) git-backed run: the unit is ready, so its implementer
+/// parks - and the real, git-backed isolation creates the unit's own durable worktree right
+/// here, before the implementer has produced any diff. Returns that worktree's path.
+fn park_the_solo_implementer_in_its_worktree(root: &Path) -> std::path::PathBuf {
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
+    assert!(
+        wt_dir.exists(),
+        "a parked implementer must already have its unit worktree on disk (load-bearing for \
+         the rest of this test): {}",
+        wt_dir.display()
+    );
+    wt_dir
+}
+
+/// The `solo` unit's worktree `wt_dir` is gone after the unit's terminal `outcome` - and fully
+/// DEREGISTERED with git, not a stale admin entry pointing at a removed dir.
+fn assert_the_solo_worktree_is_reclaimed(root: &Path, wt_dir: &Path, outcome: &str) {
+    assert!(
+        !wt_dir.exists(),
+        "the unit's worktree must be reclaimed after a {outcome}: {}",
+        wt_dir.display()
+    );
+    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert!(
+        !list.contains("rigger-wt-solo"),
+        "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
+         pointing at a removed dir: {list}"
+    );
 }
 
 /// Spec 64, criterion 2 (TERMINAL TEARDOWN IS UNCHANGED), the "in both drivers" half no
@@ -5213,20 +5020,7 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
     // Step 1: the unit is ready, so its implementer parks - the real, git-backed isolation
     // means the unit's own durable worktree is created right here, before the implementer
     // has produced any diff.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
-        "step 1 parks the implementer; got: {out:?}"
-    );
-
-    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
-    assert!(
-        wt_dir.exists(),
-        "a parked implementer must already have its unit worktree on disk (load-bearing for \
-         the rest of this test): {}",
-        wt_dir.display()
-    );
+    let wt_dir = park_the_solo_implementer_in_its_worktree(root);
 
     // Write the implementer's "diff" directly into the worktree it was already handed - the
     // shape a real out-of-process agent takes - then record its result.
@@ -5256,17 +5050,7 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
     );
 
     // The unit's own worktree is gone...
-    assert!(
-        !wt_dir.exists(),
-        "the unit's worktree must be reclaimed after a clean integrate: {}",
-        wt_dir.display()
-    );
-    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
-    assert!(
-        !list.contains("rigger-wt-solo"),
-        "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
-         pointing at a removed dir: {list}"
-    );
+    assert_the_solo_worktree_is_reclaimed(root, &wt_dir, "clean integrate");
 
     // ...and its durable branch is DELETED - the checkpoint already served its purpose (the
     // merged work now lives on the run branch) - the one half of "identical to today's
@@ -5300,20 +5084,7 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
     let root = dir.path();
     write_reviewless_git_escalating_unit_workflow(root);
 
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
-        "step 1 parks the implementer; got: {out:?}"
-    );
-
-    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
-    assert!(
-        wt_dir.exists(),
-        "a parked implementer must already have its unit worktree on disk (load-bearing for \
-         the rest of this test): {}",
-        wt_dir.display()
-    );
+    let wt_dir = park_the_solo_implementer_in_its_worktree(root);
 
     // The out-of-process courier reports a genuine crash, never a verdict.
     let (_o, err, ok) = run_rigger(
@@ -5341,17 +5112,7 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
     );
 
     // The unit's worktree is reclaimed exactly as a clean integrate's...
-    assert!(
-        !wt_dir.exists(),
-        "the unit's worktree must be reclaimed after a terminal escalation: {}",
-        wt_dir.display()
-    );
-    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
-    assert!(
-        !list.contains("rigger-wt-solo"),
-        "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
-         pointing at a removed dir: {list}"
-    );
+    assert_the_solo_worktree_is_reclaimed(root, &wt_dir, "terminal escalation");
 
     // ...but its branch SURVIVES as the human's evidence - only a successful integrate
     // deletes it, and this unit never integrated.
@@ -5576,6 +5337,44 @@ fn resume_unit_refuses_when_the_durable_branch_is_gone() {
     );
 }
 
+/// Stage and commit everything in `dir` as a `wip` commit - the test's own setup diff, never a
+/// model of the implementer (a real agent never commits).
+fn commit_the_setup_diff(dir: &Path) {
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ok,
+            "git {args:?} must succeed committing the test's setup diff"
+        );
+    }
+}
+
+/// `event`'s stamped `worktree_sha` is a real 40-hex sha (`real_why` says why an empty or
+/// short one is wrong) equal to `expected`, the tree actually judged (`equal_why`).
+fn assert_a_real_worktree_sha(
+    event: &rigger::eventstore::Event,
+    expected: &str,
+    real_why: &str,
+    equal_why: &str,
+) {
+    let sha = event
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(sha.len(), 40, "{real_why}: {sha:?}");
+    assert!(
+        sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the stamped sha must be real hex: {sha:?}"
+    );
+    assert_eq!(sha, expected, "{equal_why}");
+}
+
 /// Spec 64, criterion 3 (ensure-on-park, defense in depth: `Worktree::ensure_present` in
 /// `src/worktree.rs`, called from `run_single_stage` in `src/conductor.rs` immediately
 /// before `review_unit`): the conductor's next hand-off restores a unit worktree an
@@ -5603,24 +5402,12 @@ fn resume_unit_refuses_when_the_durable_branch_is_gone() {
 /// not just through the implementer's in-crate `Stub`-driven regression.
 #[test]
 fn step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("a.md"),
-        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
+    write_agent(root, "a", "Read", "Review it.");
 
     // A marker OUTSIDE the worktree (the project root itself, which the deletion below
     // never touches - and which, unlike the scratch root, always exists with no
@@ -5686,18 +5473,7 @@ stages:
     // branch past the run branch immediately, so `merge-base --is-ancestor` is false and
     // the sweep skips it) - applied here so this test exercises ONLY criterion 3's own
     // surface, never criterion 4's still-open gap.
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(&wt_dir)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(
-            ok,
-            "git {args:?} must succeed committing the test's setup diff"
-        );
-    }
+    commit_the_setup_diff(&wt_dir);
 
     let (_o, err, ok) = run_rigger(
         root,
@@ -5779,11 +5555,7 @@ stages:
     // recorded, from the real sqlite-backed store this binary wrote to, and check its
     // stamped `worktree_sha` is a real 40-hex sha agreeing with the restored tree's HEAD -
     // never empty, never a stale snapshot taken during the deletion window.
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     let verified = events
         .iter()
         .find(|e| {
@@ -5791,25 +5563,13 @@ stages:
                 && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
         })
         .expect("a verified status must have been recorded for the unit before review");
-    let verified_sha = verified
-        .meta
-        .get(rigger::conductor::META_WORKTREE_SHA)
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(
-        verified_sha.len(),
-        40,
+    assert_a_real_worktree_sha(
+        verified,
+        &head_after,
         "the verified event's worktree_sha must be a real 40-hex sha, not empty - it must \
-         be stamped AFTER the gate-deleted worktree is restored, not before: {verified_sha:?}"
-    );
-    assert!(
-        verified_sha.chars().all(|c| c.is_ascii_hexdigit()),
-        "the stamped sha must be real hex: {verified_sha:?}"
-    );
-    assert_eq!(
-        verified_sha, head_after,
+         be stamped AFTER the gate-deleted worktree is restored, not before",
         "the stamped sha must be the RESTORED tree's actual HEAD - the one the review tier \
-         is about to judge, not a snapshot taken during the deletion window"
+         is about to judge, not a snapshot taken during the deletion window",
     );
 }
 
@@ -5843,24 +5603,12 @@ stages:
 /// tree.
 #[test]
 fn step_integrates_after_the_exhaustive_gate_deletes_the_worktree_post_approval() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nAdjudicate it.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
+    write_agent(root, "judge", "Read", "Adjudicate it.");
 
     // A marker OUTSIDE the worktree self-reports whether the door gate's own `rm -rf`
     // really ran (and when) - the non-vacuity check a single opaque subprocess call
@@ -5911,18 +5659,7 @@ stages:
     // documents in full: it advances the unit branch past the run branch before the
     // step-start sweep (spec 64 criterion 4, unmerged here) can see an undiverged tip.
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(&wt_dir)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(
-            ok,
-            "git {args:?} must succeed committing the test's setup diff"
-        );
-    }
+    commit_the_setup_diff(&wt_dir);
 
     let (_o, err, ok) = run_rigger(
         root,
@@ -5987,11 +5724,7 @@ stages:
     );
 
     // The unit reached `integrated`, not stuck or failed.
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     assert!(
         events
             .iter()
@@ -6038,19 +5771,11 @@ stages:
 /// deletion WITHIN one process, between two tiers, can occur through a real agent spawn).
 #[test]
 fn step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
     for (id, body) in [
         ("a", "Review it."),
         ("adv", "Try to break it."),
@@ -6103,18 +5828,7 @@ stages:
     // document in full (advances the unit branch past the run branch before the step-start
     // sweep, which has no liveness conjunct yet, can see an undiverged tip).
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(&wt_dir)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(
-            ok,
-            "git {args:?} must succeed committing the test's setup diff"
-        );
-    }
+    commit_the_setup_diff(&wt_dir);
     let (_o, err, ok) = run_rigger(
         root,
         &["result", "solo/implementer#0", "implemented the unit"],
@@ -6250,11 +5964,7 @@ stages:
     // that teardown is restore the tree long enough to stamp a real `reviewed_sha` - checked
     // below via the recorded event, the only outside-observable evidence of that window.
 
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     let reviewed = events
         .iter()
         .find(|e| {
@@ -6262,27 +5972,14 @@ stages:
                 && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed"#)
         })
         .expect("a reviewed status must have been recorded for the unit");
-    let reviewed_sha = reviewed
-        .meta
-        .get(rigger::conductor::META_WORKTREE_SHA)
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(
-        reviewed_sha.len(),
-        40,
+    assert_a_real_worktree_sha(
+        reviewed,
+        &branch_tip,
         "the reviewed event's worktree_sha must be a real 40-hex sha, not empty - it must be \
          stamped AFTER a re-assert restores whatever the adjudicator's own spawn (or an \
-         out-of-band actor) deleted, not a snapshot taken during the deletion window: \
-         {reviewed_sha:?}"
-    );
-    assert!(
-        reviewed_sha.chars().all(|c| c.is_ascii_hexdigit()),
-        "the stamped sha must be real hex: {reviewed_sha:?}"
-    );
-    assert_eq!(
-        reviewed_sha, branch_tip,
+         out-of-band actor) deleted, not a snapshot taken during the deletion window",
         "the stamped sha must be the durable branch's actual tip - the RESTORED tree's real \
-         HEAD, not a snapshot taken during the deletion window"
+         HEAD, not a snapshot taken during the deletion window",
     );
 }
 
@@ -6306,11 +6003,7 @@ fn step_stamps_the_real_routed_roster_onto_the_printed_wave() {
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
     for (id, body) in [
         ("a", "Review it."),
         ("adv", "Try to break it."),
@@ -6353,18 +6046,7 @@ stages:
         "step 1 must park the implementer; got: {out:?}"
     );
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(&wt_dir)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(
-            ok,
-            "git {args:?} must succeed committing the test's setup diff"
-        );
-    }
+    commit_the_setup_diff(&wt_dir);
     let (_o, err, ok) = run_rigger(
         root,
         &["result", "solo/implementer#0", "implemented the unit"],
@@ -6468,24 +6150,12 @@ stages:
 /// pre-round-4 binary would have stamped.
 #[test]
 fn step_stamps_a_real_failed_sha_after_a_deletion_before_the_reject_stamp() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nAdjudicate it.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
+    write_agent(root, "judge", "Read", "Adjudicate it.");
     std::fs::write(
         rigger.join("workflow.yml"),
         r#"name: ensureonparkfailedshatest
@@ -6515,18 +6185,7 @@ stages:
     );
 
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(&wt_dir)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(
-            ok,
-            "git {args:?} must succeed committing the test's setup diff"
-        );
-    }
+    commit_the_setup_diff(&wt_dir);
     let (_o, err, ok) = run_rigger(
         root,
         &["result", "solo/implementer#0", "implemented the unit"],
@@ -6580,36 +6239,65 @@ stages:
     let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"])
         .expect("the restored worktree must resolve its own HEAD after step 3");
 
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     let failed = events
         .iter()
         .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
         .expect("a review-reject UnitFailed must have been recorded");
-    let failed_sha = failed
-        .meta
-        .get(rigger::conductor::META_WORKTREE_SHA)
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(
-        failed_sha.len(),
-        40,
+    assert_a_real_worktree_sha(
+        failed,
+        &head_after,
         "the failed event's worktree_sha must be a real 40-hex sha, not empty - it must be \
          stamped AFTER a re-assert restores the out-of-band-deleted tree, not a snapshot \
-         taken during the deletion window: {failed_sha:?}"
-    );
-    assert!(
-        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
-        "the stamped sha must be real hex: {failed_sha:?}"
-    );
-    assert_eq!(
-        failed_sha, head_after,
+         taken during the deletion window",
         "the stamped sha must be the restored tree's actual HEAD, not a snapshot taken \
-         during the deletion window"
+         during the deletion window",
     );
+}
+
+/// Install a fake `claude` on a fresh bin dir: a shell script that answers each spawn by
+/// matching its `--system-prompt` against the shell `case` `arms` (each `*MARKER*) ... ;;`),
+/// failing loudly on any prompt no arm names. Returns the bin dir (keep it alive for the run)
+/// and a `PATH` value that resolves it first.
+fn install_fake_claude(arms: &str) -> (tempfile::TempDir, String) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fakebin = tempfile::tempdir().unwrap();
+    let claude_path = fakebin.path().join("claude");
+    std::fs::write(
+        &claude_path,
+        format!(
+            r#"#!/bin/sh
+sp=""
+next=0
+for a in "$@"; do
+  if [ "$next" = "1" ]; then
+    sp="$a"
+    next=0
+  fi
+  if [ "$a" = "--system-prompt" ]; then
+    next=1
+  fi
+done
+case "$sp" in
+{arms}  *)
+    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
+    exit 1
+    ;;
+esac
+"#
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&claude_path, perms).unwrap();
+    let path_env = format!(
+        "{}:{}",
+        fakebin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    (fakebin, path_env)
 }
 
 /// Spec 64, criterion 3, adjudication round 3 finding
@@ -6651,39 +6339,29 @@ stages:
 #[cfg(unix)]
 #[test]
 fn run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review() {
-    use std::os::unix::fs::PermissionsExt;
-
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
-         unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("a.md"),
-        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_DELETE: review it.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("adv.md"),
-        "---\nid: adv\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADVERSARY: try to break \
-         it.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
-         it.\n",
-    )
-    .unwrap();
+    write_agent(
+        root,
+        "worker",
+        "Read, Edit",
+        "RIGGERTEST_WORKER: do the unit.",
+    );
+    write_agent(root, "a", "Read", "RIGGERTEST_LENS_DELETE: review it.");
+    write_agent(
+        root,
+        "adv",
+        "Read",
+        "RIGGERTEST_ADVERSARY: try to break it.",
+    );
+    write_agent(
+        root,
+        "judge",
+        "Read",
+        "RIGGERTEST_ADJUDICATOR: adjudicate it.",
+    );
     std::fs::write(
         rigger.join("workflow.yml"),
         r#"name: ensureonparkendtoendtest
@@ -6711,24 +6389,8 @@ stages:
     // its `$PWD` wholesale (mirroring a real gate's `rm -rf`, per the sibling gate-based
     // tests above) before reporting, self-describing the deletion to `$RIGGERTEST_MARKER`
     // (a location OUTSIDE the worktree the deletion itself never touches).
-    let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
-    std::fs::write(
-        &claude_path,
-        r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp="$a"
-    next=0
-  fi
-  if [ "$a" = "--system-prompt" ]; then
-    next=1
-  fi
-done
-case "$sp" in
-  *RIGGERTEST_LENS_DELETE*)
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *RIGGERTEST_LENS_DELETE*)
     d="$(pwd)"
     cd / || exit 1
     rm -rf "$d"
@@ -6744,24 +6406,10 @@ case "$sp" in
   *RIGGERTEST_WORKER*)
     echo "pub fn work() {}" > work.rs
     ;;
-  *)
-    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
-    exit 1
-    ;;
-esac
 "#,
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
+    );
 
     let marker = root.join("lens-deleted-marker.txt");
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
 
     let (out, err, ok) = run_rigger_envs(
         root,
@@ -6792,11 +6440,7 @@ esac
     // The unit reached `reviewed`, not stuck, failed, or escalated - so the adversary and
     // adjudicator tiers both really ran to completion in the SAME worktree the lens
     // deleted, in the SAME process.
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     assert!(
         events.iter().any(|e| {
             e.type_ == rigger::ledger::TYPE_UNIT_STATUS
@@ -6841,38 +6485,24 @@ esac
 #[test]
 fn run_speculation_restores_a_gate_deleted_worktree_across_concurrent_lenses_and_stamps_a_real_winner_sha(
 ) {
-    use std::os::unix::fs::PermissionsExt;
-
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
-         unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("a.md"),
-        "---\nid: a\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_A: review it.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("b.md"),
-        "---\nid: b\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_LENS_B: review it.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
-         it.\n",
-    )
-    .unwrap();
+    write_agent(
+        root,
+        "worker",
+        "Read, Edit",
+        "RIGGERTEST_WORKER: do the unit.",
+    );
+    write_agent(root, "a", "Read", "RIGGERTEST_LENS_A: review it.");
+    write_agent(root, "b", "Read", "RIGGERTEST_LENS_B: review it.");
+    write_agent(
+        root,
+        "judge",
+        "Read",
+        "RIGGERTEST_ADJUDICATOR: adjudicate it.",
+    );
 
     // Two markers OUTSIDE the worktree self-report each gate's own `rm -rf` really running
     // (and really removing the dir): `ok` is UNSCOPED (no `inputs`) so it runs for real in
@@ -6919,24 +6549,8 @@ stages:
     )
     .unwrap();
 
-    let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
-    std::fs::write(
-        &claude_path,
-        r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp="$a"
-    next=0
-  fi
-  if [ "$a" = "--system-prompt" ]; then
-    next=1
-  fi
-done
-case "$sp" in
-  *RIGGERTEST_LENS_A*)
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *RIGGERTEST_LENS_A*)
     echo lensA >> "$RIGGERTEST_LENS_MARKER"
     echo "reviewed: no blocker"
     ;;
@@ -6950,27 +6564,13 @@ case "$sp" in
   *RIGGERTEST_WORKER*)
     echo "pub fn work() {}" > work.rs
     ;;
-  *)
-    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
-    exit 1
-    ;;
-esac
 "#,
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
+    );
 
     // Both lenses self-report having run into ONE shared file, OUTSIDE the worktree the
     // gate's own deletion never touches - the non-vacuity check that they really are two
     // independent real subprocesses, not one call standing in for both.
     let lens_marker = root.join("lens-ran-marker.txt");
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
 
     let (out, err, ok) = run_rigger_envs(
         root,
@@ -7034,11 +6634,7 @@ esac
 
     // The deferred winner status carries a real 40-hex worktree_sha - the RESTORED tree's
     // actual HEAD, not an empty sentinel snapshotted during the deletion window.
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     let verified = events
         .iter()
         .find(|e| {
@@ -7099,28 +6695,22 @@ esac
 #[test]
 fn speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end(
 ) {
-    use std::os::unix::fs::PermissionsExt;
-
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
-         unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR_REJECT_DELETE: \
-         adjudicate it.\n",
-    )
-    .unwrap();
+    write_agent(
+        root,
+        "worker",
+        "Read, Edit",
+        "RIGGERTEST_WORKER: do the unit.",
+    );
+    write_agent(
+        root,
+        "judge",
+        "Read",
+        "RIGGERTEST_ADJUDICATOR_REJECT_DELETE: adjudicate it.",
+    );
     std::fs::write(
         rigger.join("workflow.yml"),
         r#"name: ensureonparkspeculationrejecttest
@@ -7141,24 +6731,8 @@ stages:
     )
     .unwrap();
 
-    let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
-    std::fs::write(
-        &claude_path,
-        r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp="$a"
-    next=0
-  fi
-  if [ "$a" = "--system-prompt" ]; then
-    next=1
-  fi
-done
-case "$sp" in
-  *RIGGERTEST_ADJUDICATOR_REJECT_DELETE*)
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *RIGGERTEST_ADJUDICATOR_REJECT_DELETE*)
     d="$(pwd)"
     cd / || exit 1
     rm -rf "$d"
@@ -7168,24 +6742,10 @@ case "$sp" in
   *RIGGERTEST_WORKER*)
     echo "pub fn work() {}" > work.rs
     ;;
-  *)
-    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
-    exit 1
-    ;;
-esac
 "#,
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
+    );
 
     let marker = root.join("adjudicator-deleted-marker.txt");
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
 
     let (out, err, ok) = run_rigger_envs(
         root,
@@ -7213,11 +6773,7 @@ esac
          {marker_content:?}"
     );
 
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
 
     // The group really escalated (both candidates lost) - the terminal state this test's
     // premise depends on, not a run that silently found some other way to "succeed".
@@ -7276,19 +6832,11 @@ esac
 #[test]
 fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own_deletion_is_restored(
 ) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
 
     // A marker OUTSIDE the worktree self-reports whether the gate's own `rm -rf` really ran -
     // the non-vacuity check a single opaque subprocess call otherwise denies an outside
@@ -7384,34 +6932,18 @@ stages:
          wholesale, or this test proves nothing about a restore: {marker_content:?}"
     );
 
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     let failed = events
         .iter()
         .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
         .expect("the resumed unit's red exhaustive re-gate must record a UnitFailed");
-    let failed_sha = failed
-        .meta
-        .get(rigger::conductor::META_WORKTREE_SHA)
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(
-        failed_sha.len(),
-        40,
+    assert_a_real_worktree_sha(
+        failed,
+        &expected_sha,
         "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
-         read taken during the deletion window would silently stamp: {failed_sha:?}"
-    );
-    assert!(
-        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
-        "the stamped sha must be real hex: {failed_sha:?}"
-    );
-    assert_eq!(
-        failed_sha, expected_sha,
+         read taken during the deletion window would silently stamp",
         "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
-         the deletion window"
+         the deletion window",
     );
     assert!(
         !events
@@ -7446,19 +6978,11 @@ stages:
 #[test]
 fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored(
 ) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
 
     // The unit's own deterministic worktree dir, computed the SAME way `rigger step` itself
     // computes it - known up front so the gate script below can target it by an absolute
@@ -7587,34 +7111,18 @@ stages:
          base repo's working tree"
     );
 
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     let failed = events
         .iter()
         .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
         .expect("the resumed unit's red post-merge re-gate must record a UnitFailed");
-    let failed_sha = failed
-        .meta
-        .get(rigger::conductor::META_WORKTREE_SHA)
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(
-        failed_sha.len(),
-        40,
+    assert_a_real_worktree_sha(
+        failed,
+        &expected_sha,
         "the failed event's worktree_sha must be a real 40-hex sha, not the empty sentinel a \
-         read taken during the deletion window would silently stamp: {failed_sha:?}"
-    );
-    assert!(
-        failed_sha.chars().all(|c| c.is_ascii_hexdigit()),
-        "the stamped sha must be real hex: {failed_sha:?}"
-    );
-    assert_eq!(
-        failed_sha, expected_sha,
+         read taken during the deletion window would silently stamp",
         "the stamped sha must be the RESTORED tree's actual HEAD, not a snapshot taken during \
-         the deletion window"
+         the deletion window",
     );
     assert!(
         !events
@@ -7648,28 +7156,22 @@ stages:
 #[test]
 fn run_speculation_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored()
 {
-    use std::os::unix::fs::PermissionsExt;
-
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
-         unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
-         it.\n",
-    )
-    .unwrap();
+    write_agent(
+        root,
+        "worker",
+        "Read, Edit",
+        "RIGGERTEST_WORKER: do the unit.",
+    );
+    write_agent(
+        root,
+        "judge",
+        "Read",
+        "RIGGERTEST_ADJUDICATOR: adjudicate it.",
+    );
 
     // Candidate 0 uses the unit's CANONICAL deterministic worktree/branch (the same dir a
     // single-lane unit would use) - known up front so the gate script can target it directly,
@@ -7717,25 +7219,8 @@ stages:
     )
     .unwrap();
 
-    let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
-    std::fs::write(
-        &claude_path,
-        format!(
-            r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp="$a"
-    next=0
-  fi
-  if [ "$a" = "--system-prompt" ]; then
-    next=1
-  fi
-done
-case "$sp" in
-  *RIGGERTEST_ADJUDICATOR*)
+    let (_fakebin, path_env) = install_fake_claude(&format!(
+        r#"  *RIGGERTEST_ADJUDICATOR*)
     echo '{{"verdict":"approve"}}'
     ;;
   *RIGGERTEST_WORKER*)
@@ -7748,26 +7233,10 @@ case "$sp" in
       touch "{lane0_marker}"
     fi
     ;;
-  *)
-    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
-    exit 1
-    ;;
-esac
 "#,
-            lane0_marker = lane0_marker_str,
-            root_dir = root_str,
-        ),
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
-
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+        lane0_marker = lane0_marker_str,
+        root_dir = root_str,
+    ));
 
     let (out, err, ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
     assert!(
@@ -7787,11 +7256,7 @@ esac
          {marker_content:?}"
     );
 
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
 
     // The group really escalated (no candidate's merge survived its post-merge re-gate) - the
     // terminal state this test's premise depends on.
@@ -8612,18 +8077,10 @@ fn step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its
     // for a real `cargo mutants` run's build debris - and a DIFFERENT spawn's own dir (never
     // parked by this run), which must stay untouched. Keyed by the injective byte-hex encoding
     // (`/` -> `_2f`, `#` -> `_23`) `mutation_scratch_path` uses.
-    let hung_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("a_2fimplementer_230");
-    let other_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("z_2fimplementer_230");
-    for d in [&hung_scratch, &other_scratch] {
-        std::fs::create_dir_all(d).unwrap();
-        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    }
+    let [hung_scratch, other_scratch] = populated_mutation_scratch(
+        cache_home.path(),
+        ["a_2fimplementer_230", "z_2fimplementer_230"],
+    );
 
     // Plant the SYNTHETIC STALE MARKER at the wire path (worker-write path == sweep-read path).
     plant_stale_marker(marker);
@@ -8819,21 +8276,7 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
     // The native driver's OUTER wall-clock fired: it records a LIVENESS fault on the spawn's
     // behalf, EXACTLY this CLI shape (`--error` + `--meta liveness_class:infra`). No sweep is
     // involved - the driver surfaces the hang itself.
-    let (_o, err, ok) = run_rigger(
-        root,
-        &[
-            "result",
-            "a/implementer#0",
-            "worker a/implementer#0 hung: ran past the outer wall-clock with no per-spawn max_wall_clock",
-            "--error",
-            "--meta",
-            r#"{"liveness_class":"infra"}"#,
-        ],
-    );
-    assert!(
-        ok,
-        "recording the driver's liveness fault must succeed; stderr: {err}"
-    );
+    record_liveness_fault(root, "a/implementer#0", "worker a/implementer#0 hung: ran past the outer wall-clock with no per-spawn max_wall_clock");
 
     // Step 2: `rigger step` reads that fault through `hung_spawns` and HALTS LOUDLY - so a hung
     // unbounded agent surfaces within a bounded time even though the sweep never touched it.
@@ -8941,21 +8384,7 @@ fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
 
     // The native driver's outer wall-clock records a liveness fault out of band, exactly as
     // the git-repo sibling test above does.
-    let (_o, err, ok) = run_rigger(
-        root,
-        &[
-            "result",
-            "a/implementer#0",
-            "worker a/implementer#0 hung: ran past the outer wall-clock with no per-spawn max_wall_clock",
-            "--error",
-            "--meta",
-            r#"{"liveness_class":"infra"}"#,
-        ],
-    );
-    assert!(
-        ok,
-        "recording the driver's liveness fault must succeed; stderr: {err}"
-    );
+    record_liveness_fault(root, "a/implementer#0", "worker a/implementer#0 hung: ran past the outer wall-clock with no per-spawn max_wall_clock");
 
     // Step 2: the halt still surfaces loudly on the pre-existing, ungated `halted` field, but
     // repo-less has no crossing boundary to seed `attention` from, so it stays omitted -
@@ -9009,14 +8438,7 @@ fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
 fn the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed() {
     let src = repo_text("src/main.rs");
 
-    let step_at = src
-        .find("fn cmd_step(args: &[String]) -> Res {")
-        .expect("main.rs must still define cmd_step, the `rigger step` lifecycle");
-    let step_end = src[step_at..]
-        .find("\nfn ")
-        .map(|off| step_at + off)
-        .expect("cmd_step must be followed by another top-level fn");
-    let cmd_step = &src[step_at..step_end];
+    let cmd_step = cmd_step_source(&src);
 
     let print_at = cmd_step
         .find("println!(\"{}\", serde_json::to_string(&step)?)")
@@ -9693,26 +9115,14 @@ fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_
     // Registered mutation-scratch for a spawn of EACH unit, under a throwaway cache home so
     // XDG_CACHE_HOME never points at the operator's real ~/.cache.
     let cache_home = tempfile::tempdir().unwrap();
-    let solo_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_230");
-    let sibling_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("sibling_2fimplementer_230");
-    for d in [&solo_scratch, &sibling_scratch] {
-        std::fs::create_dir_all(d).unwrap();
-        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    }
+    let [solo_scratch, sibling_scratch] = populated_mutation_scratch(
+        cache_home.path(),
+        ["solo_2fimplementer_230", "sibling_2fimplementer_230"],
+    );
 
     // Step 2: the resolved manual review folds to a clean fixpoint, running
     // `gc_integrated_branches` over "solo" (now Integrated) and "sibling" (still not).
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["step"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), &["step"]);
     assert!(
         ok,
         "the step after the manual review is integrated must still succeed; stdout: {out:?} \
@@ -9901,11 +9311,7 @@ stages:
 
     // Step 2: "a" replays to its `on_pass: none` terminal (verified-but-unmerged) state - a
     // real, single-window terminal outcome with NO worktree ever created for it.
-    let (_out, err, ok) = run_rigger_envs(
-        root,
-        &["step"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (_out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), &["step"]);
     assert!(ok, "the second step must succeed; stderr:\n{err}");
 
     assert!(
@@ -9993,119 +9399,71 @@ fn a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_envir
     );
 }
 
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the round-3 mechanical re-enumeration of the
-/// `reclaim_terminal_unit_mutation_scratch` call sites (`src/conductor.rs`) finds FOUR -
-/// `run_stage`'s fresh-path teardown and `gc_integrated_branches`'s resume path (both proven
-/// by the sibling tests above), plus `run_speculation`'s winner-integrate exit and its
-/// escalation-tail exit, neither of which any existing test drives. This closes the
-/// winner-integrate half: a REAL `speculation_width: 2` group (two real candidate implementer
-/// spawns, an adjudicator that always approves) where lane 0 wins for real - a genuine
-/// `on_pass: merge` merge through the compiled binary, never a hand-seeded `UnitIntegrated`.
-/// Registered mutation-scratch is seeded for BOTH lanes' own spawn ids before the run, proving
-/// the ONE call at the winner-integrate exit (`self.reclaim_terminal_unit_mutation_scratch(&st.
-/// name)`, keyed on the bare unit id every lane's own spawn id shares as its prefix) reaps
-/// every lane's own registered scratch together - not only the winner's.
-#[test]
-fn a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_winner_integrate_teardown(
+/// A REAL `rigger run` of a `speculation_width: 2` `solo` unit with `on_pass`, whose fake
+/// adjudicator answers `{"verdict":"<verdict>"}` for every candidate, with registered
+/// mutation-scratch seeded for BOTH lanes' own spawn ids before the run. The run exits 0 at the
+/// `exit` named, which `premise` confirms on the event log (or the test proves nothing about
+/// that exit's own reap call); that exit's ONE `reclaim_terminal_unit_mutation_scratch(&st.name)`
+/// call - keyed on the bare unit id every lane's own spawn id shares as its prefix - then reaps
+/// every lane's registered scratch together, not only the winner's.
+fn assert_a_speculation_exit_reaps_every_lanes_mutation_scratch(
+    on_pass: &str,
+    verdict: &str,
+    exit: &str,
+    premise: fn(&[rigger::eventstore::Event]) -> bool,
 ) {
-    use std::os::unix::fs::PermissionsExt;
-
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    write_agent(
+        root,
+        "worker",
+        "Read, Edit",
+        "RIGGERTEST_WORKER: do the unit.",
+    );
+    write_agent(
+        root,
+        "judge",
+        "Read",
+        "RIGGERTEST_ADJUDICATOR: adjudicate it.",
+    );
     std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
-         unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
-         it.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: specwinnermutationscratchreaptest
+        root.join(".rigger").join("workflow.yml"),
+        format!(
+            r#"name: specmutationscratchreaptest
 defaults:
   grounder: nop
   budget: 60
 gates:
-  ok: { run: "true" }
+  ok: {{ run: "true" }}
 stages:
   solo:
     agent: worker
     gates: [ok]
-    on_pass: merge
+    on_pass: {on_pass}
     speculation_width: 2
     review:
       adjudicator: judge
-"#,
+"#
+        ),
     )
     .unwrap();
 
-    let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
-    std::fs::write(
-        &claude_path,
-        r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp="$a"
-    next=0
-  fi
-  if [ "$a" = "--system-prompt" ]; then
-    next=1
-  fi
-done
-case "$sp" in
-  *RIGGERTEST_ADJUDICATOR*)
-    echo '{"verdict":"approve"}'
+    let (_fakebin, path_env) = install_fake_claude(&format!(
+        r#"  *RIGGERTEST_ADJUDICATOR*)
+    echo '{{"verdict":"{verdict}"}}'
     ;;
   *RIGGERTEST_WORKER*)
-    echo "pub fn work() {}" > work.rs
+    echo "pub fn work() {{}}" > work.rs
     ;;
-  *)
-    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
-    exit 1
-    ;;
-esac
-"#,
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
+"#
+    ));
 
-    // Registered mutation-scratch for BOTH speculation lanes' own implementer spawns, under a
-    // throwaway cache home so `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
     let cache_home = tempfile::tempdir().unwrap();
-    let lane0_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_230");
-    let lane1_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_231");
-    for d in [&lane0_scratch, &lane1_scratch] {
-        std::fs::create_dir_all(d).unwrap();
-        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    }
-
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
+    let lanes = populated_mutation_scratch(
+        cache_home.path(),
+        ["solo_2fimplementer_230", "solo_2fimplementer_231"],
     );
+
     let (out, err, ok) = run_rigger_envs(
         root,
         &["run"],
@@ -10116,360 +9474,104 @@ esac
     );
     assert!(
         ok,
-        "a real speculation-width winner-integrate run must succeed; stderr: {err}\nstdout: \
-         {out}"
+        "a speculation group reaching its {exit} must still exit 0; stderr: {err}\nstdout: {out}"
     );
 
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let events = read_run_events(root);
     assert!(
-        events
-            .iter()
-            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
-        "premise: the speculation group must reach a REAL winner-integrate, or this test proves \
+        premise(&events),
+        "premise: the speculation group must reach the {exit} for real, or this test proves \
          nothing about that exit's own reap call; events: {events:?}"
     );
-
-    assert!(
-        !lane0_scratch.exists(),
-        "the winning lane's own registered mutation-scratch dir must be reaped by the real \
-         winner-integrate teardown: {}",
-        lane0_scratch.display()
-    );
-    assert!(
-        !lane1_scratch.exists(),
-        "a LOSING lane's own registered mutation-scratch dir must ALSO be reaped by the SAME \
-         call - it is keyed on the shared unit id, covering every lane at once: {}",
-        lane1_scratch.display()
-    );
+    for (lane, scratch) in lanes.iter().enumerate() {
+        assert!(
+            !scratch.exists(),
+            "lane {lane}'s own registered mutation-scratch dir must be reaped by the real {exit} \
+             teardown - it is keyed on the shared unit id, covering every lane at once: {}",
+            scratch.display()
+        );
+    }
 }
 
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the escalation-tail half of the same
-/// mechanical re-enumeration (see the winner-integrate sibling test above for the full
-/// account). A REAL `speculation_width: 2` group where an adjudicator that always REJECTS
-/// loses both candidates, so the unit ESCALATES rather than integrating - a legitimate
-/// terminal fixpoint (mirrors
-/// `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`'s
-/// own exit-0-on-escalation contract). Registered mutation-scratch is seeded for both lanes
-/// before the run, proving the escalation-tail's own call
-/// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, right before `Ok(false)`) reaps a
-/// group's registered scratch even when it NEVER integrates - a group that exhausts every
-/// candidate is still unit-terminal, not merely a group that wins.
-#[test]
-fn a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_escalation_tail_teardown(
-) {
-    use std::os::unix::fs::PermissionsExt;
-
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
-         unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR_REJECT: \
-         adjudicate it.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: specescalationmutationscratchreaptest
-defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true" }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: merge
-    speculation_width: 2
-    review:
-      adjudicator: judge
-"#,
-    )
-    .unwrap();
-
-    let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
-    std::fs::write(
-        &claude_path,
-        r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp="$a"
-    next=0
-  fi
-  if [ "$a" = "--system-prompt" ]; then
-    next=1
-  fi
-done
-case "$sp" in
-  *RIGGERTEST_ADJUDICATOR_REJECT*)
-    echo '{"verdict":"reject"}'
-    ;;
-  *RIGGERTEST_WORKER*)
-    echo "pub fn work() {}" > work.rs
-    ;;
-  *)
-    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
-    exit 1
-    ;;
-esac
-"#,
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
-
-    let cache_home = tempfile::tempdir().unwrap();
-    let lane0_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_230");
-    let lane1_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_231");
-    for d in [&lane0_scratch, &lane1_scratch] {
-        std::fs::create_dir_all(d).unwrap();
-        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    }
-
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["run"],
-        &[
-            ("PATH", &path_env),
-            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
-        ],
-    );
-    assert!(
-        ok,
-        "an all-candidates-rejected speculation group must still reach a clean escalated \
-         fixpoint (exit 0), not a hard failure; stderr: {err}\nstdout: {out}"
-    );
-
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
-        "premise: an always-rejecting adjudicator across both speculation candidates must \
-         escalate the unit, or this test proves nothing about the escalation-tail's own reap \
-         call; events: {events:?}"
-    );
-
-    assert!(
-        !lane0_scratch.exists(),
-        "an ESCALATED unit's own registered mutation-scratch (lane 0) must still be reaped by \
-         the escalation-tail teardown - a group that never integrates is still unit-terminal: {}",
-        lane0_scratch.display()
-    );
-    assert!(
-        !lane1_scratch.exists(),
-        "an ESCALATED unit's own registered mutation-scratch (lane 1) must still be reaped by \
-         the escalation-tail teardown: {}",
-        lane1_scratch.display()
-    );
+/// Whether `events` records a unit of type `type_`.
+fn records(events: &[rigger::eventstore::Event], type_: &str) -> bool {
+    events.iter().any(|e| e.type_ == type_)
 }
 
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 4 fix for
-/// `adj-u77c3r6-verdict-reject-onpassnone-speculation-leak` (REJECT, UPHELD): the round-3
-/// mechanical re-enumeration named FOUR call sites but only wired three - the fresh-path
-/// `run_stage` teardown, `gc_integrated_branches`'s resume path, and `run_speculation`'s
-/// winner-INTEGRATE exit (all proven by the sibling tests above) - and silently left
-/// `run_speculation`'s THIRD exit, the `!integrates(st)` (`on_pass: none`) branch, uncalled.
-/// That branch is its own genuine unit-terminal fixpoint: the group settled on a winner
-/// (verified + approved), no later lane is ever attempted, yet `emit_speculation_winner_status`
-/// never emits `UnitIntegrated`, so the resume backstop in `gc_integrated_branches` (gated on
-/// `Status::Integrated`) can never catch this leak on a later resume either - a genuine
-/// permanent, unbounded leak, not merely a same-process gap.
-///
-/// A REAL `speculation_width: 2`, `on_pass: none` group (two real candidate implementer
-/// spawns, an adjudicator that always approves) where lane 0 wins for real through the
-/// compiled binary. Registered mutation-scratch is seeded for BOTH lanes' own spawn ids
-/// before the run, proving the `!integrates(st)` exit's own call
-/// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, immediately before its
-/// `return Ok(false)`, mirroring the winner-integrate and escalation-tail siblings) reaps
-/// every lane's own registered scratch together, exactly like its two siblings - even though
-/// `on_pass: none` never merges and so never emits `UnitIntegrated`.
-#[test]
-fn a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown(
-) {
-    use std::os::unix::fs::PermissionsExt;
-
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nRIGGERTEST_WORKER: do the \
-         unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\n---\nRIGGERTEST_ADJUDICATOR: adjudicate \
-         it.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: specOnPassNoneMutationScratchReapTest
-defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true" }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: none
-    speculation_width: 2
-    review:
-      adjudicator: judge
-"#,
-    )
-    .unwrap();
-
-    let fakebin = tempfile::tempdir().unwrap();
-    let claude_path = fakebin.path().join("claude");
-    std::fs::write(
-        &claude_path,
-        r#"#!/bin/sh
-sp=""
-next=0
-for a in "$@"; do
-  if [ "$next" = "1" ]; then
-    sp="$a"
-    next=0
-  fi
-  if [ "$a" = "--system-prompt" ]; then
-    next=1
-  fi
-done
-case "$sp" in
-  *RIGGERTEST_ADJUDICATOR*)
-    echo '{"verdict":"approve"}'
-    ;;
-  *RIGGERTEST_WORKER*)
-    echo "pub fn work() {}" > work.rs
-    ;;
-  *)
-    echo "fake-claude: unrecognized system prompt: $sp" 1>&2
-    exit 1
-    ;;
-esac
-"#,
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&claude_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&claude_path, perms).unwrap();
-
-    // Registered mutation-scratch for BOTH speculation lanes' own implementer spawns, under a
-    // throwaway cache home so `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
-    let cache_home = tempfile::tempdir().unwrap();
-    let lane0_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_230");
-    let lane1_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_231");
-    for d in [&lane0_scratch, &lane1_scratch] {
-        std::fs::create_dir_all(d).unwrap();
-        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    }
-
-    let path_env = format!(
-        "{}:{}",
-        fakebin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["run"],
-        &[
-            ("PATH", &path_env),
-            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
-        ],
-    );
-    assert!(
-        ok,
-        "an on_pass:none speculation winner must still reach a clean fixpoint (exit 0); \
-         stderr: {err}\nstdout: {out}"
-    );
-
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_STATUS
-                && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)),
-        "premise: the on_pass:none group must reach a confirmed, verified winner, or this test \
-         proves nothing about that exit's own reap call; events: {events:?}"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED
-                || e.type_ == rigger::ledger::TYPE_UNIT_INTEGRATED),
-        "premise: the winner must be reached through the `!integrates(st)` exit specifically - \
-         never the escalation tail (both candidates losing) and never a merge (on_pass:none \
-         never integrates) - or this test proves nothing about THIS exit's own reap call; \
-         events: {events:?}"
-    );
-
-    assert!(
-        !lane0_scratch.exists(),
-        "the winning lane's own registered mutation-scratch dir must be reaped by the real \
-         on_pass:none winner-exit teardown: {}",
-        lane0_scratch.display()
-    );
-    assert!(
-        !lane1_scratch.exists(),
-        "a LOSING lane's own registered mutation-scratch dir must ALSO be reaped by the SAME \
-         call - it is keyed on the shared unit id, covering every lane at once: {}",
-        lane1_scratch.display()
-    );
+rigger::test_cases! {
+    /// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the round-3 mechanical re-enumeration of the
+    /// `reclaim_terminal_unit_mutation_scratch` call sites (`src/conductor.rs`) finds FOUR -
+    /// `run_stage`'s fresh-path teardown and `gc_integrated_branches`'s resume path (both proven
+    /// by the sibling tests above), plus `run_speculation`'s winner-integrate exit and its
+    /// escalation-tail exit, neither of which any existing test drives. This closes the
+    /// winner-integrate half: a REAL `speculation_width: 2` group (two real candidate implementer
+    /// spawns, an adjudicator that always approves) where lane 0 wins for real - a genuine
+    /// `on_pass: merge` merge through the compiled binary, never a hand-seeded `UnitIntegrated`.
+    /// Registered mutation-scratch is seeded for BOTH lanes' own spawn ids before the run, proving
+    /// the ONE call at the winner-integrate exit (`self.reclaim_terminal_unit_mutation_scratch(&st.
+    /// name)`, keyed on the bare unit id every lane's own spawn id shares as its prefix) reaps
+    /// every lane's own registered scratch together - not only the winner's.
+    a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_winner_integrate_teardown:
+        assert_a_speculation_exit_reaps_every_lanes_mutation_scratch(
+            "merge",
+            "approve",
+            "winner-integrate",
+            |events| records(events, rigger::ledger::TYPE_UNIT_INTEGRATED),
+        );
+    /// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the escalation-tail half of the same
+    /// mechanical re-enumeration (see the winner-integrate sibling test above for the full
+    /// account). A REAL `speculation_width: 2` group where an adjudicator that always REJECTS
+    /// loses both candidates, so the unit ESCALATES rather than integrating - a legitimate
+    /// terminal fixpoint (mirrors
+    /// `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`'s
+    /// own exit-0-on-escalation contract). Registered mutation-scratch is seeded for both lanes
+    /// before the run, proving the escalation-tail's own call
+    /// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, right before `Ok(false)`) reaps a
+    /// group's registered scratch even when it NEVER integrates - a group that exhausts every
+    /// candidate is still unit-terminal, not merely a group that wins.
+    a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_escalation_tail_teardown:
+        assert_a_speculation_exit_reaps_every_lanes_mutation_scratch(
+            "merge",
+            "reject",
+            "escalation-tail",
+            |events| records(events, rigger::ledger::TYPE_UNIT_ESCALATED),
+        );
+    /// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 4 fix for
+    /// `adj-u77c3r6-verdict-reject-onpassnone-speculation-leak` (REJECT, UPHELD): the round-3
+    /// mechanical re-enumeration named FOUR call sites but only wired three - the fresh-path
+    /// `run_stage` teardown, `gc_integrated_branches`'s resume path, and `run_speculation`'s
+    /// winner-INTEGRATE exit (all proven by the sibling tests above) - and silently left
+    /// `run_speculation`'s THIRD exit, the `!integrates(st)` (`on_pass: none`) branch, uncalled.
+    /// That branch is its own genuine unit-terminal fixpoint: the group settled on a winner
+    /// (verified + approved), no later lane is ever attempted, yet `emit_speculation_winner_status`
+    /// never emits `UnitIntegrated`, so the resume backstop in `gc_integrated_branches` (gated on
+    /// `Status::Integrated`) can never catch this leak on a later resume either - a genuine
+    /// permanent, unbounded leak, not merely a same-process gap.
+    ///
+    /// A REAL `speculation_width: 2`, `on_pass: none` group (two real candidate implementer
+    /// spawns, an adjudicator that always approves) where lane 0 wins for real through the
+    /// compiled binary. Registered mutation-scratch is seeded for BOTH lanes' own spawn ids
+    /// before the run, proving the `!integrates(st)` exit's own call
+    /// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, immediately before its
+    /// `return Ok(false)`, mirroring the winner-integrate and escalation-tail siblings) reaps
+    /// every lane's own registered scratch together, exactly like its two siblings - even though
+    /// `on_pass: none` never merges and so never emits `UnitIntegrated`.
+    a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown:
+        assert_a_speculation_exit_reaps_every_lanes_mutation_scratch(
+            "none",
+            "approve",
+            "on_pass:none winner-exit",
+            // Reached through the `!integrates(st)` exit specifically: a confirmed, verified
+            // winner, never the escalation tail (both candidates losing) and never a merge
+            // (on_pass:none never integrates).
+            |events| {
+                events.iter().any(|e| {
+                    e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
+                }) && !records(events, rigger::ledger::TYPE_UNIT_ESCALATED)
+                    && !records(events, rigger::ledger::TYPE_UNIT_INTEGRATED)
+            },
+        );
 }
 
 /// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 5 fix for
@@ -10564,32 +9666,20 @@ stages:
     // Registered mutation-scratch for a spawn of EACH unit, under a throwaway cache home so
     // `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
     let cache_home = tempfile::tempdir().unwrap();
-    let stuck_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("stuck_2fimplementer_230");
-    let solo_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_230");
-    let midflight_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("midflight_2fimplementer_230");
-    for d in [&stuck_scratch, &solo_scratch, &midflight_scratch] {
-        std::fs::create_dir_all(d).unwrap();
-        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    }
+    let [stuck_scratch, solo_scratch, midflight_scratch] = populated_mutation_scratch(
+        cache_home.path(),
+        [
+            "stuck_2fimplementer_230",
+            "solo_2fimplementer_230",
+            "midflight_2fimplementer_230",
+        ],
+    );
 
     // Step 2: the resume backstop (`gc_integrated_branches`, run at the top of `run()`,
     // before any wave) folds the prior log and must reap `stuck` and `solo` - neither is
     // `Integrated` - while sparing `midflight`, which is neither terminal nor `on_pass: none`-
     // settled and so is still expected to progress toward a real merge in a later step.
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["step"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), &["step"]);
     assert!(
         ok,
         "the resume step must still succeed; stdout: {out:?} stderr:\n{err}"
@@ -10732,11 +9822,8 @@ stages:
     // spec exactly as the first step did), so the conductor re-synthesizes the identical
     // baseline unit into `stages` BEFORE the resume backstop runs - the ordering the round-5
     // doc comment claims is load-bearing for this exact case.
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["step", "--spec", "spec.md"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (out, err, ok) =
+        run_rigger_with_cache_home(root, cache_home.path(), &["step", "--spec", "spec.md"]);
     assert!(
         ok,
         "the resume step must still succeed; stdout: {out:?} stderr:\n{err}"
@@ -12289,20 +11376,10 @@ fn a_liveness_fault_on_a_review_spawn_halts_instead_of_re_parking() {
     // The adjudicator HANGS: the driver/sweep records a LIVENESS fault on its id (infra), NOT a
     // plain error - exactly the shape `step_surfaces_a_hung_unbounded_spawn...` records for a
     // stalled agent. This is the case the criterion-1 re-park path must EXCLUDE.
-    let (_o, err, ok) = run_rigger(
+    record_liveness_fault(
         root,
-        &[
-            "result",
-            "solo/adjudicator#0",
-            "reviewer solo/adjudicator#0 hung: heartbeat marker went stale past its bound",
-            "--error",
-            "--meta",
-            r#"{"liveness_class":"infra"}"#,
-        ],
-    );
-    assert!(
-        ok,
-        "recording the reviewer's liveness fault must succeed; stderr: {err}"
+        "solo/adjudicator#0",
+        "reviewer solo/adjudicator#0 hung: heartbeat marker went stale past its bound",
     );
 
     // Step 3: `rigger step` HALTS LOUDLY on the hung reviewer - it is NOT re-parked as a fresh
@@ -14029,11 +13106,7 @@ fn validate_reports_residue_under_the_relocated_cache_home_default_root() {
     std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
     std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 2048]).unwrap();
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["validate"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), &["validate"]);
     assert!(
         ok,
         "validate must still exit 0 when it only WARNS about residue; stderr:\n{err}"
@@ -15654,6 +14727,16 @@ fn installed_workflow_driver_guards_a_null_step() {
     );
 }
 
+/// The thin driver's death courier: ONE atomic `rigger result <id> --if-absent --error <why>`
+/// that records a died-worker outcome only while the spawn is still unanswered (spec 05).
+const DEATH_COURIER_IF_ABSENT: &[&str] = &[
+    "result",
+    "u/implementer#0",
+    "--if-absent",
+    "--error",
+    "died without reporting",
+];
+
 /// `rigger result <id> --if-absent` records a died-worker outcome only when the spawn is
 /// still unanswered: on a fresh run stream it writes the result and exits 0, so `rigger
 /// reported <id>` then confirms the spawn is answered. The "records when absent" half of
@@ -15666,16 +14749,7 @@ fn result_if_absent_records_when_the_spawn_is_unanswered() {
     // project must hold one before `rigger result` can record into it.
     seed_store(root);
 
-    let (out, err, ok) = run_rigger(
-        root,
-        &[
-            "result",
-            "u/implementer#0",
-            "--if-absent",
-            "--error",
-            "died without reporting",
-        ],
-    );
+    let (out, err, ok) = run_rigger(root, DEATH_COURIER_IF_ABSENT);
     assert!(ok, "recording an absent result must succeed; stderr: {err}");
     assert!(
         out.contains("recorded error result for u/implementer#0"),
@@ -15712,16 +14786,7 @@ fn result_if_absent_never_clobbers_a_self_reported_success() {
     assert!(ok, "the self-report must succeed; stderr: {err}");
 
     // The death courier, unaware the worker already reported, fires --if-absent --error.
-    let (out, err, ok) = run_rigger(
-        root,
-        &[
-            "result",
-            "u/implementer#0",
-            "--if-absent",
-            "--error",
-            "died without reporting",
-        ],
-    );
+    let (out, err, ok) = run_rigger(root, DEATH_COURIER_IF_ABSENT);
     assert!(ok, "the --if-absent no-op must still exit 0; stderr: {err}");
     assert!(
         out.contains("already has a result") && out.contains("left it untouched"),
