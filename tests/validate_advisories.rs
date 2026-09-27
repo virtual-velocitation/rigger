@@ -296,50 +296,45 @@ fn validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived(
     );
 }
 
-#[test]
-fn validate_is_silent_on_log_bloat_when_every_key_is_recorded_once() {
+/// `rigger validate` over an initialized project whose log `seed` shaped succeeds (`ok_why`
+/// when it does not) and draws no bloat warning (`why` when it does).
+fn assert_validate_draws_no_bloat_warning(seed: impl FnOnce(&Path), ok_why: &str, why: &str) {
     let dir = temp_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_duplicated_key(root, 1);
+    seed(root);
 
     let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(ok, "{ok_why}; stderr:\n{err}");
     assert!(
         !err.contains("rigger reset --derived"),
-        "a log with no duplication must draw no bloat warning; stderr:\n{err}"
+        "{why}; stderr:\n{err}"
     );
 }
 
-#[test]
-fn validate_is_silent_on_log_bloat_when_the_same_key_recurs_only_across_different_covered_types() {
-    // spec 68 Global constraints: "one measurement authority per advisory ... no shadow
-    // accounting". The real compaction (`rigger reset --derived` / `prune_derived_index`)
-    // deletes duplicates PER COVERED TYPE - its own per-type loop only ever compares a key
-    // against OTHER ROWS OF THE SAME TYPE. The SAME replay key recorded once under two
-    // DIFFERENT covered types (here, a code-entity extraction and an inferred edge) is
-    // therefore two independent single-row groups to the real prune, which reclaims NOTHING
-    // for it - so the bloat advisory must draw no warning either. A measurement that merges
-    // duplicate-detection ACROSS types would read this as one key recorded twice (a false
-    // factor of 2.0) and warn of bloat a real `rigger reset --derived` could never reclaim -
-    // exactly the shadow, independently-re-derived definition of "duplicated" the design
-    // forbids.
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_key_under_two_covered_types(root, "gc/src/a.rs@h1#0");
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
+rigger::test_cases! { assert_validate_draws_no_bloat_warning;
+    validate_is_silent_on_log_bloat_when_every_key_is_recorded_once: (
+        |root| seed_duplicated_key(root, 1),
+        "validate must succeed",
+        "a log with no duplication must draw no bloat warning",
     );
-    assert!(
-        !err.contains("rigger reset --derived"),
+    /// spec 68 Global constraints: "one measurement authority per advisory ... no shadow
+    /// accounting". The real compaction (`rigger reset --derived` / `prune_derived_index`)
+    /// deletes duplicates PER COVERED TYPE - its own per-type loop only ever compares a key
+    /// against OTHER ROWS OF THE SAME TYPE. The SAME replay key recorded once under two
+    /// DIFFERENT covered types (here, a code-entity extraction and an inferred edge) is
+    /// therefore two independent single-row groups to the real prune, which reclaims NOTHING
+    /// for it - so the bloat advisory must draw no warning either. A measurement that merges
+    /// duplicate-detection ACROSS types would read this as one key recorded twice (a false
+    /// factor of 2.0) and warn of bloat a real `rigger reset --derived` could never reclaim -
+    /// exactly the shadow, independently-re-derived definition of "duplicated" the design
+    /// forbids.
+    validate_is_silent_on_log_bloat_when_the_same_key_recurs_only_across_different_covered_types: (
+        |root| seed_key_under_two_covered_types(root, "gc/src/a.rs@h1#0"),
+        "an advisory must never fail validate's exit status",
         "the same key recorded once under two different covered types is not duplication a \
-         real prune can reclaim, and must draw no bloat warning; stderr:\n{err}"
+         real prune can reclaim, and must draw no bloat warning",
     );
 }
 
