@@ -27,21 +27,28 @@
 mod common;
 
 use rigger::spawn::SpawnEvent;
-use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
-use common::fixtures::CwdGuard;
-use rigger::conductor::{AgentDriver, SpawnOpts};
+use common::fixtures::{no_emit, CwdGuard};
+use common::is_running;
+use rigger::conductor::{AgentDriver, AgentFailure, SpawnOpts};
 use rigger::config::AgentDef;
+use rigger::driver::claude_code::Driver;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore};
+use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::liveness;
 use rigger::progress::{AgentProgress, TYPE_AGENT_PROGRESS};
 use rigger::spawn::{self, TYPE_SPAWN_RESULT};
 
-fn fixture_bin() -> String {
+/// The fixture agent replaying the recorded success stream.
+const STREAM_AGENT: &str = "claude-code-stream-agent.sh";
+
+/// The absolute path of the fixture agent script `name` under `tests/fixtures`.
+fn fixture_script(name: &str) -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-stream-agent.sh")
+        .join("tests/fixtures")
+        .join(name)
         .to_string_lossy()
         .into_owned()
 }
@@ -64,15 +71,61 @@ impl Fixture {
         }
     }
 
-    fn driver(&self) -> rigger::driver::claude_code::Driver<'_> {
-        rigger::driver::claude_code::Driver {
-            bin: fixture_bin(),
+    fn driver(&self) -> Driver<'_> {
+        Driver {
+            bin: fixture_script(STREAM_AGENT),
             rigger_bin: "rigger".to_string(),
             progress_store: &self.progress_store,
             run_store: &self.run_store,
             scratch_root: self.scratch_root.path().to_string_lossy().into_owned(),
             stop_grace: std::time::Duration::from_secs(30),
         }
+    }
+
+    /// [`Fixture::driver`] launching the fixture agent script `script` instead.
+    fn driver_running(&self, script: &str) -> Driver<'_> {
+        Driver {
+            bin: fixture_script(script),
+            ..self.driver()
+        }
+    }
+
+    /// [`Fixture::driver_running`] with THE STOP's grace injected as `stop_grace`.
+    fn stopping_driver(&self, script: &str, stop_grace: Duration) -> Driver<'_> {
+        Driver {
+            stop_grace,
+            ..self.driver_running(script)
+        }
+    }
+
+    /// The file `name` directly under this fixture's scratch root.
+    fn scratch_file(&self, name: &str) -> PathBuf {
+        self.scratch_root.path().join(name)
+    }
+
+    /// Every `SpawnResult` the run store holds.
+    fn spawn_results(&self) -> Vec<Event> {
+        self.run_store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
+            .collect()
+    }
+
+    /// Every agent-progress activity line the progress store holds.
+    fn activities(&self) -> Vec<String> {
+        self.progress_store
+            .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
+            .map(|e| {
+                serde_json::from_slice::<AgentProgress>(&e.data)
+                    .unwrap()
+                    .activity
+            })
+            .collect()
     }
 }
 
@@ -84,15 +137,51 @@ fn opts(id: &str) -> SpawnOpts {
     }
 }
 
+/// [`opts`] whose spawn environment names `path` under the fixture's own variable `var`.
+fn opts_with_env(id: &str, var: &str, path: &Path) -> SpawnOpts {
+    SpawnOpts {
+        env: vec![(var.to_string(), path.to_string_lossy().into_owned())],
+        ..opts(id)
+    }
+}
+
+/// An agent bounded to one second of wall clock, so a silent session is STOPped.
+fn wall_clock_bounded() -> AgentDef {
+    AgentDef {
+        max_wall_clock: Some(1),
+        ..Default::default()
+    }
+}
+
+/// The pid a fixture agent wrote to `pid_file`; `recorded` names when it wrote it.
+fn recorded_pid(pid_file: &Path, recorded: &str) -> u32 {
+    let pid_text = std::fs::read_to_string(pid_file).expect(recorded);
+    pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"))
+}
+
+/// Drive a wall-clock-bounded spawn that never produces a result, asserting it is
+/// STOPped; returns the error and how long the STOP took.
+fn stop(driver: &Driver, o: &SpawnOpts) -> (String, Duration) {
+    let started = Instant::now();
+    let err = driver
+        .spawn(&wall_clock_bounded(), "do the thing", o, &no_emit)
+        .expect_err("a stream that never produces a result must not read as a success");
+    let elapsed = started.elapsed();
+    assert!(err.0.contains("stopped"), "{}", err.0);
+    (err.0, elapsed)
+}
+
 #[test]
 fn spawn_reads_the_recorded_stream_to_a_real_result() {
     let fx = Fixture::new();
     let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
 
     let result = fx
         .driver()
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .expect("the recorded stream ends in a result");
 
     assert_eq!(result.output, "done: the answer is 42");
@@ -103,22 +192,14 @@ fn spawn_reads_the_recorded_stream_to_a_real_result() {
 fn spawn_records_the_result_in_the_run_store_with_its_full_meta() {
     let fx = Fixture::new();
     let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
 
     fx.driver()
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .unwrap();
 
-    let events = fx
-        .run_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    let results: Vec<_> = events
-        .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
-        .collect();
+    let results = fx.spawn_results();
     assert_eq!(results.len(), 1, "exactly one SpawnResult landed");
-    let res = spawn::SpawnResult::from_event(results[0]).unwrap();
+    let res = spawn::SpawnResult::from_event(&results[0]).unwrap();
     assert_eq!(res.id, "u104-stream/implementer#0");
     assert_eq!(res.output, "done: the answer is 42");
     assert!(!res.is_error());
@@ -148,25 +229,16 @@ fn a_relaunch_never_double_records_the_result() {
     // exactly one SpawnResult.
     let fx = Fixture::new();
     let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
 
     fx.driver()
-        .spawn(&AgentDef::default(), "first", &o, &emit)
+        .spawn(&AgentDef::default(), "first", &o, &no_emit)
         .unwrap();
     fx.driver()
-        .spawn(&AgentDef::default(), "second", &o, &emit)
+        .spawn(&AgentDef::default(), "second", &o, &no_emit)
         .unwrap();
 
-    let events = fx
-        .run_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    let results: Vec<_> = events
-        .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
-        .collect();
     assert_eq!(
-        results.len(),
+        fx.spawn_results().len(),
         1,
         "the second spawn's result never clobbers the first"
     );
@@ -176,11 +248,10 @@ fn a_relaunch_never_double_records_the_result() {
 fn spawn_touches_the_liveness_marker_and_persists_the_raw_stream() {
     let fx = Fixture::new();
     let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
     let scratch_root = fx.scratch_root.path().to_string_lossy().into_owned();
 
     fx.driver()
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .unwrap();
 
     let marker = liveness::marker_path(&scratch_root, &o.run_id, &o.id).unwrap();
@@ -206,211 +277,151 @@ fn spawn_touches_the_liveness_marker_and_persists_the_raw_stream() {
     assert!(raw.contains("done: the answer is 42"));
 }
 
-#[test]
-fn spawn_turns_api_retry_and_the_unparseable_line_into_progress_reports() {
+/// The recorded stream's activity lines, as a real spawn turns them into progress reports,
+/// carry a line containing every one of each `needles` group.
+fn spawn_reports_progress(needles: &[&[&str]]) {
     let fx = Fixture::new();
     let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
 
     fx.driver()
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .unwrap();
 
-    let events = fx
-        .progress_store
-        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
-        .unwrap();
-    let activities: Vec<String> = events
-        .iter()
-        .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
-        .map(|e| {
-            serde_json::from_slice::<AgentProgress>(&e.data)
-                .unwrap()
-                .activity
-        })
-        .collect();
+    let activities = fx.activities();
+    for group in needles {
+        assert!(
+            activities
+                .iter()
+                .any(|a| group.iter().all(|needle| a.contains(needle))),
+            "activities: {activities:?}"
+        );
+    }
+}
 
-    assert!(
-        activities
-            .iter()
-            .any(|a| a.contains("rate_limit") && a.contains("618")),
-        "activities: {activities:?}"
-    );
-    assert!(
-        activities.iter().any(|a| a.contains("permission denied")),
-        "activities: {activities:?}"
-    );
-    assert!(
-        activities
-            .iter()
-            .any(|a| a.contains("unparseable") && a.contains("not json at all")),
-        "activities: {activities:?}"
-    );
+rigger::test_cases! {
+    spawn_turns_api_retry_and_the_unparseable_line_into_progress_reports: spawn_reports_progress(&[
+        &["rate_limit", "618"],
+        &["permission denied"],
+        &["unparseable", "not json at all"],
+    ]);
+    // `system/init`'s `mcp_servers` array is "noted for the record" (Design) - this
+    // file's other progress-line assertions cover api_retry/denied/unparseable but
+    // never this branch of the same match arm; close it.
+    spawn_records_the_mcp_connection_status_from_system_init_as_a_progress_line:
+        spawn_reports_progress(&[&["mcp servers", "rigger", "connected"]]);
+}
+
+/// A spawn through `driver` fails with an error naming the spawn (`failing` says why it must
+/// not succeed) and records no `SpawnResult`.
+fn spawn_fails_recording_nothing(fx: &Fixture, driver: &Driver, failing: &str) {
+    let o = opts("u104-stream/implementer#0");
+
+    let err = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect_err(failing);
+    assert!(err.0.contains("u104-stream/implementer#0"), "{}", err.0);
+    assert!(fx.spawn_results().is_empty());
 }
 
 #[test]
 fn spawn_errors_loudly_when_the_stream_ends_with_no_result() {
     // The reader's OWN correctness, distinct from failure CLASSIFICATION (criterion 5,
     // not this one's): a stream that never produces a `result` must never read as a
-    // silent success.
+    // silent success - and no SpawnResult is recorded either.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-stream-no-result-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
-
-    let err = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
-        .expect_err("a stream with no result must not read as success");
-    assert!(err.0.contains("u104-stream/implementer#0"), "{}", err.0);
-
-    // No SpawnResult was recorded either.
-    let events = fx
-        .run_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    assert!(!events.iter().any(|e| e.type_ == TYPE_SPAWN_RESULT));
+    spawn_fails_recording_nothing(
+        &fx,
+        &fx.driver_running("claude-code-stream-no-result-agent.sh"),
+        "a stream with no result must not read as success",
+    );
 }
 
 // ---- FAILURE CLASS (spec 104 criterion 5): real-subprocess classification ----
+
+/// The failure a spawn of `script` ends in, after a StopFailure record of `billing_error` is
+/// pre-seeded on run `seeded_run` (when given), asserting its class is `class` (`why` says
+/// why it must be); returns the error text.
+fn spawn_fails_classified(
+    script: &str,
+    seeded_run: Option<&str>,
+    class: AgentFailure,
+    why: &str,
+) -> String {
+    let fx = Fixture::new();
+    if let Some(run) = seeded_run {
+        rigger::progress_store::record_stop_failure(
+            &fx.progress_store,
+            run,
+            &rigger::progress::StopFailure {
+                spawn: "u104-fail-class/implementer#0".to_string(),
+                class: "billing_error".to_string(),
+            },
+        )
+        .unwrap();
+    }
+    let o = opts("u104-fail-class/implementer#0"); // run_id: "run-1"
+
+    let err = fx
+        .driver_running(script)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect_err("a session ending with no result must not succeed");
+
+    assert!(
+        rigger::conductor::strip_failure_marker(&err).contains(&format!("class {class}")),
+        "{why}: {}",
+        err.0
+    );
+    err.0
+}
 
 #[test]
 fn a_child_that_exits_before_init_classifies_unknown_and_carries_the_stderr_tail() {
     // CONSTRAINTS WALK, verbatim: "the child exits before `system/init` (binary missing,
     // unknown flag) - a fault of class `unknown` carrying the stderr tail, never a hang."
     // No StopFailure record, no api_retry line - the `unknown` floor is all that is left.
-    let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-exits-before-init-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let o = opts("u104-fail-class/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
-
-    let err = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
-        .expect_err("a child that never reaches system/init must not read as success");
-
-    assert!(
-        rigger::conductor::strip_failure_marker(&err).contains(&format!(
-            "class {}",
-            rigger::conductor::AgentFailure::Unknown
-        )),
-        "{}",
-        err.0
+    let err = spawn_fails_classified(
+        "claude-code-exits-before-init-agent.sh",
+        None,
+        AgentFailure::Unknown,
+        "a child that never reaches system/init classifies unknown",
     );
     assert!(
-        err.0
-            .contains("unrecognized flag --this-flag-does-not-exist"),
-        "the stderr tail must be visible in the error: {}",
-        err.0
+        err.contains("unrecognized flag --this-flag-does-not-exist"),
+        "the stderr tail must be visible in the error: {err}"
     );
 }
 
-#[test]
-fn a_session_with_no_stopfailure_record_classifies_from_the_last_api_retry_category() {
-    let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-api-retry-then-no-result-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let o = opts("u104-fail-class/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
-
-    let err = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
-        .expect_err("a session ending on an api_retry with no result must not succeed");
-
-    assert!(
-        rigger::conductor::strip_failure_marker(&err).contains(&format!(
-            "class {}",
-            rigger::conductor::AgentFailure::AuthenticationFailed
-        )),
-        "{}",
-        err.0
-    );
-}
-
-#[test]
-fn a_stopfailure_record_outranks_the_last_api_retry_category() {
+rigger::test_cases! {
+    a_session_with_no_stopfailure_record_classifies_from_the_last_api_retry_category:
+        spawn_fails_classified(
+            "claude-code-api-retry-then-no-result-agent.sh",
+            None,
+            AgentFailure::AuthenticationFailed,
+            "a session ending on an api_retry with no result classifies from that category",
+        );
     // Design's FAILURE CLASS ordering: "the record written by the `StopFailure` hook ...
     // else the last `api_retry.error`". Pre-seed a StopFailure record for a DIFFERENT
     // category than the fixture's own api_retry line, as `rigger hook stop-failure` would
     // have written it, and prove the record wins.
-    let fx = Fixture::new();
-    rigger::progress_store::record_stop_failure(
-        &fx.progress_store,
-        "run-1",
-        &rigger::progress::StopFailure {
-            spawn: "u104-fail-class/implementer#0".to_string(),
-            class: "billing_error".to_string(),
-        },
-    )
-    .unwrap();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-api-retry-then-no-result-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let o = opts("u104-fail-class/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
-
-    let err = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
-        .expect_err("a session ending with no result must not succeed");
-
-    assert!(
-        rigger::conductor::strip_failure_marker(&err).contains(&format!(
-            "class {}",
-            rigger::conductor::AgentFailure::BillingError
-        )),
-        "the StopFailure record must outrank the api_retry category"
+    a_stopfailure_record_outranks_the_last_api_retry_category: spawn_fails_classified(
+        "claude-code-api-retry-then-no-result-agent.sh",
+        Some("run-1"),
+        AgentFailure::BillingError,
+        "the StopFailure record must outrank the api_retry category",
     );
-}
-
-#[test]
-fn a_stopfailure_record_from_a_different_run_does_not_outrank_the_live_sessions_api_retry() {
     // adv-u104c5-stopfailure-crosses-run-boundary: a StopFailure record left over from an
     // OLD or UNRELATED run must never outrank the LIVE session's own api_retry category -
     // the same `run_id` scoping `rigger status` already applies to this exact progress
-    // stream (`src/main.rs`). The reciprocal of the sibling test just above: same spawn id,
+    // stream (`src/main.rs`). The reciprocal of the sibling case just above: same spawn id,
     // same seeded class, but stamped on a DIFFERENT run than this session's own "run-1".
-    let fx = Fixture::new();
-    rigger::progress_store::record_stop_failure(
-        &fx.progress_store,
-        "some-other-run",
-        &rigger::progress::StopFailure {
-            spawn: "u104-fail-class/implementer#0".to_string(),
-            class: "billing_error".to_string(),
-        },
-    )
-    .unwrap();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-api-retry-then-no-result-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let o = opts("u104-fail-class/implementer#0"); // run_id: "run-1"
-    let emit = |_: &str, _: serde_json::Value| Ok(());
-
-    let err = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
-        .expect_err("a session ending with no result must not succeed");
-
-    assert!(
-        rigger::conductor::strip_failure_marker(&err).contains(&format!(
-            "class {}",
-            rigger::conductor::AgentFailure::AuthenticationFailed
-        )),
-        "the OTHER run's StopFailure record must not outrank this run's own api_retry \
-         category: {}",
-        err.0
-    );
+    a_stopfailure_record_from_a_different_run_does_not_outrank_the_live_sessions_api_retry:
+        spawn_fails_classified(
+            "claude-code-api-retry-then-no-result-agent.sh",
+            Some("some-other-run"),
+            AgentFailure::AuthenticationFailed,
+            "the OTHER run's StopFailure record must not outrank this run's own api_retry \
+             category",
+        );
 }
 
 #[test]
@@ -438,25 +449,19 @@ fn spawn_propagates_a_launch_failure_never_reading_a_stream_that_never_started()
     // `spawn()` (the `AgentDriver` method every other test in this file drives) is
     // `launch()` composed with `read_stream()` - the implementer's own `mod tests`
     // proves `launch()`'s failure in isolation (a nonexistent `bin`); this proves the
-    // SAME failure surfaces through the composed call, not just the half-call.
+    // SAME failure surfaces through the composed call, not just the half-call. No
+    // SpawnResult lands either - a launch that never started a process never produced a
+    // stream to read a result from.
     let fx = Fixture::new();
-    let bin = "/definitely/does/not/exist/claude-code-xyz".to_string();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
-
-    let err = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
-        .expect_err("spawning a nonexistent binary must fail through spawn(), not just launch()");
-    assert!(err.0.contains("u104-stream/implementer#0"), "{}", err.0);
-
-    // No SpawnResult landed either - a launch that never started a process never
-    // produced a stream to read a result from.
-    let events = fx
-        .run_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    assert!(!events.iter().any(|e| e.type_ == TYPE_SPAWN_RESULT));
+    let driver = Driver {
+        bin: "/definitely/does/not/exist/claude-code-xyz".to_string(),
+        ..fx.driver()
+    };
+    spawn_fails_recording_nothing(
+        &fx,
+        &driver,
+        "spawning a nonexistent binary must fail through spawn(), not just launch()",
+    );
 }
 
 #[test]
@@ -478,19 +483,14 @@ fn spawn_with_an_empty_scratch_root_never_writes_relative_to_cwd() {
     let _cwd_guard = CwdGuard::enter(throwaway.path());
 
     let fx = Fixture::new();
-    let driver = rigger::driver::claude_code::Driver {
-        bin: fixture_bin(),
-        rigger_bin: "rigger".to_string(),
-        progress_store: &fx.progress_store,
-        run_store: &fx.run_store,
+    let driver = Driver {
         scratch_root: String::new(),
-        stop_grace: std::time::Duration::from_secs(30),
+        ..fx.driver()
     };
     let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
 
     driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .expect("an empty scratch root must still let the spawn succeed");
 
     assert!(
@@ -500,41 +500,6 @@ fn spawn_with_an_empty_scratch_root_never_writes_relative_to_cwd() {
     assert!(
         !throwaway.path().join("agent-stream").exists(),
         "an empty scratch_root must not create a stream transcript relative to cwd"
-    );
-}
-
-#[test]
-fn spawn_records_the_mcp_connection_status_from_system_init_as_a_progress_line() {
-    // `system/init`'s `mcp_servers` array is "noted for the record" (Design) - this
-    // file's other progress-line assertions cover api_retry/denied/unparseable but
-    // never this branch of the same match arm; close it.
-    let fx = Fixture::new();
-    let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
-
-    fx.driver()
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
-        .unwrap();
-
-    let events = fx
-        .progress_store
-        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
-        .unwrap();
-    let activities: Vec<String> = events
-        .iter()
-        .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
-        .map(|e| {
-            serde_json::from_slice::<AgentProgress>(&e.data)
-                .unwrap()
-                .activity
-        })
-        .collect();
-
-    assert!(
-        activities
-            .iter()
-            .any(|a| a.contains("mcp servers") && a.contains("rigger") && a.contains("connected")),
-        "activities: {activities:?}"
     );
 }
 
@@ -555,30 +520,23 @@ fn spawn_reaps_the_child_on_a_mid_stream_read_error() {
     // `Child` handle `read_stream` already reaped, via `common::is_alive` - never the
     // handle that did the reaping.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-invalid-utf8-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let pid_file = fx.scratch_root.path().join("agent.pid");
-    let mut o = opts("u104-stream/implementer#0");
-    o.env = vec![(
-        "RIGGER_TEST_INVALID_UTF8_PID_FILE".to_string(),
-        pid_file.to_string_lossy().into_owned(),
-    )];
-    let emit = |_: &str, _: serde_json::Value| Ok(());
+    let pid_file = fx.scratch_file("agent.pid");
+    let o = opts_with_env(
+        "u104-stream/implementer#0",
+        "RIGGER_TEST_INVALID_UTF8_PID_FILE",
+        &pid_file,
+    );
 
-    let err = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+    let err = fx
+        .driver_running("claude-code-invalid-utf8-agent.sh")
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .expect_err("invalid utf-8 on the stream must surface as a read error, not a result");
     assert!(err.0.contains("read agent stream"), "{}", err.0);
 
-    let pid_text = std::fs::read_to_string(&pid_file)
-        .expect("the fixture recorded its pid before writing invalid utf-8");
-    let pid: u32 = pid_text
-        .trim()
-        .parse()
-        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    let pid = recorded_pid(
+        &pid_file,
+        "the fixture recorded its pid before writing invalid utf-8",
+    );
     assert!(
         !common::is_alive(pid),
         "child pid {pid} must not survive a mid-stream read error - it must be reaped \
@@ -587,11 +545,7 @@ fn spawn_reaps_the_child_on_a_mid_stream_read_error() {
 
     // No SpawnResult landed either - a stream that errored mid-read never reached a
     // `result` message.
-    let events = fx
-        .run_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    assert!(!events.iter().any(|e| e.type_ == TYPE_SPAWN_RESULT));
+    assert!(fx.spawn_results().is_empty());
 }
 
 // ---- adj-u104-stream REQUIRED FIX 2: stderr is drained concurrently with stdout, so a
@@ -612,29 +566,13 @@ fn spawn_drains_stderr_concurrently_so_a_stderr_flood_cannot_deadlock_the_host()
     // (never borrowed from the test's own stack), so the call is a plain 'static
     // `thread::spawn`, not a scoped one - simplest correct shape for a call this test
     // must be able to abandon (never `join`) if it times out.
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-stderr-flood-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let scratch_root = tempfile::tempdir().unwrap();
-    let scratch_root = scratch_root.path().to_string_lossy().into_owned();
-
     let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
     std::thread::spawn(move || {
-        let progress_store = Store::open(":memory:").unwrap();
-        let run_store = Store::open(":memory:").unwrap();
-        let driver = rigger::driver::claude_code::Driver {
-            bin,
-            rigger_bin: "rigger".to_string(),
-            progress_store: &progress_store,
-            run_store: &run_store,
-            scratch_root,
-            stop_grace: std::time::Duration::from_secs(30),
-        };
+        let fx = Fixture::new();
         let o = opts("u104-stream/implementer#0");
-        let emit = |_: &str, _: serde_json::Value| Ok(());
-        let outcome = driver
-            .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        let outcome = fx
+            .driver_running("claude-code-stderr-flood-agent.sh")
+            .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
             .map(|r| r.output)
             .map_err(|e| e.0);
         let _ = tx.send(outcome);
@@ -662,45 +600,34 @@ fn spawn_survives_a_read_error_that_arrives_after_the_result_line() {
     // `spawn_reaps_the_child_on_a_mid_stream_read_error`'s error-before-any-result
     // shape.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-post-result-read-error-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let pid_file = fx.scratch_root.path().join("agent.pid");
-    let mut o = opts("u104-stream/implementer#0");
-    o.env = vec![(
-        "RIGGER_TEST_POST_RESULT_PID_FILE".to_string(),
-        pid_file.to_string_lossy().into_owned(),
-    )];
-    let emit = |_: &str, _: serde_json::Value| Ok(());
+    let pid_file = fx.scratch_file("agent.pid");
+    let o = opts_with_env(
+        "u104-stream/implementer#0",
+        "RIGGER_TEST_POST_RESULT_PID_FILE",
+        &pid_file,
+    );
 
-    let result = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+    let result = fx
+        .driver_running("claude-code-post-result-read-error-agent.sh")
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .expect("a read error strictly after the result must not overturn it");
     assert_eq!(result.output, "done: the answer is 42");
     assert_eq!(result.resolved_model, "claude-sonnet-4-5-20250929");
 
     // Exactly one SpawnResult landed - the real one, durably recorded before the
     // later read error ever happened.
-    let events = fx
-        .run_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    let results: Vec<_> = events
-        .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
-        .collect();
-    assert_eq!(results.len(), 1, "exactly one SpawnResult landed");
+    assert_eq!(
+        fx.spawn_results().len(),
+        1,
+        "exactly one SpawnResult landed"
+    );
 
     // The child is still reaped through its own handle, never leaked, even though a
     // read error - not a clean EOF - is what ended this loop.
-    let pid_text = std::fs::read_to_string(&pid_file)
-        .expect("the fixture recorded its pid before writing invalid utf-8");
-    let pid: u32 = pid_text
-        .trim()
-        .parse()
-        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    let pid = recorded_pid(
+        &pid_file,
+        "the fixture recorded its pid before writing invalid utf-8",
+    );
     assert!(
         !common::is_alive(pid),
         "child pid {pid} must not survive a post-result read error - it must still be \
@@ -724,16 +651,11 @@ fn spawn_pins_the_returned_result_to_the_first_result_line_not_the_last() {
     // shape from `spawn_survives_a_read_error_that_arrives_after_the_result_line`, which
     // errors after the result rather than emitting a second genuine one.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-second-result-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
     let o = opts("u104-stream/implementer#0");
-    let emit = |_: &str, _: serde_json::Value| Ok(());
 
-    let result = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+    let result = fx
+        .driver_running("claude-code-second-result-agent.sh")
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .expect("a second genuine result line must not fail the spawn");
 
     // The RETURNED AgentResult matches the FIRST result, never the second.
@@ -746,16 +668,9 @@ fn spawn_pins_the_returned_result_to_the_first_result_line_not_the_last() {
 
     // Exactly one SpawnResult landed in the run store, and it is the FIRST result's own
     // full meta - never the second's.
-    let events = fx
-        .run_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    let results: Vec<_> = events
-        .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
-        .collect();
+    let results = fx.spawn_results();
     assert_eq!(results.len(), 1, "exactly one SpawnResult landed");
-    let res = spawn::SpawnResult::from_event(results[0]).unwrap();
+    let res = spawn::SpawnResult::from_event(&results[0]).unwrap();
     assert_eq!(res.output, "done: the answer is 42");
     assert_eq!(
         res.meta["session_id"],
@@ -785,21 +700,16 @@ fn spawn_waits_out_a_clean_eof_before_reaping_never_kills_mid_teardown() {
     // block until the child exits on its own, so `spawn()` returns the correct result
     // AND the marker is already there by the time it does.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-clean-eof-teardown-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let marker = fx.scratch_root.path().join("teardown-done.marker");
-    let mut o = opts("u104-stream/implementer#0");
-    o.env = vec![(
-        "RIGGER_TEST_TEARDOWN_MARKER".to_string(),
-        marker.to_string_lossy().into_owned(),
-    )];
-    let emit = |_: &str, _: serde_json::Value| Ok(());
+    let marker = fx.scratch_file("teardown-done.marker");
+    let o = opts_with_env(
+        "u104-stream/implementer#0",
+        "RIGGER_TEST_TEARDOWN_MARKER",
+        &marker,
+    );
 
-    let result = driver
-        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+    let result = fx
+        .driver_running("claude-code-clean-eof-teardown-agent.sh")
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
         .expect("a clean EOF followed by legitimate teardown must still return the result");
 
     assert_eq!(result.output, "done: the answer is 42");
@@ -822,30 +732,15 @@ fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
     // immediate force-end, while `stop_grace` is injected short so the test itself stays
     // fast (see `Driver::stop_grace`'s own doc).
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-silent-winds-down-on-eof-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver {
-        bin,
-        stop_grace: Duration::from_millis(300),
-        ..fx.driver()
-    };
+    let driver = fx.stopping_driver(
+        "claude-code-silent-winds-down-on-eof-agent.sh",
+        Duration::from_millis(300),
+    );
     let o = opts("u104-stop/implementer#0");
-    let agent = AgentDef {
-        max_wall_clock: Some(1),
-        ..Default::default()
-    };
-    let emit = |_: &str, _: serde_json::Value| Ok(());
 
-    let started = std::time::Instant::now();
-    let err = driver
-        .spawn(&agent, "do the thing", &o, &emit)
-        .expect_err("a stream that never produces a result must not read as a success");
-    let elapsed = started.elapsed();
+    let (err, elapsed) = stop(&driver, &o);
 
-    assert!(err.0.contains("stopped"), "{}", err.0);
-    assert!(err.0.contains("u104-stop/implementer#0"), "{}", err.0);
+    assert!(err.contains("u104-stop/implementer#0"), "{err}");
     // 1s wall-clock bound + a short injected grace, nowhere near the real 30s default -
     // proves the injected `stop_grace` seam actually reached the stop sequence.
     assert!(
@@ -855,16 +750,9 @@ fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
 
     // "the existing liveness-fault result is recorded" - the SAME SpawnResult shape
     // liveness::sweep records for the stepwise driver's own hung agent.
-    let events = fx
-        .run_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    let results: Vec<_> = events
-        .iter()
-        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
-        .collect();
+    let results = fx.spawn_results();
     assert_eq!(results.len(), 1, "exactly one liveness-fault result landed");
-    let res = spawn::SpawnResult::from_event(results[0]).unwrap();
+    let res = spawn::SpawnResult::from_event(&results[0]).unwrap();
     assert_eq!(res.id, "u104-stop/implementer#0");
     assert!(
         res.is_liveness_fault(),
@@ -905,34 +793,21 @@ fn spawn_stop_grace_loop_actually_waits_out_the_injected_duration() {
     // host that genuinely polls across the injected `stop_grace` window observes the
     // fixture exiting ON ITS OWN and lets it finish, so the marker survives.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-silent-delayed-self-exit-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver {
-        bin,
-        // Comfortably longer than the fixture's own 0.15s post-EOF sleep, so a correct
-        // host's poll loop is certain to observe the natural exit within the grace
-        // window rather than racing it.
-        stop_grace: Duration::from_millis(600),
-        ..fx.driver()
-    };
-    let marker = fx.scratch_root.path().join("self-exit.marker");
-    let mut o = opts("u104-stop/implementer#1");
-    o.env = vec![(
-        "RIGGER_TEST_SELF_EXIT_MARKER".to_string(),
-        marker.to_string_lossy().into_owned(),
-    )];
-    let agent = AgentDef {
-        max_wall_clock: Some(1),
-        ..Default::default()
-    };
-    let emit = |_: &str, _: serde_json::Value| Ok(());
+    // Comfortably longer than the fixture's own 0.15s post-EOF sleep, so a correct
+    // host's poll loop is certain to observe the natural exit within the grace
+    // window rather than racing it.
+    let driver = fx.stopping_driver(
+        "claude-code-silent-delayed-self-exit-agent.sh",
+        Duration::from_millis(600),
+    );
+    let marker = fx.scratch_file("self-exit.marker");
+    let o = opts_with_env(
+        "u104-stop/implementer#1",
+        "RIGGER_TEST_SELF_EXIT_MARKER",
+        &marker,
+    );
 
-    let err = driver
-        .spawn(&agent, "do the thing", &o, &emit)
-        .expect_err("a stream that never produces a result must not read as a success");
-    assert!(err.0.contains("stopped"), "{}", err.0);
+    stop(&driver, &o);
 
     assert!(
         marker.exists(),
@@ -951,38 +826,23 @@ fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_
     // mid-stream-read-error test proves a reap: a REAL pid the fixture wrote itself,
     // checked via `common::is_alive` independently of the `Child` handle that reaped it.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-silent-ignores-eof-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver {
-        bin,
-        stop_grace: Duration::from_millis(200),
-        ..fx.driver()
-    };
-    let pid_file = fx.scratch_root.path().join("ignores-eof.pid");
-    let mut o = opts("u104-stop/implementer#0");
-    o.env = vec![(
-        "RIGGER_TEST_IGNORES_EOF_PID_FILE".to_string(),
-        pid_file.to_string_lossy().into_owned(),
-    )];
-    let agent = AgentDef {
-        max_wall_clock: Some(1),
-        ..Default::default()
-    };
-    let emit = |_: &str, _: serde_json::Value| Ok(());
+    let driver = fx.stopping_driver(
+        "claude-code-silent-ignores-eof-agent.sh",
+        Duration::from_millis(200),
+    );
+    let pid_file = fx.scratch_file("ignores-eof.pid");
+    let o = opts_with_env(
+        "u104-stop/implementer#0",
+        "RIGGER_TEST_IGNORES_EOF_PID_FILE",
+        &pid_file,
+    );
 
-    let err = driver
-        .spawn(&agent, "do the thing", &o, &emit)
-        .expect_err("a stream that never produces a result must not read as a success");
-    assert!(err.0.contains("stopped"), "{}", err.0);
+    stop(&driver, &o);
 
-    let pid_text = std::fs::read_to_string(&pid_file)
-        .expect("the fixture recorded its pid before going silent");
-    let pid: u32 = pid_text
-        .trim()
-        .parse()
-        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    let pid = recorded_pid(
+        &pid_file,
+        "the fixture recorded its pid before going silent",
+    );
     assert!(
         !common::is_alive(pid),
         "child pid {pid} ignored its input closing and must still be ended by \
@@ -1004,15 +864,10 @@ fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_cloc
     // worktree dir via the SAME public `UNIT_WORKTREE_PREFIX` constant production derives it
     // from, that must still be running once this spawn's own wall-clock stop returns.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-silent-ignores-eof-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver {
-        bin,
-        stop_grace: Duration::from_millis(200),
-        ..fx.driver()
-    };
+    let driver = fx.stopping_driver(
+        "claude-code-silent-ignores-eof-agent.sh",
+        Duration::from_millis(200),
+    );
     let scratch_root = fx.scratch_root.path().to_string_lossy().into_owned();
     let unit_dir = format!(
         "{scratch_root}/{}u104-stop",
@@ -1029,33 +884,23 @@ fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_cloc
         .expect("spawn sleep");
     let sibling_pid = sibling.id();
 
-    let pid_file = fx.scratch_root.path().join("ignores-eof-sibling.pid");
-    let mut o = opts("u104-stop/implementer#0");
-    o.env = vec![(
-        "RIGGER_TEST_IGNORES_EOF_PID_FILE".to_string(),
-        pid_file.to_string_lossy().into_owned(),
-    )];
-    let agent = AgentDef {
-        max_wall_clock: Some(1),
-        ..Default::default()
-    };
-    let emit = |_: &str, _: serde_json::Value| Ok(());
+    let pid_file = fx.scratch_file("ignores-eof-sibling.pid");
+    let o = opts_with_env(
+        "u104-stop/implementer#0",
+        "RIGGER_TEST_IGNORES_EOF_PID_FILE",
+        &pid_file,
+    );
 
-    let err = driver
-        .spawn(&agent, "do the thing", &o, &emit)
-        .expect_err("a stream that never produces a result must not read as a success");
-    assert!(err.0.contains("stopped"), "{}", err.0);
+    stop(&driver, &o);
 
     // The stopped spawn's OWN held child is still ended - exactly as
     // `spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing`
     // already proves - so this test's new assertion below is what THE STOP must leave
     // alone, not a claim that STOP now reaps nothing at all.
-    let pid_text = std::fs::read_to_string(&pid_file)
-        .expect("the fixture recorded its pid before going silent");
-    let stopped_pid: u32 = pid_text
-        .trim()
-        .parse()
-        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    let stopped_pid = recorded_pid(
+        &pid_file,
+        "the fixture recorded its pid before going silent",
+    );
     assert!(
         !common::is_alive(stopped_pid),
         "the stopped spawn's own held child must still be ended by reap::end_child"
@@ -1086,26 +931,6 @@ fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_cloc
 // ---- spec 104 criterion 6 round-4 fix (decision op-104-stop-end-the-tree-and-bound-the-
 // joins): a descendant the driven child forked but never exec'd, inheriting a pipe fd ----
 
-/// Whether `pid` is still actually RUNNING - neither fully gone NOR a ZOMBIE awaiting reap
-/// by whatever process ends up adopting it - distinct from `common::is_alive`'s
-/// `kill(pid, 0)`-based "does this pid still occupy a process-table slot" check, which a
-/// SIGKILLed-but-not-yet-reaped zombie also satisfies. This test's own process is not the
-/// parent of the descendant it is checking (its real parent, the fixture's own shell, is
-/// ended by the SAME stop and so cannot `wait()` it either), so a genuinely-ended
-/// descendant may sit as a zombie - still "alive" by `kill(pid, 0)` - until whatever
-/// init/subreaper eventually collects it; reading its own reported state (`/proc/<pid>/stat`,
-/// the field right after `comm`'s closing paren, `Z` for zombie) is what tells "ended,
-/// awaiting reap by someone else" apart from "never signalled at all".
-fn is_running(pid: u32) -> bool {
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some((_, after_comm)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    !matches!(after_comm.trim_start().chars().next(), Some('Z') | None)
-}
-
 #[test]
 fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
     // adj-u104stop-r3-verdict-reject UPHELD adv-u104stop-r3-stop-can-still-hang-on-a-
@@ -1116,46 +941,29 @@ fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
     // descendant and end it too - never left running merely because THE STOP only ever
     // held a `Child` handle to its direct parent - and THE STOP must still return promptly.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-descendant-in-tree-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver {
-        bin,
-        stop_grace: Duration::from_millis(300),
-        ..fx.driver()
-    };
-    let descendant_pid_file = fx.scratch_root.path().join("descendant-in-tree.pid");
-    let mut o = opts("u104-stop/implementer#0");
-    o.env = vec![(
-        "RIGGER_TEST_DESCENDANT_PID_FILE".to_string(),
-        descendant_pid_file.to_string_lossy().into_owned(),
-    )];
-    let agent = AgentDef {
-        max_wall_clock: Some(1),
-        ..Default::default()
-    };
-    let emit = |_: &str, _: serde_json::Value| Ok(());
+    let driver = fx.stopping_driver(
+        "claude-code-descendant-in-tree-agent.sh",
+        Duration::from_millis(300),
+    );
+    let descendant_pid_file = fx.scratch_file("descendant-in-tree.pid");
+    let o = opts_with_env(
+        "u104-stop/implementer#0",
+        "RIGGER_TEST_DESCENDANT_PID_FILE",
+        &descendant_pid_file,
+    );
 
-    let started = std::time::Instant::now();
-    let err = driver
-        .spawn(&agent, "do the thing", &o, &emit)
-        .expect_err("a stream that never produces a result must not read as a success");
-    let elapsed = started.elapsed();
+    let (_, elapsed) = stop(&driver, &o);
 
-    assert!(err.0.contains("stopped"), "{}", err.0);
     assert!(
         elapsed < Duration::from_secs(5),
         "THE STOP must return within a bounded time even while ending a forked \
          descendant's own process tree: {elapsed:?}"
     );
 
-    let pid_text = std::fs::read_to_string(&descendant_pid_file)
-        .expect("the fixture recorded its forked descendant's pid before going silent");
-    let descendant_pid: u32 = pid_text
-        .trim()
-        .parse()
-        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    let descendant_pid = recorded_pid(
+        &descendant_pid_file,
+        "the fixture recorded its forked descendant's pid before going silent",
+    );
     assert!(
         common::wait_until(|| !is_running(descendant_pid)),
         "a descendant still in the child's own process tree (pid {descendant_pid}) must be \
@@ -1190,34 +998,19 @@ fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_chi
     // floor and a ceiling below turn that gap into a fast, deterministic failure rather
     // than a silent pass.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-descendant-out-of-tree-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver {
-        bin,
-        stop_grace: Duration::from_secs(4),
-        ..fx.driver()
-    };
-    let descendant_pid_file = fx.scratch_root.path().join("descendant-out-of-tree.pid");
-    let mut o = opts("u104-stop/implementer#0");
-    o.env = vec![(
-        "RIGGER_TEST_DESCENDANT_PID_FILE".to_string(),
-        descendant_pid_file.to_string_lossy().into_owned(),
-    )];
-    let agent = AgentDef {
-        max_wall_clock: Some(1),
-        ..Default::default()
-    };
-    let emit = |_: &str, _: serde_json::Value| Ok(());
+    let driver = fx.stopping_driver(
+        "claude-code-descendant-out-of-tree-agent.sh",
+        Duration::from_secs(4),
+    );
+    let descendant_pid_file = fx.scratch_file("descendant-out-of-tree.pid");
+    let o = opts_with_env(
+        "u104-stop/implementer#0",
+        "RIGGER_TEST_DESCENDANT_PID_FILE",
+        &descendant_pid_file,
+    );
 
-    let started = std::time::Instant::now();
-    let err = driver
-        .spawn(&agent, "do the thing", &o, &emit)
-        .expect_err("a stream that never produces a result must not read as a success");
-    let elapsed = started.elapsed();
+    let (_, elapsed) = stop(&driver, &o);
 
-    assert!(err.0.contains("stopped"), "{}", err.0);
     assert!(
         elapsed > Duration::from_secs(7),
         "THE STOP's trailing pipe joins must be bounded by the INJECTED self.stop_grace \
@@ -1232,12 +1025,10 @@ fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_chi
          end open: {elapsed:?}"
     );
 
-    let pid_text = std::fs::read_to_string(&descendant_pid_file)
-        .expect("the fixture recorded its escaped descendant's pid before going silent");
-    let descendant_pid: u32 = pid_text
-        .trim()
-        .parse()
-        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    let descendant_pid = recorded_pid(
+        &descendant_pid_file,
+        "the fixture recorded its escaped descendant's pid before going silent",
+    );
     assert!(
         common::is_alive(descendant_pid),
         "pid {descendant_pid}, standing in for a descendant that already escaped the \
@@ -1277,28 +1068,21 @@ fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_s
     // PRODUCTION `stop_grace` default (`fx.driver()`'s own 30s) unmodified - only the
     // STOP-path tests above still shrink `stop_grace`, for THEIR own concern.
     let fx = Fixture::new();
-    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-descendant-survives-a-clean-result-agent.sh")
-        .to_string_lossy()
-        .into_owned();
-    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
-    let descendant_pid_file = fx.scratch_root.path().join("descendant-clean-result.pid");
-    let mut o = opts("u104-stop/implementer#0");
-    o.env = vec![(
-        "RIGGER_TEST_DESCENDANT_PID_FILE".to_string(),
-        descendant_pid_file.to_string_lossy().into_owned(),
-    )];
-    let agent = AgentDef {
-        max_wall_clock: Some(1),
-        ..Default::default()
-    };
-    let emit = |_: &str, _: serde_json::Value| Ok(());
-
-    let started = std::time::Instant::now();
-    let result = driver.spawn(&agent, "do the thing", &o, &emit).expect(
-        "a real result line must still be read back even though a descendant \
-                 outlives the driven child and keeps the stdout pipe's write end open",
+    let driver = fx.driver_running("claude-code-descendant-survives-a-clean-result-agent.sh");
+    let descendant_pid_file = fx.scratch_file("descendant-clean-result.pid");
+    let o = opts_with_env(
+        "u104-stop/implementer#0",
+        "RIGGER_TEST_DESCENDANT_PID_FILE",
+        &descendant_pid_file,
     );
+
+    let started = Instant::now();
+    let result = driver
+        .spawn(&wall_clock_bounded(), "do the thing", &o, &no_emit)
+        .expect(
+            "a real result line must still be read back even though a descendant \
+             outlives the driven child and keeps the stdout pipe's write end open",
+        );
     let elapsed = started.elapsed();
 
     assert_eq!(
@@ -1318,12 +1102,10 @@ fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_s
          open: {elapsed:?}"
     );
 
-    let pid_text = std::fs::read_to_string(&descendant_pid_file)
-        .expect("the fixture recorded its forked descendant's pid before exiting");
-    let descendant_pid: u32 = pid_text
-        .trim()
-        .parse()
-        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    let descendant_pid = recorded_pid(
+        &descendant_pid_file,
+        "the fixture recorded its forked descendant's pid before exiting",
+    );
     assert!(
         common::is_alive(descendant_pid),
         "pid {descendant_pid}: an ordinary completion's reap ends only the ONE held \

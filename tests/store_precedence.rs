@@ -27,32 +27,19 @@
 //! pass-through are owned by their own criteria and are not asserted here.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-use tempfile::TempDir;
+use std::process::Output;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
+use common::cli::temp_rigger_project;
+
 /// An unreachable but well-formed server address: nothing listens on this loopback port, so the
 /// eager connect (fail-fast) is refused immediately. We prove WHICH backend the authority selected,
 /// not that a server is up.
 const UNREACHABLE: &str = "kurrentdb://127.0.0.1:65533?tls=false";
-
-/// A throwaway project: its own git repo (so identity - and the owning-root anchor the store
-/// resolver uses for the config and secret file - resolve exactly as a real project's do), with an
-/// empty `.rigger/` and no event log yet.
-fn empty_project() -> TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
 
 /// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. The
 /// precedence rungs must never fabricate this when a server is selected.
@@ -162,7 +149,7 @@ fn assert_selected_sqlite(out: &Output, root: &Path, why: &str) {
 fn the_committed_store_config_selects_the_server_over_the_default() {
     // Rung 4 wired + rung 4 beats rung 5: the committed config alone pins the server (with its
     // non-secret URL), no env, no flag, no secret file -> the bare courier resolves the server.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     write_store_config(
         root,
@@ -175,7 +162,7 @@ fn the_committed_store_config_selects_the_server_over_the_default() {
 #[test]
 fn a_committed_sqlite_store_config_resolves_the_local_log() {
     // Rung 4 can also pin sqlite explicitly: the bare courier takes the local walk-up.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     write_store_config(root, "store:\n  backend: sqlite\n");
     let out = run_bare_courier(root);
@@ -186,7 +173,7 @@ fn a_committed_sqlite_store_config_resolves_the_local_log() {
 fn the_secret_file_selects_the_server_and_beats_the_committed_config() {
     // Rung 3 wired + rung 3 beats rung 4: the secret file names the server while the committed
     // config pins sqlite; the secret file must win, so the courier resolves the server.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     write_store_conn(root, UNREACHABLE);
     write_store_config(root, "store:\n  backend: sqlite\n");
@@ -202,7 +189,7 @@ fn the_secret_file_selects_the_server_and_beats_the_committed_config() {
 fn the_environment_beats_the_committed_config() {
     // Rung 2 beats rung 4: KURRENTDB_CONN names the server while the committed config pins sqlite;
     // the environment must win, so the courier resolves the server.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     write_store_config(root, "store:\n  backend: sqlite\n");
     let out = run_courier_with_env(root, UNREACHABLE);
@@ -225,7 +212,7 @@ fn a_present_but_unreadable_store_conn_surfaces_loudly_not_a_silent_sqlite_fallb
     // rung's `a_present_but_unreadable_workflow...` test (d-u2-conn-file-unreadable-loud); it pins
     // that the file-backed secret rung distinguishes absent (no opinion) from unreadable (loud), the
     // same NotFound-vs-other split `read_store_config` makes one rung down.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     make_store_conn_unreadable(root);
     let out = run_bare_courier(root);
@@ -255,7 +242,7 @@ fn a_present_but_unreadable_store_conn_surfaces_loudly_not_a_silent_sqlite_fallb
 fn nothing_configured_resolves_the_local_default() {
     // Rung 5: no flag, no env, no secret file, no committed store: - the backward-compatible
     // embedded-sqlite default.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     let out = run_bare_courier(root);
     assert_selected_sqlite(
@@ -279,7 +266,7 @@ fn an_unknown_committed_backend_surfaces_loudly_not_a_silent_sqlite_fallback() {
     // courier's stderr, never swallowed between the resolver and the command handler. The sibling
     // guards `a_present_but_unreadable_store_conn...` and (config rung) `a_malformed_workflow...`
     // cover the OTHER two silent-fallback classes; this closes the invalid-value one.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     write_store_config(root, "store:\n  backend: bogus\n");
     let out = run_bare_courier(root);
@@ -325,7 +312,7 @@ fn a_committed_kurrentdb_backend_with_no_credential_names_all_three_sources() {
     // core; neither observes the CONFIG-rung server-with-no-url arm end-to-end through the binary.
     // This closes that: the committed-config server selection reaches the missing-conn guard, wired
     // through the shipped binary, and fabricates no local log.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     write_store_config(root, "store:\n  backend: kurrentdb\n");
     let out = run_bare_courier(root);

@@ -18,7 +18,6 @@
 //! signal under test - never a wall clock, which no node carries.
 
 use std::path::Path;
-use std::process::Command;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
@@ -30,17 +29,7 @@ mod common;
 
 use common::cli::run_stream_identity;
 use common::cli::seed_store;
-
-/// A throwaway project dir that is its own git repo, so `project_identity()` is stable across
-/// the seed and the binary's reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use common::cli::temp_project;
 
 /// Run `rigger <args...>` in `cwd`, opting out of the auto-started dashboard and pointing the
 /// instance registry at a throwaway state dir, exactly as the other CLI integration tests do.

@@ -32,72 +32,18 @@ mod common;
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use common::cli::now_nanos;
 use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::seed_order_signature;
+use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::cli::temp_project;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-/// A throwaway project: its own git repo (so `project_identity()` resolves deterministically),
-/// with NO `.rigger` dir yet - mirrors `tests/cli.rs`'s `temp_project`.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s
-/// `run_stream_identity`, which mirrors `StoreLocation::identity`'s own precedence: the tracked
-/// `.rigger/project.id` at the git top-level when present, else the git top-level basename, else
-/// `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Append `events` directly to `root`'s namespaced run stream, standing in for the conductor
-/// minting them - mirrors `tests/cli.rs`'s `seed_run_events`. Requires `seed_store(root)` (or an
-/// equivalent prior append) to have run first.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
 
 // --- `rigger watch --once`: the composition root, driven through the real binary ---
 
@@ -214,39 +160,6 @@ fn watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly()
     );
 }
 
-/// Seed `<root>/.rigger/events.db`'s run stream with rows whose position order and revision
-/// order DISAGREE (spec 71's corruption signature `watch::order_signatures` detects) by
-/// inserting directly - bypassing the store's own always-increasing revision assignment, the
-/// only way to reach this shape (mirrors `tests/cli.rs`'s own `seed_order_signature`, which
-/// proves the SAME shared detector reachable from `rigger validate`'s DIFFERENT composition
-/// root). Three rows land in the run stream, in this insertion (position) order: revision 5,
-/// then revision 1, then revision 2 - distinct values (satisfying `UNIQUE(stream, revision)`,
-/// the actual on-disk shape a write into a compaction-opened revision hole leaves) where
-/// positions 2 and 3 both carry a revision at or below the running maximum (5).
-fn seed_order_signature(root: &Path) {
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let db = rigger_dir.join("events.db");
-    // Open through the real store first, so the schema is laid down exactly as the binary
-    // itself would lay it down (mirrors `seed_run_events`'s own precondition).
-    rigger::eventstore::sqlite::Store::open(db.to_str().unwrap()).unwrap();
-    let stream = format!(
-        "{}{}",
-        rigger::eventstore::namespace::Namespaced::prefix_for(&run_stream_identity(root)),
-        rigger::conductor::STREAM
-    );
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    let ts = now_nanos();
-    for revision in [5i64, 1, 2] {
-        conn.execute(
-            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
-             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', ?3, ?3, ?4)",
-            rusqlite::params![stream, format!("seed-{revision}"), ts, revision],
-        )
-        .unwrap();
-    }
-}
-
 /// Seed an out-of-order TAIL directly on a stream DISTINCT from the run stream
 /// (`"other"`, still namespaced to this project), rather than the run stream
 /// [`seed_order_signature`] itself uses - a store-wide corruption shape `watch_poll`'s
@@ -301,7 +214,7 @@ fn seed_out_of_order_tail(root: &Path, stream_suffix: &str) {
 fn watch_once_reports_a_store_integrity_anomaly_through_the_real_compiled_binary() {
     let proj = temp_project();
     let root = proj.path();
-    seed_order_signature(root);
+    seed_order_signature(root, &run_stream_identity(root), now_nanos());
 
     let lines = watch_once(
         root,

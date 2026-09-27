@@ -54,7 +54,7 @@ mod common;
 use common::fixtures::{apply_ref, call_edge_pairs, call_layer, call_node_ids};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Direction, Projection, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
+    CallGraph, Direction, Projection, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::Event;
@@ -87,6 +87,36 @@ fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
     let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
     e.position = pos;
     p.apply(&e).unwrap();
+}
+
+/// The `direction` walk to `depth` from `src/a.rs::<seed>` over one file, `src/a.rs`, that defines
+/// each of `defs` in fold order (the first opening the extraction batch, each at its fold position
+/// as its line) and in which each `(caller, callee)` of `calls` is a same-file call, folded after
+/// the definitions.
+fn walk_one_file(
+    defs: &[&str],
+    calls: &[(&str, &str)],
+    seed: &str,
+    direction: Direction,
+    depth: i64,
+) -> CallGraph {
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+    for (i, name) in defs.iter().enumerate() {
+        pos += 1;
+        apply_def(&p, pos, "src/a.rs", name, pos as u32, i == 0);
+    }
+    for (caller, callee) in calls {
+        pos += 1;
+        apply_call(&p, pos, "src/a.rs", callee, caller);
+    }
+    p.calls(
+        &[format!("src/a.rs::{seed}")],
+        direction,
+        depth,
+        TIER_INFERRED,
+    )
+    .unwrap()
 }
 
 /// Backend-agnostic contract for the `Projection::calls` trait DEFAULT (spec 52). The default body
@@ -266,23 +296,13 @@ fn the_depth_bound_clamps_the_layers_the_walk_returns() {
     // Spec 52's `depth` param at the public API: the walk is bounded to `depth` hops. Build a linear
     // same-file chain f0 -> f1 -> f2 -> f3 and walk with depth 2: layers 0..=2 (f0, f1, f2) are
     // returned and f3 (which would be layer 3) is NOT, because a node at the bound is not expanded.
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "f0", 1, true);
-    apply_def(&p, 2, "src/a.rs", "f1", 2, false);
-    apply_def(&p, 3, "src/a.rs", "f2", 3, false);
-    apply_def(&p, 4, "src/a.rs", "f3", 4, false);
-    apply_call(&p, 5, "src/a.rs", "f1", "f0");
-    apply_call(&p, 6, "src/a.rs", "f2", "f1");
-    apply_call(&p, 7, "src/a.rs", "f3", "f2");
-
-    let cg = p
-        .calls(
-            &["src/a.rs::f0".to_string()],
-            Direction::Down,
-            2,
-            TIER_INFERRED,
-        )
-        .unwrap();
+    let cg = walk_one_file(
+        &["f0", "f1", "f2", "f3"],
+        &[("f0", "f1"), ("f1", "f2"), ("f2", "f3")],
+        "f0",
+        Direction::Down,
+        2,
+    );
 
     assert_eq!(
         call_node_ids(&cg),
@@ -754,27 +774,21 @@ fn the_up_walk_clamps_the_caller_dag_to_the_depth_bound_and_emits_a_deterministi
     // polls. Build a caller tree - two callers at layer 1, one at layer 2, one at layer 3 - and walk
     // UP with depth 2: layers 0..=2 are returned, the layer-3 caller is clamped out, and the emitted
     // node Vec is in the production (layer, id) order (NOT a re-sorted view), pinning the sort itself.
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "t0", 1, true); // the SEED
-                                                 // `mid` is folded BEFORE `alt` so the natural insertion order within layer 1 would be [mid, alt];
-                                                 // only the builder's (layer, id) sort yields the asserted [alt, mid] - the ordering has teeth.
-    apply_def(&p, 2, "src/a.rs", "mid", 2, false);
-    apply_def(&p, 3, "src/a.rs", "alt", 3, false);
-    apply_def(&p, 4, "src/a.rs", "top", 4, false);
-    apply_def(&p, 5, "src/a.rs", "over", 5, false);
-    apply_call(&p, 6, "src/a.rs", "t0", "mid"); // mid -> t0 : layer 1
-    apply_call(&p, 7, "src/a.rs", "t0", "alt"); // alt -> t0 : layer 1
-    apply_call(&p, 8, "src/a.rs", "mid", "top"); // top -> mid : layer 2
-    apply_call(&p, 9, "src/a.rs", "top", "over"); // over -> top : layer 3 (clamped at depth 2)
-
-    let up = p
-        .calls(
-            &["src/a.rs::t0".to_string()],
-            Direction::Up,
-            2,
-            TIER_INFERRED,
-        )
-        .unwrap();
+    let up = walk_one_file(
+        // `t0` is the SEED. `mid` is folded BEFORE `alt` so the natural insertion order within
+        // layer 1 would be [mid, alt]; only the builder's (layer, id) sort yields the asserted
+        // [alt, mid] - the ordering has teeth.
+        &["t0", "mid", "alt", "top", "over"],
+        &[
+            ("mid", "t0"),   // layer 1
+            ("alt", "t0"),   // layer 1
+            ("top", "mid"),  // layer 2
+            ("over", "top"), // layer 3 (clamped at depth 2)
+        ],
+        "t0",
+        Direction::Up,
+        2,
+    );
 
     // The layer-3 caller is clamped out; the bound node (top, layer 2) is present but not expanded.
     assert!(

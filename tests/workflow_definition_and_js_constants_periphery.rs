@@ -75,19 +75,8 @@ mod common;
 use common::cli::ingested_count;
 #[cfg(feature = "symbols")]
 use common::cli::run_stream_identity;
-
-/// A throwaway project dir that is its own git repo, so `cmd_graph_build`'s root resolution (the
-/// git top-level) and `project_identity()` (which scopes the graph read `--show`/`--around` use)
-/// are both stable and match between the seed and the binary's own reads.
 #[cfg(feature = "symbols")]
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use common::cli::temp_project;
 
 /// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr,
 /// success). Opts out of the auto-started dashboard and points the instance registry at a

@@ -35,6 +35,8 @@
 
 mod common;
 
+use rigger::worktree::branch_exists;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -69,16 +71,6 @@ fn expected_postmerge_dir(scratch_root: &str, unit_id: &str, attempt: u32) -> St
 }
 fn expected_postmerge_branch(unit_id: &str, attempt: u32) -> String {
     format!("rigger/postmerge/{unit_id}-{attempt}")
-}
-
-fn branch_exists(repo_path: &str, branch: &str) -> bool {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["branch", "--list", branch])
-        .output()
-        .unwrap();
-    !String::from_utf8_lossy(&out.stdout).trim().is_empty()
 }
 
 /// A single stage, one gate that always passes, no review panel - the same minimal shape the

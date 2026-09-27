@@ -59,6 +59,8 @@
 
 mod common;
 
+use common::cli::temp_git_project_with_commit;
+
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
@@ -67,29 +69,6 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use serde_json::{json, Value};
-
-/// A throwaway project that is its own git repo with one commit, so a base ref like `HEAD`
-/// resolves and a real per-unit worktree/branch/merge can land. Mirrors
-/// `tests/fanout_template_needs_and_stage_retries_periphery.rs`'s identically-named helper
-/// (itself mirroring `tests/cli.rs`'s).
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
 
 /// A real, single-criterion fan-out workflow: one `plan` stage feeding one `implement`
 /// fan-out template that declares gate `ok` (`run: "true"`, always passes) - and a SECOND
@@ -150,6 +129,12 @@ fn base_cfg(repo: &std::path::Path) -> Config {
     cfg
 }
 
+/// The fan-out criterion every planner here supersedes or refines.
+const CRITERION: &str = "the auth module lands";
+
+/// The id of the planner's own superseding (or same-id refined) unit.
+const PROPOSED_ID: &str = "planner-refines-the-auth-module";
+
 /// A planner driver whose one `UnitProposed` emit supersedes `criterion` with a unit named
 /// `proposed_id`, naming exactly `proposal_gates` in its own `gates` field (omitted from
 /// the wire entirely when empty, mirroring a real planner that never learned about gates -
@@ -198,110 +183,6 @@ impl AgentDriver for SupersedingPlannerDriver {
             resolved_model: String::new(),
         })
     }
-}
-
-/// GATE INHERITANCE's central production claim: a planner proposal that supersedes a
-/// fan-out criterion's baseline and NAMES NO `gates` field at all - the exact "a proposal
-/// naming none ran ungated" shape the spec's Goal paragraph describes - still runs the
-/// template's own gate for real. Drives the crate's public `run()` with a real
-/// `gate::ExecRunner` (so `ok`'s `run: "true"` genuinely executes as a child process) and a
-/// real git repo (so the unit's `on_pass: merge` genuinely merges), then reads the fix's
-/// effect off the same public field the spec's Goal paragraph names as the symptom:
-/// `Unit::evidence["verified"]`, mechanically mirroring `st.gates`
-/// (`verified_evidence`, `src/conductor.rs:10935`) - `{}` before this fix (RED: `gates:
-/// u.gates` with `u.gates` empty), `"gates passed: ok"` after it.
-#[test]
-fn a_gateless_supersede_of_a_fanout_baseline_still_runs_the_templates_gate_for_real() {
-    let repo = temp_git_project_with_commit();
-    let cfg = base_cfg(repo.path());
-
-    let crit_a = "the auth module lands";
-    let superseding_id = "planner-refines-the-auth-module";
-
-    let store = Store::open(":memory:").unwrap();
-    let driver = SupersedingPlannerDriver {
-        proposed_id: superseding_id.to_string(),
-        criterion: crit_a.to_string(),
-        proposal_gates: Vec::new(),
-    };
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![crit_a.to_string()],
-    };
-    let rs = run(&cfg, &deps).unwrap();
-
-    assert_eq!(
-        rs.units.get(superseding_id).map(|u| u.status),
-        Some(ledger::Status::Integrated),
-        "the gateless superseding unit must still integrate through a real git merge; \
-         units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        rs.units[superseding_id]
-            .evidence
-            .get("verified")
-            .map(String::as_str),
-        Some("gates passed: ok"),
-        "a proposal naming no `gates` field must still carry the template's own gate list \
-         into a REAL gate run, whose outcome is recorded as real evidence - empty evidence \
-         here means the unit went green to verified without ever running the template's \
-         gate, the exact defect spec 103 describes; got evidence: {:?}",
-        rs.units[superseding_id].evidence
-    );
-}
-
-/// GATE INHERITANCE's union half: a proposal that DOES name its own gate gets it unioned
-/// onto the template's, never substituted for it - both gates run for real and both show up
-/// in the real recorded evidence, template's gate first (base-list order preserved).
-#[test]
-fn a_supersede_naming_its_own_gate_unions_it_onto_the_templates_gate_for_real() {
-    let repo = temp_git_project_with_commit();
-    let cfg = base_cfg(repo.path());
-
-    let crit_a = "the auth module lands";
-    let superseding_id = "planner-refines-the-auth-module";
-
-    let store = Store::open(":memory:").unwrap();
-    let driver = SupersedingPlannerDriver {
-        proposed_id: superseding_id.to_string(),
-        criterion: crit_a.to_string(),
-        proposal_gates: vec!["extra".to_string()],
-    };
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
-        grounder: None,
-        graph: None,
-        criteria: vec![crit_a.to_string()],
-    };
-    let rs = run(&cfg, &deps).unwrap();
-
-    assert_eq!(
-        rs.units.get(superseding_id).map(|u| u.status),
-        Some(ledger::Status::Integrated),
-        "the unioned-gate superseding unit must still integrate through a real git merge; \
-         units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        rs.units[superseding_id]
-            .evidence
-            .get("verified")
-            .map(String::as_str),
-        Some("gates passed: ok, extra"),
-        "a proposal naming its own `extra` gate must run it UNIONED with the template's own \
-         `ok` gate (template's gate first, never dropped, never replaced) - both must show \
-         up in the real recorded evidence; got evidence: {:?}",
-        rs.units[superseding_id].evidence
-    );
 }
 
 /// A planner driver whose one `spawn()` call emits TWO `UnitProposed` events for the SAME
@@ -362,51 +243,88 @@ impl AgentDriver for RefiningPlannerDriver {
     }
 }
 
-/// GATE INHERITANCE's third named shape: a SAME-ID REFINE. The refine's own `extra` gate
-/// must union onto the EXISTING stage's already-templated gate list (`existing.gates =
-/// union_gates(&existing.gates, &u.gates)`) rather than overwrite it - a source line
-/// distinct from the insert site the two tests above exercise, so this proves that line
-/// also survives real gate execution and real evidence recording, not merely the insert
-/// site.
-#[test]
-fn a_same_id_refine_unions_its_own_gate_onto_the_already_templated_list_for_real() {
+/// Drive the crate's public `run()` over [`base_cfg`]'s workflow with `driver` as the planner, a
+/// real `gate::ExecRunner` (so every gate genuinely executes as a child process) and a real git
+/// repo (so `on_pass: merge` genuinely merges): the planner's [`PROPOSED_ID`] unit must integrate
+/// through a real merge, and its real recorded `verified` evidence - mechanically mirroring
+/// `st.gates` (`verified_evidence`) - must read exactly `verified`.
+fn proposal_integrates_verified_by(driver: &dyn AgentDriver, verified: &str) {
     let repo = temp_git_project_with_commit();
     let cfg = base_cfg(repo.path());
 
-    let crit_a = "the auth module lands";
-    let refined_id = "planner-refines-the-auth-module";
-
     let store = Store::open(":memory:").unwrap();
-    let driver = RefiningPlannerDriver {
-        proposed_id: refined_id.to_string(),
-        criterion: crit_a.to_string(),
-    };
     let deps = Deps {
         store: &store,
-        driver: &driver,
+        driver,
         gates: &ExecRunner,
         repo: repo.path().to_str().unwrap().to_string(),
         grounder: None,
         graph: None,
-        criteria: vec![crit_a.to_string()],
+        criteria: vec![CRITERION.to_string()],
     };
     let rs = run(&cfg, &deps).unwrap();
 
     assert_eq!(
-        rs.units.get(refined_id).map(|u| u.status),
+        rs.units.get(PROPOSED_ID).map(|u| u.status),
         Some(ledger::Status::Integrated),
-        "the same-id-refined unit must still integrate through a real git merge; units: {:?}",
+        "the planner's unit must still integrate through a real git merge; units: {:?}",
         rs.units.keys().collect::<Vec<_>>()
     );
     assert_eq!(
-        rs.units[refined_id]
+        rs.units[PROPOSED_ID]
             .evidence
             .get("verified")
             .map(String::as_str),
-        Some("gates passed: ok, extra"),
-        "a same-id refine naming its own `extra` gate must union it onto the EXISTING \
-         stage's already-templated `ok` gate (never overwrite it) - both must show up in \
-         the real recorded evidence; got evidence: {:?}",
-        rs.units[refined_id].evidence
+        Some(verified),
+        "the planner's unit must carry the template's own gate list, unioned with any gate it          names itself, into a REAL gate run recorded as real evidence; got evidence: {:?}",
+        rs.units[PROPOSED_ID].evidence
     );
+}
+
+rigger::test_cases! {
+    /// GATE INHERITANCE's central production claim: a planner proposal that supersedes a
+    /// fan-out criterion's baseline and NAMES NO `gates` field at all - the exact "a proposal
+    /// naming none ran ungated" shape the spec's Goal paragraph describes - still runs the
+    /// template's own gate for real. Drives the crate's public `run()` with a real
+    /// `gate::ExecRunner` (so `ok`'s `run: "true"` genuinely executes as a child process) and a
+    /// real git repo (so the unit's `on_pass: merge` genuinely merges), then reads the fix's
+    /// effect off the same public field the spec's Goal paragraph names as the symptom:
+    /// `Unit::evidence["verified"]`, mechanically mirroring `st.gates`
+    /// (`verified_evidence`, `src/conductor.rs:10935`) - `{}` before this fix (RED: `gates:
+    /// u.gates` with `u.gates` empty), `"gates passed: ok"` after it.
+    a_gateless_supersede_of_a_fanout_baseline_still_runs_the_templates_gate_for_real:
+        proposal_integrates_verified_by(
+            &SupersedingPlannerDriver {
+                proposed_id: PROPOSED_ID.to_string(),
+                criterion: CRITERION.to_string(),
+                proposal_gates: Vec::new(),
+            },
+            "gates passed: ok",
+        );
+    /// GATE INHERITANCE's union half: a proposal that DOES name its own gate gets it unioned
+    /// onto the template's, never substituted for it - both gates run for real and both show up
+    /// in the real recorded evidence, template's gate first (base-list order preserved).
+    a_supersede_naming_its_own_gate_unions_it_onto_the_templates_gate_for_real:
+        proposal_integrates_verified_by(
+            &SupersedingPlannerDriver {
+                proposed_id: PROPOSED_ID.to_string(),
+                criterion: CRITERION.to_string(),
+                proposal_gates: vec!["extra".to_string()],
+            },
+            "gates passed: ok, extra",
+        );
+    /// GATE INHERITANCE's third named shape: a SAME-ID REFINE. The refine's own `extra` gate
+    /// must union onto the EXISTING stage's already-templated gate list (`existing.gates =
+    /// union_gates(&existing.gates, &u.gates)`) rather than overwrite it - a source line
+    /// distinct from the insert site the two tests above exercise, so this proves that line
+    /// also survives real gate execution and real evidence recording, not merely the insert
+    /// site.
+    a_same_id_refine_unions_its_own_gate_onto_the_already_templated_list_for_real:
+        proposal_integrates_verified_by(
+            &RefiningPlannerDriver {
+                proposed_id: PROPOSED_ID.to_string(),
+                criterion: CRITERION.to_string(),
+            },
+            "gates passed: ok, extra",
+        );
 }

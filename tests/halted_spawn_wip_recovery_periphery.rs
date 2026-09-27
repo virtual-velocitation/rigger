@@ -83,24 +83,15 @@
 
 mod common;
 
+use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::seed_run_events;
+use common::cli::temp_git_project_with_commit;
 use common::git::git_ok;
 use common::git::git_out;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git project with a real commit, so `HEAD` resolves for `git worktree add`
-/// and the run's base ref is real. Mirrors `tests/cli.rs`'s `temp_git_project_with_commit`.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let root = dir.path();
-    git_ok(root, &["init", "-q"]);
-    git_ok(root, &["config", "user.email", "t@example.com"]);
-    git_ok(root, &["config", "user.name", "t"]);
-    git_ok(root, &["commit", "--allow-empty", "-q", "-m", "init"]);
-    dir
-}
 
 /// Scaffold a single, real-worktree implementer unit named "solo": one gate (`ok`, always
 /// green), no review tier, `on_pass: none` (verified but never merged - the minimal shape
@@ -132,18 +123,16 @@ stages:
     .unwrap();
 }
 
-/// The DETERMINISTIC dir/branch `stage_worktree`'s `Worktree::create` would derive for a
-/// unit named `unit` in `root`'s default (unconfigured) scratch root - mirrors
-/// `unit_worktree_dir`/`unit_branch` in `src/conductor.rs`, which this file cannot import
-/// (they are private), so it reconstructs the same well-known convention every other
-/// fixture in this suite already asserts against via `common::default_scratch_root` (spec
-/// 89, criterion 2: SCRATCH IS OUTSIDE THE STORE TREE moved the default off the old bare
-/// `root.join(".rigger").join("tmp")` literal this helper used to hardcode - that literal
-/// stopped matching what `sweep_terminal`'s own `d.starts_with(root)` gate and the
-/// conductor's worktree adoption actually resolve, so a worktree this helper pre-seeded
-/// there silently fell outside every step-start authority's own sweep domain).
-fn unit_worktree_dir(root: &Path, unit: &str) -> std::path::PathBuf {
-    common::default_scratch_root(root).join(format!("rigger-wt-{unit}"))
+/// The DETERMINISTIC worktree dir `stage_worktree`'s `Worktree::create` derives for a unit named
+/// `unit` in `root`'s default (unconfigured) scratch root - the product's own
+/// [`rigger::conductor::unit_worktree_dir`] over `common::default_scratch_root`, so a worktree a
+/// test pre-seeds lands exactly where every step-start sweep and the conductor's adoption look.
+fn default_unit_worktree_dir(root: &Path, unit: &str) -> std::path::PathBuf {
+    let scratch = common::default_scratch_root(root);
+    std::path::PathBuf::from(rigger::conductor::unit_worktree_dir(
+        scratch.to_str().expect("a utf-8 scratch root"),
+        unit,
+    ))
 }
 
 fn unit_branch(unit: &str) -> String {
@@ -161,7 +150,7 @@ fn unit_branch(unit: &str) -> String {
 /// this no-spawn-recorded shape, independent of whether the checkpoint itself goes on to
 /// capture it. See [`seed_and_halt_a_dispatched_spawn`] for the genuine-halt shape.
 fn seed_halted_worktree(root: &Path, unit: &str, file: &str, content: &str) -> std::path::PathBuf {
-    let dir = unit_worktree_dir(root, unit);
+    let dir = default_unit_worktree_dir(root, unit);
     let branch = unit_branch(unit);
     git_ok(
         root,
@@ -211,7 +200,7 @@ fn seed_and_halt_a_dispatched_spawn(
         "the priming step must park {unit}/implementer#0 fresh, giving it a real \
          SpawnRequested to halt later; got: {prime_out:?}"
     );
-    let dir = unit_worktree_dir(root, unit);
+    let dir = default_unit_worktree_dir(root, unit);
     std::fs::write(dir.join(file), content).unwrap();
     let status = git_out(&dir, &["status", "--porcelain"]);
     assert!(
@@ -466,11 +455,11 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is
         root,
         &[(
             rigger::spawn::TYPE_SPAWN_REQUESTED,
-            serde_json::to_value(&sibling).unwrap(),
+            &serde_json::to_value(&sibling).unwrap().to_string(),
         )],
     );
     // The sibling's own liveness marker, touched right now - well inside its 3600s bound -
-    // at the EXACT path production derives (same scratch root [`unit_worktree_dir`]'s own doc
+    // at the EXACT path production derives (same scratch root [`default_unit_worktree_dir`]'s own doc
     // comment already asserts against, same run id the priming step just minted).
     let scratch = common::default_scratch_root(root);
     let run_id = current_run_id(root);
@@ -540,7 +529,7 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_r
 
     // The implementer's own real edit, then its real, non-fault result - recorded through the
     // real `rigger result` command, exactly like an ordinary successful attempt.
-    let wt_dir = unit_worktree_dir(root, "solo");
+    let wt_dir = default_unit_worktree_dir(root, "solo");
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
     let (_out, result_err, result_ok) =
         run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
@@ -598,75 +587,13 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_r
     );
 }
 
-/// The `project_identity` a fresh, real `rigger` process resolves for `root` - mirrors
-/// `tests/cli.rs`'s identically-named helper (the tracked `.rigger/project.id` at the git
-/// top-level when present, else the git top-level basename, else `root`'s own basename), so a
-/// seed appended under this identity lands in the exact stream a later `rigger step` reads.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Seed run-lifecycle events directly into the namespaced run stream, standing in for the
-/// conductor minting them - mirrors `tests/cli.rs`'s identically-named helper. `rigger emit`
-/// (the guarded courier CLI) refuses these conductor-owned boundary types (spec 22), so a
-/// test that must seed a PRIOR window's recorded lifecycle appends through the store
-/// directly, at the SAME identity a later real `rigger step` process resolves for `root`.
-fn seed_run_events(root: &Path, events: &[(&str, serde_json::Value)]) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for (ty, data) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(*ty, serde_json::to_vec(data).unwrap())],
-            )
-            .unwrap();
-    }
-}
-
 /// The run id `rigger::run::current_run_id` resolves for the events a real `rigger step`
 /// process against `root` has already written - read back from the SAME on-disk store, at the
 /// SAME project identity, [`seed_run_events`] appends to. Lets a test plant a liveness marker
 /// at the EXACT path production derives for a spawn of the run a separate, real prior process
 /// just started, without hardcoding or guessing the run id that process minted.
 fn current_run_id(root: &Path) -> String {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let events = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
-    rigger::run::current_run_id(&events)
+    rigger::run::current_run_id(&read_run_events(root))
         .expect("a real prior `rigger step` process must already have minted a run id")
 }
 
@@ -712,7 +639,7 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
     // `stage_worktree`'s adopt-by-path-lookup would derive - and, critically, never `.remove()`d,
     // so the real `rigger step` below ADOPTS this exact on-disk state rather than a fresh one.
     let repo_path = root.to_str().unwrap().to_string();
-    let wt_dir = unit_worktree_dir(root, "s");
+    let wt_dir = default_unit_worktree_dir(root, "s");
     let unit_wt = rigger::worktree::Worktree::create(
         &repo_path,
         wt_dir.to_str().unwrap(),
@@ -777,19 +704,20 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
         &[
             (
                 "RunStarted",
-                serde_json::json!({"run": "r1", "criteria": []}),
+                &serde_json::json!({"run": "r1", "criteria": []}).to_string(),
             ),
             (
                 "UnitStarted",
-                serde_json::json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                &serde_json::json!({"id": "s", "agent": "worker", "branch": unit_branch("s")})
+                    .to_string(),
             ),
             (
                 "UnitStatus",
-                serde_json::json!({"id": "s", "status": "verified"}),
+                &serde_json::json!({"id": "s", "status": "verified"}).to_string(),
             ),
             (
                 "UnitStatus",
-                serde_json::json!({"id": "s", "status": "reviewed"}),
+                &serde_json::json!({"id": "s", "status": "reviewed"}).to_string(),
             ),
         ],
     );
@@ -860,7 +788,7 @@ fn an_untouched_conflict_marker_lookalike_file_never_blocks_an_unrelated_checkpo
 
     // The implementer's own real edit - a DIFFERENT file, left uncommitted for the
     // conductor's own per-attempt checkpoint commit to pick up.
-    let wt_dir = unit_worktree_dir(root, "solo");
+    let wt_dir = default_unit_worktree_dir(root, "solo");
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
     let (_out, err, ok) = run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
     assert!(

@@ -55,8 +55,12 @@
 //!    `sqlite.rs::migration_c3` already reads the raw superseded edge directly.
 
 mod common;
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
 
 use common::cli::run_rigger;
+use common::cli::temp_rigger_project;
+use graph_fold::apply_json;
 use std::path::Path;
 use std::process::Command;
 
@@ -421,18 +425,6 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_proj
 // Part 2: `rigger validate`'s RETIRED CODE-ENTITY advisory, through the COMPILED binary
 // =========================================================================================
 
-/// A throwaway project: its own git repo, so `project_identity()` resolves as it does for a
-/// real project (mirrors `tests/validate_advisories.rs`'s own `temp_project` convention).
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
 /// The project identity `rigger validate`'s own `project_identity()` resolves for `root`: the
 /// tracked `.rigger/project.id` when present (as `rigger init` mints), else the git top-level's
 /// basename, else `root`'s own basename. Mirrors `tests/validate_advisories.rs`'s own
@@ -470,61 +462,58 @@ fn project_identity_of(root: &Path) -> String {
 /// correct. `contextgraph` is not feature-gated (unlike `grounder::symbols`), so this seeding
 /// runs in BOTH feature lanes, and Part 2's tests below carry no `#[cfg(feature = "symbols")]`.
 fn seed_a_retired_entity(root: &Path) {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
-    use rigger::eventstore::Event;
+    use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
 
-    let project = project_identity_of(root);
-    let graph_path = root.join(".rigger").join("graph.db");
-    std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
-    let p = Projector::open(graph_path.to_str().unwrap(), &project).unwrap();
-
-    let legacy = serde_json::json!({
-        "file": "tests/legacy.rs", "name": "old_test_helper", "kind": "function",
-        "line": 1, "lang": "rust", "fresh": true,
-    });
-    let mut e1 = Event::new(
+    let p = project_graph(root);
+    apply_json(
+        &p,
+        1,
         TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&legacy).unwrap(),
+        serde_json::json!({
+            "file": "tests/legacy.rs", "name": "old_test_helper", "kind": "function",
+            "line": 1, "lang": "rust", "fresh": true,
+        }),
     );
-    e1.position = 1;
-    p.apply(&e1).unwrap();
-
-    let boundary = serde_json::json!({
-        "file": "tests/legacy.rs", "name": "", "lang": "rust", "fresh": true,
-    });
-    let mut e2 = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&boundary).unwrap());
-    e2.position = 2;
-    p.apply(&e2).unwrap();
+    apply_json(
+        &p,
+        2,
+        TYPE_EDGE_INFERRED,
+        serde_json::json!({
+            "file": "tests/legacy.rs", "name": "", "lang": "rust", "fresh": true,
+        }),
+    );
 }
 
 /// Seed `root`'s `.rigger/graph.db` with ONE live, never-retired code entity - the "graph.db
 /// exists but nothing has been retired" case, distinct from no `graph.db` at all.
 fn seed_a_live_entity(root: &Path) {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-    use rigger::eventstore::Event;
+    let p = project_graph(root);
+    apply_json(
+        &p,
+        1,
+        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+        serde_json::json!({
+            "file": "product.rs", "name": "product_fn", "kind": "function",
+            "line": 1, "lang": "rust", "fresh": true,
+        }),
+    );
+}
 
-    let project = project_identity_of(root);
+/// The projector over `root`'s own `.rigger/graph.db`, scoped to the SAME project identity the
+/// compiled binary will read it back under.
+fn project_graph(root: &Path) -> rigger::contextgraph::sqlite::Projector {
     let graph_path = root.join(".rigger").join("graph.db");
     std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
-    let p = Projector::open(graph_path.to_str().unwrap(), &project).unwrap();
-
-    let def = serde_json::json!({
-        "file": "product.rs", "name": "product_fn", "kind": "function",
-        "line": 1, "lang": "rust", "fresh": true,
-    });
-    let mut e = Event::new(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&def).unwrap(),
-    );
-    e.position = 1;
-    p.apply(&e).unwrap();
+    rigger::contextgraph::sqlite::Projector::open(
+        graph_path.to_str().unwrap(),
+        &project_identity_of(root),
+    )
+    .unwrap()
 }
 
 #[test]
 fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -552,7 +541,7 @@ fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fai
 
 #[test]
 fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -569,7 +558,7 @@ fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
 
 #[test]
 fn validate_never_fabricates_a_graph_db_and_draws_no_retired_advisory_on_a_fresh_project() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");

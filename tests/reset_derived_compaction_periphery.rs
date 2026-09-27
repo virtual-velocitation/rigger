@@ -83,7 +83,10 @@ mod common;
 use common::git::run_git;
 
 use common::cli::keyed;
+use common::cli::reported_reclaimed_bytes;
 use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::temp_rigger_project;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
@@ -91,7 +94,7 @@ use rigger::eventstore::sqlite::{PrunedDerived, Store};
 use rigger::eventstore::{ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------------------
@@ -573,50 +576,13 @@ fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wro
 // 3. The cross-module seam: the command prunes what `ingest` declares, and nothing else decides
 // ---------------------------------------------------------------------------------------
 
-/// A throwaway project whose identity resolves the same way it does for a real one.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
 fn event_log(root: &Path) -> PathBuf {
     root.join(".rigger").join("events.db")
 }
 
-/// The project identity the binary resolves for `root`, mirrored here so a seed lands in the very
-/// stream the compiled binary reads back.
-fn project_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
 fn seed_project(root: &Path, rounds: u64) {
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    seed_namespace(&backend, &project_identity(root), rounds);
+    seed_namespace(&backend, &run_stream_identity(root), rounds);
 }
 
 /// The `(type, count)` pairs out of the command's report - the parenthesised list in
@@ -648,7 +614,7 @@ fn per_type_report(out: &str) -> Vec<(String, usize)> {
 
 #[test]
 fn the_command_prunes_and_accounts_for_exactly_the_derived_index_types_ingest_declares() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     const ROUNDS: u64 = 5;
     seed_project(root, ROUNDS);
@@ -802,7 +768,7 @@ fn a_compacted_stream_answers_expected_revision_from_its_highest_surviving_revis
 
 #[test]
 fn reset_accepts_each_mode_at_most_once_and_composes_the_two_in_either_order() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 3);
 
@@ -1054,7 +1020,7 @@ fn registry_entry(help: &str, mode: &str) -> String {
 /// it.
 #[test]
 fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_is_real() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let (out, err, ok) = run_rigger(dir.path(), &["--help"]);
     assert!(ok, "rigger --help must succeed; stderr: {err}\n{out}");
     let help = format!("{err}{out}");
@@ -1080,7 +1046,7 @@ fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_
     // EVERY ADVERTISED MODE IS REAL. Each runs in its own freshly seeded project so one mode's
     // prune cannot be what makes the next one look like it worked.
     for mode in &modes {
-        let project = temp_project();
+        let project = temp_rigger_project();
         seed_project(project.path(), 3);
         let (out, err, ok) = run_rigger(project.path(), &["reset", mode]);
         let said = format!("{err}{out}");
@@ -1098,7 +1064,7 @@ fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_
 
     // AND NOTHING ELSE IS. An unadvertised mode is refused, and the refusal enumerates exactly the
     // modes the registry advertises, so a mode added to one and not the other cannot go unnoticed.
-    let project = temp_project();
+    let project = temp_rigger_project();
     seed_project(project.path(), 3);
     let (out, err, ok) = run_rigger(project.path(), &["reset", "--everything"]);
     let said = format!("{err}{out}");
@@ -1313,11 +1279,11 @@ const PINNED_ID: &str = "compaction-fixture";
 const DEAD_DECISION: &str = "d-dead-run";
 
 /// A temp project whose identity is PINNED in `.rigger/project.id` - the first rung the binary's
-/// identity resolution reads, and the one [`project_identity`] mirrors. Without it each fixture
+/// identity resolution reads, and the one [`run_stream_identity`] mirrors. Without it each fixture
 /// would take its identity from its own temp directory name, so two identically-seeded projects
 /// would write their events under two different stream names and could not be compared.
 fn pinned_project() -> tempfile::TempDir {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     std::fs::write(dir.path().join(".rigger").join("project.id"), PINNED_ID)
         .expect("pin the project identity");
     dir
@@ -1403,7 +1369,7 @@ fn row_marks(rows: &[Row]) -> Vec<String> {
 /// the log holds the duplicated derived index for `--derived`. That is the precondition for
 /// separating "this prune did nothing to the other store" from "there was nothing to do".
 fn seed_both_stores(root: &Path, rounds: u64) {
-    let id = project_identity(root);
+    let id = run_stream_identity(root);
     let mut events = vec![
         Event::new("RunStarted", br#"{"run":"dead","criteria":["c"]}"#.to_vec())
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(10)),
@@ -1480,7 +1446,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     let composed = pinned_project();
     for project in [&runs_only, &derived_only, &composed] {
         assert_eq!(
-            project_identity(project.path()),
+            run_stream_identity(project.path()),
             PINNED_ID,
             "the fixtures must all resolve to one identity, or their stores are not comparable"
         );
@@ -1654,7 +1620,7 @@ fn seed_run_history_and_duplication(root: &Path, rounds: u64) {
     }
 
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &project_identity(root));
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the run history");
@@ -1680,7 +1646,7 @@ fn seed_run_history_and_duplication(root: &Path, rounds: u64) {
 #[test]
 fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_compaction() {
     const ROUNDS: u64 = 6;
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_run_history_and_duplication(root, ROUNDS);
 
@@ -1894,7 +1860,7 @@ fn append_run(root: &Path, at: &mut u64, events: &[(&str, &str)]) {
         })
         .collect();
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    Namespaced::new(&backend, &project_identity(root))
+    Namespaced::new(&backend, &run_stream_identity(root))
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &staged)
         .expect("seed the run stream");
 }
@@ -1913,7 +1879,7 @@ fn append_duplication(root: &Path, key: &str, rounds: u64, base_secs: u64) {
         })
         .collect();
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    Namespaced::new(&backend, &project_identity(root))
+    Namespaced::new(&backend, &run_stream_identity(root))
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the duplication");
 }
@@ -1941,7 +1907,7 @@ fn append_duplication(root: &Path, key: &str, rounds: u64, base_secs: u64) {
 #[test]
 fn the_status_view_reads_a_compacted_log_exactly_as_it_read_the_bloated_one() {
     const ROUNDS: u64 = 6;
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
 
     // A finished earlier run, then the duplication, then the current run - which is blocked
@@ -2124,7 +2090,7 @@ fn run_rigger_bounded(
 /// its revision cursor furthest apart while leaving a real, answerable spawn behind.
 fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
     let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let project = project_identity(root);
+    let project = run_stream_identity(root);
     let store = Namespaced::new(&backend, &project);
     let mut events = vec![
         Event::new(
@@ -2185,7 +2151,7 @@ fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
 /// the real one agree and the bug is invisible.
 #[test]
 fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     const ROUNDS: u64 = 5;
     seed_run_with_a_parked_spawn(root, ROUNDS);
@@ -2345,7 +2311,7 @@ fn git_in(root: &Path, args: &[&str]) {
 /// any seed: a seed written under the identity the directory name implies would land in a stream
 /// the binary then never reads back.
 fn committed_config_project() -> tempfile::TempDir {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // The repo's own identity, so the commit below never depends on the machine's git config.
     git_in(root, &["config", "user.email", "periphery@example.invalid"]);
@@ -3019,7 +2985,7 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
 
     // Seeded BEFORE the mint, so the history is filed under the basename namespace exactly as a
     // pre-identity store's is. A fixture that minted first would prove nothing about the migration.
-    let legacy = project_identity(root);
+    let legacy = run_stream_identity(root);
     let backend = Store::open(event_log(root).to_str().unwrap()).expect("open the event log");
     seed_namespace(&backend, &legacy, rounds);
     drop(backend);
@@ -3037,7 +3003,7 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
     );
     assert_ne!(
         legacy,
-        project_identity(root),
+        run_stream_identity(root),
         "the mint must produce an identity distinct from the basename, or this fixture does not \
          reproduce the shape it exists for"
     );
@@ -3438,7 +3404,7 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     // A CLEAN LOG: one recording per replay key, which is what a log written since the ingest
     // dedup existed holds. The fixture differs from every other one in this file by exactly the
     // round count, so "clean" here means precisely "no key recorded twice".
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 1);
     let before = raw_rows(&event_log(root));
@@ -3516,7 +3482,7 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
 
     // THE OTHER DIRECTION: on a log that DOES hold duplication the clause is absent, so it reads
     // as a statement about this log rather than as boilerplate the command always prints.
-    let bloated = temp_project();
+    let bloated = temp_rigger_project();
     seed_project(bloated.path(), 4);
     let (out, err, ok) = run_rigger(bloated.path(), &["reset", "--derived"]);
     assert!(
@@ -3567,7 +3533,7 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     // THE CONTENDED RUN. The reader is parked BEFORE the binary starts and released only after it
     // exits, so the checkpoint is refused for the whole of the command's life. An open read
     // transaction from a second connection is exactly what a second rigger process holds.
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, ROUNDS);
     // ROOM TO RECLAIM. The rewrite runs over a file that is holding reclaimable free pages, and
@@ -3594,7 +3560,7 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     drop(reader);
 
     // THE CONTROL. A second project seeded identically, with nobody reading it.
-    let solo_dir = temp_project();
+    let solo_dir = temp_rigger_project();
     seed_project(solo_dir.path(), ROUNDS);
     plant_free_pages(&event_log(solo_dir.path()), 3_000);
     let (uncontended, err, ok) = run_rigger(solo_dir.path(), &["reset", "--derived"]);
@@ -3820,7 +3786,7 @@ fn a_prune_that_shed_nothing_still_reclaims_the_free_space_the_file_is_holding()
 
 #[test]
 fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // ONE recording per replay key - the clean log of section 18, differing from the duplicated
     // fixtures by exactly the round count.
@@ -3891,7 +3857,7 @@ fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
 
 #[test]
 fn the_command_reclaims_the_free_space_a_failed_reclamation_left_in_the_file() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // THE STATE A FAILED RECLAMATION LEAVES: the duplication is already gone (so this pass deletes
     // nothing) and the space it freed is still sitting in the file.
@@ -3971,7 +3937,7 @@ const WHY_A_DEDUPLICATED_LOG_STILL_SHEDS: [(&str, &str); 3] = [
 
 #[test]
 fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 4);
 
@@ -3992,7 +3958,7 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
 
     // THE OTHER DIRECTION, so the clause is a statement about THIS log rather than boilerplate:
     // the clean log does not carry it.
-    let clean = temp_project();
+    let clean = temp_rigger_project();
     seed_project(clean.path(), 1);
     let (clean_out, err, ok) = run_rigger(clean.path(), &["reset", "--derived"]);
     assert!(
@@ -4046,23 +4012,6 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
 // - no `-wal` still holding the frames the number already counted as reclaimed.
 // ---------------------------------------------------------------------------------------
 
-/// The byte count out of the report's measured-reclamation clause: `reclaimed <n> byte(s) on
-/// disk`.
-fn reported_reclaimed_bytes(out: &str) -> u64 {
-    let marker = "reclaimed ";
-    let at = out
-        .find(marker)
-        .unwrap_or_else(|| panic!("the report must carry a measured reclamation; got {out:?}"))
-        + marker.len();
-    let rest = &out[at..];
-    let end = rest
-        .find(" byte(s) on disk")
-        .unwrap_or_else(|| panic!("the reclamation must be reported in bytes; got {out:?}"));
-    rest[..end]
-        .parse()
-        .unwrap_or_else(|e| panic!("the reclamation must be a number ({e}); got {out:?}"))
-}
-
 /// Bytes of `path` on disk, or 0 when it does not exist - the `-wal` is deleted on a clean close.
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
@@ -4070,7 +4019,7 @@ fn file_len(path: &Path) -> u64 {
 
 #[test]
 fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 4);
     let db = event_log(root);
@@ -4100,7 +4049,8 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
 
     let pages_after = pragma_i64(&db, "page_count");
     let on_disk_after = file_len(&db) + file_len(&wal);
-    let reclaimed = reported_reclaimed_bytes(&out);
+    let reclaimed = reported_reclaimed_bytes(&out, "reclaimed ")
+        .unwrap_or_else(|| panic!("the report must carry a measured reclamation; got {out:?}"));
     assert!(
         pages_after < pages_before,
         "the compaction must actually shrink the log, or the figure below is a claim about \

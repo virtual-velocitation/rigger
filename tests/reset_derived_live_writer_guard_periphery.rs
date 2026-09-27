@@ -23,86 +23,15 @@ mod common;
 use common::git::run_git;
 
 use common::cli::run_rigger_envs;
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+use common::cli::seed_run_events;
+use common::cli::temp_store_project;
+use common::git::git_out;
 use rigger::registry::{self, Instance, StoreIdentity};
 use std::path::Path;
-use std::process::Command;
 
 // ---------------------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------------------
-
-/// A throwaway project: its own git repo (so `project_identity()`, which scopes the namespaced
-/// run stream, resolves to the directory's basename deterministically) with an already-seeded
-/// `.rigger/events.db` - standing in for the store a prior `rigger run`/`step` would have
-/// created, exactly as `tests/cli.rs`'s `seed_store` does. `require_store_dir` (which every
-/// courier, `reset` included, resolves through) refuses to fabricate a fresh store from an
-/// uninitialized `.rigger`, so a test that drives `reset` must establish one first.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    let rigger = dir.path().join(".rigger");
-    std::fs::create_dir_all(&rigger).expect("create .rigger");
-    std::fs::File::create(rigger.join("events.db")).expect("seed an empty events.db");
-    dir
-}
-
-/// The git top-level for `root`, resolved exactly as the product's own `git_repo_at` resolves it
-/// (`git -C <root> rev-parse --show-toplevel`) - the SAME string the product uses as the
-/// registry's `Instance.root` / the `registry_store_identity` input, so a test-written registry
-/// entry lands under the identical key the guard's own read filters on.
-fn git_toplevel(root: &Path) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .expect("git rev-parse --show-toplevel must succeed for a git-init'd temp project")
-}
-
-/// The project identity the binary resolves for `root` (the tracked `.rigger/project.id` at the
-/// git top-level when present, else that top-level's basename) - mirrors `project_identity_at`'s
-/// precedence so a seed appended under this identity lands in the exact stream the binary reads.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = git_toplevel(root);
-    let base = Path::new(&toplevel);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Seed run-lifecycle events directly into the namespaced run stream, standing in for the
-/// conductor minting them - mirrors `tests/cli.rs`'s `seed_run_events`.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
 
 /// The row count of the seeded event log, so a refused compaction can be proven to have pruned
 /// NOTHING - the guard may only refuse, never partially act.
@@ -143,7 +72,7 @@ fn assert_prunes(root: &Path, args: &[&str], envs: &[(&str, &str)], why: &str) {
 /// Seeds `events` (none leaves the store empty) into a fresh project and asserts
 /// `rigger <args>` compacts it.
 fn assert_seeded_reset_prunes(events: &[(&str, &str)], args: &[&str], why: &str) {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
     if !events.is_empty() {
         seed_run_events(root, events);
@@ -154,7 +83,7 @@ fn assert_seeded_reset_prunes(events: &[(&str, &str)], args: &[&str], why: &str)
 /// Seeds `events` into a fresh project and asserts `reset --derived` refuses with a message
 /// naming every one of `names`, pruning NOTHING - the guard may only refuse, never partially act.
 fn assert_seeded_derived_refused(events: &[(&str, &str)], names: &[&str], why: &str) {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
     seed_run_events(root, events);
     let before = row_count(root);
@@ -272,7 +201,7 @@ rigger::test_cases! {
 #[test]
 fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
     use fs2::FileExt;
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
 
     let lock_file = hold_step_lock(root);
@@ -309,9 +238,9 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
 #[test]
 fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_lock() {
     use fs2::FileExt;
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    // `git worktree add` needs a real commit to detach onto - `temp_project` only `git init`s
+    // `git worktree add` needs a real commit to detach onto - `temp_store_project` only `git init`s
     // (an unborn HEAD), so seed one first.
     for args in [
         &["config", "user.email", "t@example.com"][..],
@@ -422,9 +351,9 @@ rigger::test_cases! {
 /// binary's own exit code - exactly as the malformed-spawn-event case above proves for the first.
 #[test]
 fn reset_derived_fails_on_an_unreadable_step_lock_probe_and_prunes_nothing() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    // `temp_project` seeds an empty `events.db` FILE with no schema yet (the schema is created on
+    // `temp_store_project` seeds an empty `events.db` FILE with no schema yet (the schema is created on
     // the first real `Store::open`, as every other `row_count` caller below arranges via
     // `seed_run_events`) - an empty seed establishes it without recording any event.
     seed_run_events(root, &[]);
@@ -463,9 +392,9 @@ fn reset_derived_fails_on_an_unreadable_step_lock_probe_and_prunes_nothing() {
 /// in-process `rigger run`/`serve` may not have parked its first spawn yet).
 #[test]
 fn reset_derived_refuses_a_live_driver_registration_naming_it() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    let toplevel = git_toplevel(root);
+    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
 
     let (state_home, _entry) = seed_registry("proj", &toplevel, registry::now_ms());
 
@@ -488,7 +417,7 @@ fn reset_derived_refuses_a_live_driver_registration_naming_it() {
 /// guard is scoped to this store's exact identity, not "any instance is running somewhere".
 #[test]
 fn reset_derived_ignores_a_registration_for_a_different_store() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
 
     let (state_home, _entry) =
@@ -520,7 +449,7 @@ fn reset_derived_ignores_a_registration_for_a_different_store() {
 /// `refuse_derived_reset_if_live`'s own probe now filters staleness without ever deleting.
 #[test]
 fn reset_derived_never_deletes_a_stale_foreign_registry_entrys_file() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
 
     // Well past `DEFAULT_IDLE_MS`: the pre-fix `read_live` would have pruned this outright as
@@ -554,7 +483,7 @@ fn reset_derived_never_deletes_a_stale_foreign_registry_entrys_file() {
 #[test]
 fn reset_derived_force_live_compacts_despite_a_held_step_lock() {
     use fs2::FileExt;
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
 
     let lock_file = hold_step_lock(root);
@@ -575,8 +504,8 @@ fn reset_derived_force_live_compacts_despite_a_held_step_lock() {
 /// `reset --runs`.
 #[test]
 fn force_live_with_runs_alone_is_inert() {
-    let with_force = temp_project();
-    let plain = temp_project();
+    let with_force = temp_store_project();
+    let plain = temp_store_project();
 
     let (out_f, err_f, ok_f) =
         run_rigger_envs(with_force.path(), &["reset", "--runs", "--force-live"], &[]);
@@ -597,7 +526,7 @@ fn force_live_with_runs_alone_is_inert() {
 /// cancel the other's independent, already-safe work.
 #[test]
 fn runs_composed_with_a_refused_derived_still_completes_its_own_prune() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
     seed_run_events(
         root,
@@ -635,7 +564,7 @@ fn runs_composed_with_a_refused_derived_still_completes_its_own_prune() {
 /// `--force-live` never implies a mode of its own.
 #[test]
 fn reset_force_live_alone_is_refused_as_no_mode() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
 
     let (_out, err, ok) = run_rigger_envs(root, &["reset", "--force-live"], &[]);
@@ -651,7 +580,7 @@ fn reset_force_live_alone_is_refused_as_no_mode() {
 /// naming the flag, which a future edit could water down without this test noticing.
 #[test]
 fn the_derived_help_entry_documents_force_live_and_owns_the_risk() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
 
     let (out, err, ok) = run_rigger_envs(root, &["--help"], &[]);

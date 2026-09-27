@@ -92,6 +92,66 @@ pub fn get_raw(target: &str) -> Vec<u8> {
     raw
 }
 
+/// Start `serve` on a FRESH ephemeral loopback port - `whole_graph` behind the lazy whole-graph
+/// provider (`/api/graph` reads it), `poll_graph` behind the state-poll provider (every `/api/*`
+/// request rides it) - fetch `GET <path>` once, and return the raw HTTP response, or `None` on a
+/// genuine socket-level failure (a caller retries the whole handoff).
+///
+/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. That is
+/// load-bearing: releasing it first would leave the port free for the whole handoff window, so a
+/// sibling test's `bind(0)` in the same binary could be handed it; one `serve` then wins the
+/// re-bind and the loser's client CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture -
+/// a content failure no connect-error retry can see, reddening only on a loaded machine. Owning the
+/// port from `bind` through `serve_on` closes that window by construction.
+pub fn try_fetch_served(path: &str, whole_graph: Graph, poll_graph: Graph) -> Option<String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+    let addr = listener.local_addr().ok()?;
+
+    let graph_provider = move |_instance: Option<&str>| -> Graph { whole_graph.clone() };
+    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
+        Ok((Vec::new(), poll_graph.clone(), Vec::new(), HashMap::new()))
+    };
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
+    let instances_provider = Vec::new;
+    std::thread::spawn(move || {
+        let _ = dash::serve_on(
+            listener,
+            provider,
+            graph_provider,
+            calls_provider,
+            instances_provider,
+            3,
+            "rigger-run",
+            "origin/main",
+        );
+    });
+
+    // The port is already bound and listening, so this connect succeeds on its first pass; the
+    // budget survives only as a guard against a scheduler stall between the bind and the first
+    // accept.
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    let mut client = loop {
+        match TcpStream::connect(addr) {
+            Ok(s) => break s,
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    };
+
+    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    if client.write_all(req.as_bytes()).is_err() {
+        return None;
+    }
+    let mut resp = String::new();
+    match client.read_to_string(&mut resp) {
+        Ok(_) => Some(resp),
+        Err(_) => None,
+    }
+}
+
 /// A raw HTTP response split into its header block and its body bytes.
 pub fn split_response(raw: &[u8]) -> (&str, &[u8]) {
     let sep = b"\r\n\r\n";

@@ -87,36 +87,14 @@
 mod common;
 
 use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::temp_git_project_with_commit;
+use common::cli::write_reviewless_git_unit_workflow;
 use common::git::git_ok;
 use common::git::init_repo;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git project with a real commit, so `rigger step`'s run-branch anchoring (a base
-/// ref like `HEAD` must resolve) works. Mirrors `tests/cli.rs`'s identical helper.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
 
 /// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success.
 fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
@@ -129,33 +107,6 @@ fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
-}
-
-/// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s identical
-/// `run_stream_identity` helper (a repo with no `.rigger/project.id` falls through to the git
-/// toplevel's own basename).
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
 }
 
 /// Append raw events built through the crate's PUBLIC `rigger::spawn`/`rigger::eventstore` API
@@ -178,37 +129,6 @@ fn seed_events(root: &Path, events: Vec<rigger::eventstore::Event>) {
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[event])
             .unwrap();
     }
-}
-
-/// A single reviewless git-backed unit stage - mirrors `tests/cli.rs`'s identical
-/// `write_reviewless_git_unit_workflow`. Its only purpose here is to give `rigger step` a
-/// real workflow to bootstrap a run (and the `rigger-run` branch) against; the units this file
-/// actually tests (`fenced`, `hung`) are manufactured directly as foreign worktrees/events,
-/// exactly as `tests/cli.rs`'s `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_
-/// reclaims_a_dead_ancestor_leftover` already does for its own "leftover-orphan" branch.
-fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: merge
-"#,
-    )
-    .unwrap();
 }
 
 /// Spec 83, criterion 1 (THE FENCE), driven at the real binary boundary across THREE separate

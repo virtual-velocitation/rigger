@@ -75,77 +75,66 @@ fn run_phase_of(id: &str, unit: &str) -> Option<String> {
     }
 }
 
-/// The two run-wide meta-stages resolve to `Plan` by UNIT, regardless of the role the id
-/// carries - the exact behavior this criterion introduces to fix the split-across-Build/Review
-/// bug the planner (role `implementer`) and the critique gate (roles `adversary`/`adjudicator`)
-/// would otherwise cause under a role-first mapping. Every id here is a real shape
-/// `spawn::spawn_id` mints (`{unit}/{role}#{attempt}`); a structural pin over source text
-/// cannot tell a role-first `phaseOf` (which would mis-route the adversary/adjudicator rows to
-/// Review) from the correct unit-first one - only running it, with a review-tier role on a
-/// meta-stage unit, distinguishes them.
-#[test]
-fn plan_and_plan_critique_resolve_to_plan_regardless_of_role() {
-    for (unit, id) in [
-        ("plan", "plan/implementer#0"),
-        ("plan-critique", "plan-critique/adversary#0"),
-        ("plan-critique", "plan-critique/adjudicator#0"),
-    ] {
+/// The real `phaseOf` resolves every `(unit, id)` of `cases` to `phase` (or `node` is
+/// unavailable - graceful absence).
+fn phase_of_resolves(phase: &str, cases: &[(&str, &str)]) {
+    for (unit, id) in cases {
         let Some(out) = run_phase_of(id, unit) else {
             return; // node unavailable; graceful absence.
         };
         assert_eq!(
-            out, "Plan",
-            "phaseOf({{unit: {unit:?}, id: {id:?}}}) must resolve to 'Plan' - the run-wide \
-             meta-stage special case must win over the id's own role"
+            out, phase,
+            "phaseOf({{unit: {unit:?}, id: {id:?}}}) must resolve to {phase:?}"
         );
     }
 }
 
-/// The three review-tier roles - `adversary`, `adjudicator`, and `lens:*` by PREFIX (not an
-/// exact-match list a new lens agent id would fall through) - resolve to `Review` on an
-/// ordinary per-criterion unit. `lens:sdet` and the doctest respawn shape
-/// `u1/adjudicator#0~retry2` are the EXACT strings `src/spawn.rs`'s own doctests pin for
-/// `spawn_id`/`spawn_role`, so this also proves the `~retry{n}` suffix `roleOf` trims is
-/// trimmed correctly end to end, not merely that the substring `adjudicator` appears somewhere
-/// in the id.
-#[test]
-fn review_tier_roles_resolve_to_review() {
-    for (unit, id) in [
-        ("u1", "u1/adversary#0"),
-        ("u1", "u1/adjudicator#0~retry2"),
-        ("u1", "u1/lens:sdet#1"),
-        ("u1", "u1/lens:architecture-reviewer#0"),
-    ] {
-        let Some(out) = run_phase_of(id, unit) else {
-            return; // node unavailable; graceful absence.
-        };
-        assert_eq!(
-            out, "Review",
-            "phaseOf({{unit: {unit:?}, id: {id:?}}}) must resolve to 'Review'"
+rigger::test_cases! {
+    /// The two run-wide meta-stages resolve to `Plan` by UNIT, regardless of the role the id
+    /// carries - the exact behavior this criterion introduces to fix the split-across-Build/Review
+    /// bug the planner (role `implementer`) and the critique gate (roles `adversary`/`adjudicator`)
+    /// would otherwise cause under a role-first mapping. Every id here is a real shape
+    /// `spawn::spawn_id` mints (`{unit}/{role}#{attempt}`); a structural pin over source text
+    /// cannot tell a role-first `phaseOf` (which would mis-route the adversary/adjudicator rows to
+    /// Review) from the correct unit-first one - only running it, with a review-tier role on a
+    /// meta-stage unit, distinguishes them.
+    plan_and_plan_critique_resolve_to_plan_regardless_of_role: phase_of_resolves(
+        "Plan",
+        &[
+            ("plan", "plan/implementer#0"),
+            ("plan-critique", "plan-critique/adversary#0"),
+            ("plan-critique", "plan-critique/adjudicator#0"),
+        ],
+    );
+    /// The three review-tier roles - `adversary`, `adjudicator`, and `lens:*` by PREFIX (not an
+    /// exact-match list a new lens agent id would fall through) - resolve to `Review` on an
+    /// ordinary per-criterion unit. `lens:sdet` and the doctest respawn shape
+    /// `u1/adjudicator#0~retry2` are the EXACT strings `src/spawn.rs`'s own doctests pin for
+    /// `spawn_id`/`spawn_role`, so this also proves the `~retry{n}` suffix `roleOf` trims is
+    /// trimmed correctly end to end, not merely that the substring `adjudicator` appears somewhere
+    /// in the id.
+    review_tier_roles_resolve_to_review: phase_of_resolves(
+        "Review",
+        &[
+            ("u1", "u1/adversary#0"),
+            ("u1", "u1/adjudicator#0~retry2"),
+            ("u1", "u1/lens:sdet#1"),
+            ("u1", "u1/lens:architecture-reviewer#0"),
+        ],
+    );
+    /// `implementer`, and any role this mapping does not recognize (a future role added on the
+    /// Rust side with no matching JS branch yet, and the degenerate case of an id carrying no `/`
+    /// at all, which `roleOf` reads as an empty role) all fall to the fail-visible `Build` default -
+    /// proven by actually calling `phaseOf`, not by checking that the literal `'Build'` merely
+    /// appears in the source (which the implementer's own structural test already does, and which
+    /// would stay green even if the branch above it accidentally caught these roles first).
+    implementer_and_any_unrecognized_role_resolve_to_the_fail_visible_build_default:
+        phase_of_resolves(
+            "Build",
+            &[
+                ("u1", "u1/implementer#0"),
+                ("u1", "u1/some-future-role#0"),
+                ("u1", "no-slash-in-this-id"),
+            ],
         );
-    }
-}
-
-/// `implementer`, and any role this mapping does not recognize (a future role added on the
-/// Rust side with no matching JS branch yet, and the degenerate case of an id carrying no `/`
-/// at all, which `roleOf` reads as an empty role) all fall to the fail-visible `Build` default -
-/// proven by actually calling `phaseOf`, not by checking that the literal `'Build'` merely
-/// appears in the source (which the implementer's own structural test already does, and which
-/// would stay green even if the branch above it accidentally caught these roles first).
-#[test]
-fn implementer_and_any_unrecognized_role_resolve_to_the_fail_visible_build_default() {
-    for (unit, id) in [
-        ("u1", "u1/implementer#0"),
-        ("u1", "u1/some-future-role#0"),
-        ("u1", "no-slash-in-this-id"),
-    ] {
-        let Some(out) = run_phase_of(id, unit) else {
-            return; // node unavailable; graceful absence.
-        };
-        assert_eq!(
-            out, "Build",
-            "phaseOf({{unit: {unit:?}, id: {id:?}}}) must fall to the fail-visible 'Build' \
-             default, not drop the row (undefined) or misroute it to 'Review'"
-        );
-    }
 }

@@ -27,13 +27,13 @@ use std::collections::BTreeSet;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED, TYPE_CODE_ENTITY_EXTRACTED,
+    KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED, TYPE_CODE_ENTITY_EXTRACTED,
     TYPE_COMMUNITY_ASSIGNED, TYPE_EDGE_INFERRED,
 };
 
 #[path = "common/graph_fold.rs"]
 mod graph_fold;
-use graph_fold::{apply_json, live_targets};
+use graph_fold::{apply_json, community_snapshot, live_targets};
 
 /// Fold one `CodeEntityExtracted` (spec 29a): a definition, folding its file node, the
 /// `<file>::<name>` entity node (carrying a `name` attr - the label source), and their `CONTAINS`
@@ -56,26 +56,6 @@ fn call(p: &Projector, pos: u64, file: &str, callee: &str, caller: &str) {
         TYPE_EDGE_INFERRED,
         serde_json::json!({ "file": file, "name": callee, "caller": caller, "lang": "rust" }),
     );
-}
-
-/// A deterministic snapshot of the whole community layer read over the PUBLIC surface: every
-/// `KIND_COMMUNITY` node (id, kind, ordered attrs) and every LIVE `IN_COMMUNITY` edge (from, to),
-/// sorted. Two derivations of the same assignment SET must produce byte-identical snapshots.
-fn community_snapshot(g: &Graph) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
-    for n in &g.nodes {
-        if n.kind == KIND_COMMUNITY {
-            // `attrs` is a `BTreeMap`, so its Debug is key-ordered and byte-stable.
-            rows.push(format!("node\t{}\t{}\t{:?}", n.id, n.kind, n.attrs));
-        }
-    }
-    for e in &g.edges {
-        if e.rel == REL_IN_COMMUNITY {
-            rows.push(format!("edge\t{}\t{}", e.from, e.to));
-        }
-    }
-    rows.sort();
-    rows
 }
 
 /// The canonical spec-53 coupling graph: an `apply_damage` hub that CALLS three symbols (degree-4

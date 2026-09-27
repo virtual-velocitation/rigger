@@ -105,17 +105,9 @@
 
 mod common;
 
-use std::path::Path;
-use std::process::Command;
+use common::cli::temp_project;
 
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use std::path::Path;
 
 fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     let out = common::rigger_courier()
@@ -137,396 +129,262 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 const WORKFLOW_WITH_UNKNOWN_KEY: &str =
     "defaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n";
 
-#[test]
-fn rigger_validate_and_config_store_load_name_the_same_dotted_path_for_an_unknown_key() {
+/// The surface pair that must fail on a fixture with the same text: the CLI command and the
+/// library call it resolves through.
+#[derive(Clone, Copy)]
+enum Surface {
+    /// `rigger validate` over [`rigger::config_store::load`].
+    Validate,
+    /// `rigger status` over [`rigger::config_store::read_store_config`] (store selection
+    /// resolves before any command requires an existing `events.db`).
+    Status,
+}
+
+/// A fresh `rigger init`ed project whose `.rigger/<rel>` is `content`, failing on both
+/// halves of `surface`: returns `(library error, CLI stderr)` after asserting the CLI fails
+/// and carries the library's exact text (spec 102 criterion 3: "the same text", not merely
+/// each containing a match for the same substring pattern independently).
+fn both_fail(surface: Surface, rel: &str, content: &str) -> (String, String) {
     let dir = temp_project();
     let root = dir.path();
 
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
 
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        WORKFLOW_WITH_UNKNOWN_KEY,
-    )
-    .expect("overwrite workflow.yml with the unknown-key fixture");
+    std::fs::write(root.join(".rigger").join(rel), content)
+        .unwrap_or_else(|e| panic!("write the .rigger/{rel} fixture: {e}"));
 
-    // The library call `rigger validate` itself resolves through.
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("a workflow.yml carrying an unrecognized key must fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("defaults.max_parallel_unitz: unknown key"),
-        "config_store::load must name the dotted path of the unrecognized key: {lib_err}"
-    );
+    let (lib_err, command) = match surface {
+        Surface::Validate => (
+            rigger::config_store::load(root.to_str().unwrap())
+                .expect_err("the fixture must fail to load")
+                .to_string(),
+            "validate",
+        ),
+        Surface::Status => (
+            rigger::config_store::read_store_config(&root.join(".rigger"))
+                .expect_err("the fixture's store: block must fail to load")
+                .to_string(),
+            "status",
+        ),
+    };
 
-    // The CLI surface, through the compiled binary.
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on an unrecognized config key"
-    );
-    assert!(
-        cli_err.contains("defaults.max_parallel_unitz: unknown key"),
-        "rigger validate's stderr must name the same dotted path; stderr:\n{cli_err}"
-    );
-
-    // Both surfaces must report the identical text (spec 102 criterion 3: "the same text"),
-    // not merely each contain a match for the same substring pattern independently.
+    let (_out, cli_err, cli_ok) = run_rigger(root, &[command]);
+    assert!(!cli_ok, "rigger {command} must fail on the fixture");
     assert!(
         cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
+        "rigger {command} and its library call must fail with the SAME text: \
          lib=\"{lib_err}\" cli=\"{cli_err}\""
+    );
+    (lib_err, cli_err)
+}
+
+/// Both halves of `surface` fail on `workflow` naming the unknown key's dotted path `named`.
+fn both_name(surface: Surface, workflow: &str, named: &str) {
+    let (lib_err, cli_err) = both_fail(surface, "workflow.yml", workflow);
+    assert!(
+        lib_err.contains(named),
+        "the library call must name the dotted path {named:?}: {lib_err}"
+    );
+    assert!(
+        cli_err.contains(named),
+        "the CLI's stderr must name the same dotted path {named:?}; stderr:\n{cli_err}"
     );
 }
 
-/// `read_store_config`'s own `dotted_unknown_key` wiring (a SEPARATE call site from
-/// `load_workflow`'s, over the `StoreConfig` struct rather than `Workflow`/`Defaults`) -
-/// unreached by any other test in this tree. `rigger status` drives it because store
-/// selection (§48 rung 4, the committed `store:` block) resolves before any command
-/// requires an existing `events.db`, so this needs no run bootstrapped first.
-#[test]
-fn rigger_status_and_read_store_config_name_the_same_dotted_path_for_an_unknown_store_key() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "store:\n  backend: sqlite\n  urll: bogus\n",
-    )
-    .expect("overwrite workflow.yml with the unknown-key fixture");
-
-    // The library call `read_store_config` itself resolves through.
-    let lib_err = rigger::config_store::read_store_config(&root.join(".rigger"))
-        .expect_err("a store: block carrying an unrecognized key must fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("store.urll: unknown key"),
-        "read_store_config must name the dotted path of the unrecognized key: {lib_err}"
-    );
-
-    // The CLI surface, through the compiled binary.
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["status"]);
-    assert!(
-        !cli_ok,
-        "rigger status must fail on an unrecognized store: key"
-    );
-    assert!(
-        cli_err.contains("store.urll: unknown key"),
-        "rigger status's stderr must name the same dotted path; stderr:\n{cli_err}"
-    );
-
-    // Both surfaces must report the identical text, exactly as the load_workflow case above
-    // proves for its own two call sites.
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger status and read_store_config must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
-    );
-}
-
-/// The adjudicator rejected the first round on two adversary-found edge cases in
-/// `dotted_unknown_key`, both fixed purely inside that pure function and pinned there by
-/// the implementer's own unit tests (`src/config_store.rs`) against synthetic fixture
-/// structs unrelated to the real schema. Neither edge case had ever been driven through
-/// the REAL `Workflow`/`Defaults` schema or the compiled binary - this proves the fix
-/// survives the actual CLI boundary, not just the synthetic pure-function case the unit
-/// tests constructed.
-///
-/// A genuine type mismatch on a real config field (`max_retries: u32`) whose invalid
-/// string VALUE happens to echo the "unknown field `" marker wording must still surface
-/// serde_yaml's real type-mismatch message unchanged - never be corrupted into a
-/// fabricated "unknown key" report that hides the real defect.
-#[test]
-fn rigger_validate_passes_through_a_type_mismatch_whose_value_echoes_the_unknown_field_marker() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "defaults:\n  max_retries: \"unknown field `evil`, expected `max_retries`\"\n",
-    )
-    .expect("overwrite workflow.yml with the embedded-marker fixture");
-
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("a wrongly-typed max_retries must fail to load")
-        .to_string();
+/// `rigger validate` and `config_store::load` both fail on `.rigger/<rel>` = `content` with a
+/// genuine type mismatch, never misreported as an unknown key, carrying every `kept` text.
+fn both_keep_a_type_mismatch(rel: &str, content: &str, kept: &[&str]) {
+    let (lib_err, cli_err) = both_fail(Surface::Validate, rel, content);
     assert!(
         !lib_err.contains("unknown key"),
         "a type mismatch must never be misreported as an unknown key: {lib_err}"
     );
-    assert!(
-        lib_err.contains("invalid type"),
-        "config_store::load must surface serde_yaml's real type-mismatch message: {lib_err}"
-    );
-
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on a wrongly-typed field"
-    );
+    for text in kept {
+        assert!(
+            lib_err.contains(text),
+            "config_store::load must keep {text:?} in the type-mismatch message: {lib_err}"
+        );
+    }
     assert!(
         !cli_err.contains("unknown key"),
-        "rigger validate's stderr must never misreport a type mismatch as an unknown key; stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
+        "rigger validate's stderr must never misreport a type mismatch as an unknown key; \
+         stderr:\n{cli_err}"
     );
 }
 
-/// The second adversary-found edge case: an unknown key whose own NAME contains a
-/// backtick must be named in full, not silently truncated at the embedded backtick.
-#[test]
-fn rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_a_backtick() {
-    let dir = temp_project();
-    let root = dir.path();
+rigger::test_cases! {
 
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    rigger_validate_and_config_store_load_name_the_same_dotted_path_for_an_unknown_key:
+        both_name(
+            Surface::Validate,
+            WORKFLOW_WITH_UNKNOWN_KEY,
+            "defaults.max_parallel_unitz: unknown key",
+        );
 
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "defaults:\n  weird`field: 1\n",
-    )
-    .expect("overwrite workflow.yml with the backtick-key fixture");
+    /// `read_store_config`'s own `dotted_unknown_key` wiring (a SEPARATE call site from
+    /// `load_workflow`'s, over the `StoreConfig` struct rather than `Workflow`/`Defaults`) -
+    /// unreached by any other test in this tree. `rigger status` drives it because store
+    /// selection (§48 rung 4, the committed `store:` block) resolves before any command
+    /// requires an existing `events.db`, so this needs no run bootstrapped first.
+    rigger_status_and_read_store_config_name_the_same_dotted_path_for_an_unknown_store_key:
+        both_name(
+            Surface::Status,
+            "store:\n  backend: sqlite\n  urll: bogus\n",
+            "store.urll: unknown key",
+        );
 
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("an unknown key containing a backtick must still fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("defaults.weird`field: unknown key"),
-        "config_store::load must name the FULL field, not truncate at the embedded backtick: {lib_err}"
-    );
+    /// The adjudicator rejected the first round on two adversary-found edge cases in
+    /// `dotted_unknown_key`, both fixed purely inside that pure function and pinned there by
+    /// the implementer's own unit tests (`src/config_store.rs`) against synthetic fixture
+    /// structs unrelated to the real schema. Neither edge case had ever been driven through
+    /// the REAL `Workflow`/`Defaults` schema or the compiled binary - this proves the fix
+    /// survives the actual CLI boundary, not just the synthetic pure-function case the unit
+    /// tests constructed.
+    ///
+    /// A genuine type mismatch on a real config field (`max_retries: u32`) whose invalid
+    /// string VALUE happens to echo the "unknown field `" marker wording must still surface
+    /// serde_yaml's real type-mismatch message unchanged - never be corrupted into a
+    /// fabricated "unknown key" report that hides the real defect.
+    rigger_validate_passes_through_a_type_mismatch_whose_value_echoes_the_unknown_field_marker:
+        both_keep_a_type_mismatch(
+            "workflow.yml",
+            "defaults:\n  max_retries: \"unknown field `evil`, expected `max_retries`\"\n",
+            &["invalid type"],
+        );
 
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the backtick-bearing unknown key"
-    );
-    assert!(
-        cli_err.contains("defaults.weird`field: unknown key"),
-        "rigger validate's stderr must name the same full field; stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
-    );
-}
+    /// The second adversary-found edge case: an unknown key whose own NAME contains a
+    /// backtick must be named in full, not silently truncated at the embedded backtick.
+    rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_a_backtick:
+        both_name(
+            Surface::Validate,
+            "defaults:\n  weird`field: 1\n",
+            "defaults.weird`field: unknown key",
+        );
 
-/// Round 2's first adversary-found edge case: an unknown key whose own NAME contains the
-/// exact `"`, "` run `dotted_unknown_key` anchors the field terminator on (round 1 fixed
-/// truncation at a bare backtick; a field name echoing the FULL terminator text still
-/// truncated a first-occurrence search). `defaults:` has more than a handful of known
-/// fields, so the real "expected one of `a`, `b`, ..." trailer this produces itself
-/// contains several more `"`, "` runs beyond the crafted field name's own - proving the
-/// fix picks the true (rightmost) terminator through a real multi-field expected-list,
-/// not just the single-item synthetic list the implementer's own unit test constructs.
-#[test]
-fn rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_the_terminator_run() {
-    let dir = temp_project();
-    let root = dir.path();
+    /// Round 2's first adversary-found edge case: an unknown key whose own NAME contains the
+    /// exact `"`, "` run `dotted_unknown_key` anchors the field terminator on (round 1 fixed
+    /// truncation at a bare backtick; a field name echoing the FULL terminator text still
+    /// truncated a first-occurrence search). `defaults:` has more than a handful of known
+    /// fields, so the real "expected one of `a`, `b`, ..." trailer this produces itself
+    /// contains several more `"`, "` runs beyond the crafted field name's own - proving the
+    /// fix picks the true (rightmost) terminator through a real multi-field expected-list,
+    /// not just the single-item synthetic list the implementer's own unit test constructs.
+    rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_the_terminator_run:
+        both_name(
+            Surface::Validate,
+            "defaults:\n  \"weird`, field\": 1\n",
+            "defaults.weird`, field: unknown key",
+        );
 
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    /// Round 2's second adversary-found edge case: a nested path segment sourced from a real
+    /// YAML MAP KEY - a `stages:` name, arbitrary operator text unlike a plain struct field -
+    /// that embeds its own `": "`, the exact text the path/marker boundary search anchors on.
+    /// Drives the real `Workflow.stages: BTreeMap<String, Stage>` production seam (not the
+    /// synthetic `WithStages`/`Stage` fixture the implementer's own unit test constructs) end
+    /// to end through `rigger validate`, so the recomposed dotted path - `stages` joined to
+    /// the colon-space-bearing stage name joined to the unknown field - is proven at the real
+    /// CLI boundary, not merely against a local struct.
+    rigger_validate_recomposes_a_stage_path_through_a_stage_name_containing_its_own_colon_space:
+        both_name(
+            Surface::Validate,
+            "stages:\n  \"foo: bar\":\n    unknown_stage_field: 1\n",
+            "stages.foo: bar.unknown_stage_field: unknown key",
+        );
 
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "defaults:\n  \"weird`, field\": 1\n",
-    )
-    .expect("overwrite workflow.yml with the terminator-embedded-key fixture");
+    /// Spec 102's Design (amended at rigger-run@3df56f8) requires the dotted path come from a
+    /// STRUCTURAL tracker: "it is never recovered by searching the rendered error text, because
+    /// a key or a value can echo any delimiter the search would anchor on and the recovered
+    /// message is then wrong." Every earlier round was still a string search - round 3
+    /// (`addc1d0`) improved the anchor (a marker position must be immediately preceded by
+    /// `": "`), but when a crafted key made TWO such positions exist, it declined to guess and
+    /// returned the raw, un-reformatted message rather than a wrong one; the criterion itself -
+    /// "an error naming that dotted path" - was unmet for this input under that round. An
+    /// unknown key literally named `` z: unknown field `y `` under `defaults:` is real
+    /// operator-writable YAML text (quoted), not a contrived internal fixture, and it makes a
+    /// string scan see its own real path/marker boundary AND a second, embedded one inside the
+    /// key's own name - genuinely ambiguous by construction to anything that searches rendered
+    /// text. `config::parse_yaml_naming_unknown_keys` (commit 9bfb4a9, wrapping
+    /// `serde_path_to_error`) is immune: its path comes from the actual key the deserializer
+    /// read, never from scanning what it rendered afterward, so this is no longer ambiguous at
+    /// all. This test now PINS that fix at the real CLI boundary - a regression back to any
+    /// text-search reformatter would fail it again.
+    rigger_validate_names_the_dotted_path_even_when_the_unknown_key_echoes_the_marker_boundary:
+        both_name(
+            Surface::Validate,
+            "defaults:\n  \"z: unknown field `y\": 1\n",
+            "defaults.z: unknown field `y: unknown key",
+        );
 
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("an unknown key embedding the terminator run must still fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("defaults.weird`, field: unknown key"),
-        "config_store::load must name the FULL field, not truncate at the embedded \
-         terminator run: {lib_err}"
-    );
+    /// The other half of the same Design clause: "every other parse error is rendered with the
+    /// same tracked path prefix and its message otherwise unchanged." `dotted_unknown_key`'s
+    /// passthrough branch (the error is not an unknown-field violation at all) does nothing to
+    /// the message - it relies entirely on `serde_yaml` already having prefixed its own tracked
+    /// path onto a nested violation. This pins that today, at two levels of real nesting
+    /// (`stages.<name>.<field>`, not the one-level `defaults.<field>` the existing echoed-marker
+    /// passthrough test above already covers), so a future structural-tracker rewrite that
+    /// replaces the whole function is proven not to have dropped this already-working case.
+    rigger_validate_keeps_the_nested_dotted_path_on_a_genuine_type_mismatch:
+        both_keep_a_type_mismatch(
+            "workflow.yml",
+            "stages:\n  foo:\n    partition: [1, 2]\n",
+            &["stages.foo.partition", "invalid type"],
+        );
 
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the terminator-embedding unknown key"
-    );
-    assert!(
-        cli_err.contains("defaults.weird`, field: unknown key"),
-        "rigger validate's stderr must name the same full field; stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
-    );
-}
+    /// A FIFTH gap, from a fourth remediation round: the adjudicator rejected round 4's
+    /// structural-tracker rewrite itself on two path/prefix-composition bugs, both inside
+    /// `parse_yaml_naming_unknown_keys`'s own recomposition of `e.path()`'s segments, never
+    /// pinned through the real `Workflow` schema or the compiled binary - only against
+    /// synthetic fixture structs in `src/config_store.rs`.
+    ///
+    /// `defaults.failure_rules: Vec<FailureRuleDef>` is real, PRE-EXISTING production schema
+    /// (spec 10 unit 2, untouched by this diff) - an unknown key inside one of its elements is
+    /// an ordinary typo, no crafted input at all. Round 4's `parent` computation joined
+    /// segments with an unconditional "." that put a separator before the `[N]` sequence
+    /// index; `serde_yaml`'s own rendered message never does, so the classification's
+    /// `starts_with` check silently missed a GENUINE unknown-key violation and fell through to
+    /// the raw, un-reformatted message - criterion 3 ("AN UNKNOWN KEY IS NAMED ... at every
+    /// config level") unmet for any Vec-nested field, through no fault of the operator's input.
+    rigger_validate_names_the_dotted_path_for_an_unknown_key_inside_a_vec_element:
+        both_name(
+            Surface::Validate,
+            "defaults:\n  failure_rules:\n    - {}\n    - bogus_field: 1\n",
+            "defaults.failure_rules[1].bogus_field: unknown key",
+        );
 
-/// Round 2's second adversary-found edge case: a nested path segment sourced from a real
-/// YAML MAP KEY - a `stages:` name, arbitrary operator text unlike a plain struct field -
-/// that embeds its own `": "`, the exact text the path/marker boundary search anchors on.
-/// Drives the real `Workflow.stages: BTreeMap<String, Stage>` production seam (not the
-/// synthetic `WithStages`/`Stage` fixture the implementer's own unit test constructs) end
-/// to end through `rigger validate`, so the recomposed dotted path - `stages` joined to
-/// the colon-space-bearing stage name joined to the unknown field - is proven at the real
-/// CLI boundary, not merely against a local struct.
-#[test]
-fn rigger_validate_recomposes_a_stage_path_through_a_stage_name_containing_its_own_colon_space() {
-    let dir = temp_project();
-    let root = dir.path();
+    /// The round-4 adjudicator's second path-composition finding: a `stages:` name (arbitrary
+    /// operator-writable YAML text, already legal today - no character restriction anywhere in
+    /// `config_store::validate`) containing its own literal "." recomposed, under round 4's
+    /// unescaped join, into a dotted path structurally indistinguishable from a stage "foo"
+    /// genuinely nested under a substructure "bar" - an operator reading the message could not
+    /// tell which stage was actually wrong. This proves the fix's escaping through the real
+    /// `Workflow.stages: BTreeMap<String, Stage>` production seam and the compiled binary, not
+    /// just the synthetic fixture structs the implementer's own unit test constructs.
+    rigger_validate_escapes_a_literal_dot_inside_a_stage_name:
+        both_name(
+            Surface::Validate,
+            "stages:\n  \"foo.bar\":\n    unknown_stage_field: 1\n",
+            "stages.foo\\.bar.unknown_stage_field: unknown key",
+        );
 
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "stages:\n  \"foo: bar\":\n    unknown_stage_field: 1\n",
-    )
-    .expect("overwrite workflow.yml with the colon-space-stage-name fixture");
-
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("a stage name embedding its own colon-space must still fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("stages.foo: bar.unknown_stage_field: unknown key"),
-        "config_store::load must recompose the full path through the embedded colon-space, \
-         not split at it: {lib_err}"
-    );
-
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the unrecognized stage field"
-    );
-    assert!(
-        cli_err.contains("stages.foo: bar.unknown_stage_field: unknown key"),
-        "rigger validate's stderr must name the same recomposed path; stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
-    );
-}
-
-/// Spec 102's Design (amended at rigger-run@3df56f8) requires the dotted path come from a
-/// STRUCTURAL tracker: "it is never recovered by searching the rendered error text, because
-/// a key or a value can echo any delimiter the search would anchor on and the recovered
-/// message is then wrong." Every earlier round was still a string search - round 3
-/// (`addc1d0`) improved the anchor (a marker position must be immediately preceded by
-/// `": "`), but when a crafted key made TWO such positions exist, it declined to guess and
-/// returned the raw, un-reformatted message rather than a wrong one; the criterion itself -
-/// "an error naming that dotted path" - was unmet for this input under that round. An
-/// unknown key literally named `` z: unknown field `y `` under `defaults:` is real
-/// operator-writable YAML text (quoted), not a contrived internal fixture, and it makes a
-/// string scan see its own real path/marker boundary AND a second, embedded one inside the
-/// key's own name - genuinely ambiguous by construction to anything that searches rendered
-/// text. `config::parse_yaml_naming_unknown_keys` (commit 9bfb4a9, wrapping
-/// `serde_path_to_error`) is immune: its path comes from the actual key the deserializer
-/// read, never from scanning what it rendered afterward, so this is no longer ambiguous at
-/// all. This test now PINS that fix at the real CLI boundary - a regression back to any
-/// text-search reformatter would fail it again.
-#[test]
-fn rigger_validate_names_the_dotted_path_even_when_the_unknown_key_echoes_the_marker_boundary() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "defaults:\n  \"z: unknown field `y\": 1\n",
-    )
-    .expect("overwrite workflow.yml with the boundary-echoing-key fixture");
-
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("an unknown key echoing the marker boundary must still fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("defaults.z: unknown field `y: unknown key"),
-        "config_store::load must still name the dotted path of the unrecognized key even \
-         when the key's own name echoes the path/marker boundary the reformatter scans for \
-         - a string search over untrusted content cannot disambiguate this, only a \
-         structural tracker (serde_path_to_error) can: {lib_err}"
-    );
-
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the boundary-echoing unknown key"
-    );
-    assert!(
-        cli_err.contains("defaults.z: unknown field `y: unknown key"),
-        "rigger validate's stderr must name the same dotted path; stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
-    );
-}
-
-/// The other half of the same Design clause: "every other parse error is rendered with the
-/// same tracked path prefix and its message otherwise unchanged." `dotted_unknown_key`'s
-/// passthrough branch (the error is not an unknown-field violation at all) does nothing to
-/// the message - it relies entirely on `serde_yaml` already having prefixed its own tracked
-/// path onto a nested violation. This pins that today, at two levels of real nesting
-/// (`stages.<name>.<field>`, not the one-level `defaults.<field>` the existing echoed-marker
-/// passthrough test above already covers), so a future structural-tracker rewrite that
-/// replaces the whole function is proven not to have dropped this already-working case.
-#[test]
-fn rigger_validate_keeps_the_nested_dotted_path_on_a_genuine_type_mismatch() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "stages:\n  foo:\n    partition: [1, 2]\n",
-    )
-    .expect("overwrite workflow.yml with the nested-type-mismatch fixture");
-
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("a wrongly-typed nested field must fail to load")
-        .to_string();
-    assert!(
-        !lib_err.contains("unknown key"),
-        "a type mismatch must never be misreported as an unknown key: {lib_err}"
-    );
-    assert!(
-        lib_err.contains("stages.foo.partition"),
-        "a genuinely nested type mismatch must keep its two-level dotted path prefix, not \
-         just the bare field or the bare stage: {lib_err}"
-    );
-    assert!(
-        lib_err.contains("invalid type"),
-        "config_store::load must surface serde_yaml's real type-mismatch message: {lib_err}"
-    );
-
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the wrongly-typed nested field"
-    );
-    assert!(
-        cli_err.contains("stages.foo.partition"),
-        "rigger validate's stderr must keep the same nested dotted path; stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
-    );
+    /// A SIXTH gap, from the same round-5 fix: `render_path_segments`'s `escape_keys` mode
+    /// escapes a literal "\" inside a map key the same way it escapes a literal "." - both are
+    /// documented as escaped (src/config.rs, `render_path_segments`'s doc comment), but only the
+    /// "." branch had a test anywhere (unit or periphery) before this one. A stage name
+    /// containing its own literal backslash is exactly as legal and operator-producible as one
+    /// containing a dot (no character restriction anywhere in `config_store::validate`), so this
+    /// proves the fix's other escape branch through the real `Workflow.stages:
+    /// BTreeMap<String, Stage>` production seam and the compiled binary, matching the sibling
+    /// dot-escaping test above.
+    ///
+    /// YAML double-quoted `"foo\\bar"` decodes to one literal backslash between "foo" and
+    /// "bar" - the stage name the deserializer actually sees is `foo\bar` (7 bytes, one `\`).
+    rigger_validate_escapes_a_literal_backslash_inside_a_stage_name:
+        both_name(
+            Surface::Validate,
+            "stages:\n  \"foo\\\\bar\":\n    unknown_stage_field: 1\n",
+            "stages.foo\\\\bar.unknown_stage_field: unknown key",
+        );
 }
 
 /// Spec 102's amended Design names TWO parse sites for the structural tracker: "the
@@ -547,52 +405,16 @@ fn rigger_validate_keeps_the_nested_dotted_path_on_a_genuine_type_mismatch() {
 /// no divergence, and is never misclassified as an unknown-key violation.
 #[test]
 fn rigger_validate_and_config_store_load_preserve_an_agent_frontmatter_type_mismatch_unchanged() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
     // The exact raw message a direct serde_yaml parse of the same frontmatter produces,
     // measured (not assumed) in this same test run, so "unchanged" is a real comparison.
     let raw = serde_yaml::from_str::<rigger::config::AgentDef>("id: probe\nrecurse: not-a-bool\n")
         .expect_err("a bool field given a string must fail to parse")
         .to_string();
 
-    std::fs::write(
-        root.join(".rigger").join("agents").join("zzz-probe.md"),
+    both_keep_a_type_mismatch(
+        "agents/zzz-probe.md",
         "---\nid: probe\nrecurse: not-a-bool\n---\nBody.\n",
-    )
-    .expect("add the type-mismatch agent fixture");
-
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("an agent frontmatter type mismatch must fail to load")
-        .to_string();
-    assert!(
-        !lib_err.contains("unknown key"),
-        "a type mismatch in agent frontmatter must never be misreported as an unknown key: \
-         {lib_err}"
-    );
-    assert!(
-        lib_err.contains(&raw),
-        "config_store::load must surface serde_yaml's real type-mismatch message unchanged, \
-         byte-for-byte, through the shared structural parser: raw=\"{raw}\" got=\"{lib_err}\""
-    );
-
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the wrongly-typed agent field"
-    );
-    assert!(
-        !cli_err.contains("unknown key"),
-        "rigger validate's stderr must never misreport a type mismatch as an unknown key; \
-         stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
+        &[&raw],
     );
 }
 
@@ -637,156 +459,5 @@ fn rigger_validate_still_ignores_an_unrecognized_agent_frontmatter_key() {
         out.contains("7 agents"),
         "rigger validate must count the foreign-keyed agent among the loaded fleet (the 6 \
          scaffolded defaults plus this one): {out}"
-    );
-}
-
-/// A FIFTH gap, from a fourth remediation round: the adjudicator rejected round 4's
-/// structural-tracker rewrite itself on two path/prefix-composition bugs, both inside
-/// `parse_yaml_naming_unknown_keys`'s own recomposition of `e.path()`'s segments, never
-/// pinned through the real `Workflow` schema or the compiled binary - only against
-/// synthetic fixture structs in `src/config_store.rs`.
-///
-/// `defaults.failure_rules: Vec<FailureRuleDef>` is real, PRE-EXISTING production schema
-/// (spec 10 unit 2, untouched by this diff) - an unknown key inside one of its elements is
-/// an ordinary typo, no crafted input at all. Round 4's `parent` computation joined
-/// segments with an unconditional "." that put a separator before the `[N]` sequence
-/// index; `serde_yaml`'s own rendered message never does, so the classification's
-/// `starts_with` check silently missed a GENUINE unknown-key violation and fell through to
-/// the raw, un-reformatted message - criterion 3 ("AN UNKNOWN KEY IS NAMED ... at every
-/// config level") unmet for any Vec-nested field, through no fault of the operator's input.
-#[test]
-fn rigger_validate_names_the_dotted_path_for_an_unknown_key_inside_a_vec_element() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "defaults:\n  failure_rules:\n    - {}\n    - bogus_field: 1\n",
-    )
-    .expect("overwrite workflow.yml with the Vec-element-unknown-key fixture");
-
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("an unknown key inside a failure_rules element must fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("defaults.failure_rules[1].bogus_field: unknown key"),
-        "config_store::load must name the dotted path THROUGH the sequence index, with no \
-         separator before it, matching serde_yaml's own rendering: {lib_err}"
-    );
-
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the unrecognized failure_rules element field"
-    );
-    assert!(
-        cli_err.contains("defaults.failure_rules[1].bogus_field: unknown key"),
-        "rigger validate's stderr must name the same path through the sequence index; \
-         stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
-    );
-}
-
-/// The round-4 adjudicator's second path-composition finding: a `stages:` name (arbitrary
-/// operator-writable YAML text, already legal today - no character restriction anywhere in
-/// `config_store::validate`) containing its own literal "." recomposed, under round 4's
-/// unescaped join, into a dotted path structurally indistinguishable from a stage "foo"
-/// genuinely nested under a substructure "bar" - an operator reading the message could not
-/// tell which stage was actually wrong. This proves the fix's escaping through the real
-/// `Workflow.stages: BTreeMap<String, Stage>` production seam and the compiled binary, not
-/// just the synthetic fixture structs the implementer's own unit test constructs.
-#[test]
-fn rigger_validate_escapes_a_literal_dot_inside_a_stage_name() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "stages:\n  \"foo.bar\":\n    unknown_stage_field: 1\n",
-    )
-    .expect("overwrite workflow.yml with the dot-bearing-stage-name fixture");
-
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("a stage name embedding its own '.' must still fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("stages.foo\\.bar.unknown_stage_field: unknown key"),
-        "config_store::load must escape the stage name's embedded '.' so it cannot be \
-         misread as a separator between two segments: {lib_err}"
-    );
-
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the unrecognized stage field"
-    );
-    assert!(
-        cli_err.contains("stages.foo\\.bar.unknown_stage_field: unknown key"),
-        "rigger validate's stderr must name the same escaped path; stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
-    );
-}
-
-/// A SIXTH gap, from the same round-5 fix: `render_path_segments`'s `escape_keys` mode
-/// escapes a literal "\" inside a map key the same way it escapes a literal "." - both are
-/// documented as escaped (src/config.rs, `render_path_segments`'s doc comment), but only the
-/// "." branch had a test anywhere (unit or periphery) before this one. A stage name
-/// containing its own literal backslash is exactly as legal and operator-producible as one
-/// containing a dot (no character restriction anywhere in `config_store::validate`), so this
-/// proves the fix's other escape branch through the real `Workflow.stages:
-/// BTreeMap<String, Stage>` production seam and the compiled binary, matching the sibling
-/// dot-escaping test above.
-#[test]
-fn rigger_validate_escapes_a_literal_backslash_inside_a_stage_name() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    // YAML double-quoted `"foo\\bar"` decodes to one literal backslash between "foo" and
-    // "bar" - the stage name the deserializer actually sees is `foo\bar` (7 bytes, one `\`).
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "stages:\n  \"foo\\\\bar\":\n    unknown_stage_field: 1\n",
-    )
-    .expect("overwrite workflow.yml with the backslash-bearing-stage-name fixture");
-
-    let lib_err = rigger::config_store::load(root.to_str().unwrap())
-        .expect_err("a stage name embedding its own '\\' must still fail to load")
-        .to_string();
-    assert!(
-        lib_err.contains("stages.foo\\\\bar.unknown_stage_field: unknown key"),
-        "config_store::load must escape the stage name's embedded '\\' (doubling it) so it \
-         can never be misread as the start of an escape sequence: {lib_err}"
-    );
-
-    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !cli_ok,
-        "rigger validate must fail on the unrecognized stage field"
-    );
-    assert!(
-        cli_err.contains("stages.foo\\\\bar.unknown_stage_field: unknown key"),
-        "rigger validate's stderr must name the same escaped path; stderr:\n{cli_err}"
-    );
-    assert!(
-        cli_err.contains(&lib_err),
-        "rigger validate and config_store::load must fail with the SAME text: \
-         lib=\"{lib_err}\" cli=\"{cli_err}\""
     );
 }

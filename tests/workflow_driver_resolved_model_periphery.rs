@@ -42,6 +42,8 @@
 
 mod common;
 
+use common::cli::temp_git_project_with_commit;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{ChildStderr, ChildStdin, Stdio};
@@ -51,31 +53,6 @@ use serde_json::{json, Value};
 
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore, Filter};
-
-/// A throwaway git project with a real commit, so `--base HEAD` resolves. Mirrors
-/// `tests/cli.rs`'s identically-named helper.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let root = dir.path();
-    let _ = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
 
 /// A single-stage workflow: exactly ONE implementer spawn is ever queued (unlike
 /// `tests/cli.rs`'s two-stage fixture), so this test's `rigger_next` poll has one

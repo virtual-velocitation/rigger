@@ -25,55 +25,17 @@ mod common;
 use common::cli::keyed;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::run_stream_identity;
+use common::cli::temp_rigger_project;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------------------
-
-/// A throwaway project: its own git repo, so `project_identity()` resolves to the directory's
-/// basename exactly as it does for a real project, and a seed appended under that identity lands
-/// in the same `proj-<id>-run` stream the compiled binary reads back.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-/// The project identity the binary resolves for `root`, mirrored for seeding: the tracked
-/// `.rigger/project.id` at the git top-level when present, else that top-level's basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
 
 fn event_log(root: &Path) -> PathBuf {
     root.join(".rigger").join("events.db")
@@ -293,7 +255,7 @@ const REMOVED_DOC_LINKS: usize = ROUNDS - 1;
 
 #[test]
 fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every_earlier_one() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_bloated_log(root);
 
@@ -348,7 +310,7 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
 
 #[test]
 fn reset_derived_preserves_every_non_derived_event_and_every_keyless_derived_event_byte_for_byte() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_bloated_log(root);
 
@@ -409,7 +371,7 @@ fn reset_derived_preserves_every_non_derived_event_and_every_keyless_derived_eve
 /// namespace and the assertion would hold whether or not the migration ran.
 #[test]
 fn reset_derived_compacts_a_log_whose_history_predates_the_minted_project_identity() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // Seeded under the LEGACY basename namespace: no `.rigger/project.id` exists yet.
     seed_bloated_log(root);
@@ -463,7 +425,7 @@ fn reset_derived_compacts_a_log_whose_history_predates_the_minted_project_identi
 
 #[test]
 fn reset_derived_shrinks_the_log_on_disk_and_reports_the_rows_per_type_and_the_bytes_reclaimed() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_bloated_log(root);
 
@@ -598,7 +560,7 @@ fn read_log(root: &Path) -> Vec<Event> {
 
 #[test]
 fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_appends() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // Scaffold FIRST, then seed. `rigger init` is what mints `.rigger/project.id`, and the minted
     // id is what every later command namespaces its streams under - so a fixture that scaffolds
@@ -696,7 +658,7 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
 
 #[test]
 fn reset_composes_derived_with_runs_bare_reset_previews_it_and_an_unknown_mode_still_refuses() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_bloated_log(root);
 
@@ -745,7 +707,7 @@ fn reset_composes_derived_with_runs_bare_reset_previews_it_and_an_unknown_mode_s
 
 #[test]
 fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backend_it_needs() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_bloated_log(root);
     let db_before = rows(&event_log(root)).len();

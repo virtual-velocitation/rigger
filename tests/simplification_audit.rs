@@ -100,6 +100,9 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod common;
+use common::repo::collect_rs_files;
+
 use serde::{Deserialize, Serialize};
 
 /// Spec 90 criterion 2's line-free content identity, reused rather than a second open-coded
@@ -2127,27 +2130,6 @@ const ADVERSARIAL_SAMPLE_SIZE: usize = 30;
 /// own file-count growth from perturbing a criterion-2-owned artifact at all"). A citation-guard
 /// rewrite by this criterion can now never perturb another criterion's owned artifact again.
 const ADVERSARIAL_SAMPLE_EXCLUDED_FILE: &str = "tests/prioritized_plan_citation_periphery.rs";
-
-/// Every `.rs` file strictly under `dir`, recursively, appended to `out`, in deterministic
-/// (sorted) finding order - mirrors `tests/no_os_kill_audit.rs::collect_rs_files`'s own
-/// precedent (kept as this criterion's own copy: spec 85 "WHAT THIS SPEC DOES NOT DO... no test
-/// consolidation" forbids reaching into that file to share it, and the duplication this creates
-/// is itself exactly the kind of thing THIS catalog is built to find and list, section 5's own
-/// concern to consolidate).
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-}
 
 // -----------------------------------------------------------------------------------------
 // THE TOKENIZER
@@ -4191,9 +4173,6 @@ fn render_section_4() -> String {
 // the prose can never cite a stale count. Closing or changing a cited cluster makes the render
 // panic with the id, which is the prompt to re-cite that sentence.
 
-const SPEC_LINT_DEFECT_TESTS: &str = "dup-7fb3b2dc01eb";
-const NO_OS_KILL_PATTERN_TESTS: &str = "dup-a76bc2af4d4b";
-const NO_OS_KILL_SEPARATOR_TESTS: &str = "dup-7f174d1fe10b";
 const PROJECT_BATCHES: &str = "dup-0f2f14f8c3ce";
 
 /// The real catalog's cluster `id`, which the report's prose cites.
@@ -4291,6 +4270,31 @@ fn cluster_bullet(c: &DupCluster) -> String {
 const HEADLINE_HELPER_CLUSTERS: usize = 4;
 /// How many further helper clusters section 5.4 names beyond 5.2's headline ones.
 const FURTHER_HELPER_CLUSTERS: usize = 6;
+
+/// How many table-driven test families section 5.5 and item 16 name.
+const HEADLINE_TEST_FAMILIES: usize = 2;
+
+/// The largest still-open (undispositioned) all-`#[test]` clusters of `tests`, most sites
+/// first, at most [`HEADLINE_TEST_FAMILIES`] of them - read off the catalog at render time, so
+/// closing a family moves the headline to the next one instead of leaving a stale citation.
+fn largest_open_test_families<'a>(tests: &[&'a DupCluster]) -> Vec<&'a DupCluster> {
+    let mut open: Vec<&DupCluster> = tests
+        .iter()
+        .copied()
+        .filter(|c| c.disposition.is_none())
+        .collect();
+    open.sort_by(|a, b| (b.sites.len(), &a.id).cmp(&(a.sites.len(), &b.id)));
+    open.truncate(HEADLINE_TEST_FAMILIES);
+    open
+}
+
+/// The bullets naming `families`, or the one line saying none remain open.
+fn test_family_bullets(families: &[&DupCluster]) -> String {
+    if families.is_empty() {
+        return "- none: every all-`#[test]` cluster is closed or dispositioned.\n".to_string();
+    }
+    families.iter().map(|c| cluster_bullet(c)).collect()
+}
 
 /// How many of `ids` name a cluster in `clusters`.
 fn count_cited_in(ids: &[&str], clusters: &[&DupCluster]) -> usize {
@@ -4599,32 +4603,19 @@ pub(crate) fn render_section_5() -> String {
         directly - not re-enumerated exhaustively here to keep this section a report, not a \
         second copy of the catalog.\n\n",
     ));
-    let spec_lint = cited(SPEC_LINT_DEFECT_TESTS);
     out.push_str("### 5.5 Table-driven test families\n\n");
     out.push_str(&format!(
         "{tests_n} test-only clusters have every site as a `#[test]` function - a \
         literal-differs-only-in-input family, spec 85's own named table-driven-test \
-        candidate class. The single largest anywhere in the suite: `{SPEC_LINT_DEFECT_TESTS}` \
-        (near, {spec_lint_sites} sites, all in `tests/spec_lint.rs`, e.g. \
-        `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class`, \
-        `validate_spec_attributes_a_prose_level_defect_to_no_criterion`, \
-        `validate_spec_reports_two_simultaneous_defects_on_the_same_criterion` \
-        - near-identical \"feed one spec fixture through `validate`, assert one \
-        expected defect/advisory line\" bodies). Proposed table: `#[test] fn \
-        validate_spec_field_guide_defects() {{ for (fixture, expected) in CASES {{ ... \
-        }} }}` retiring all {spec_lint_sites} named tests into one parametrized loop over a \
-        `(&str, &str)` (or richer struct) case table. Other large families (the \
+        candidate class. The largest families this audit first found - `tests/spec_lint.rs`'s \
+        feed-one-spec-through-`validate` defect tests and `tests/no_os_kill_audit.rs`'s \
+        one-termination-pattern-per-test checks - are closed, as are the \
         `tests/reap_before_removal_audit.rs` exemption-coverage family, this generator's own \
-        scanner tests and the no-os-kill test helper's pid-refusal tests are already closed: \
-        their cases run as `test_cases!` rows over shared case helpers): \
-        `{NO_OS_KILL_PATTERN_TESTS}`/`{NO_OS_KILL_SEPARATOR_TESTS}` ({}+{} sites, \
-        `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test \
-        - a `(pattern, is_caught)` table). As with 5.4, the full {tests_n}-family list lives \
-        in the committed catalog by cluster id for a follow-up test-consolidation spec to \
-        consume directly.\n",
-        cited(NO_OS_KILL_PATTERN_TESTS).sites.len(),
-        cited(NO_OS_KILL_SEPARATOR_TESTS).sites.len(),
-        spec_lint_sites = spec_lint.sites.len(),
+        scanner tests and the no-os-kill test helper's pid-refusal tests: their cases run as \
+        `test_cases!` rows over shared case helpers. The largest still open:\n\n{}\n\
+        As with 5.4, the full {tests_n}-family list lives in the committed catalog by cluster \
+        id for a follow-up test-consolidation spec to consume directly.\n",
+        test_family_bullets(&largest_open_test_families(&test_only.tests)),
     ));
     out
 }
@@ -5020,29 +5011,23 @@ fn render_section_6() -> String {
         proc_literals.id, proc_readers.id,
     ));
     out.push_str(&format!(
-        "- Scope: `src/dash.rs::process_state` independently re-derives `/proc/<pid>/stat` \
-        fields that `src/reap.rs` (`pid_starttime`/`read_ppid`) already parses - the exact \
-        \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`{readers_id}`, {readers_sites} sites across \
-        {proc_reader_files}), plus {literal_sites} raw `/proc`-path string literals scattered \
-        across {literal_files} files with no shared composer (`{literals_id}`). Both clusters' \
-        own `proposed_home` agree: `src/reap.rs` becomes the one `/proc`-reading module; \
-        `dash.rs` calls it instead of re-parsing. `process_state` is reachable from `dash`'s \
-        own always-on production server, so it is the actual active-correctness risk this \
-        tier-1 placement is about; the cluster's test-only readers (such as the shared \
-        `tests/common/fixtures/host.rs::pgid_of` fixture) earn no tier-1 placement on their \
-        own and ride in this same item only because they share its root cause.\n\
-        - Files: `src/dash.rs`, `src/reap.rs`, plus the test-only readers `{readers_id}` \
-        names.\n\
-        - Expected line delta: negative - retires `process_state`'s own parsing body in favor \
-        of calling `reap.rs`'s existing parser.\n\
-        - Risk: low. Section 3's own disposition already establishes `process_state` as a \
-        duplicate READ-only reimplementation, never a bypassed mutation path - nothing this \
-        touches can signal or end a process, so it carries none of the no-os-kill gate's own \
-        risk surface; retiring the test-only readers is ordinary test cleanup.\n\
-        - Unblocks: retires the codebase's only currently-known live instance of the \
-        \"duplicate implementation reconciled after the fact\" pattern the operator's \
-        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites.\n\n",
+        "- Scope: the production half is done - `src/dash.rs::process_state` and \
+        `src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through \
+        `src/reap.rs::stat_field_after_comm`, the one parser of the kernel's \
+        `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What \
+        remains is the test-only readers (`{readers_id}`, {readers_sites} sites across \
+        {proc_reader_files}, such as the shared `tests/common/fixtures/host.rs::pgid_of` \
+        fixture) and {literal_sites} raw `/proc`-path string literals across {literal_files} \
+        files (`{literals_id}`), most of them assertion messages and this audit's own sweep \
+        names rather than reads.\n\
+        - Files: the test-only readers `{readers_id}` names.\n\
+        - Expected line delta: small and negative - a test fixture reads its field through one \
+        shared helper instead of re-splitting the stat line.\n\
+        - Risk: low - test-only; nothing this touches can signal or end a process, so it \
+        carries none of the no-os-kill gate's own risk surface.\n\
+        - Unblocks: retires the last copies of the \"duplicate implementation reconciled \
+        after the fact\" pattern the operator's strict-DRY rule targets - the concrete \
+        precedent spec 85's own Goal cites.\n\n",
         readers_id = proc_readers.id,
         readers_sites = proc_readers.sites.len(),
         literals_id = proc_literals.id,
@@ -5331,33 +5316,25 @@ fn render_section_6() -> String {
         percent(verb_covered(&cli_tests), cli_tests.len()),
         cli_cross_file_clusters(&test_only.all).len(),
     ));
-    let item_16 = [
-        SPEC_LINT_DEFECT_TESTS,
-        NO_OS_KILL_PATTERN_TESTS,
-        NO_OS_KILL_SEPARATOR_TESTS,
-    ];
-    let item_16_sites: usize = item_16.iter().map(|id| cited(id).sites.len()).sum();
+    let item_16_families = largest_open_test_families(&test_only.tests);
+    let item_16: Vec<&str> = item_16_families.iter().map(|c| c.id.as_str()).collect();
+    let item_16_sites: usize = item_16_families.iter().map(|c| c.sites.len()).sum();
     out.push_str(
-        "#### 16. Convert the two remaining largest table-driven test families into \
+        "#### 16. Convert the largest remaining table-driven test families into \
         parametrized tables (section 5.5)\n\n",
     );
     out.push_str(&format!(
-        "- Scope, largest first: `{SPEC_LINT_DEFECT_TESTS}` ({} sites, `tests/spec_lint.rs`), \
-        `{NO_OS_KILL_PATTERN_TESTS}`/`{NO_OS_KILL_SEPARATOR_TESTS}` ({}+{} sites, \
-        `tests/no_os_kill_audit.rs`) - {item_16_sites} sites across {} clusters (the reap \
-        audit's exemption-coverage family, this generator's own scanner tests and the \
-        no-os-kill test helper's pid-refusal tests are already closed).\n\
-        - Files: the two files named above.\n\
+        "- Scope, largest first ({item_16_sites} sites across {} clusters; the spec_lint, \
+        no-os-kill, reap-audit exemption, scanner and pid-refusal families are already \
+        closed):\n{}\
+        - Files: the files named above.\n\
         - Expected line delta: negative - each family's near-identical test bodies collapse \
-        into one parametrized loop over a table.\n\
+        into `test_cases!` rows over one case helper.\n\
         - Risk: low - test-only, and each family already shares one body shape (section \
         5.5's own finding).\n\
-        - Unblocks: the largest reduction in raw `#[test]` count available in the suite \
-        (roughly {item_16_sites} named tests retiring toward 2).\n\n",
-        cited(SPEC_LINT_DEFECT_TESTS).sites.len(),
-        cited(NO_OS_KILL_PATTERN_TESTS).sites.len(),
-        cited(NO_OS_KILL_SEPARATOR_TESTS).sites.len(),
+        - Unblocks: the largest remaining reduction in raw `#[test]` body count.\n\n",
         item_16.len(),
+        test_family_bullets(&item_16_families),
     ));
     let (helpers_n, tests_n) = (test_only.helpers.len(), test_only.tests.len());
     let helpers_left = helpers_n - item_14.len();
@@ -8393,19 +8370,22 @@ mod tests {
             .unwrap_or_else(|| panic!("{name} is findable in the real catalog"))
     }
 
-    /// THE WORKED EXAMPLE (spec 85 Goal): on the real tree, `dash.rs::process_state` and
-    /// `reap.rs::pid_starttime` land in the SAME cluster - the mechanical pass alone does not
-    /// find this pair (their tails differ enough to fall under the Jaccard threshold), which is
-    /// exactly why this hand-found sweep exists.
+    /// THE WORKED EXAMPLE (spec 85 Goal), retired: `dash.rs::process_state` and
+    /// `reap.rs::pid_starttime` used to each re-derive the `/proc/<pid>/stat` split and landed in
+    /// the reader sweep together. Both now read through `reap::stat_field_after_comm`, so on the
+    /// real tree the sweep carries that one parser and neither former re-deriver.
     #[test]
-    fn the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster() {
-        let hosting = real_cluster_hosting("process_state");
-        let names: Vec<&str> = hosting.sites.iter().map(|s| s.name.as_str()).collect();
+    fn the_dash_reap_proc_stat_pair_reads_through_the_one_stat_parser() {
+        let readers = sweep_cluster_named(real_catalog(), PROC_STAT_READERS_SWEEP)
+            .expect("the /proc reader sweep is catalogued");
+        let names: HashSet<&str> = readers.sites.iter().map(|s| s.name.as_str()).collect();
         assert!(
-            names.contains(&"pid_starttime"),
-            "process_state's cluster {:?} must also contain pid_starttime, found: {:?}",
-            hosting.id,
-            names
+            names.contains("stat_field_after_comm")
+                && !names.contains("process_state")
+                && !names.contains("pid_starttime"),
+            "the /proc reader sweep {:?} must carry the one stat parser and neither former \
+             re-deriver, found: {names:?}",
+            readers.id
         );
     }
 
@@ -8471,18 +8451,26 @@ mod tests {
         );
     }
 
-    rigger::test_cases! {
-        /// A SECOND, DEEPER worked example from the same adversarial sample draw:
-        /// `spawn::SpawnResult::liveness_fault` reads MISSING from the mechanical catalog (its
-        /// extra `class` parameter and `serde_json::json!` meta field push its Jaccard similarity
-        /// to `ok`/`failed` just under threshold) even though `ok` and `failed` themselves DO
-        /// cluster mechanically - reading it revealed a real recall gap the parallel-constructor
-        /// sweep above exists to close.
-        the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster:
-            assert_real_cluster_of_holds(
-            "src/spawn.rs",
-            "liveness_fault",
-            ["ok", "failed"],
+    /// A SECOND, DEEPER worked example from the same adversarial sample draw, retired:
+    /// `spawn::SpawnResult::liveness_fault` read MISSING from the mechanical catalog (its extra
+    /// `class` parameter and meta field pushed its Jaccard similarity to `ok`/`failed` just under
+    /// threshold) though it was a third parallel constructor - the recall gap the
+    /// parallel-constructor sweep closes. All three now delegate to one canonical constructor,
+    /// so on the real tree no parallel-constructor cluster names a `src/spawn.rs` site.
+    #[test]
+    fn the_spawn_result_constructor_triple_is_one_canonical_constructor() {
+        let prefix = "mandatory sweep: parallel constructor functions - ";
+        let spawn_constructors: Vec<&str> = real_catalog()
+            .iter()
+            .filter(|c| c.note.starts_with(prefix))
+            .flat_map(|c| c.sites.iter())
+            .filter(|s| s.file == "src/spawn.rs")
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            spawn_constructors.is_empty(),
+            "SpawnResult's constructors must all delegate to one canonical constructor, found \
+             parallel ones: {spawn_constructors:?}"
         );
     }
 
@@ -9790,7 +9778,9 @@ mod tests {
         // Cites section 5's own headline test-suite consolidation items.
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
-        assert!(rendered.contains(SPEC_LINT_DEFECT_TESTS));
+        assert!(
+            rendered.contains("#### 16. Convert the largest remaining table-driven test families")
+        );
         // Item 0: the dead-code deletion, and the explicit no-further-follow-up category.
         assert!(rendered.contains("Delete the dead-code set"));
         assert!(rendered.contains("no further follow-up"));

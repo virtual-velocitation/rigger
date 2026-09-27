@@ -43,28 +43,12 @@
 
 mod common;
 
+use common::repo::collect_rs_files;
 use common::repo::repo_root;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const RECORD_PATH: &str = "docs/audit/stage1-compiler-pass.json";
-
-/// Every `.rs` file strictly under `dir`, recursively, appended to `out`, deterministically
-/// ordered - the same walk shape as `tests/no_os_kill_audit.rs::collect_rs_files`.
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort(); // deterministic finding order regardless of readdir order
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-}
 
 /// A line is a real `#[path]` attribute (not a comment quoting the syntax as prose) exactly
 /// when, trimmed of leading whitespace, it starts with `#[path` - a `///` or `//` comment

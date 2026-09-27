@@ -37,7 +37,10 @@
 //! the gate's own command carries no literal instance of what it forbids.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+mod common;
+use common::repo::collect_rs_files;
 
 #[path = "common/source_audit.rs"]
 mod source_audit;
@@ -190,51 +193,35 @@ fn substring_shapes() -> [(String, &'static str); 4] {
     ]
 }
 
+/// One gate shape: a literal `marker` immediately followed by a `tail` in which `.` is the
+/// gate regex's any-character wildcard and every other character must match exactly.
+type MarkerShape = (&'static str, &'static str);
+
 /// `\.arg\(.--.\)` - the bare `--` argv separator passed to `.arg(...)`.
-fn shape_arg_dashdash(line: &str) -> bool {
-    let chars: Vec<char> = line.chars().collect();
-    let marker: Vec<char> = ".arg(".chars().collect();
-    let mlen = marker.len();
-    if chars.len() < mlen {
-        return false;
-    }
-    for start in 0..=(chars.len() - mlen) {
-        if chars[start..start + mlen] != marker[..] {
-            continue;
-        }
-        let x = start + mlen; // position of the gate's leading `.` wildcard
-        if x + 4 >= chars.len() {
-            continue;
-        }
-        if chars[x + 1] == '-' && chars[x + 2] == '-' && chars[x + 4] == ')' {
-            return true;
-        }
-    }
-    false
-}
+const ARG_DASHDASH: MarkerShape = (".arg(", ".--.)");
 
 /// `format!\(.-\{` - a `format!` call shaped to build a leading-hyphen (negative-pid-style)
 /// argument.
-fn shape_format_dash_brace(line: &str) -> bool {
+const FORMAT_DASH_BRACE: MarkerShape = ("format!(", ".-{");
+
+/// Whether `line` carries `shape`'s marker followed by its tail anywhere.
+fn has_marker_shape(line: &str, (marker, tail): MarkerShape) -> bool {
     let chars: Vec<char> = line.chars().collect();
-    let marker: Vec<char> = "format!(".chars().collect();
+    let marker: Vec<char> = marker.chars().collect();
+    let tail: Vec<char> = tail.chars().collect();
     let mlen = marker.len();
     if chars.len() < mlen {
         return false;
     }
-    for start in 0..=(chars.len() - mlen) {
-        if chars[start..start + mlen] != marker[..] {
-            continue;
-        }
-        let x = start + mlen; // position of the gate's leading `.` wildcard
-        if x + 2 >= chars.len() {
-            continue;
-        }
-        if chars[x + 1] == '-' && chars[x + 2] == '{' {
-            return true;
-        }
-    }
-    false
+    (0..=(chars.len() - mlen)).any(|start| {
+        let rest = &chars[start + mlen..];
+        chars[start..start + mlen] == marker[..]
+            && rest.len() >= tail.len()
+            && tail
+                .iter()
+                .zip(rest)
+                .all(|(want, got)| *want == '.' || want == got)
+    })
 }
 
 /// The two files spec 78 sanctions to call the signal API directly (`src/reap.rs`'s
@@ -261,10 +248,10 @@ fn general_hits(line: &str) -> Vec<&'static str> {
             hits.push(label);
         }
     }
-    if shape_arg_dashdash(line) {
+    if has_marker_shape(line, ARG_DASHDASH) {
         hits.push("-- argv separator passed to .arg(...)");
     }
-    if shape_format_dash_brace(line) {
+    if has_marker_shape(line, FORMAT_DASH_BRACE) {
         hits.push("format! shaped to build a negative-pid argument");
     }
     hits
@@ -279,29 +266,13 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
     if shape_command_new_signal(line) {
         hits.push("Command::new(...) shell-out to an OS kill utility");
     }
-    if shape_arg_dashdash(line) {
+    if has_marker_shape(line, ARG_DASHDASH) {
         hits.push("-- argv separator passed to .arg(...)");
     }
-    if shape_format_dash_brace(line) {
+    if has_marker_shape(line, FORMAT_DASH_BRACE) {
         hits.push("format! shaped to build a negative-pid argument");
     }
     hits
-}
-
-/// Every `.rs` file strictly under `dir`, recursively, appended to `out`.
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort(); // deterministic finding order regardless of readdir order
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
 }
 
 /// Scan every `.rs` file under `root/src` and `root/tests`, deterministically ordered by
@@ -370,208 +341,161 @@ mod tests {
         );
     }
 
+    /// The findings of a fixture tree holding each `(rel, content)` file.
+    fn scan_fixture(files: &[(&str, &str)]) -> Vec<Finding> {
+        let root = tempfile::tempdir().unwrap();
+        for (rel, content) in files {
+            write_file(root.path(), rel, content);
+        }
+        scan_tree(root.path())
+    }
+
+    /// The one finding a fixture tree holding `content` at `rel` yields.
+    fn single_finding(rel: &str, content: &str) -> Finding {
+        let findings = scan_fixture(&[(rel, content)]);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        findings.into_iter().next().unwrap()
+    }
+
+    /// `line` at `rel` is caught, as the one finding, under a shape naming `shape`.
+    fn caught_as(rel: &str, line: &str, shape: &str) {
+        let finding = single_finding(rel, line);
+        assert!(finding.shape.contains(shape), "{finding:?}");
+    }
+
+    /// `content` at `rel` is caught as one finding naming `rel` itself.
+    fn caught_in(rel: &str, content: &str) -> Finding {
+        let finding = single_finding(rel, content);
+        assert_eq!(finding.file, rel);
+        finding
+    }
+
+    /// A fixture tree holding `files` yields no finding at all.
+    fn never_flagged(files: &[(&str, &str)], why: &str) {
+        let findings = scan_fixture(files);
+        assert!(findings.is_empty(), "{why}; {findings:?}");
+    }
+
     #[test]
     fn command_new_shell_out_is_caught_outside_the_sanctioned_files() {
-        let root = tempfile::tempdir().unwrap();
         // `killall`, not the p-kill utility - it does not ALSO satisfy the standalone-token
         // shape, so this fixture isolates the Command::new shape alone.
         let line = format!(
             "let _ = std::process::Command::new(\"{}\");\n",
             suffixed_kill("all")
         );
-        write_file(root.path(), "src/somewhere.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert_eq!(findings[0].file, "src/somewhere.rs");
-        assert_eq!(findings[0].line_no, 1);
-        assert!(findings[0].shape.contains("Command::new"), "{findings:?}");
+        let finding = caught_in("src/somewhere.rs", &line);
+        assert_eq!(finding.line_no, 1);
+        assert!(finding.shape.contains("Command::new"), "{finding:?}");
     }
 
-    #[test]
-    fn bare_shell_kill_dash_form_is_caught() {
-        let root = tempfile::tempdir().unwrap();
-        let line = format!("// once shelled out: {} -9 $target_pid\n", kill_word());
-        write_file(root.path(), "src/somewhere.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].shape.contains("shell kill"), "{findings:?}");
-    }
-
-    #[test]
-    fn standalone_pkill_token_is_caught() {
-        let root = tempfile::tempdir().unwrap();
-        let line = format!("let cmd = \"{}\";\n", prefixed_kill("p"));
-        write_file(root.path(), "tests/somewhere_test.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].shape.contains("p-kill"), "{findings:?}");
-    }
-
-    #[test]
-    fn pg_signal_call_name_is_caught() {
-        let root = tempfile::tempdir().unwrap();
-        let line = format!("unsafe {{ libc2::{}(pgid, 9); }}\n", suffixed_kill("pg"));
-        write_file(root.path(), "src/somewhere.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].shape.contains("process-group"), "{findings:?}");
-    }
-
-    #[test]
-    fn libc_kill_call_is_caught_outside_the_sanctioned_files() {
-        let root = tempfile::tempdir().unwrap();
-        let line = format!("unsafe {{ {}pid, 9); }}\n", module_kill_open("libc::"));
-        write_file(root.path(), "src/somewhere.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].shape.contains("libc"), "{findings:?}");
-    }
-
-    #[test]
-    fn signal_kill_call_is_caught_outside_the_sanctioned_files() {
-        let root = tempfile::tempdir().unwrap();
-        let line = format!("{}pid, term); }}\n", module_kill_open("signal::"));
-        write_file(root.path(), "src/somewhere.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].shape.contains("signal-module"), "{findings:?}");
-    }
-
-    #[test]
-    fn kill_process_call_is_caught_outside_the_sanctioned_files() {
-        let root = tempfile::tempdir().unwrap();
-        let line = format!(
-            "let _ = rustix::process::{}rpid, sig);\n",
-            kill_process_open()
+    rigger::test_cases! {
+        bare_shell_kill_dash_form_is_caught: caught_as(
+            "src/somewhere.rs",
+            &format!("// once shelled out: {} -9 $target_pid\n", kill_word()),
+            "shell kill",
         );
-        write_file(root.path(), "src/somewhere_else.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(
-            findings[0].shape.contains("sanctioned rustix signal call"),
-            "{findings:?}"
+        standalone_pkill_token_is_caught: caught_as(
+            "tests/somewhere_test.rs",
+            &format!("let cmd = \"{}\";\n", prefixed_kill("p")),
+            "p-kill",
         );
-    }
-
-    #[test]
-    fn arg_dashdash_separator_is_caught_outside_the_sanctioned_files() {
-        let root = tempfile::tempdir().unwrap();
-        let dashes = join("-", "-");
-        let line = format!("cmd.arg(\"{dashes}\");\n");
-        write_file(root.path(), "src/somewhere.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].shape.contains("--"), "{findings:?}");
-    }
-
-    #[test]
-    fn negative_pid_format_is_caught_outside_the_sanctioned_files() {
-        let root = tempfile::tempdir().unwrap();
-        let shape = join("-", "{}");
-        let line = format!("let arg = format!(\"{shape}\", pgid);\n");
-        write_file(root.path(), "src/somewhere.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].shape.contains("negative-pid"), "{findings:?}");
+        pg_signal_call_name_is_caught: caught_as(
+            "src/somewhere.rs",
+            &format!("unsafe {{ libc2::{}(pgid, 9); }}\n", suffixed_kill("pg")),
+            "process-group",
+        );
+        libc_kill_call_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere.rs",
+            &format!("unsafe {{ {}pid, 9); }}\n", module_kill_open("libc::")),
+            "libc",
+        );
+        signal_kill_call_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere.rs",
+            &format!("{}pid, term); }}\n", module_kill_open("signal::")),
+            "signal-module",
+        );
+        kill_process_call_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere_else.rs",
+            &format!(
+                "let _ = rustix::process::{}rpid, sig);\n",
+                kill_process_open()
+            ),
+            "sanctioned rustix signal call",
+        );
+        arg_dashdash_separator_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere.rs",
+            &format!("cmd.arg(\"{}\");\n", join("-", "-")),
+            "--",
+        );
+        negative_pid_format_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere.rs",
+            &format!("let arg = format!(\"{}\", pgid);\n", join("-", "{}")),
+            "negative-pid",
+        );
     }
 
     #[test]
     fn a_finding_names_its_exact_file_and_line_number() {
-        let root = tempfile::tempdir().unwrap();
         let content = format!(
             "fn a() {{}}\nfn b() {{}}\nlet cmd = \"{}\";\nfn c() {{}}\n",
             prefixed_kill("p")
         );
-        write_file(root.path(), "src/multi_line.rs", &content);
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert_eq!(findings[0].file, "src/multi_line.rs");
+        let finding = caught_in("src/multi_line.rs", &content);
         assert_eq!(
-            findings[0].line_no, 3,
-            "the violation sits on line 3; {findings:?}"
+            finding.line_no, 3,
+            "the violation sits on line 3; {finding:?}"
         );
     }
 
-    #[test]
-    fn kill_process_is_never_flagged_inside_either_sanctioned_file() {
-        let root = tempfile::tempdir().unwrap();
-        let reap_line = format!(
-            "    let _ = rustix::process::{}rpid, signal);\n",
-            kill_process_open()
+    rigger::test_cases! {
+        kill_process_is_never_flagged_inside_either_sanctioned_file: never_flagged(
+            &[
+                (
+                    "src/reap.rs",
+                    &format!(
+                        "    let _ = rustix::process::{}rpid, signal);\n",
+                        kill_process_open()
+                    ),
+                ),
+                (
+                    "tests/common/mod.rs",
+                    &format!(
+                        "pub fn terminate_pid(pid: u32) {{ let _ = rustix::process::{}rpid, sig); }}\n",
+                        kill_process_open()
+                    ),
+                ),
+            ],
+            "the sanctioned files' own direct signal call must never be flagged",
         );
-        write_file(root.path(), "src/reap.rs", &reap_line);
-        let helper_line = format!(
-            "pub fn terminate_pid(pid: u32) {{ let _ = rustix::process::{}rpid, sig); }}\n",
-            kill_process_open()
+        /// A shell-out remains banned even inside a sanctioned file.
+        a_shell_out_inside_a_sanctioned_file_is_still_caught: caught_in(
+            "src/reap.rs",
+            &format!(
+                "let _ = std::process::Command::new(\"{}\");\n",
+                suffixed_kill("all")
+            ),
         );
-        write_file(root.path(), "tests/common/mod.rs", &helper_line);
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "the sanctioned files' own direct signal call must never be flagged; {findings:?}"
+        /// The -- separator remains banned even inside a sanctioned file.
+        a_dashdash_separator_inside_a_sanctioned_file_is_still_caught: caught_in(
+            "tests/common/mod.rs",
+            &format!("cmd.arg(\"{}\");\n", join("-", "-")),
         );
-    }
-
-    #[test]
-    fn a_shell_out_inside_a_sanctioned_file_is_still_caught() {
-        let root = tempfile::tempdir().unwrap();
-        let line = format!(
-            "let _ = std::process::Command::new(\"{}\");\n",
-            suffixed_kill("all")
+        /// A negative-pid format! remains banned even inside a sanctioned file.
+        a_negative_pid_format_inside_a_sanctioned_file_is_still_caught: caught_in(
+            "src/reap.rs",
+            &format!("let arg = format!(\"{}\", pgid);\n", join("-", "{}")),
         );
-        write_file(root.path(), "src/reap.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "a shell-out remains banned even inside a sanctioned file; {findings:?}"
-        );
-        assert_eq!(findings[0].file, "src/reap.rs");
-    }
-
-    #[test]
-    fn a_dashdash_separator_inside_a_sanctioned_file_is_still_caught() {
-        let root = tempfile::tempdir().unwrap();
-        let dashes = join("-", "-");
-        let line = format!("cmd.arg(\"{dashes}\");\n");
-        write_file(root.path(), "tests/common/mod.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "the -- separator remains banned even inside a sanctioned file; {findings:?}"
-        );
-        assert_eq!(findings[0].file, "tests/common/mod.rs");
-    }
-
-    #[test]
-    fn a_negative_pid_format_inside_a_sanctioned_file_is_still_caught() {
-        let root = tempfile::tempdir().unwrap();
-        let shape = join("-", "{}");
-        let line = format!("let arg = format!(\"{shape}\", pgid);\n");
-        write_file(root.path(), "src/reap.rs", &line);
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "a negative-pid format! remains banned even inside a sanctioned file; {findings:?}"
-        );
-        assert_eq!(findings[0].file, "src/reap.rs");
-    }
-
-    #[test]
-    fn a_shape_outside_src_and_tests_is_never_scanned() {
-        let root = tempfile::tempdir().unwrap();
-        // Same violation, but rooted outside src/ and tests/ entirely - must be invisible.
-        let line = format!(
-            "let _ = std::process::Command::new(\"{}\");\n",
-            prefixed_kill("p")
-        );
-        write_file(root.path(), "scripts/somewhere.rs", &line);
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a .rs file outside src/ and tests/ must never be scanned; {findings:?}"
+        /// The same violation, rooted outside src/ and tests/ entirely, must be invisible.
+        a_shape_outside_src_and_tests_is_never_scanned: never_flagged(
+            &[(
+                "scripts/somewhere.rs",
+                &format!(
+                    "let _ = std::process::Command::new(\"{}\");\n",
+                    prefixed_kill("p")
+                ),
+            )],
+            "a .rs file outside src/ and tests/ must never be scanned",
         );
     }
 

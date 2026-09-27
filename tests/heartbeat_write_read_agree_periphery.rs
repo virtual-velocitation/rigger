@@ -40,13 +40,15 @@ mod common;
 use common::git::run_git;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use common::cli::now_nanos;
+use common::cli::run_stream_identity;
+use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::git::git_out;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 
 const RUN_ID: &str = "r-heartbeat-seam";
 const SPAWN_ID: &str = "seam-unit/implementer#0";
@@ -56,22 +58,6 @@ const SPAWN_ID: &str = "seam-unit/implementer#0";
 fn git(dir: &Path, args: &[&str]) {
     let ok = run_git(dir, args).status.success();
     assert!(ok, "git {args:?} must succeed in {dir:?}");
-}
-
-/// The git top-level directory containing `dir`, resolved with `git -C <dir>` - mirrors
-/// `src/main.rs`'s own `git_repo_at`, the exact raw-cwd computation the fix replaces. Used
-/// here only to PROVE the nested worktree's own top-level genuinely diverges from the owning
-/// root, the precondition that gives this test its discriminating power.
-fn git_toplevel(dir: &Path) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
 }
 
 /// A throwaway MAIN repo with one commit (so `git worktree add` has a base to branch from) -
@@ -107,48 +93,6 @@ fn nested_worktree(root: &Path, name: &str) -> PathBuf {
     std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
     git(root, &["worktree", "add", "-q", nested.to_str().unwrap()]);
     nested
-}
-
-/// The project identity the binary resolves for `root` - mirrors
-/// `tests/cause_wire_periphery.rs`'s `run_stream_identity`, itself mirroring
-/// `StoreLocation::identity`'s precedence: the tracked `.rigger/project.id` at the git
-/// top-level when present, else the git top-level basename, else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = git_toplevel(root);
-    let base = if toplevel.is_empty() {
-        root
-    } else {
-        Path::new(&toplevel)
-    };
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Append `events` directly to `root`'s namespaced run stream through a REAL `Store::open` /
-/// SQLite round trip - standing in for the conductor minting them. Mirrors
-/// `tests/cause_wire_periphery.rs`'s `seed_run_events`.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
 }
 
 /// Seed a run with exactly one in-flight spawn (`SPAWN_ID`, no recorded result) at `root`.
@@ -287,8 +231,8 @@ fn status_from_a_nested_worktree_reports_the_heartbeat_written_at_the_owning_roo
     // the owning root, else this test cannot discriminate the owning-root binding from a raw
     // cwd read (mirrors `tests/store_resolution.rs`'s identical guard on its nested-worktree
     // case).
-    let root_toplevel = git_toplevel(root);
-    let nested_toplevel = git_toplevel(&nested);
+    let root_toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
+    let nested_toplevel = git_out(&nested, &["rev-parse", "--show-toplevel"]);
     assert!(
         !root_toplevel.is_empty() && root_toplevel != nested_toplevel,
         "fixture bug: the nested worktree must resolve a DISTINCT git top-level ({nested_toplevel:?}) \

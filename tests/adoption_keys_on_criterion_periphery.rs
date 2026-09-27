@@ -156,8 +156,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod common;
-use common::git::git_ok;
 use common::fixtures::bare_deps;
+use common::git::git_ok;
 
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY, STREAM,

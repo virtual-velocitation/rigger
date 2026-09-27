@@ -203,30 +203,41 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         record_result(&store, &SpawnResult::ok("u/implementer#0", "self-reported")).unwrap();
 
-        let skipped = record_result_if_absent(
+        assert_the_courier_error_never_clobbers_the_self_report(
             &store,
-            &SpawnResult::failed("u/implementer#0", "died without reporting"),
+            "died without reporting",
+            [
+                "an already-recorded result must not be re-recorded (return None)",
+                "the `--if-absent` no-op must append no second result event",
+                "the self-reported success must stand un-clobbered",
+            ],
+        );
+    }
+
+    /// Fires the death courier's `--if-absent --error` (`courier_error`) for
+    /// `u/implementer#0` over a `store` where that spawn's own `self-reported` success has
+    /// landed, and asserts the courier is a no-op: it records nothing (`why[0]`), the stream
+    /// carries exactly one result (`why[1]`), and the self-report stands (`why[2]`).
+    fn assert_the_courier_error_never_clobbers_the_self_report(
+        store: &dyn EventStore,
+        courier_error: &str,
+        why: [&str; 3],
+    ) {
+        let skipped = record_result_if_absent(
+            store,
+            &SpawnResult::failed("u/implementer#0", courier_error),
         )
         .unwrap();
-        assert!(
-            skipped.is_none(),
-            "an already-recorded result must not be re-recorded (return None)"
-        );
+        assert!(skipped.is_none(), "{}", why[0]);
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let results = events
             .iter()
             .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
             .count();
-        assert_eq!(
-            results, 1,
-            "the `--if-absent` no-op must append no second result event"
-        );
+        assert_eq!(results, 1, "{}", why[1]);
         let got = result_of(&events, "u/implementer#0").unwrap().unwrap();
-        assert!(
-            !got.is_error(),
-            "the self-reported success must stand un-clobbered"
-        );
+        assert!(!got.is_error(), "{}", why[2]);
         assert_eq!(got.output, "self-reported");
     }
 
@@ -333,29 +344,15 @@ mod tests {
         let store = RaceOnFirstAppend::new(inner, racing);
 
         // The death courier, believing the worker died, fires `--if-absent --error`.
-        let skipped =
-            record_result_if_absent(&store, &SpawnResult::failed("u/implementer#0", "died"))
-                .unwrap();
-        assert!(
-            skipped.is_none(),
-            "the self-report won the race; the re-check on retry must make this a no-op"
+        assert_the_courier_error_never_clobbers_the_self_report(
+            &store,
+            "died",
+            [
+                "the self-report won the race; the re-check on retry must make this a no-op",
+                "the losing courier must append no second result (no clobber, no duplicate)",
+                "the self-reported success must stand, not be force-failed by the courier",
+            ],
         );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let results = events
-            .iter()
-            .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
-            .count();
-        assert_eq!(
-            results, 1,
-            "the losing courier must append no second result (no clobber, no duplicate)"
-        );
-        let got = result_of(&events, "u/implementer#0").unwrap().unwrap();
-        assert!(
-            !got.is_error(),
-            "the self-reported success must stand, not be force-failed by the courier"
-        );
-        assert_eq!(got.output, "self-reported");
     }
 
     #[test]

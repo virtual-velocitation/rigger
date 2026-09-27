@@ -507,109 +507,30 @@ impl Projector {
     ) -> Result<CallGraph, Error> {
         let conn = self.conn.lock().unwrap();
         let floor = tier_rank(tier_floor, UNRECOGNIZED_FLOOR_RANK);
-
-        // `layer_of` records each REACHED node's min hop distance from the seed (its final layer);
-        // it also serves as the visited set, so a node is expanded at most once - recursion and
-        // mutual calls dedup into a DAG. `frontier_of` holds, for a multi-candidate hop the walk
-        // did NOT descend, its sorted candidate ids.
-        let mut layer_of: BTreeMap<String, i64> = BTreeMap::new();
-        let mut frontier_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut call_edges: Vec<CallEdge> = Vec::new();
-        let mut queue: VecDeque<(String, i64)> = VecDeque::new();
-
-        // The seed sits at layer 0. Only ids that EXIST as nodes in this project are seeded (a
-        // missing seed yields an empty view); deduped and ordered so the walk is deterministic.
-        let mut seeds: Vec<String> = seed.to_vec();
-        seeds.sort();
-        seeds.dedup();
-        for s in seeds {
-            if layer_of.contains_key(&s) {
-                continue;
-            }
-            if node_row(&conn, &s, &self.project)?.is_some() {
-                layer_of.insert(s.clone(), 0);
-                queue.push_back((s, 0));
-            }
-        }
-
-        // Breadth-first by layer: dequeuing shallowest-first makes each node's recorded layer its
-        // MINIMUM hop distance, and bounds the walk to `depth` hops.
-        while let Some((cur, cur_layer)) = queue.pop_front() {
-            if cur_layer >= depth {
-                continue; // depth clamp: do not expand a node at the bound
-            }
-            for (raw_to, tier, valid_from, source) in calls_out(&conn, &cur, &self.project)? {
-                if tier_rank(&tier, UNRECOGNIZED_EDGE_RANK) < floor {
-                    continue; // below the confidence floor: not a followed edge
-                }
-                // Resolve the callee: a same-file definition lands directly; a bare cross-file
-                // placeholder resolves by its name-suffix to the definition(s) sharing the name.
-                let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
-                let newly = !layer_of.contains_key(&target);
-                let target_layer = if newly {
-                    cur_layer + 1
-                } else {
-                    layer_of[&target]
-                };
-                if newly {
-                    layer_of.insert(target.clone(), target_layer);
-                    match &frontier {
-                        // A frontier is marked but NEVER descended - the human re-seeds on a chosen
-                        // candidate, so the walk never guesses which definition a name resolves to.
-                        Some(cands) => {
-                            frontier_of.insert(target.clone(), cands.clone());
-                        }
-                        None => queue.push_back((target.clone(), target_layer)),
+        let (nodes, edges) = layered_call_walk(
+            &conn,
+            &self.project,
+            seed,
+            depth,
+            |cur| {
+                let mut hops: Vec<CallHop> = Vec::new();
+                for (raw_to, tier, valid_from, source) in calls_out(&conn, cur, &self.project)? {
+                    if tier_rank(&tier, UNRECOGNIZED_EDGE_RANK) < floor {
+                        continue; // below the confidence floor: not a followed edge
                     }
+                    // Resolve the callee: a same-file definition lands directly; a bare cross-file
+                    // placeholder resolves by its name-suffix to the definition(s) sharing the name.
+                    let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
+                    hops.push((target, tier, valid_from, source, frontier));
                 }
-                // A recursion / mutual-call edge points at a node no deeper than its source: mark it
-                // a BACK edge rather than following the target a second time (the DAG already holds
-                // it).
-                let back = target_layer <= cur_layer;
-                call_edges.push(CallEdge {
-                    edge: Edge {
-                        from: cur.clone(),
-                        to: target.clone(),
-                        rel: REL_CALLS.to_string(),
-                        valid_from,
-                        valid_to: None,
-                        source,
-                        tier,
-                    },
-                    back,
-                });
-            }
-        }
-
-        // Materialize the reached nodes (fetch kind/attrs) with their layer and any frontier
-        // marker, ordered by (layer, id); sort the edges by endpoints. Deterministic by
-        // construction, so the same graph and seed yield a byte-identical result across polls.
-        let mut nodes: Vec<CallNode> = Vec::with_capacity(layer_of.len());
-        for (id, layer) in &layer_of {
-            if let Some(node) = node_row(&conn, id, &self.project)? {
-                nodes.push(CallNode {
-                    node,
-                    layer: *layer,
-                    frontier: frontier_of.get(id).cloned(),
-                });
-            }
-        }
-        nodes.sort_by(|a, b| {
-            a.layer
-                .cmp(&b.layer)
-                .then_with(|| a.node.id.cmp(&b.node.id))
-        });
-        call_edges.sort_by(|a, b| {
-            a.edge
-                .from
-                .cmp(&b.edge.from)
-                .then_with(|| a.edge.to.cmp(&b.edge.to))
-                .then_with(|| a.edge.rel.cmp(&b.edge.rel))
-        });
-
+                Ok(hops)
+            },
+            // A DOWN edge runs from the node being expanded to the callee it reached.
+            |cur, callee| (cur.to_string(), callee.to_string()),
+        )?;
         Ok(CallGraph {
             nodes,
-            edges: call_edges,
+            edges,
             // The "referenced but not called" sidecar is an UP-direction concept (who imports/uses
             // the seed without calling it); the DOWN execution path never carries it.
             referenced_not_called: Vec::new(),
@@ -653,113 +574,131 @@ impl Projector {
     fn calls_up(&self, seed: &[String], depth: i64, tier_floor: &str) -> Result<CallGraph, Error> {
         let conn = self.conn.lock().unwrap();
         let floor = tier_rank(tier_floor, UNRECOGNIZED_FLOOR_RANK);
-
-        // `layer_of` records each REACHED node's min hop distance from the seed and doubles as the
-        // visited set (a node is expanded at most once - recursion and mutual calls dedup into a
-        // DAG); `frontier_of` holds, for a caller whose call to its callee was multi-candidate, the
-        // sorted candidate definition ids the walk did NOT ascend.
-        let mut layer_of: BTreeMap<String, i64> = BTreeMap::new();
-        let mut frontier_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut call_edges: Vec<CallEdge> = Vec::new();
-        let mut queue: VecDeque<(String, i64)> = VecDeque::new();
-
-        // The seed sits at layer 0. Only ids that EXIST as nodes in this project are seeded (a
-        // missing seed yields an empty view); deduped and ordered so the walk is deterministic.
-        let mut seeds: Vec<String> = seed.to_vec();
-        seeds.sort();
-        seeds.dedup();
-        for s in seeds {
-            if layer_of.contains_key(&s) {
-                continue;
-            }
-            if node_row(&conn, &s, &self.project)?.is_some() {
-                layer_of.insert(s.clone(), 0);
-                queue.push_back((s, 0));
-            }
-        }
-
-        // Breadth-first by layer over CALLERS: dequeuing shallowest-first makes each caller's
-        // recorded layer its MINIMUM hop distance, and bounds the walk to `depth` hops.
-        while let Some((cur, cur_layer)) = queue.pop_front() {
-            if cur_layer >= depth {
-                continue; // depth clamp: do not expand a node at the bound
-            }
-            for (caller, tier, valid_from, source, frontier) in
-                callers_of(&conn, &cur, &self.project)?
-            {
-                if tier_rank(&tier, UNRECOGNIZED_EDGE_RANK) < floor {
-                    continue; // below the confidence floor: not a followed edge
-                }
-                let newly = !layer_of.contains_key(&caller);
-                let caller_layer = if newly {
-                    cur_layer + 1
-                } else {
-                    layer_of[&caller]
-                };
-                if newly {
-                    layer_of.insert(caller.clone(), caller_layer);
-                    match &frontier {
-                        // A frontier caller is marked but NEVER ascended - it might call a same-named
-                        // sibling rather than the seed, so the walk never guesses; the human re-seeds
-                        // on a chosen candidate definition.
-                        Some(cands) => {
-                            frontier_of.insert(caller.clone(), cands.clone());
-                        }
-                        None => queue.push_back((caller.clone(), caller_layer)),
-                    }
-                }
-                // A recursion / mutual-call edge whose caller is no deeper than the callee it was
-                // found from: mark it BACK rather than ascending the caller a second time (the DAG
-                // already holds it). The edge keeps its real CALLS direction (caller -> callee).
-                let back = caller_layer <= cur_layer;
-                call_edges.push(CallEdge {
-                    edge: Edge {
-                        from: caller.clone(),
-                        to: cur.clone(),
-                        rel: REL_CALLS.to_string(),
-                        valid_from,
-                        valid_to: None,
-                        source,
-                        tier,
-                    },
-                    back,
-                });
-            }
-        }
-
-        // Materialize the reached nodes (fetch kind/attrs) with their layer and any frontier marker,
-        // ordered by (layer, id); sort the edges by endpoints. Deterministic by construction.
-        let mut nodes: Vec<CallNode> = Vec::with_capacity(layer_of.len());
-        for (id, layer) in &layer_of {
-            if let Some(node) = node_row(&conn, id, &self.project)? {
-                nodes.push(CallNode {
-                    node,
-                    layer: *layer,
-                    frontier: frontier_of.get(id).cloned(),
-                });
-            }
-        }
-        nodes.sort_by(|a, b| {
-            a.layer
-                .cmp(&b.layer)
-                .then_with(|| a.node.id.cmp(&b.node.id))
-        });
-        call_edges.sort_by(|a, b| {
-            a.edge
-                .from
-                .cmp(&b.edge.from)
-                .then_with(|| a.edge.to.cmp(&b.edge.to))
-                .then_with(|| a.edge.rel.cmp(&b.edge.rel))
-        });
-
+        let (nodes, edges) = layered_call_walk(
+            &conn,
+            &self.project,
+            seed,
+            depth,
+            |cur| {
+                Ok(callers_of(&conn, cur, &self.project)?
+                    .into_iter()
+                    // Below the confidence floor: not a followed edge.
+                    .filter(|(_, tier, ..)| tier_rank(tier, UNRECOGNIZED_EDGE_RANK) >= floor)
+                    .collect())
+            },
+            // An UP edge keeps its real CALLS direction: from the caller reached to the callee it
+            // was found from.
+            |cur, caller| (caller.to_string(), cur.to_string()),
+        )?;
         let referenced_not_called = referenced_not_called(&conn, seed, &self.project)?;
-
         Ok(CallGraph {
             nodes,
-            edges: call_edges,
+            edges,
             referenced_not_called,
         })
     }
+}
+
+/// THE layered `CALLS` walk both directions of [`Projection::calls`] share (spec 52 criteria 1 and
+/// 3): a breadth-first walk by LAYER from `seed` over the hops `hops` yields for each expanded node
+/// (already filtered to the tier floor and resolved, each a [`CallHop`] naming the neighbor
+/// reached), bounded by `depth`. `orient` turns `(expanded node, neighbor)` into the edge's real
+/// `(from, to)` - callee-ward for DOWN, caller-ward for UP.
+///
+/// Only seed ids that EXIST as nodes in `project` are seeded (layer 0), deduped and ordered so the
+/// walk is deterministic. Dequeuing shallowest-first makes each node's recorded layer its MINIMUM
+/// hop distance; `layer_of` doubles as the visited set, so recursion and mutual calls dedup into a
+/// DAG. A neighbor carrying a frontier (a multi-candidate hop) is marked but NEVER expanded - the
+/// human re-seeds on a chosen candidate, so the walk never guesses. An edge whose neighbor sits no
+/// deeper than the node it was found from is marked a BACK edge rather than walked a second time.
+/// The reached nodes come back ordered by (layer, id) and the edges by endpoints, so the same
+/// graph and seed yield a byte-identical result across polls.
+fn layered_call_walk(
+    conn: &Connection,
+    project: &str,
+    seed: &[String],
+    depth: i64,
+    hops: impl Fn(&str) -> Result<Vec<CallHop>, Error>,
+    orient: impl Fn(&str, &str) -> (String, String),
+) -> Result<(Vec<CallNode>, Vec<CallEdge>), Error> {
+    let mut layer_of: BTreeMap<String, i64> = BTreeMap::new();
+    let mut frontier_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut call_edges: Vec<CallEdge> = Vec::new();
+    let mut queue: VecDeque<(String, i64)> = VecDeque::new();
+
+    let mut seeds: Vec<String> = seed.to_vec();
+    seeds.sort();
+    seeds.dedup();
+    for s in seeds {
+        if layer_of.contains_key(&s) {
+            continue;
+        }
+        if node_row(conn, &s, project)?.is_some() {
+            layer_of.insert(s.clone(), 0);
+            queue.push_back((s, 0));
+        }
+    }
+
+    while let Some((cur, cur_layer)) = queue.pop_front() {
+        if cur_layer >= depth {
+            continue; // depth clamp: do not expand a node at the bound
+        }
+        for (next, tier, valid_from, source, frontier) in hops(&cur)? {
+            let newly = !layer_of.contains_key(&next);
+            let next_layer = if newly {
+                cur_layer + 1
+            } else {
+                layer_of[&next]
+            };
+            if newly {
+                layer_of.insert(next.clone(), next_layer);
+                match frontier {
+                    Some(cands) => {
+                        frontier_of.insert(next.clone(), cands);
+                    }
+                    None => queue.push_back((next.clone(), next_layer)),
+                }
+            }
+            let back = next_layer <= cur_layer;
+            let (from, to) = orient(&cur, &next);
+            call_edges.push(CallEdge {
+                edge: Edge {
+                    from,
+                    to,
+                    rel: REL_CALLS.to_string(),
+                    valid_from,
+                    valid_to: None,
+                    source,
+                    tier,
+                },
+                back,
+            });
+        }
+    }
+
+    let mut nodes: Vec<CallNode> = Vec::with_capacity(layer_of.len());
+    for (id, layer) in &layer_of {
+        if let Some(node) = node_row(conn, id, project)? {
+            nodes.push(CallNode {
+                node,
+                layer: *layer,
+                frontier: frontier_of.get(id).cloned(),
+            });
+        }
+    }
+    nodes.sort_by(|a, b| {
+        a.layer
+            .cmp(&b.layer)
+            .then_with(|| a.node.id.cmp(&b.node.id))
+    });
+    call_edges.sort_by(|a, b| {
+        a.edge
+            .from
+            .cmp(&b.edge.from)
+            .then_with(|| a.edge.to.cmp(&b.edge.to))
+            .then_with(|| a.edge.rel.cmp(&b.edge.rel))
+    });
+    Ok((nodes, call_edges))
 }
 
 /// Additive backward-compat migration (spec 28, criterion 1). A graph.db created before the
@@ -2140,13 +2079,13 @@ fn callers_via_bare(
     )
 }
 
-/// One resolved UP caller hop (spec 52 criterion 3): `(caller_id, tier, valid_from, source,
-/// frontier)`, where `frontier` is `Some(sorted candidate definition ids)` when the caller's
-/// cross-file call is multi-candidate (the walk must not ascend it) and `None` for an unambiguous
-/// caller. Named to keep the reverse-walk signatures out of clippy's `type_complexity`.
-type CallerHop = (String, String, i64, Position, Option<Vec<String>>);
+/// One resolved `CALLS` hop of a layered walk (spec 52): `(neighbor_id, tier, valid_from, source,
+/// frontier)`, where `frontier` is `Some(sorted candidate definition ids)` when the hop is
+/// multi-candidate (the walk must not expand it) and `None` for an unambiguous one. Named to keep
+/// the walk signatures out of clippy's `type_complexity`.
+type CallHop = (String, String, i64, Position, Option<Vec<String>>);
 
-/// The callers of `cur` for one UP hop (spec 52 criterion 3), each a [`CallerHop`] whose `frontier`
+/// The callers of `cur` for one UP hop (spec 52 criterion 3), each a [`CallHop`] whose `frontier`
 /// carries the SORTED candidate definition ids on a multi-candidate hop the walk must NOT ascend.
 /// Two disjoint sources, mirroring [`resolve_down_hop`] in reverse:
 ///
@@ -2159,8 +2098,8 @@ type CallerHop = (String, String, i64, Position, Option<Vec<String>>);
 ///   there). The cross-file source applies only when `cur` is a DEFINITION (carries a `name` attr):
 ///   a bare node is not a definition, so a cross-file call to its name resolves to the real
 ///   definitions elsewhere, never to it.
-fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallerHop>, Error> {
-    let mut out: Vec<CallerHop> = Vec::new();
+fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop>, Error> {
+    let mut out: Vec<CallHop> = Vec::new();
     for (from, tier, vf, src) in callers_direct(conn, cur, project)? {
         out.push((from, tier, vf, src, None));
     }

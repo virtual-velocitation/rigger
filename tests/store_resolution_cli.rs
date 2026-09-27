@@ -39,30 +39,17 @@
 //! owned by their own criteria and are not asserted here.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-use tempfile::TempDir;
+use std::process::Output;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+
+use common::cli::temp_rigger_project;
 #[path = "common/store_courier.rs"]
 mod store_courier;
 use store_courier::run_bare_result;
-
-/// A throwaway project: its own git repo (so identity resolves exactly as a real project's does)
-/// with an empty `.rigger/` and no event log yet. The `TempDir` is returned so it outlives the
-/// command and is removed on drop.
-fn empty_project() -> TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
 
 /// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. The
 /// single-authority guarantee is that a server-configured courier never fabricates this file.
@@ -72,7 +59,7 @@ fn local_event_log(root: &Path) -> PathBuf {
 
 #[test]
 fn a_server_selected_courier_reaches_the_server_and_never_fabricates_local_sqlite() {
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
 
     // A well-formed but unreachable server address: nothing listens on this loopback port, so the
@@ -109,7 +96,7 @@ fn a_server_selected_courier_reaches_the_server_and_never_fabricates_local_sqlit
 
 #[test]
 fn a_courier_with_no_server_configured_resolves_the_local_sqlite_log() {
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
 
     let out = run_bare_result(root, None);
@@ -139,7 +126,7 @@ fn a_courier_with_no_server_configured_resolves_the_local_sqlite_log() {
 
 #[test]
 fn an_empty_kurrentdb_conn_is_treated_as_unset_not_a_server_with_no_address() {
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
 
     // A stray empty `KURRENTDB_CONN=` (e.g. an unset shell variable expanded to nothing) must NOT
@@ -203,7 +190,7 @@ fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
 
     // CONTROL: nothing configured -> the single authority defaults to the LOCAL sqlite log, whose
     // file is absent on a never-run project, so the guard fires and the command reports empty.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     let out = run_read(root, args, None);
     let ctrl_stdout = String::from_utf8_lossy(&out.stdout);
@@ -226,7 +213,7 @@ fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
     // SERVER-configured, unreachable (nothing listens on this loopback port, so the eager connect
     // is refused fast): the single authority selects the server, the guard must NOT fire, and the
     // read resolves - and fails inside - the SERVER backend, never the local-absent sentinel.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     let out = run_read(root, args, Some("kurrentdb://127.0.0.1:65533?tls=false"));
     let stdout = String::from_utf8_lossy(&out.stdout);

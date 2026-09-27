@@ -234,152 +234,102 @@ mod tests {
         }
     }
 
-    #[test]
-    fn decisions_for_scopes_to_the_blast_radius() {
+    /// Appends two `type_` events built by `payload(id, file)` - `ids[0]` about a.rs, `ids[1]`
+    /// about b.rs - waits until the side-car surfaces both as `P` (`what` names them in the
+    /// timeout message), asserts an empty blast-radius returns both, and returns the peers
+    /// scoped to a.rs.
+    fn peers_scoped_to_a_rs<P: Peer>(
+        type_: &str,
+        what: &str,
+        ids: [&str; 2],
+        payload: impl Fn(&str, &str) -> serde_json::Value,
+    ) -> Vec<P> {
         let store = Store::open(":memory:").unwrap();
         let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
 
-        // One decision governs a.rs, another governs b.rs.
-        for (id, governs) in [("da", "a.rs"), ("db", "b.rs")] {
-            let data = serde_json::to_vec(&serde_json::json!({
-                "id": id, "summary": "x", "governs": [governs],
-            }))
-            .unwrap();
+        for (id, file) in ids.into_iter().zip(["a.rs", "b.rs"]) {
+            let data = serde_json::to_vec(&payload(id, file)).unwrap();
             store
-                .append(
-                    "run",
-                    ExpectedRevision::Any,
-                    &[Event::new(contextgraph::TYPE_DECISION_MADE, data)],
-                )
+                .append("run", ExpectedRevision::Any, &[Event::new(type_, data)])
                 .unwrap();
         }
 
-        // Wait until both decisions have surfaced through the subscription.
+        // Wait until both records have surfaced through the subscription.
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if sidecar.peers::<PeerDecision>().len() >= 2 {
+            if sidecar.peers::<P>().len() >= 2 {
                 break;
             }
             assert!(
                 Instant::now() < deadline,
-                "the side-car never surfaced both decisions"
+                "the side-car never surfaced both {what}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        // Scoped to a.rs: only the a.rs decision comes back.
-        let scoped = sidecar.peers_for::<PeerDecision>(&["a.rs".into()]);
-        assert_eq!(scoped.len(), 1);
-        assert_eq!(scoped[0].id, "da");
-
-        // An empty blast-radius returns every decision.
-        let all = sidecar.peers_for::<PeerDecision>(&[]);
+        // An empty blast-radius returns every record.
+        let all = sidecar.peers_for::<P>(&[]);
         assert_eq!(all.len(), 2);
+
+        sidecar.peers_for::<P>(&["a.rs".into()])
     }
 
-    #[test]
-    fn findings_for_scopes_to_the_blast_radius() {
-        // A peer reviewer's ReviewFinding is surfaced by the side-car and scoped to a
-        // reviewer's blast-radius the same way decisions are: a finding about a file
-        // is returned by the blast-radius-scoped peers query (item 4), so concurrent
-        // lenses see each other's findings live.
-        let store = Store::open(":memory:").unwrap();
-        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
-
-        // One finding about a.rs, another about b.rs.
-        for (id, about) in [("fa", "a.rs"), ("fb", "b.rs")] {
-            let data = serde_json::to_vec(&serde_json::json!({
-                "id": id, "by": "lens", "summary": "x", "about": [about],
-            }))
-            .unwrap();
-            store
-                .append(
-                    "run",
-                    ExpectedRevision::Any,
-                    &[Event::new(contextgraph::TYPE_REVIEW_FINDING, data)],
-                )
-                .unwrap();
-        }
-
-        // Wait until both findings have surfaced through the subscription.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if sidecar.peers::<PeerFinding>().len() >= 2 {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the side-car never surfaced both findings"
+    crate::test_cases! {
+        /// One decision governs a.rs, another governs b.rs: scoped to a.rs, only the a.rs
+        /// decision comes back.
+        decisions_for_scopes_to_the_blast_radius: {
+            let scoped = peers_scoped_to_a_rs::<PeerDecision>(
+                contextgraph::TYPE_DECISION_MADE,
+                "decisions",
+                ["da", "db"],
+                |id, governs| serde_json::json!({"id": id, "summary": "x", "governs": [governs]}),
             );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        // Scoped to a.rs: only the a.rs finding comes back.
-        let scoped = sidecar.peers_for::<PeerFinding>(&["a.rs".into()]);
-        assert_eq!(
-            scoped.len(),
-            1,
-            "a finding about a.rs is returned scoped to a.rs"
-        );
-        assert_eq!(scoped[0].id, "fa");
-
-        // An empty blast-radius returns every finding.
-        let all = sidecar.peers_for::<PeerFinding>(&[]);
-        assert_eq!(all.len(), 2);
-    }
-
-    #[test]
-    fn lessons_for_scopes_to_the_blast_radius() {
-        // A prior run's LessonLearned is surfaced by the side-car and scoped to a
-        // blast-radius the same way decisions and findings are: a lesson about a file
-        // comes back from the blast-radius-scoped peers query, so `rigger peers` can
-        // recover the lessons elided from a capped prompt section (the recovery the
-        // elision note names). Without this surface `rigger peers` would return zero
-        // lessons and that note would be a dead promise (adj-u1gap17).
-        let store = Store::open(":memory:").unwrap();
-        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
-
-        // One lesson about a.rs, another about b.rs.
-        for (id, about) in [("la", "a.rs"), ("lb", "b.rs")] {
-            let data = serde_json::to_vec(&serde_json::json!({
-                "id": id, "summary": "do not repeat x", "about": [about],
-            }))
-            .unwrap();
-            store
-                .append(
-                    "run",
-                    ExpectedRevision::Any,
-                    &[Event::new(contextgraph::TYPE_LESSON_LEARNED, data)],
-                )
-                .unwrap();
-        }
-
-        // Wait until both lessons have surfaced through the subscription.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if sidecar.peers::<PeerLesson>().len() >= 2 {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the side-car never surfaced both lessons"
+            assert_eq!(scoped.len(), 1);
+            assert_eq!(scoped[0].id, "da");
+        };
+        /// A peer reviewer's ReviewFinding is surfaced by the side-car and scoped to a
+        /// reviewer's blast-radius the same way decisions are: a finding about a file
+        /// is returned by the blast-radius-scoped peers query (item 4), so concurrent
+        /// lenses see each other's findings live.
+        findings_for_scopes_to_the_blast_radius: {
+            let scoped = peers_scoped_to_a_rs::<PeerFinding>(
+                contextgraph::TYPE_REVIEW_FINDING,
+                "findings",
+                ["fa", "fb"],
+                |id, about| {
+                    serde_json::json!({"id": id, "by": "lens", "summary": "x", "about": [about]})
+                },
             );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        // Scoped to a.rs: only the a.rs lesson comes back.
-        let scoped = sidecar.peers_for::<PeerLesson>(&["a.rs".into()]);
-        assert_eq!(
-            scoped.len(),
-            1,
-            "a lesson about a.rs is returned scoped to a.rs"
-        );
-        assert_eq!(scoped[0].id, "la");
-        assert_eq!(scoped[0].summary, "do not repeat x");
-
-        // An empty blast-radius returns every lesson.
-        let all = sidecar.peers_for::<PeerLesson>(&[]);
-        assert_eq!(all.len(), 2);
+            assert_eq!(
+                scoped.len(),
+                1,
+                "a finding about a.rs is returned scoped to a.rs"
+            );
+            assert_eq!(scoped[0].id, "fa");
+        };
+        /// A prior run's LessonLearned is surfaced by the side-car and scoped to a
+        /// blast-radius the same way decisions and findings are: a lesson about a file
+        /// comes back from the blast-radius-scoped peers query, so `rigger peers` can
+        /// recover the lessons elided from a capped prompt section (the recovery the
+        /// elision note names). Without this surface `rigger peers` would return zero
+        /// lessons and that note would be a dead promise (adj-u1gap17).
+        lessons_for_scopes_to_the_blast_radius: {
+            let scoped = peers_scoped_to_a_rs::<PeerLesson>(
+                contextgraph::TYPE_LESSON_LEARNED,
+                "lessons",
+                ["la", "lb"],
+                |id, about| {
+                    serde_json::json!({"id": id, "summary": "do not repeat x", "about": [about]})
+                },
+            );
+            assert_eq!(
+                scoped.len(),
+                1,
+                "a lesson about a.rs is returned scoped to a.rs"
+            );
+            assert_eq!(scoped[0].id, "la");
+            assert_eq!(scoped[0].summary, "do not repeat x");
+        };
     }
 
     #[test]

@@ -19,19 +19,11 @@
 //! the wiring - not just the pure resolver - reaches the relocated default.
 
 use std::path::Path;
-use std::process::Command;
 
 mod common;
 use common::git::run_git;
 
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use common::cli::temp_project;
 
 /// Seed an initialized, otherwise-empty `.rigger/events.db`, mirroring
 /// `tests/reset_build_cache_periphery.rs::seed_store` - `rigger validate` needs a resolvable

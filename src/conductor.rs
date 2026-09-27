@@ -908,23 +908,22 @@ struct ReviewOutcome {
 }
 
 impl ReviewOutcome {
-    fn approved(reason: String) -> Self {
+    /// The one constructor: a bare `approved` verdict carrying `reason`, with no rollback, no
+    /// adjudicator resolution and no round-start sha.
+    fn verdict(approved: bool, reason: String) -> Self {
         ReviewOutcome {
-            approved: true,
+            approved,
             reason,
             compensate: None,
             adj_resolved: String::new(),
             round_start_sha: String::new(),
         }
     }
+    fn approved(reason: String) -> Self {
+        Self::verdict(true, reason)
+    }
     fn rejected(reason: String) -> Self {
-        ReviewOutcome {
-            approved: false,
-            reason,
-            compensate: None,
-            adj_resolved: String::new(),
-            round_start_sha: String::new(),
-        }
+        Self::verdict(false, reason)
     }
 }
 
@@ -4462,20 +4461,10 @@ impl RunCtx<'_> {
         gate::decide(&probe) == gate::Action::Pause
     }
 
-    /// The review panel a unit reviews ITSELF with (§3.2): the stage's own `review`
-    /// override when it sets one, otherwise the workflow-wide `defaults.review`.
-    /// Declared once and inherited by every implementer unit, including the
-    /// planner-proposed units that run through `run_single_stage`. Delegates to
-    /// [`crate::config::Workflow::effective_review_panel`] (spec 92 criterion 2), the ONE
-    /// fallback-rule authority the workflow-definition graph indexer also reads.
-    fn effective_review_panel<'a>(&'a self, st: &'a Stage) -> &'a crate::config::ReviewPanel {
-        self.cfg.workflow.effective_review_panel(st)
-    }
-
     /// Select the review panel for a unit by its observable risk (spec 03 / spec 13
     /// unit 4), routing to the LIGHT or FULL tier via [`route_review_tier`] over the
-    /// unit's [`effective_review_panel`](RunCtx::effective_review_panel). `blast_radius`
-    /// is the unit's `.safe` structural blast-radius view (spec 16 unit 3), passed down from
+    /// unit's [`effective_review_panel`](crate::config::Workflow::effective_review_panel).
+    /// `blast_radius` is the unit's `.safe` structural blast-radius view (spec 16 unit 3), passed down from
     /// [`review_unit`](RunCtx::review_unit) via a separate
     /// [`grounded_blast_radius`](RunCtx::grounded_blast_radius) call - the UNCAPPED
     /// structural-width superset on the symbols grounder, equal to the grounded seed on the
@@ -4488,7 +4477,11 @@ impl RunCtx<'_> {
         blast_radius: &[String],
         flapped: bool,
     ) -> TierRouting<'a> {
-        route_review_tier(self.effective_review_panel(st), blast_radius, flapped)
+        route_review_tier(
+            self.cfg.workflow.effective_review_panel(st),
+            blast_radius,
+            flapped,
+        )
     }
 
     /// Log a unit's review-tier routing decision with its inputs (spec 03 / spec 13
@@ -6472,7 +6465,7 @@ impl RunCtx<'_> {
         // `reviewed` stamp uses inline, never a fresh live read here. `verified#{lane}`
         // above legitimately keeps `winner_sha`: it records what the gates verified, not
         // what the review judged.
-        let panel = self.effective_review_panel(st);
+        let panel = self.cfg.workflow.effective_review_panel(st);
         if !panel.is_empty() && !panel.adjudicator.is_empty() {
             self.emit_keyed_meta(
                 &format!("{}/reviewed#{lane}", st.name),
@@ -12823,14 +12816,15 @@ pub fn unit_branch(unit_id: &str) -> String {
 /// single-threaded within one `rigger step`.) Pairs with [`unit_branch`], which derives the
 /// unit's durable branch from the same id.
 ///
-/// `pub(crate)` (spec 104 criterion 6, STOP): the supervisor start-up reconciliation in
+/// One derivation (spec 104 criterion 6, STOP): the supervisor start-up reconciliation in
 /// `driver::claude_code` derives a spawn's worktree dir the SAME way every other caller in
 /// this module already does - purely from the run's scratch root and the spawn's unit (via
 /// [`crate::spawn::unit_of`]) - rather than a second, divergent path-assembly. No event
 /// needs to carry a `dir` field: this function's own purity is what makes "the log and the
 /// progress store are the only state" (spec 104's CONSTRAINTS WALK, cold start) hold for
-/// the worktree location too.
-pub(crate) fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
+/// the worktree location too. Public so an integration fixture pre-seeds a worktree at the
+/// exact path production derives.
+pub fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
     format!(
         "{scratch_root}/{}{}",
         crate::worktree::UNIT_WORKTREE_PREFIX,
@@ -13966,6 +13960,7 @@ mod tests {
     use crate::test_support::git_out;
     use crate::test_support::git_stdout;
     use crate::test_support::run_git;
+    use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE};
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -15466,44 +15461,30 @@ mod tests {
 
         /// Every prompt the named agent was spawned with, in spawn order.
         fn prompts_for(&self, agent_id: &str) -> Vec<String> {
-            self.prompts_by_agent
-                .lock()
-                .unwrap()
-                .get(agent_id)
-                .cloned()
-                .unwrap_or_default()
+            cached(&self.prompts_by_agent, agent_id).unwrap_or_default()
         }
 
         /// Every working dir (cwd) the named agent was spawned with, in spawn order.
         fn dirs_for(&self, agent_id: &str) -> Vec<String> {
-            self.dirs_by_agent
-                .lock()
-                .unwrap()
-                .get(agent_id)
-                .cloned()
-                .unwrap_or_default()
+            cached(&self.dirs_by_agent, agent_id).unwrap_or_default()
         }
 
         /// The persona (system prompt) the conductor threaded to the driver for the
         /// named agent, or None if it was never spawned.
         fn system_prompt_for(&self, agent_id: &str) -> Option<String> {
-            self.system_prompt_by_agent
-                .lock()
-                .unwrap()
-                .get(agent_id)
-                .cloned()
+            cached(&self.system_prompt_by_agent, agent_id)
         }
 
         /// The live work-line title (unit criterion) the conductor threaded to the driver
         /// for the named agent, or None if it was never spawned.
         fn title_for(&self, agent_id: &str) -> Option<String> {
-            self.titles_by_agent.lock().unwrap().get(agent_id).cloned()
+            cached(&self.titles_by_agent, agent_id)
         }
 
         /// The routed review roster (spec 67, criterion 4) the conductor threaded to the
         /// driver for the named agent, or None if it was never spawned.
         fn reviews_for(&self, agent_id: &str) -> Option<Vec<String>> {
-            self.reviews_by_agent.lock().unwrap().get(agent_id).cloned()
+            cached(&self.reviews_by_agent, agent_id)
         }
 
         /// Every spawn's deterministic id, in spawn order (Gap-18 tests assert the exact
@@ -36946,75 +36927,6 @@ mod tests {
                 .is_some_and(|p| p.contains("your integrating commit was REVERTED")),
             "the re-entered unit-a is prompted with the recovered contradiction; prompts:\n{prompts:?}"
         );
-    }
-
-    /// The base `m.rs` content the merge-break fixture below starts from: six MARK-free
-    /// lines so `unit-a`'s top insert and `unit-b`'s bottom append land in NON-overlapping
-    /// hunks that git auto-merges cleanly (no conflict) into a tree carrying BOTH marks.
-    const MERGE_BREAK_BASE: &str = "l1\nl2\nl3\nl4\nl5\nl6\n";
-
-    /// A driver for the post-merge re-gate fixture (spec 12, unit 5): `unit-a` and `unit-b`
-    /// are two batch-mates with NO dependency between them (the grounder placed them in one
-    /// wave), each editing the SAME file `m.rs`. `unit-a` PREPENDS one `MARK` line, `unit-b`
-    /// APPENDS one - so each unit's OWN tree carries exactly one MARK (its gate passes in
-    /// isolation), but the textual auto-merge combines both into a two-MARK tree the gate
-    /// REJECTS. Both writes are recomputed from the fixed base each attempt (idempotent), so
-    /// a remediation re-attempt never doubles a unit's own mark. A barrier makes both
-    /// worktrees branch from the SAME base commit (neither integrates before the other's
-    /// branch exists), which is what creates the unpredicted overlap.
-    struct MergeBreakDriver {
-        repo: String,
-    }
-    impl AgentDriver for MergeBreakDriver {
-        fn spawn(
-            &self,
-            _a: &AgentDef,
-            _prompt: &str,
-            opts: &SpawnOpts,
-            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-        ) -> Result<AgentResult, Error> {
-            let unit = opts.id.split('/').next().unwrap_or_default();
-            if opts.id.contains("/implementer#") {
-                if !opts.dir.is_empty() {
-                    // Barrier: block until BOTH unit branches exist, so both worktrees were
-                    // cut from the SAME base commit (neither has integrated yet - an
-                    // implementer runs strictly before its unit's integrate). This is the
-                    // UNPREDICTED-overlap case unit 5 targets: two batch-mates that actually
-                    // edit the same region, each green alone, broken when merged.
-                    for _ in 0..400 {
-                        let n = std::process::Command::new("git")
-                            .arg("-C")
-                            .arg(&self.repo)
-                            .args(["branch", "--list", "rigger/u/*"])
-                            .output()
-                            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
-                            .unwrap_or(0);
-                        if n >= 2 {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(25));
-                    }
-                    // Idempotent per attempt: always the fixed base plus this unit's ONE mark.
-                    let content = if unit == "unit-a" {
-                        format!("MARK\n{MERGE_BREAK_BASE}")
-                    } else {
-                        format!("{MERGE_BREAK_BASE}MARK\n")
-                    };
-                    std::fs::write(Path::new(&opts.dir).join("m.rs"), content).unwrap();
-                }
-                return Ok(AgentResult::default());
-            }
-            if opts.id.contains("/adjudicator#") {
-                return Ok(AgentResult {
-                    output: r#"{"verdict":"approve"}"#.into(),
-                    resolved_model: String::new(),
-                });
-            }
-            Ok(AgentResult {
-                output: "reviewed the diff".into(),
-                resolved_model: String::new(),
-            })
-        }
     }
 
     #[test]

@@ -354,6 +354,13 @@ pub fn stop_pid(pid: u32) -> bool {
     rustix::process::kill_process(rpid, rustix::process::Signal::STOP).is_ok()
 }
 
+/// Whether `pid` is still running - alive and not a zombie (state `Z` in `/proc/<pid>/stat`, read
+/// through the product's one stat parser). An exited-but-unreaped child is a zombie, which
+/// [`is_alive`]'s signal probe still reports alive.
+pub fn is_running(pid: u32) -> bool {
+    rigger::reap::stat_field_after_comm(pid, 0).is_some_and(|state| !state.starts_with('Z'))
+}
+
 /// Whether `pid` is currently alive, via the internal `rustix` liveness probe (mirrors
 /// [`terminate_pid`]'s signal call so both go through the identical sanctioned API) - the
 /// test-side replacement for a shelled-out existence-probe command.

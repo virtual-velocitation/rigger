@@ -267,6 +267,7 @@
 mod common;
 use common::git::run_git;
 
+use common::cli::has_status_marker;
 use common::cli::write_workflow;
 use common::fixtures::bare_deps;
 use common::fixtures::gate_def;
@@ -1854,15 +1855,6 @@ impl EventStore for FailAppendContaining<'_> {
         self.inner.append(stream, expected, events)
     }
     crate::delegate_event_store_reads!();
-}
-
-/// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status` -
-/// GAP 9's shared assertion helper for the six new row-record status tokens.
-fn has_status_marker(events: &[rigger::eventstore::Event], status: &str) -> bool {
-    events.iter().any(|e| {
-        e.type_ == ledger::TYPE_UNIT_STATUS
-            && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
-    })
 }
 
 fn count_status_marker(events: &[rigger::eventstore::Event], status: &str) -> usize {

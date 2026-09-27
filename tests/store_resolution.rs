@@ -14,32 +14,11 @@
 //! by their own criteria; here we only prove that every command constructs its backend
 //! through the one resolver, and that the resolver genuinely reaches a server.
 
-use std::path::Path;
 use std::process::Command;
 
 // ---------------------------------------------------------------------------------------
 // Structural single-authority: the sqlite event-log constructor lives at exactly one site.
 // ---------------------------------------------------------------------------------------
-
-/// The production source of the CLI composition root (`src/main.rs`), with the trailing
-/// `#[cfg(test)] mod tests { ... }` unit-test module stripped. The single-authority rule
-/// governs SHIPPING code: test code legitimately opens throwaway sqlite stores (`:memory:`,
-/// temp files) directly, and must not be counted as a command's construction path.
-fn production_main_rs() -> String {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("read src/main.rs");
-    strip_unit_test_module(&src)
-}
-
-/// Everything before the file's `#[cfg(test)]\nmod tests {` marker (the unit tests are the
-/// final block of `src/main.rs`, running to EOF). Falls back to the whole source when the
-/// marker is absent, so a future reshaping of the tests never makes this scan silently pass.
-fn strip_unit_test_module(src: &str) -> String {
-    match src.find("#[cfg(test)]\nmod tests {") {
-        Some(cut) => src[..cut].to_string(),
-        None => src.to_string(),
-    }
-}
 
 /// The nearest enclosing top-level function for source line `idx` (0-based): the last line
 /// at or above it that opens a top-level `fn` (column 0). The event-log construction lives in
@@ -144,32 +123,8 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 mod common;
 use common::git::run_git;
 
-/// The project identity the binary resolves for `root` (the git top-level basename, or the
-/// tracked `.rigger/project.id`), mirrored here so a read-back of the server binds the exact
-/// `proj-<id>-run` stream a courier's write landed in.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
+use common::cli::run_stream_identity;
+use common::repo::production_main_rs;
 
 /// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
 /// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as

@@ -38,6 +38,7 @@ mod common;
 mod gitsemver;
 
 use common::fixtures::tool_available;
+use common::git::tagged_gitsemver_repo;
 use std::path::Path;
 use std::process::Command;
 
@@ -56,28 +57,6 @@ fn git(root: &Path, args: &[&str]) {
     );
 }
 
-/// Build a fixture git repository at `root`: `go-gitsemver.yml` matching the one
-/// committed at this repo's own root (`mode: Mainline`, `tag-prefix: v`), an initial
-/// commit tagged `v1.0.0`, then one more commit with `second_commit_message`. Mirrors
-/// this project's own `init_committed_repo` helper (`src/main.rs`) for git-fixture
-/// construction, extended with the tag + second commit criterion 1 needs.
-fn fixture_repo(root: &Path, second_commit_message: &str) {
-    git(root, &["init", "-q"]);
-    git(root, &["config", "user.email", "t@example.com"]);
-    git(root, &["config", "user.name", "t"]);
-    std::fs::write(
-        root.join("go-gitsemver.yml"),
-        "mode: Mainline\ntag-prefix: v\n",
-    )
-    .expect("write fixture go-gitsemver.yml");
-    git(root, &["add", "go-gitsemver.yml"]);
-    git(root, &["commit", "-q", "-m", "chore: initial"]);
-    git(root, &["tag", "v1.0.0"]);
-    std::fs::write(root.join("file.txt"), "second\n").expect("write fixture file");
-    git(root, &["add", "file.txt"]);
-    git(root, &["commit", "-q", "-m", second_commit_message]);
-}
-
 /// A repo tagged v1.0.0 with one further commit titled `subject` derives a version starting
 /// `prefix` under Mainline mode (`why` is the assertion's reason), never the fallback marker.
 fn assert_derives_after_the_tag(subject: &str, prefix: &str, why: &str) {
@@ -86,7 +65,7 @@ fn assert_derives_after_the_tag(subject: &str, prefix: &str, why: &str) {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), subject);
+    tagged_gitsemver_repo(dir.path(), subject);
 
     let version = gitsemver::derive_version("go-gitsemver", dir.path());
 
@@ -117,7 +96,7 @@ fn a_successful_derivation_folds_the_short_sha_into_build_metadata() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), "docs: update the readme");
 
     let version = gitsemver::derive_version("go-gitsemver", dir.path());
     let short_sha_out = Command::new("go-gitsemver")
@@ -149,7 +128,7 @@ fn tool_not_found_falls_back_to_the_crate_semver_with_an_unversioned_marker() {
     let dir = tempfile::tempdir().unwrap();
     // A fixture repo that WOULD derive successfully if the tool ran - proves the
     // fallback is driven by the tool being unreachable, not by the repo state.
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), "docs: update the readme");
 
     let version = gitsemver::derive_version("go-gitsemver-does-not-exist-xyz", dir.path());
 
@@ -172,7 +151,7 @@ fn a_successful_derivation_never_mutates_the_repositorys_git_config() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), "docs: update the readme");
 
     let config_path = dir.path().join(".git").join("config");
     let before = std::fs::read(&config_path).expect("read fixture .git/config before");
@@ -200,7 +179,7 @@ fn worktree_config_extension_never_mutated_even_though_it_defeats_derivation() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), "docs: update the readme");
     // Enable the git extension `go-gitsemver` repairs (silently strips from
     // `.git/config`) by default unless `--no-repair-worktree-config` suppresses it.
     // Verified independently before writing this test: go-gitsemver's own git library

@@ -205,19 +205,27 @@ fn scan_with_starttime(base: &Path) -> Vec<ScanEntry> {
         .collect()
 }
 
-/// The process start time from `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since
-/// boot) - the TOCTOU witness [`scan_with_starttime`] records and [`signal_if_unchanged`]
-/// re-reads immediately before signalling. Field 22 is located from the LAST `)` in the
-/// line rather than by naive whitespace-splitting, because field 2 (`comm`, the process
-/// name in parens) may itself contain spaces or parens. `None` when the process has already
-/// exited or `/proc` is unavailable.
-fn pid_starttime(pid: u32) -> Option<u64> {
+/// The ONE `/proc/<pid>/stat` parser: the `index`-th (0-based) whitespace-separated field
+/// AFTER `comm` - `0` is the state, `19` the start time (see `proc(5)`). Fields are located
+/// from the LAST `)` in the line rather than by naive whitespace-splitting, because field 2
+/// (`comm`, the process name in parens) may itself contain spaces or parens. `None` when the
+/// process has already exited, `/proc` is unavailable, or the line has no such field. Public so
+/// the test fixtures read a process's state or group through this same parser.
+pub fn stat_field_after_comm(pid: u32, index: usize) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let after_comm = stat.rsplit_once(')')?.1;
+    after_comm.split_whitespace().nth(index).map(String::from)
+}
+
+/// The process start time from `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since
+/// boot) - the TOCTOU witness [`scan_with_starttime`] records and [`signal_if_unchanged`]
+/// re-reads immediately before signalling. `None` when the process has already exited or
+/// `/proc` is unavailable.
+fn pid_starttime(pid: u32) -> Option<u64> {
     // Fields after `comm`, 1-indexed: state, ppid, pgrp, session, tty_nr, tpgid, flags,
     // minflt, cminflt, majflt, cmajflt, utime, stime, cutime, cstime, priority, nice,
     // num_threads, itrealvalue, starttime - the 20th, so index 19 (0-based).
-    after_comm.split_whitespace().nth(19)?.parse().ok()
+    stat_field_after_comm(pid, 19)?.parse().ok()
 }
 
 /// `pid`'s parent pid from `/proc/<pid>/status`'s `PPid:` field. `None` when the process is
@@ -1312,62 +1320,50 @@ mod tests {
         assert!(died, "an eligible, matching target must be signalled");
     }
 
-    #[test]
-    fn signal_if_unchanged_skips_a_starttime_mismatch() {
-        // The TOCTOU guard (spec 78): even though the pid and cwd both genuinely match, a
-        // starttime that no longer matches the scan's recorded value means the scan's
-        // identity is stale - skip rather than signal.
+    /// A live `sleep` rooted in a fresh `scratch` base whose recorded starttime is shifted by
+    /// `starttime_shift`, signalled against the base named `signal_base`, must be SKIPPED -
+    /// still alive afterwards.
+    fn assert_signal_skipped(starttime_shift: u64, signal_base: &str, why: &str) {
         let repo = FakeRepo::new();
         let base = repo.base("scratch");
-        let mut child = sleeper_in(&base);
-        let real_starttime = wait_until(|| pid_starttime(child.id()).is_some());
-        assert!(real_starttime);
-        let wrong = ScanEntry {
-            pid: child.id(),
-            starttime: pid_starttime(child.id()).unwrap().wrapping_add(1),
-        };
-        signal_if_unchanged(
-            &wrong,
-            &base,
-            std::process::id(),
-            &HashSet::new(),
-            Signal::KILL,
-        );
-        let still_alive = matches!(child.try_wait(), Ok(None));
-        cleanup(&mut child);
-        assert!(
-            still_alive,
-            "a starttime mismatch must be skipped, never signalled"
-        );
-    }
-
-    #[test]
-    fn signal_if_unchanged_skips_when_cwd_is_outside_the_given_base() {
-        // The pid and starttime both genuinely match, but the base passed in does not
-        // contain the process's cwd - must be skipped (mirrors "cwd changed" between scan
-        // and signal: from this call's point of view, it no longer matches).
-        let repo = FakeRepo::new();
-        let base = repo.base("scratch");
-        let other_base = repo.base("unrelated");
+        let signal_base = repo.base(signal_base);
         let mut child = sleeper_in(&base);
         let ready = wait_until(|| pid_starttime(child.id()).is_some());
-        assert!(ready);
+        assert!(ready, "precondition: starttime is readable");
         let target = ScanEntry {
             pid: child.id(),
-            starttime: pid_starttime(child.id()).unwrap(),
+            starttime: pid_starttime(child.id())
+                .unwrap()
+                .wrapping_add(starttime_shift),
         };
         signal_if_unchanged(
             &target,
-            &other_base,
+            &signal_base,
             std::process::id(),
             &HashSet::new(),
             Signal::KILL,
         );
         let still_alive = matches!(child.try_wait(), Ok(None));
         cleanup(&mut child);
-        assert!(
-            still_alive,
-            "a cwd outside the given base must be skipped, never signalled"
+        assert!(still_alive, "{why}");
+    }
+
+    crate::test_cases! {
+        // The TOCTOU guard (spec 78): even though the pid and cwd both genuinely match, a
+        // starttime that no longer matches the scan's recorded value means the scan's
+        // identity is stale - skip rather than signal.
+        signal_if_unchanged_skips_a_starttime_mismatch: assert_signal_skipped(
+            1,
+            "scratch",
+            "a starttime mismatch must be skipped, never signalled",
+        );
+        // The pid and starttime both genuinely match, but the base passed in does not
+        // contain the process's cwd - must be skipped (mirrors "cwd changed" between scan
+        // and signal: from this call's point of view, it no longer matches).
+        signal_if_unchanged_skips_when_cwd_is_outside_the_given_base: assert_signal_skipped(
+            0,
+            "unrelated",
+            "a cwd outside the given base must be skipped, never signalled",
         );
     }
 

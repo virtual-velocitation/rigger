@@ -248,7 +248,7 @@ fn the_suppression_predicate_groups_by_the_published_spans() {
 /// key's own `@` separator - the shape a version-pinned vendored folder really takes on disk, and
 /// the one a hand-spelled key can never prove the WRITER actually mints.
 #[cfg(feature = "symbols")]
-fn temp_project() -> tempfile::TempDir {
+fn at_sign_source_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
@@ -298,7 +298,7 @@ fn minted(root: &std::path::Path) -> Vec<(String, Event)> {
 #[cfg(feature = "symbols")]
 #[test]
 fn the_published_split_recognises_every_key_a_real_walk_mints() {
-    let dir = temp_project();
+    let dir = at_sign_source_project();
     let minted = minted(dir.path());
     assert!(
         !minted.is_empty(),

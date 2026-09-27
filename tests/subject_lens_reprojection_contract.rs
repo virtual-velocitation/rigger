@@ -88,6 +88,26 @@ fn bucket(key: &str, count: usize, label: Option<&str>) -> Cluster {
     }
 }
 
+/// Re-projecting `subject` of `graph` under the lens named `lens_name` yields a member set of
+/// `total`, exactly `clusters`, and the empty-state caption `empty_state`.
+fn reprojects_to(
+    graph: Graph,
+    subject: &str,
+    lens_name: &str,
+    total: usize,
+    clusters: Vec<Cluster>,
+    empty_state: Option<&str>,
+) {
+    let re = reproject(&graph, subject, &lens(lens_name));
+    assert_eq!(re.total, total, "the member-set size: {re:?}");
+    assert_eq!(re.clusters, clusters, "the re-grained clusters: {re:?}");
+    assert_eq!(
+        re.empty_state.as_deref(),
+        empty_state,
+        "the empty-state caption: {re:?}"
+    );
+}
+
 // --- the LENS axis: the Concepts fold, on a COMMUNITY subject --------------------------------------
 
 const COMMUNITY: &str = "community/1/9";
@@ -186,47 +206,40 @@ const NOKIND_COMMUNITY: &str = "community/1/10";
 const NOKIND_DECISION: &str = "d-u63c4-a-non-code-realizer";
 const NOKIND_ENTITY: &str = "src/d/m5.rs::m5";
 
-/// Spec 63 CRITERION 4's POSITIVE half, mirroring
-/// `concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs` at the
-/// RE-PROJECTION surface (a DIFFERENT code path from `clustered_overview` / `cluster_detail`): a
-/// concept realized by a NON-code-entity node (a decision) folds into that concept's bucket exactly
-/// like a code entity would - kind is never a filtering axis for concept membership, so
-/// `reprojection_lens_key`'s Concepts arm must admit by MEMBERSHIP alone, never by kind, the same
-/// way the whole-graph surface already does.
-#[test]
-fn reprojection_admits_a_realizing_member_of_any_kind_under_the_concepts_lens() {
-    let graph = Graph {
-        nodes: vec![
-            node(NOKIND_COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
-            node(NOKIND_CONCEPT, KIND_CONCEPT, Some("the idea")),
-            def(NOKIND_ENTITY, "m5"),
-            decision(NOKIND_DECISION, "why this matters"),
-        ],
-        edges: vec![
-            // Both members belong to the re-projected community subject.
-            edge(NOKIND_ENTITY, NOKIND_COMMUNITY, REL_IN_COMMUNITY),
-            edge(NOKIND_DECISION, NOKIND_COMMUNITY, REL_IN_COMMUNITY),
-            // Both realize the SAME concept - one a code entity, one a decision.
-            edge(NOKIND_ENTITY, NOKIND_CONCEPT, REL_REALIZES),
-            edge(NOKIND_DECISION, NOKIND_CONCEPT, REL_REALIZES),
-        ],
-    };
-
-    let re = reproject(&graph, NOKIND_COMMUNITY, &lens("concepts"));
-    assert_eq!(
-        re.total, 2,
-        "the member-set size counts both realizers: {re:?}"
-    );
-    assert_eq!(
-        re.clusters,
+rigger::test_cases! {
+    /// Spec 63 CRITERION 4's POSITIVE half, mirroring
+    /// `concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs` at the
+    /// RE-PROJECTION surface (a DIFFERENT code path from `clustered_overview` / `cluster_detail`): a
+    /// concept realized by a NON-code-entity node (a decision) folds into that concept's bucket exactly
+    /// like a code entity would - kind is never a filtering axis for concept membership, so
+    /// `reprojection_lens_key`'s Concepts arm must admit by MEMBERSHIP alone, never by kind, the same
+    /// way the whole-graph surface already does.
+    reprojection_admits_a_realizing_member_of_any_kind_under_the_concepts_lens: reprojects_to(
+        Graph {
+            nodes: vec![
+                node(NOKIND_COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
+                node(NOKIND_CONCEPT, KIND_CONCEPT, Some("the idea")),
+                def(NOKIND_ENTITY, "m5"),
+                decision(NOKIND_DECISION, "why this matters"),
+            ],
+            edges: vec![
+                // Both members belong to the re-projected community subject.
+                edge(NOKIND_ENTITY, NOKIND_COMMUNITY, REL_IN_COMMUNITY),
+                edge(NOKIND_DECISION, NOKIND_COMMUNITY, REL_IN_COMMUNITY),
+                // Both realize the SAME concept - one a code entity, one a decision.
+                edge(NOKIND_ENTITY, NOKIND_CONCEPT, REL_REALIZES),
+                edge(NOKIND_DECISION, NOKIND_CONCEPT, REL_REALIZES),
+            ],
+        },
+        NOKIND_COMMUNITY,
+        "concepts",
+        // The member-set size counts both realizers.
+        2,
+        // The decision realizer folds into the SAME concept bucket as the code entity -
+        // membership, not kind, is the only filter under the concepts lens here too.
         vec![bucket(NOKIND_CONCEPT, 2, Some("the idea"))],
-        "the decision realizer folds into the SAME concept bucket as the code entity - membership, \
-         not kind, is the only filter under the concepts lens at the re-projection surface too: \
-         {re:?}"
-    );
-    assert_eq!(
-        re.empty_state, None,
-        "a real concept membership landed a full cluster, so no additive caption: {re:?}"
+        // A real concept membership landed a full cluster, so no additive caption.
+        None,
     );
 }
 
@@ -234,43 +247,35 @@ const BLANK_COMMUNITY: &str = "community/1/11";
 const BLANK_ENTITY: &str = "src/d/m6.rs::m6";
 const BLANK_DECISION: &str = "d-u63c4-no-concept-at-all";
 
-/// Spec 63 CRITERION 4's empty-cell re-check, mirroring
-/// `reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded`'s Code-lens
-/// precedent for the Concepts lens: when NO member of the re-projected subject realizes ANY concept
-/// at this grain, the cell must carry the documented [`REPROJECT_NO_CONCEPT`] caption rather than go
-/// silently blank (`clusters: []` with `empty_state: None`) - regardless of the members' own kinds,
-/// and regardless of any OTHER (non-concept) membership they might genuinely carry.
-#[test]
-fn reprojection_carries_empty_state_when_no_member_realizes_any_concept_under_the_concepts_lens() {
-    let graph = Graph {
-        nodes: vec![
-            node(BLANK_COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
-            def(BLANK_ENTITY, "m6"),
-            decision(BLANK_DECISION, "unrelated to any concept"),
-        ],
-        edges: vec![
-            // Both members carry a genuine (non-concept) IN_COMMUNITY membership, but NEITHER
-            // realizes any concept.
-            edge(BLANK_ENTITY, BLANK_COMMUNITY, REL_IN_COMMUNITY),
-            edge(BLANK_DECISION, BLANK_COMMUNITY, REL_IN_COMMUNITY),
-        ],
-    };
-
-    let re = reproject(&graph, BLANK_COMMUNITY, &lens("concepts"));
-    assert_eq!(
-        re.total, 2,
-        "the member-set size still counts both members: {re:?}"
-    );
-    assert!(
-        re.clusters.is_empty(),
-        "neither member realizes any concept, so no cluster forms - and NEITHER spawns its own kind \
-         bucket, purity being total under the concepts lens: {re:?}"
-    );
-    assert_eq!(
-        re.empty_state.as_deref(),
+rigger::test_cases! {
+    /// Spec 63 CRITERION 4's empty-cell re-check, mirroring
+    /// `reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded`'s Code-lens
+    /// precedent for the Concepts lens: when NO member of the re-projected subject realizes ANY concept
+    /// at this grain, the cell must carry the documented [`REPROJECT_NO_CONCEPT`] caption rather than go
+    /// silently blank (`clusters: []` with `empty_state: None`) - regardless of the members' own kinds,
+    /// and regardless of any OTHER (non-concept) membership they might genuinely carry.
+    reprojection_carries_empty_state_when_no_member_realizes_any_concept_under_the_concepts_lens: reprojects_to(
+        Graph {
+            nodes: vec![
+                node(BLANK_COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
+                def(BLANK_ENTITY, "m6"),
+                decision(BLANK_DECISION, "unrelated to any concept"),
+            ],
+            edges: vec![
+                // Both members carry a genuine (non-concept) IN_COMMUNITY membership, but NEITHER
+                // realizes any concept.
+                edge(BLANK_ENTITY, BLANK_COMMUNITY, REL_IN_COMMUNITY),
+                edge(BLANK_DECISION, BLANK_COMMUNITY, REL_IN_COMMUNITY),
+            ],
+        },
+        BLANK_COMMUNITY,
+        "concepts",
+        // The member-set size still counts both members.
+        2,
+        // Neither member realizes any concept, so no cluster forms - and NEITHER spawns its own
+        // kind bucket, purity being total under the concepts lens.
+        vec![],
         Some(REPROJECT_NO_CONCEPT),
-        "a blank cell (clusters: [] AND empty_state: None) is never a valid re-projection body - the \
-         documented empty-state message must appear instead: {re:?}"
     );
 }
 
@@ -428,47 +433,40 @@ const PURITY_COMMUNITY: &str = "community/1/5";
 const PURITY_ENTITY: &str = "src/alpha/m.rs::m";
 const PURITY_DECISION: &str = "d-u63c1-a-non-code-realizer";
 
-/// Spec 63 CRITERION 1 (CODE-LENS PURITY, the subjects-only rule), on the RE-PROJECTION surface
-/// (`reproject_derived`, a DIFFERENT code path from `clustered_overview` / `cluster_detail` - the
-/// whole-graph surface `code_lens_excludes_a_membership_less_code_entity_entirely` already pins): a
-/// concept realized by a NON-code-entity node (a decision - `REALIZES` is never restricted to code
-/// entities, exactly as spec 53 already lets a non-code-entity carry a live `IN_COMMUNITY`
-/// membership) must carry NO bucket at all once the concept's member set is re-bucketed under the
-/// CODE lens - not even a `decision` KIND bucket - so a storage-schema kind name never becomes a
-/// cluster key on the shared code-lens tab, at the whole-graph OR the re-projected surface.
-#[test]
-fn reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens() {
-    let graph = Graph {
-        nodes: vec![
-            node(PURITY_CONCEPT, KIND_CONCEPT, Some("the idea")),
-            node(PURITY_COMMUNITY, KIND_COMMUNITY, Some("alpha")),
-            decision(PURITY_DECISION, "why this matters"),
-            def(PURITY_ENTITY, "m"),
-        ],
-        edges: vec![
-            // The concept's REALIZES members: a real code entity AND a decision.
-            edge(PURITY_ENTITY, PURITY_CONCEPT, REL_REALIZES),
-            edge(PURITY_DECISION, PURITY_CONCEPT, REL_REALIZES),
-            // The code entity's own community membership, so its bucket is non-empty.
-            edge(PURITY_ENTITY, PURITY_COMMUNITY, REL_IN_COMMUNITY),
-        ],
-    };
-
-    let re = reproject(&graph, PURITY_CONCEPT, &lens("code"));
-    assert_eq!(
-        re.total, 2,
-        "the member-set size still counts the decision realizer, even though it folds into nothing"
-    );
-    assert_eq!(
-        re.clusters,
+rigger::test_cases! {
+    /// Spec 63 CRITERION 1 (CODE-LENS PURITY, the subjects-only rule), on the RE-PROJECTION surface
+    /// (`reproject_derived`, a DIFFERENT code path from `clustered_overview` / `cluster_detail` - the
+    /// whole-graph surface `code_lens_excludes_a_membership_less_code_entity_entirely` already pins): a
+    /// concept realized by a NON-code-entity node (a decision - `REALIZES` is never restricted to code
+    /// entities, exactly as spec 53 already lets a non-code-entity carry a live `IN_COMMUNITY`
+    /// membership) must carry NO bucket at all once the concept's member set is re-bucketed under the
+    /// CODE lens - not even a `decision` KIND bucket - so a storage-schema kind name never becomes a
+    /// cluster key on the shared code-lens tab, at the whole-graph OR the re-projected surface.
+    reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens: reprojects_to(
+        Graph {
+            nodes: vec![
+                node(PURITY_CONCEPT, KIND_CONCEPT, Some("the idea")),
+                node(PURITY_COMMUNITY, KIND_COMMUNITY, Some("alpha")),
+                decision(PURITY_DECISION, "why this matters"),
+                def(PURITY_ENTITY, "m"),
+            ],
+            edges: vec![
+                // The concept's REALIZES members: a real code entity AND a decision.
+                edge(PURITY_ENTITY, PURITY_CONCEPT, REL_REALIZES),
+                edge(PURITY_DECISION, PURITY_CONCEPT, REL_REALIZES),
+                // The code entity's own community membership, so its bucket is non-empty.
+                edge(PURITY_ENTITY, PURITY_COMMUNITY, REL_IN_COMMUNITY),
+            ],
+        },
+        PURITY_CONCEPT,
+        "code",
+        // The member-set size still counts the decision realizer, even though it folds into
+        // nothing.
+        2,
+        // The decision realizer never spawns its own kind bucket under the code lens - the ONLY
+        // cluster is the real community the code entity joined.
         vec![bucket(PURITY_COMMUNITY, 1, Some("alpha"))],
-        "the decision realizer never spawns its own kind bucket under the code lens - the ONLY \
-         cluster is the real community the code entity joined: {re:?}"
-    );
-    assert!(
-        re.clusters.iter().all(|c| c.key != KIND_DECISION),
-        "no decision KIND bucket - the exact storage-schema-name leak this criterion fixes - ever \
-         appears as a cluster key in a re-projection: {re:?}"
+        None,
     );
 }
 
@@ -477,45 +475,43 @@ const INFLATE_COMMUNITY: &str = "community/1/6";
 const INFLATE_ENTITY: &str = "src/beta/n.rs::n";
 const INFLATE_DECISION: &str = "d-u63c1-a-non-code-community-member";
 
-/// Spec 63 CRITERION 1, the STRICTER form on the RE-PROJECTION surface:
-/// `reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens` above proves a
-/// membership-LESS non-code-entity realizer spawns no bucket of its own; a realizer that ALSO carries
-/// its OWN live `IN_COMMUNITY` membership (spec 53: never restricted to code entities) is the harder
-/// case - `Buckets::key` would otherwise fold it into that SAME community bucket, INFLATING its member
-/// count rather than leaking a separate key. `reprojection_lens_key` excludes by KIND unconditionally,
-/// before ever consulting membership, so this must hold too; mirrors
-/// `code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membership`, which pins the
-/// identical inflation guard on the whole-graph surface.
-#[test]
-fn reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community_membership() {
-    let graph = Graph {
-        nodes: vec![
-            node(INFLATE_CONCEPT, KIND_CONCEPT, Some("the idea")),
-            node(INFLATE_COMMUNITY, KIND_COMMUNITY, Some("beta")),
-            decision(INFLATE_DECISION, "why this also matters"),
-            def(INFLATE_ENTITY, "n"),
-        ],
-        edges: vec![
-            // The concept's REALIZES members: a real code entity AND a decision.
-            edge(INFLATE_ENTITY, INFLATE_CONCEPT, REL_REALIZES),
-            edge(INFLATE_DECISION, INFLATE_CONCEPT, REL_REALIZES),
-            // BOTH realizers join the SAME community - the decision's membership is genuine, not
-            // absent, so a broken guard would fold it into the community bucket alongside the entity.
-            edge(INFLATE_ENTITY, INFLATE_COMMUNITY, REL_IN_COMMUNITY),
-            edge(INFLATE_DECISION, INFLATE_COMMUNITY, REL_IN_COMMUNITY),
-        ],
-    };
-
-    let re = reproject(&graph, INFLATE_CONCEPT, &lens("code"));
-    assert_eq!(
-        re.total, 2,
-        "the member-set size still counts the decision realizer"
-    );
-    assert_eq!(
-        re.clusters,
+rigger::test_cases! {
+    /// Spec 63 CRITERION 1, the STRICTER form on the RE-PROJECTION surface:
+    /// `reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens` above proves a
+    /// membership-LESS non-code-entity realizer spawns no bucket of its own; a realizer that ALSO carries
+    /// its OWN live `IN_COMMUNITY` membership (spec 53: never restricted to code entities) is the harder
+    /// case - `Buckets::key` would otherwise fold it into that SAME community bucket, INFLATING its member
+    /// count rather than leaking a separate key. `reprojection_lens_key` excludes by KIND unconditionally,
+    /// before ever consulting membership, so this must hold too; mirrors
+    /// `code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membership`, which pins the
+    /// identical inflation guard on the whole-graph surface.
+    reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community_membership: reprojects_to(
+        Graph {
+            nodes: vec![
+                node(INFLATE_CONCEPT, KIND_CONCEPT, Some("the idea")),
+                node(INFLATE_COMMUNITY, KIND_COMMUNITY, Some("beta")),
+                decision(INFLATE_DECISION, "why this also matters"),
+                def(INFLATE_ENTITY, "n"),
+            ],
+            edges: vec![
+                // The concept's REALIZES members: a real code entity AND a decision.
+                edge(INFLATE_ENTITY, INFLATE_CONCEPT, REL_REALIZES),
+                edge(INFLATE_DECISION, INFLATE_CONCEPT, REL_REALIZES),
+                // BOTH realizers join the SAME community - the decision's membership is genuine,
+                // not absent, so a broken guard would fold it into the community bucket alongside
+                // the entity.
+                edge(INFLATE_ENTITY, INFLATE_COMMUNITY, REL_IN_COMMUNITY),
+                edge(INFLATE_DECISION, INFLATE_COMMUNITY, REL_IN_COMMUNITY),
+            ],
+        },
+        INFLATE_CONCEPT,
+        "code",
+        // The member-set size still counts the decision realizer.
+        2,
+        // The ONE cluster is the community, sized 1 - the decision's own membership in that SAME
+        // community never inflates the count to 2.
         vec![bucket(INFLATE_COMMUNITY, 1, Some("beta"))],
-        "the ONE cluster is the community, sized 1 - the decision's own membership in that SAME \
-         community never inflates the count to 2: {re:?}"
+        None,
     );
 }
 
@@ -523,47 +519,38 @@ const SOLE_CONCEPT: &str = "concept/1/7";
 const SOLE_COMMUNITY: &str = "community/1/7";
 const SOLE_DECISION: &str = "d-u63c1-sole-realizer-purity-excluded";
 
-/// Spec 63 CRITERION 1, round-2's OWN regression: a concept realized by a SINGLE member, and that
-/// member is purity-excluded under the code lens (a decision, never a code entity) yet carries a
-/// GENUINE live `IN_COMMUNITY` membership. `reprojection_lens_key` correctly excludes the decision from
-/// the cluster fold (so `clusters` is empty - no storage-schema-kind bucket, no inflated community),
-/// but `has_derived_bucket` must ALSO honor that same exclusion when it decides whether the cell is
-/// "empty" (spec 55 c2): reading the RAW `buckets.membership` (ungated) sees the decision's genuine
-/// membership and wrongly concludes the cell is full, yielding `clusters: []` AND `empty_state: None`
-/// simultaneously - a silent, unexplained blank the panel cannot present. The one member that DOES
-/// carry a membership is exactly the one member `reprojection_lens_key` says never forms a bucket, so
-/// the cell must fall back to the documented empty-state message, not go blank.
-#[test]
-fn reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded() {
-    let graph = Graph {
-        nodes: vec![
-            node(SOLE_CONCEPT, KIND_CONCEPT, Some("the idea")),
-            node(SOLE_COMMUNITY, KIND_COMMUNITY, Some("gamma")),
-            decision(SOLE_DECISION, "why this also matters"),
-        ],
-        edges: vec![
-            // The concept's ONLY realizer is the decision - no code entity co-realizes it.
-            edge(SOLE_DECISION, SOLE_CONCEPT, REL_REALIZES),
-            // The decision's OWN membership is genuine, not absent.
-            edge(SOLE_DECISION, SOLE_COMMUNITY, REL_IN_COMMUNITY),
-        ],
-    };
-
-    let re = reproject(&graph, SOLE_CONCEPT, &lens("code"));
-    assert_eq!(
-        re.total, 1,
-        "the member-set size still counts the decision realizer: {re:?}"
-    );
-    assert!(
-        re.clusters.is_empty(),
-        "the purity-excluded decision spawns no cluster of its own: {re:?}"
-    );
-    assert_eq!(
-        re.empty_state.as_deref(),
+rigger::test_cases! {
+    /// Spec 63 CRITERION 1, round-2's OWN regression: a concept realized by a SINGLE member, and that
+    /// member is purity-excluded under the code lens (a decision, never a code entity) yet carries a
+    /// GENUINE live `IN_COMMUNITY` membership. `reprojection_lens_key` correctly excludes the decision from
+    /// the cluster fold (so `clusters` is empty - no storage-schema-kind bucket, no inflated community),
+    /// but `has_derived_bucket` must ALSO honor that same exclusion when it decides whether the cell is
+    /// "empty" (spec 55 c2): reading the RAW `buckets.membership` (ungated) sees the decision's genuine
+    /// membership and wrongly concludes the cell is full, yielding `clusters: []` AND `empty_state: None`
+    /// simultaneously - a silent, unexplained blank the panel cannot present. The one member that DOES
+    /// carry a membership is exactly the one member `reprojection_lens_key` says never forms a bucket, so
+    /// the cell must fall back to the documented empty-state message, not go blank.
+    reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded: reprojects_to(
+        Graph {
+            nodes: vec![
+                node(SOLE_CONCEPT, KIND_CONCEPT, Some("the idea")),
+                node(SOLE_COMMUNITY, KIND_COMMUNITY, Some("gamma")),
+                decision(SOLE_DECISION, "why this also matters"),
+            ],
+            edges: vec![
+                // The concept's ONLY realizer is the decision - no code entity co-realizes it.
+                edge(SOLE_DECISION, SOLE_CONCEPT, REL_REALIZES),
+                // The decision's OWN membership is genuine, not absent.
+                edge(SOLE_DECISION, SOLE_COMMUNITY, REL_IN_COMMUNITY),
+            ],
+        },
+        SOLE_CONCEPT,
+        "code",
+        // The member-set size still counts the decision realizer.
+        1,
+        // The purity-excluded decision spawns no cluster of its own.
+        vec![],
         Some(REPROJECT_NO_COMMUNITY),
-        "a blank cell (clusters: [] AND empty_state: None) is never a valid re-projection body - the \
-         sole realizer's membership does not count as a DERIVED bucket once purity-excluded, so the \
-         documented empty-state message must appear instead: {re:?}"
     );
 }
 

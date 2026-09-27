@@ -32,18 +32,10 @@ use std::process::Command;
 
 use common::cli::run_rigger;
 use common::cli::seed_store;
+use common::cli::temp_project;
 use common::fixtures::write_file;
 use rigger::budget::BuildBudget;
 use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner};
-
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
 
 /// The shared gate build cache's entry name under the default scratch root.
 const SHARED_CACHE: &str = "cargo-target";

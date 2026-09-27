@@ -28,24 +28,13 @@
 //!    the event's own body prose falsely claims a different model.
 
 use std::path::Path;
-use std::process::Command;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
 use common::cli::run_rigger;
-
-/// A throwaway project dir that is its own git repo, mirroring `tests/cli.rs::temp_project`
-/// (private to that file, unreachable from this separate integration-test binary).
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use common::cli::temp_project;
 
 /// Seed `<root>/.rigger/events.db` under `project` with TWO runs (`r1`, `r2`) on the
 /// conductor's run stream. `run1`/`run2` each list this run's `(alias, resolved)` pairs; a
@@ -124,15 +113,14 @@ fn prose_claiming(model: &str) -> String {
     format!(r#"done reviewing. {{"resolved_model":"{model}"}}"#)
 }
 
-/// UNATTRIBUTED: a tier (`opus`) that reported no resolved-model metadata in the current run -
-/// the in-process cli-driver/canary path's exact shape, which has no metadata channel at all -
-/// is excluded from the drift comparison entirely, not compared as if it were empty, even
-/// though its own event body carries prose shaped like a model claim. A second tier (`lens`)
-/// resolves identically in both runs so the current run genuinely IS model-bearing (comparison
-/// runs at all, rather than trivially passing for lack of any baseline).
-#[test]
-fn canary_and_validate_treat_an_unattributed_tier_as_unmeasured_never_defaulted_from_output_prose()
-{
+/// A `rigger init`ed project whose store is [`seed_two_runs`]-seeded under `project` with
+/// `run1` then `run2`, the current run's output prose claiming `prose_r2`.
+fn seeded_project(
+    project: &str,
+    run1: &[(&str, Option<&str>)],
+    run2: &[(&str, Option<&str>)],
+    prose_r2: &str,
+) -> tempfile::TempDir {
     let dir = temp_project();
     let root = dir.path();
     let (_o, err, ok) = run_rigger(root, &["init"]);
@@ -140,9 +128,53 @@ fn canary_and_validate_treat_an_unattributed_tier_as_unmeasured_never_defaulted_
         ok,
         "rigger init must scaffold a valid config; stderr:\n{err}"
     );
+    seed_two_runs(root, project, run1, run2, "", prose_r2);
+    dir
+}
 
-    seed_two_runs(
+/// Neither `rigger validate` nor `rigger canary --if-model-changed` sees drift in `root`:
+/// validate succeeds with its config summary and no drift warning naming any of `never_named`,
+/// and the canary drift gate stays shut.
+fn assert_no_drift_seen(root: &Path, never_named: &[&str]) {
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate still prints its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.to_lowercase().contains("resolved model id changed"),
+        "no genuine metadata change, so no drift warning; stderr:\n{err}"
+    );
+    for text in never_named {
+        assert!(
+            !err.contains(text),
+            "{text:?} must never reach validate's output; stderr:\n{err}"
+        );
+    }
+
+    let (out, _err, ok) = run_rigger(
         root,
+        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
+    );
+    assert!(
+        ok && out.contains("no resolved-model change") && out.contains("skipping"),
+        "the canary drift gate must not open; stdout:\n{out}"
+    );
+}
+
+/// UNATTRIBUTED: a tier (`opus`) that reported no resolved-model metadata in the current run -
+/// the in-process cli-driver/canary path's exact shape, which has no metadata channel at all -
+/// is excluded from the drift comparison entirely, not compared as if it were empty, even
+/// though its own event body carries prose shaped like a model claim. A second tier (`lens`)
+/// resolves identically in both runs so the current run genuinely IS model-bearing (comparison
+/// runs at all, rather than trivially passing for lack of any baseline). Neither the
+/// unattributed tier's alias nor the prose-embedded fake model id may appear in a drift
+/// advisory at all.
+#[test]
+fn canary_and_validate_treat_an_unattributed_tier_as_unmeasured_never_defaulted_from_output_prose()
+{
+    let dir = seeded_project(
         "canary-unattributed",
         &[
             ("opus", Some("claude-opus-4-1")),
@@ -152,38 +184,9 @@ fn canary_and_validate_treat_an_unattributed_tier_as_unmeasured_never_defaulted_
         // its own body) but with no resolved-model metadata - the unattributed shape - while
         // `lens` resolves identically to run1 so the current run genuinely is model-bearing.
         &[("opus", None), ("lens", Some("claude-sonnet-4-2"))],
-        "",
         &prose_claiming("claude-opus-9-fake-from-prose"),
     );
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
-    assert!(
-        out.contains("config valid"),
-        "validate still prints its config summary; stdout:\n{out}"
-    );
-    assert!(
-        !err.to_lowercase().contains("resolved model id changed"),
-        "an unattributed tier (no metadata this run) must draw NO drift warning - lens is \
-         unchanged and opus is unmeasured, not a comparable value; stderr:\n{err}"
-    );
-    assert!(
-        !err.contains("opus"),
-        "the unattributed tier's alias must not appear in a drift advisory at all; stderr:\n{err}"
-    );
-    assert!(
-        !err.contains("claude-opus-9-fake-from-prose"),
-        "the prose-embedded fake model id must never leak into validate's output; stderr:\n{err}"
-    );
-
-    let (out, _err, ok) = run_rigger(
-        root,
-        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
-    );
-    assert!(
-        ok && out.contains("no resolved-model change") && out.contains("skipping"),
-        "an unattributed tier must not open the canary drift gate either; stdout:\n{out}"
-    );
+    assert_no_drift_seen(dir.path(), &["opus", "claude-opus-9-fake-from-prose"]);
 }
 
 /// MASK and FORGE resistance: the drift comparison reads ONLY structured metadata, so a
@@ -196,21 +199,13 @@ fn canary_and_validate_treat_an_unattributed_tier_as_unmeasured_never_defaulted_
 fn canary_and_validate_drift_reads_only_metadata_prose_can_neither_mask_nor_forge_it() {
     // MASK: the metadata genuinely re-points opus, but the current run's output prose lies
     // that nothing changed (claims the PREVIOUS model). The real re-point must still surface.
-    let mask = temp_project();
-    let mroot = mask.path();
-    let (_o, err, ok) = run_rigger(mroot, &["init"]);
-    assert!(
-        ok,
-        "rigger init must scaffold a valid config; stderr:\n{err}"
-    );
-    seed_two_runs(
-        mroot,
+    let mask = seeded_project(
         "canary-mask",
         &[("opus", Some("claude-opus-4-1"))],
         &[("opus", Some("claude-opus-4-8"))],
-        "",
         &prose_claiming("claude-opus-4-1"),
     );
+    let mroot = mask.path();
     let (_out, err, ok) = run_rigger(mroot, &["validate"]);
     assert!(ok, "validate WARNS but still exits 0; stderr:\n{err}");
     assert!(
@@ -231,46 +226,13 @@ fn canary_and_validate_drift_reads_only_metadata_prose_can_neither_mask_nor_forg
     );
 
     // FORGE: the metadata is UNCHANGED, but the current run's output prose lies that the
-    // model re-pointed. No warning, no gate-open - the lie manufactures nothing.
-    let forge = temp_project();
-    let froot = forge.path();
-    let (_o, err, ok) = run_rigger(froot, &["init"]);
-    assert!(
-        ok,
-        "rigger init must scaffold a valid config; stderr:\n{err}"
-    );
-    seed_two_runs(
-        froot,
+    // model re-pointed. No warning, no gate-open - the lie manufactures nothing, and the
+    // forged model id never leaks into validate's output.
+    let forge = seeded_project(
         "canary-forge",
         &[("opus", Some("claude-opus-4-1"))],
         &[("opus", Some("claude-opus-4-1"))],
-        "",
         &prose_claiming("claude-opus-4-1-lying-that-it-repointed"),
     );
-    let (out, err, ok) = run_rigger(froot, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed on a steady model; stderr:\n{err}"
-    );
-    assert!(
-        out.contains("config valid"),
-        "validate still prints its config summary; stdout:\n{out}"
-    );
-    assert!(
-        !err.to_lowercase().contains("resolved model id changed"),
-        "an unchanged metadata value must NOT warn just because the output prose lies about \
-         a re-point; stderr:\n{err}"
-    );
-    assert!(
-        !err.contains("claude-opus-4-1-lying-that-it-repointed"),
-        "the forged model id must never leak into validate's output; stderr:\n{err}"
-    );
-    let (out, _err, ok) = run_rigger(
-        froot,
-        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
-    );
-    assert!(
-        ok && out.contains("no resolved-model change") && out.contains("skipping"),
-        "the canary drift gate must not open on a forged prose claim; stdout:\n{out}"
-    );
+    assert_no_drift_seen(forge.path(), &["claude-opus-4-1-lying-that-it-repointed"]);
 }

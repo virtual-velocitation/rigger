@@ -33,6 +33,7 @@ use common::fixtures::star_graph;
 use common::fixtures::tool_available;
 use common::served::body_of;
 use common::served::page_script;
+use common::served::try_fetch_served;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
     REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
@@ -75,82 +76,13 @@ fn fixture_graph() -> Graph {
     }
 }
 
-/// Start `serve` on a FRESH ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
-/// provider, and return the raw HTTP response - or `None` on a genuine socket-level failure.
-///
-/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. That is
-/// load-bearing, not tidiness: the earlier shape (bind port 0, read the port, DROP the listener, let
-/// `serve` re-bind it) left the port free for the whole handoff window, so a sibling test's `bind(0)`
-/// in this same binary could be handed the port this attempt had just released. One `serve` then won
-/// the re-bind and the loser's client CONNECTED SUCCESSFULLY to it, reading a well-formed `200` whose
-/// body was the OTHER test's fixture graph - a CONTENT failure the connect-error retry could not see
-/// and the caller's assertions then read as a defect in the route (observed under parallel load as
-/// `find(id == "hub")` on a node list that never held a hub). Owning the port from `bind` through
-/// `serve_on` closes that window by construction: no other binder can be handed a port this process
-/// never released, so a response returned here is always this attempt's own server's.
-fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    // The `/api/graph` route now reads through the SEPARATE lazy graph provider (spec 45,
-    // criterion 1), NOT the polled tuple's graph, so the fixture graph is what `graph_provider`
-    // yields; the polled provider still carries a run-seeded slice for the state poll (unused here).
-    let graph_provider = {
-        let graph = graph.clone();
-        move |_instance: Option<&str>| -> Graph { graph.clone() }
-    };
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), graph.clone(), Vec::new(), HashMap::new()))
-    };
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    // The port is already bound and listening, so this connect succeeds on its first pass; the budget
-    // survives only as a guard against a scheduler stall between the bind and the first accept.
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    };
-
-    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    if client.write_all(req.as_bytes()).is_err() {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
-}
-
 /// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, RETRYING on
 /// a socket-level transient (see [`try_fetch_served`], which owns its port from `bind` through
 /// `serve_on` so an attempt can never return another server's response). Each attempt is independent,
 /// so the guard is deterministic without weakening what it proves.
 fn fetch_served(path: &str, graph: &Graph) -> String {
     for _ in 0..200 {
-        if let Some(resp) = try_fetch_served(path, graph.clone()) {
+        if let Some(resp) = try_fetch_served(path, graph.clone(), graph.clone()) {
             return resp;
         }
     }
@@ -229,6 +161,41 @@ fn the_served_graph_route_returns_a_tier_tagged_seeded_neighborhood() {
     );
 }
 
+/// The body of `GET /` over the real serve socket, asserted to be a 200 HTML page.
+fn served_root_page() -> String {
+    let resp = fetch_served("/", &fixture_graph());
+    assert!(
+        resp.starts_with("HTTP/1.1 200 OK") && resp.contains("text/html"),
+        "GET / returns a 200 HTML page over the real serve socket:\n{resp}"
+    );
+    body_of(&resp).to_string()
+}
+
+/// The served page's `render()` never touches `el("kgpanel")`, so an operator's selection in the
+/// KG panel survives the live poll.
+fn assert_render_never_touches_the_kg_panel(page: &str) {
+    let r = page
+        .find("function render(state)")
+        .expect("the served page carries render()");
+    let render_end = page[r..]
+        .find("\n// The run-tree spine")
+        .map(|i| r + i)
+        .expect("render() ends before the tree helpers");
+    assert!(
+        !page[r..render_end].contains("kgpanel"),
+        "render() must NOT touch the KG panel, so a selection survives the live poll"
+    );
+}
+
+/// [`served_root_page`], asserted to carry every needle of each `(needles, why)` group.
+fn served_root_page_carrying(groups: &[(&[&str], &str)]) -> String {
+    let page = served_root_page();
+    for (needles, why) in groups {
+        assert!(needles.iter().all(|n| page.contains(n)), "{why}");
+    }
+    page
+}
+
 /// The SERVED root page ships the unified-KG detail PANEL and the SELECT-TO-SEED wiring c5 owns: the
 /// `kgpanel` render region, the read-only `GET /api/graph?seed=` fetch keyed on the selected node,
 /// the `data-seed` handle the tree nodes carry, and the single delegated listener that maps a click
@@ -236,12 +203,7 @@ fn the_served_graph_route_returns_a_tier_tagged_seeded_neighborhood() {
 /// or `fetch` some OTHER panel emits cannot satisfy it.
 #[test]
 fn the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring() {
-    let resp = fetch_served("/", &fixture_graph());
-    assert!(
-        resp.starts_with("HTTP/1.1 200 OK") && resp.contains("text/html"),
-        "GET / returns a 200 HTML page over the real serve socket:\n{resp}"
-    );
-    let page = body_of(&resp);
+    let page = &served_root_page();
 
     // The KG detail panel ships as its own render region.
     assert!(
@@ -279,19 +241,9 @@ fn the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring() {
         page.contains("tierClass(") && page.contains("kgedge"),
         "the KG panel must render each edge with its confidence-tier badge"
     );
-    // The panel is NOT written by render(): render() must never touch el("kgpanel"), so an operator
-    // selection survives the live poll. (The runtime guard below proves the survival behaviorally.)
-    let r = page
-        .find("function render(state)")
-        .expect("the served page carries render()");
-    let render_end = page[r..]
-        .find("\n// The run-tree spine")
-        .map(|i| r + i)
-        .expect("render() ends before the tree helpers");
-    assert!(
-        !page[r..render_end].contains("kgpanel"),
-        "render() must NOT touch the KG panel, so an operator's selection survives the live poll"
-    );
+    // The panel is NOT written by render(), so an operator selection survives the live poll. (The
+    // runtime guard below proves the survival behaviorally.)
+    assert_render_never_touches_the_kg_panel(page);
 }
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN select-to-seed path: it
@@ -654,55 +606,41 @@ fn the_served_graph_route_flags_god_nodes_and_returns_the_query_path() {
     );
 }
 
-/// The SERVED root page ships the c6 client rendering: a GOD-NODE badge keyed off the server's `god`
-/// flag + `degree`, the QUERY-PATH highlight keyed off the returned `path`, and the shift-click that
-/// selects a second node and fetches the `from=&to=` path over the read-only route. Structural, but
-/// bound to the c6 mechanism so some OTHER panel's markup cannot satisfy it.
-#[test]
-fn the_served_root_page_renders_god_nodes_and_the_query_path() {
-    let resp = fetch_served("/", &fixture_graph());
-    assert!(
-        resp.starts_with("HTTP/1.1 200 OK") && resp.contains("text/html"),
-        "GET / returns a 200 HTML page over the real serve socket:\n{resp}"
-    );
-    let page = body_of(&resp);
-
-    // The god-node badge is conditional on the server's `god` flag and shows the `degree`.
-    assert!(
-        page.contains("n.god ?") && page.contains("kggod"),
-        "the page must render a god-node badge conditioned on n.god"
-    );
-    assert!(
-        page.contains("n.degree"),
-        "the god-node badge must show the node's in-neighborhood degree"
-    );
-    // The query-path highlight is keyed off the returned `path`, applied to nodes AND edges.
-    assert!(
-        page.contains("g.path") && page.contains("onpath"),
-        "the page must highlight the query path (nodes/edges) from the returned path"
-    );
-    // A shift-click selects the second endpoint and fetches the from=&to= path over the route.
-    assert!(
-        page.contains("shiftKey") && page.contains("pathTo("),
-        "the page must wire a shift-click to trace the query path"
-    );
-    assert!(
-        page.contains("&from=") && page.contains("&to="),
-        "the path request must fetch /api/graph with from= and to= endpoints"
-    );
-    // The panel is NOT written by render(): render() must never touch el("kgpanel"), so the operator's
-    // selection (and any traced path) survives the live poll - the c5 poll-survival invariant c6 keeps.
-    let r = page
-        .find("function render(state)")
-        .expect("the served page carries render()");
-    let render_end = page[r..]
-        .find("\n// The run-tree spine")
-        .map(|i| r + i)
-        .expect("render() ends before the tree helpers");
-    assert!(
-        !page[r..render_end].contains("kgpanel"),
-        "render() must NOT touch the KG panel, so a selection/path survives the live poll"
-    );
+rigger::test_cases! {
+    /// The SERVED root page ships the c6 client rendering: a GOD-NODE badge keyed off the server's `god`
+    /// flag + `degree`, the QUERY-PATH highlight keyed off the returned `path`, and the shift-click that
+    /// selects a second node and fetches the `from=&to=` path over the read-only route. Structural, but
+    /// bound to the c6 mechanism so some OTHER panel's markup cannot satisfy it.
+    // The panel is NOT written by render(), so the operator's selection (and any traced path)
+    // survives the live poll - the c5 poll-survival invariant c6 keeps.
+    the_served_root_page_renders_god_nodes_and_the_query_path:
+        assert_render_never_touches_the_kg_panel(&served_root_page_carrying(&[
+            // The god-node badge is conditional on the server's `god` flag and shows the `degree`.
+            (
+                &["n.god ?", "kggod"],
+                "the page must render a god-node badge conditioned on n.god",
+            ),
+            (
+                &["n.degree"],
+                "the god-node badge must show the node's in-neighborhood degree",
+            ),
+            // The query-path highlight is keyed off the returned `path`, applied to nodes AND
+            // edges.
+            (
+                &["g.path", "onpath"],
+                "the page must highlight the query path (nodes/edges) from the returned path",
+            ),
+            // A shift-click selects the second endpoint and fetches the from=&to= path over the
+            // route.
+            (
+                &["shiftKey", "pathTo("],
+                "the page must wire a shift-click to trace the query path",
+            ),
+            (
+                &["&from=", "&to="],
+                "the path request must fetch /api/graph with from= and to= endpoints",
+            ),
+        ]));
 }
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN c6 rendering: (A) it calls
@@ -1265,64 +1203,59 @@ fn toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders() {
     );
 }
 
-/// The SERVED root page ships the c7 client mechanisms: the tier-filter TOGGLES (a `data-tier`
-/// checkbox per confidence tier, backed by a client-side visible-tier set that `renderGraph` filters
-/// the drawn edges by) and the EXPLAIN provenance render (keyed off the server's `explain` DTO), the
-/// toggle wired via a delegated `change` listener on the stable panel container. Structural, but
-/// bound to the c7 mechanism so some OTHER markup cannot satisfy it. The c6 god/path tokens must
-/// remain in `renderGraph`, proving the tier filter COEXISTS with (does not replace) the c6 render.
-#[test]
-fn the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance() {
-    let resp = fetch_served("/", &fixture_graph());
-    assert!(
-        resp.starts_with("HTTP/1.1 200 OK") && resp.contains("text/html"),
-        "GET / returns a 200 HTML page over the real serve socket:\n{resp}"
-    );
-    let page = body_of(&resp);
-
-    // The tier filter is a CLIENT-side visibility toggle: a data-tier checkbox per tier, a client
-    // visible-tier set, and renderGraph filtering the DRAWN edges by it (never a server-side drop).
-    assert!(
-        page.contains("data-tier="),
-        "the page must ship a data-tier toggle handle per confidence tier"
-    );
-    assert!(
-        page.contains("kgTiers"),
-        "the page must carry the client-side visible-tier set (kgTiers)"
-    );
-    assert!(
-        page.contains("kgTiers.has"),
-        "renderGraph must FILTER the drawn edges by the visible-tier set"
-    );
-    // The three confidence tiers are the toggle vocabulary.
-    assert!(
-        page.contains("\"extracted\"")
-            && page.contains("\"inferred\"")
-            && page.contains("\"ambiguous\""),
-        "the tier toggles must cover extracted / inferred / ambiguous"
-    );
-    // The toggle is wired via a delegated `change` listener on the stable panel container, so it
-    // survives the renderGraph innerHTML swaps (the same delegation the c5 select-to-seed uses).
-    assert!(
-        page.contains("\"change\"") && page.contains("closest(\"[data-tier]\")"),
-        "a delegated change listener must map a tier-checkbox toggle to the visible-tier set"
-    );
-
-    // The explain provenance renders from the server's `explain` DTO into its own panel section.
-    assert!(
-        page.contains("g.explain"),
-        "the panel must render the seed's provenance from the server explain DTO"
-    );
-    assert!(
-        page.contains("kgprov"),
-        "the explain provenance must render in its own section (kgprov)"
-    );
-
-    // The tier filter COEXISTS with the c6 render: the god badge + path highlight tokens remain.
-    assert!(
-        page.contains("kggod") && page.contains("onpath"),
-        "the c7 tier filter must coexist with (not replace) the c6 god/path render"
-    );
+rigger::test_cases! {
+    /// The SERVED root page ships the c7 client mechanisms: the tier-filter TOGGLES (a `data-tier`
+    /// checkbox per confidence tier, backed by a client-side visible-tier set that `renderGraph` filters
+    /// the drawn edges by) and the EXPLAIN provenance render (keyed off the server's `explain` DTO), the
+    /// toggle wired via a delegated `change` listener on the stable panel container. Structural, but
+    /// bound to the c7 mechanism so some OTHER markup cannot satisfy it. The c6 god/path tokens must
+    /// remain in `renderGraph`, proving the tier filter COEXISTS with (does not replace) the c6 render.
+    the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance:
+        served_root_page_carrying(&[
+            // The tier filter is a CLIENT-side visibility toggle: a data-tier checkbox per tier, a
+            // client visible-tier set, and renderGraph filtering the DRAWN edges by it (never a
+            // server-side drop).
+            (
+                &["data-tier="],
+                "the page must ship a data-tier toggle handle per confidence tier",
+            ),
+            (
+                &["kgTiers"],
+                "the page must carry the client-side visible-tier set (kgTiers)",
+            ),
+            (
+                &["kgTiers.has"],
+                "renderGraph must FILTER the drawn edges by the visible-tier set",
+            ),
+            // The three confidence tiers are the toggle vocabulary.
+            (
+                &["\"extracted\"", "\"inferred\"", "\"ambiguous\""],
+                "the tier toggles must cover extracted / inferred / ambiguous",
+            ),
+            // The toggle is wired via a delegated `change` listener on the stable panel container,
+            // so it survives the renderGraph innerHTML swaps (the same delegation the c5
+            // select-to-seed uses).
+            (
+                &["\"change\"", "closest(\"[data-tier]\")"],
+                "a delegated change listener must map a tier-checkbox toggle to the visible-tier set",
+            ),
+            // The explain provenance renders from the server's `explain` DTO into its own panel
+            // section.
+            (
+                &["g.explain"],
+                "the panel must render the seed's provenance from the server explain DTO",
+            ),
+            (
+                &["kgprov"],
+                "the explain provenance must render in its own section (kgprov)",
+            ),
+            // The tier filter COEXISTS with the c6 render: the god badge + path highlight tokens
+            // remain.
+            (
+                &["kggod", "onpath"],
+                "the c7 tier filter must coexist with (not replace) the c6 god/path render",
+            ),
+        ]);
 }
 
 /// A two-file + decision + community fixture the EXPLORATION route (spec 42 c4) drills, overviews,

@@ -613,11 +613,10 @@ fn every_dup_id_citation_anywhere_in_the_report_matches_the_committed_catalog() 
 
     let citations = scan_citations(&report);
     assert!(
-        citations.len() > sites.len(),
+        citations.len() >= sites.len(),
         "sanity: the generic scanner found only {} citations across the whole report - expected \
-         more than the catalog's {} clusters (each cluster plus section 5/6's own narrative \
-         citations); this smells like the scanner itself broke, not that the report suddenly has \
-         far fewer citations",
+         at least one per catalog cluster ({}), since section 2 lists every one; this smells like \
+         the scanner itself broke, not that the report suddenly has far fewer citations",
         citations.len(),
         sites.len()
     );

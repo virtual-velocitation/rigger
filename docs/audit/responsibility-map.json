@@ -137,11 +137,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "verdict",
+    "is_test": false,
+    "proposed_module": "conductor::review_outcome",
+    "reason": "method inside `impl ReviewOutcome`; grouped with its other `ReviewOutcome` methods.",
+    "content_hash": "9b68e29c7147436e"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "approved",
     "is_test": false,
     "proposed_module": "conductor::review_outcome",
     "reason": "method inside `impl ReviewOutcome`; grouped with its other `ReviewOutcome` methods.",
-    "content_hash": "d2411d1a19497571"
+    "content_hash": "fe1c0106d17be5ab"
   },
   {
     "file": "src/conductor.rs",
@@ -149,7 +157,7 @@
     "is_test": false,
     "proposed_module": "conductor::review_outcome",
     "reason": "method inside `impl ReviewOutcome`; grouped with its other `ReviewOutcome` methods.",
-    "content_hash": "2a3df84bcea61207"
+    "content_hash": "5a1b0296dc0f45ff"
   },
   {
     "file": "src/conductor.rs",
@@ -657,19 +665,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "effective_review_panel",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "ac3564a0bdbef9c6"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "select_review_panel",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "f4b1a3cea6e8fb3e"
+    "content_hash": "aa0d23c5af15436f"
   },
   {
     "file": "src/conductor.rs",
@@ -789,7 +789,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "be2e203c246f4c76"
+    "content_hash": "40fe40e55cd6e5df"
   },
   {
     "file": "src/conductor.rs",
@@ -1645,7 +1645,7 @@
     "is_test": false,
     "proposed_module": "conductor::run",
     "reason": "name contains \"unit\" (unit run loop); grouped under `conductor::run`.",
-    "content_hash": "721687dff6ff9d2c"
+    "content_hash": "73bd3f99319956d2"
   },
   {
     "file": "src/conductor.rs",
@@ -2405,7 +2405,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f7c7694bfbd66c04"
+    "content_hash": "435d3d0c0395a91c"
   },
   {
     "file": "src/conductor.rs",
@@ -2413,7 +2413,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a03420bf0d6a57ce"
+    "content_hash": "43ac0363e6cdf84a"
   },
   {
     "file": "src/conductor.rs",
@@ -2421,7 +2421,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "42e8523320377447"
+    "content_hash": "1b6c63029c82ef8b"
   },
   {
     "file": "src/conductor.rs",
@@ -2429,7 +2429,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5dc0bed9de38d68a"
+    "content_hash": "ec13ce7c874de8ea"
   },
   {
     "file": "src/conductor.rs",
@@ -2437,7 +2437,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c418eaacfbcb8b37"
+    "content_hash": "25de4892720f0243"
   },
   {
     "file": "src/conductor.rs",
@@ -5910,14 +5910,6 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "1b72cc2f3d0acc8f"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "spawn",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "91f8a561722f23d8"
   },
   {
     "file": "src/conductor.rs",
@@ -10885,7 +10877,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "005357a46236c9b0"
+    "content_hash": "bf4715275f23e351"
   },
   {
     "file": "src/main.rs",
@@ -12221,7 +12213,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"process_\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "31e2aa11529f3bbf"
+    "content_hash": "3bd187225302aa2f"
   },
   {
     "file": "src/dash.rs",
@@ -12601,14 +12593,6 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "unix_seconds",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "825e0e6155dff435"
-  },
-  {
-    "file": "src/dash.rs",
     "name": "now_unix",
     "is_test": false,
     "proposed_module": null,
@@ -12673,11 +12657,19 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "new",
+    "is_test": false,
+    "proposed_module": "dash::response",
+    "reason": "method inside `impl Response`; grouped with its other `Response` methods.",
+    "content_hash": "b1e042534a39485f"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "rendered",
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods.",
-    "content_hash": "e83d5fd4bc8a5b6d"
+    "content_hash": "883d3e8064b7d7f9"
   },
   {
     "file": "src/dash.rs",
@@ -12685,7 +12677,7 @@
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods.",
-    "content_hash": "aaa76b5ea3df0ce8"
+    "content_hash": "a333a5588cbbfc40"
   },
   {
     "file": "src/dash.rs",
@@ -12693,7 +12685,7 @@
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods.",
-    "content_hash": "49eb28ddcb3dedb8"
+    "content_hash": "1d58754097b21ae6"
   },
   {
     "file": "src/dash.rs",
@@ -12865,6 +12857,22 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "get_static",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "45992246031d92a4"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "assert_console_page_carries",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "73c2f4f553471756"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "seeded_run",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12909,7 +12917,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b2cd17761089d176"
+    "content_hash": "f5141db35d539c8e"
   },
   {
     "file": "src/dash.rs",
@@ -12933,7 +12941,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9425afd0ea857721"
+    "content_hash": "420f9e8a0c6d9ea9"
   },
   {
     "file": "src/dash.rs",
@@ -12941,7 +12949,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "47848104dd3be5c7"
+    "content_hash": "072f2b992eedfecf"
   },
   {
     "file": "src/dash.rs",
@@ -12949,15 +12957,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a2c5ab561d3639f8"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "console_fonts_route_404s_for_an_unknown_asset",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c75cf96ad5d34c85"
+    "content_hash": "39a33a00e9ae22c4"
   },
   {
     "file": "src/dash.rs",
@@ -12965,7 +12965,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8b47196a9fd9ad98"
+    "content_hash": "1cb146fc775321bc"
   },
   {
     "file": "src/dash.rs",
@@ -12973,7 +12973,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "05a701eab0f919ed"
+    "content_hash": "96d2eddfb95607fb"
   },
   {
     "file": "src/dash.rs",
@@ -13009,11 +13009,43 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "serve_reply",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "cdb584f2ada73d9a"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "serve_dribble",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "dfe43bdb9d84017c"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "timed_dash_probe",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "fac926ab04840d09"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "assert_pid_probe",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b482016d807cd53d"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "dash_serving_on_is_false_for_a_non_dash_listener",
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2156b0d0b7f13fc5"
+    "content_hash": "828b67ecfb59adeb"
   },
   {
     "file": "src/dash.rs",
@@ -13021,7 +13053,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aaa0ca0f0d0fe083"
+    "content_hash": "82eafc0795288879"
   },
   {
     "file": "src/dash.rs",
@@ -13029,31 +13061,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "592500c046585cde"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_serving_pid_on_reports_the_pid_a_real_dash_response_names",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "68bfc4933bd25ffb"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b4029d9c679f7788"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_serving_pid_on_is_none_for_a_non_dash_listener",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8e99574277b5803d"
+    "content_hash": "d76fed9068330483"
   },
   {
     "file": "src/dash.rs",
@@ -13062,14 +13070,6 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "2e4a220a1b2773b0"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cd649c2db69e5a4f"
   },
   {
     "file": "src/dash.rs",
@@ -13157,7 +13157,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1196c17c18a98d47"
+    "content_hash": "03146eb8aa738ea1"
   },
   {
     "file": "src/dash.rs",
@@ -13238,14 +13238,6 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "f740e85c180d8191"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "unknown_get_path_is_404",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "fb866a7c16640536"
   },
   {
     "file": "src/dash.rs",
@@ -13617,19 +13609,11 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "describe_held_port_names_this_process_when_it_holds_the_port_itself",
+    "name": "assert_names_this_process_as_holder",
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "96b1511383311bd7"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9585d52360102028"
+    "content_hash": "197a538170a9758d"
   },
   {
     "file": "src/dash.rs",
@@ -14009,19 +13993,11 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "card_of_a_file_reports_no_proof_of_its_own",
+    "name": "assert_card_reports_no_proof",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "88940dae7d946e59"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "card_tolerates_a_malformed_proof_evidence_attr",
-    "is_test": true,
-    "proposed_module": "dash::tests::metadata_card_c2",
-    "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "973936b8ec35cf15"
+    "content_hash": "d673433d2ac3fdb2"
   },
   {
     "file": "src/dash.rs",
