@@ -2600,7 +2600,8 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 11 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: error-shaping helper functions - 11 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-535941bb5619",
@@ -6802,7 +6803,8 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 722 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 722 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-6bb42578d223",
