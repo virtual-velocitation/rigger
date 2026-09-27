@@ -26,10 +26,14 @@
 //! public boundary a same-crate `super::` test is structurally blind to, and drive the served
 //! `route` end-to-end through the `seed=` / `lens=` / `resolution=` query parsing the browser hits.
 
+mod common;
+
 use std::collections::HashMap;
 
+use common::fixtures::edge;
+use common::fixtures::plain;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
+    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
     REL_REALIZES, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{reproject, route, Cluster, ClusterEdge, Lens, UnresolvedMember};
@@ -68,16 +72,6 @@ fn def(id: &str, name: &str) -> Node {
     n
 }
 
-/// A BARE cross-file placeholder code-entity: NO `name` attr, so cross-grain file resolution must
-/// resolve it by name-suffix to its defining file rather than trust its (referencing-file) id.
-fn bare(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    }
-}
-
 /// A derived super-node (`KIND_CONCEPT` / `KIND_COMMUNITY`) carrying its deterministic display
 /// `label`. It is a BUCKET, never a member, so it is excluded from every count.
 fn super_node(id: &str, kind: &str, label: &str) -> Node {
@@ -88,19 +82,6 @@ fn super_node(id: &str, kind: &str, label: &str) -> Node {
     };
     n.attrs.insert("label".to_string(), label.to_string());
     n
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel` at `tier`.
-fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: tier.to_string(),
-    }
 }
 
 /// The re-projection fixture. The concept `concept/1/0` REALIZES five members: three definitions
@@ -118,8 +99,8 @@ fn reproj_graph() -> Graph {
             def(FOO, "foo"),
             def(BAR, "bar"),
             def(BAZ, "baz"),
-            bare(HELPER_BARE),
-            bare(RUN_BARE),
+            plain(HELPER_BARE, KIND_CODE_ENTITY),
+            plain(RUN_BARE, KIND_CODE_ENTITY),
             // Standalone definitions the bare members resolve against (not concept members).
             def(HELPER_DEF, "helper"),
             def(RUN_DEF_ONE, "run"),

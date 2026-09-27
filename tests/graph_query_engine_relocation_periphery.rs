@@ -36,24 +36,14 @@
 //! suite - these tests run on both the default and the `--no-default-features` lane. No reference to
 //! any external tool or project; hyphens, never em dashes.
 
+mod common;
+
+use common::fixtures::node_with_attrs as node;
 use rigger::contextgraph::query::{
     card, cluster_detail, clustered_overview, graph_load, graph_query, neighborhood, path, search,
     Lens, SearchHit, DEFAULT_COMMUNITY_RESOLUTION, SEARCH_RESULT_LIMIT,
 };
-use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, REL_CONTAINS,
-};
-
-fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: attrs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    }
-}
+use rigger::contextgraph::{Edge, Graph, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, REL_CONTAINS};
 
 fn edge(from: &str, to: &str, rel: &str) -> Edge {
     Edge {

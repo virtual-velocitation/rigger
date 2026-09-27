@@ -3924,7 +3924,9 @@ mod tests {
         TIER_INFERRED,
     };
     use crate::eventstore::Event;
+    use crate::test_support::chain_graph;
     use crate::test_support::ev;
+    use crate::test_support::star_graph;
 
     /// Give a slice of events 1-based positions, as the store would on append, so
     /// position-sensitive reads (`/api/events?since=`) are exercised realistically.
@@ -7479,37 +7481,6 @@ mod tests {
         );
     }
 
-    /// A star graph: one hub wired to `spokes` bare leaf nodes (each edge `extracted`, pointing
-    /// hub -> spoke). A depth-1 walk from the hub reaches the whole star, so its returned
-    /// neighborhood carries every hub-spoke edge - the hub's IN-NEIGHBORHOOD degree is exactly
-    /// `spokes`.
-    fn star_graph(hub: &str, spokes: usize) -> Graph {
-        let mut nodes = vec![Node {
-            id: hub.to_string(),
-            kind: KIND_UNIT.to_string(),
-            attrs: BTreeMap::new(),
-        }];
-        let mut edges = Vec::new();
-        for i in 0..spokes {
-            let spoke = format!("{hub}-s{i}");
-            nodes.push(Node {
-                id: spoke.clone(),
-                kind: "code-entity".to_string(),
-                attrs: BTreeMap::new(),
-            });
-            edges.push(Edge {
-                from: hub.to_string(),
-                to: spoke,
-                rel: REL_REFERENCES.to_string(),
-                valid_from: 0,
-                valid_to: None,
-                source: 0,
-                tier: TIER_EXTRACTED.to_string(),
-            });
-        }
-        Graph { nodes, edges }
-    }
-
     #[test]
     fn neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood() {
         // A hub wired to one MORE than the threshold's worth of spokes: its in-neighborhood degree
@@ -7663,7 +7634,7 @@ mod tests {
         );
 
         // Selecting a second node (`from`/`to`) returns the query path between the two on the wire.
-        let chain = chain_graph_local(5); // n0 -> n1 -> n2 -> n3 -> n4
+        let chain = chain_graph(5); // n0 -> n1 -> n2 -> n3 -> n4
         let r2 = route(
             "GET",
             "/api/graph?seed=n0&depth=4&from=n0&to=n3",
@@ -7689,29 +7660,6 @@ mod tests {
             vec!["n0", "n1", "n2", "n3"],
             "the route returns the shortest path between the two selected nodes: {body2}"
         );
-    }
-
-    /// A linear chain `n0 -> n1 -> ... -> n{len-1}` of bare nodes, for the route-level path proof.
-    fn chain_graph_local(len: usize) -> Graph {
-        let nodes = (0..len)
-            .map(|i| Node {
-                id: format!("n{i}"),
-                kind: KIND_UNIT.to_string(),
-                attrs: BTreeMap::new(),
-            })
-            .collect();
-        let edges = (0..len.saturating_sub(1))
-            .map(|i| Edge {
-                from: format!("n{i}"),
-                to: format!("n{}", i + 1),
-                rel: REL_REFERENCES.to_string(),
-                valid_from: 0,
-                valid_to: None,
-                source: 0,
-                tier: TIER_EXTRACTED.to_string(),
-            })
-            .collect();
-        Graph { nodes, edges }
     }
 
     /// A provenance fixture (spec 30 c7): a decision `d1` that DECIDED a unit `u1` and GOVERNS a
@@ -9224,9 +9172,11 @@ mod tests {
         use super::*;
         use crate::contextgraph::sqlite::Projector;
         use crate::contextgraph::{
-            CallEdge, CallGraph, CallNode, Direction, Projection, REL_CALLS,
-            TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+            CallGraph, CallNode, Direction, Projection, TYPE_CODE_ENTITY_EXTRACTED,
+            TYPE_EDGE_INFERRED,
         };
+        use crate::test_support::calls_edge;
+        use crate::test_support::plain;
 
         /// One reached call node with a store-side (non-negative) hop `layer` and an optional
         /// multi-candidate `frontier`, as the traversal returns it.
@@ -9239,30 +9189,6 @@ mod tests {
                 },
                 layer,
                 frontier,
-            }
-        }
-
-        /// One CALLS edge with the recursion `back` marker.
-        fn cedge(from: &str, to: &str, back: bool) -> CallEdge {
-            CallEdge {
-                edge: Edge {
-                    from: from.to_string(),
-                    to: to.to_string(),
-                    rel: REL_CALLS.to_string(),
-                    valid_from: 0,
-                    valid_to: None,
-                    source: 0,
-                    tier: TIER_INFERRED.to_string(),
-                },
-                back,
-            }
-        }
-
-        fn file_node(id: &str) -> Node {
-            Node {
-                id: id.to_string(),
-                kind: KIND_FILE.to_string(),
-                attrs: BTreeMap::new(),
             }
         }
 
@@ -9312,9 +9238,9 @@ mod tests {
                     ),
                 ],
                 edges: vec![
-                    cedge("f.rs::s", "f.rs::a", false),
-                    cedge("f.rs::s", "f.rs::fr", false),
-                    cedge("f.rs::a", "f.rs::s", true), // recursion: a back edge
+                    calls_edge("f.rs::s", "f.rs::a", false),
+                    calls_edge("f.rs::s", "f.rs::fr", false),
+                    calls_edge("f.rs::a", "f.rs::s", true), // recursion: a back edge
                 ],
                 referenced_not_called: Vec::new(),
             };
@@ -9363,8 +9289,8 @@ mod tests {
         fn calls_view_up_negates_callers_and_carries_the_referenced_sidecar() {
             let up = CallGraph {
                 nodes: vec![cnode("a.rs::t", 0, None), cnode("b.rs::c", 1, None)],
-                edges: vec![cedge("b.rs::c", "a.rs::t", false)],
-                referenced_not_called: vec![file_node("d.rs")],
+                edges: vec![calls_edge("b.rs::c", "a.rs::t", false)],
+                referenced_not_called: vec![plain("d.rs", KIND_FILE)],
             };
             let v = calls_view(None, Some(&up), "a.rs::t", 5);
 
@@ -9408,13 +9334,13 @@ mod tests {
         fn calls_view_both_centers_the_seed_with_callees_right_and_callers_left() {
             let down = CallGraph {
                 nodes: vec![cnode("m.rs::s", 0, None), cnode("m.rs::callee", 1, None)],
-                edges: vec![cedge("m.rs::s", "m.rs::callee", false)],
+                edges: vec![calls_edge("m.rs::s", "m.rs::callee", false)],
                 referenced_not_called: Vec::new(),
             };
             let up = CallGraph {
                 nodes: vec![cnode("m.rs::s", 0, None), cnode("m.rs::caller", 1, None)],
-                edges: vec![cedge("m.rs::caller", "m.rs::s", false)],
-                referenced_not_called: vec![file_node("z.rs")],
+                edges: vec![calls_edge("m.rs::caller", "m.rs::s", false)],
+                referenced_not_called: vec![plain("z.rs", KIND_FILE)],
             };
             let v = calls_view(Some(&down), Some(&up), "m.rs::s", 5);
 
@@ -9630,20 +9556,7 @@ mod rationale_overlay_c3 {
     use crate::contextgraph::{
         Edge, KIND_CODE_ENTITY, KIND_FILE, KIND_HANDBOOK_RULE, KIND_LESSON, REL_ABOUT, REL_GOVERNS,
     };
-
-    /// A node with the given kind and optional `summary` (a decision / finding / lesson content
-    /// node carries a summary; a plain file / entity target does not).
-    fn node(id: &str, kind: &str, summary: &str) -> Node {
-        Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs: if summary.is_empty() {
-                BTreeMap::new()
-            } else {
-                BTreeMap::from([("summary".to_string(), summary.to_string())])
-            },
-        }
-    }
+    use crate::test_support::summarized_node as node;
 
     /// A finding content node carrying the run-machinery attribution (`by` reviewer + `unit`)
     /// ALONGSIDE its `summary`, so a test can prove the leaf drops the machinery and keeps only the
@@ -9966,17 +9879,7 @@ mod subject_view_c5 {
         Edge, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS,
         REL_REALIZES, TIER_INFERRED,
     };
-
-    fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
-        Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs: attrs
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-        }
-    }
+    use crate::test_support::node_with_attrs as node;
 
     fn edge(from: &str, to: &str, rel: &str) -> Edge {
         Edge {
@@ -10256,17 +10159,7 @@ mod metadata_card_c2 {
         Edge, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_ABOUT, REL_CONTAINS,
         REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, TIER_INFERRED,
     };
-
-    fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
-        Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs: attrs
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-        }
-    }
+    use crate::test_support::node_with_attrs as node;
 
     fn edge(from: &str, to: &str, rel: &str) -> Edge {
         Edge {

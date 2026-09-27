@@ -36,8 +36,11 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use common::fixtures::plain;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, REL_IN_COMMUNITY, REL_REFERENCES,
     TIER_EXTRACTED, TIER_INFERRED,
@@ -48,28 +51,6 @@ use rigger::dash::{route, CLUSTER_RENDER_BUDGET, GOD_NODE_DEGREE_THRESHOLD};
 /// `?lens=code` request needs no explicit `resolution=` parameter.
 const BIG: &str = "community/1/0";
 const SMALL: &str = "community/1/1";
-
-/// A code-entity node (carries no membership by itself - `membership` below wires it into a
-/// community).
-fn ce(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::new(),
-    }
-}
-
-/// A dev-loop decision node (no path id, no community membership): under the already-merged spec 63
-/// c1 CODE-LENS PURITY, a non-code-entity never folds into a cluster of its own - not even its own
-/// kind bucket - so it stays in the fixture only to prove `total` still counts it while contributing
-/// NO cluster at all.
-fn dec(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_DECISION.to_string(),
-        attrs: BTreeMap::new(),
-    }
-}
 
 /// A currently-valid REFERENCES edge (`extracted` tier, `valid_to = None`).
 fn refs(from: &str, to: &str) -> Edge {
@@ -115,13 +96,13 @@ fn spoke(i: usize) -> String {
 /// for the overview and then the drill.
 fn exploration_graph() -> Graph {
     let hub = "src/big/mod.rs::hub";
-    let mut nodes: Vec<Node> = vec![ce(hub)];
+    let mut nodes: Vec<Node> = vec![plain(hub, KIND_CODE_ENTITY)];
     let mut edges: Vec<Edge> = vec![membership(hub, BIG)];
 
     // BIG: hub -> every spoke (all intra-community). One over budget so the drill caps.
     let spokes = CLUSTER_RENDER_BUDGET + 1;
     for i in 0..spokes {
-        nodes.push(ce(&spoke(i)));
+        nodes.push(plain(&spoke(i), KIND_CODE_ENTITY));
         edges.push(membership(&spoke(i), BIG));
         edges.push(refs(hub, &spoke(i)));
     }
@@ -129,12 +110,12 @@ fn exploration_graph() -> Graph {
     // SMALL: three members.
     for m in ["a", "b", "c"] {
         let id = format!("src/small/mod.rs::{m}");
-        nodes.push(ce(&id));
+        nodes.push(plain(&id, KIND_CODE_ENTITY));
         edges.push(membership(&id, SMALL));
     }
 
     // decision: one dev-loop node, no membership - a distinct kind that folds into no cluster at all.
-    nodes.push(dec("d0"));
+    nodes.push(plain("d0", KIND_DECISION));
 
     // Two cross edges BIG -> SMALL, so the ONE overview cluster edge has weight 2. They dangle out of
     // the BIG drill (their SMALL endpoint is not a BIG member) and so must be dropped from the drill

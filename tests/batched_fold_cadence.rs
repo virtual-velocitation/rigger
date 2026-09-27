@@ -27,8 +27,10 @@
 //! exactly like the sibling ingest suites; a light-lane test pins the walk's no-op there. Both lanes
 //! stay green.
 
+mod common;
+
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Error as CgError, Graph, Projection, REL_GOVERNS, TYPE_DECISION_MADE};
+use rigger::contextgraph::{Error as CgError, Projection, REL_GOVERNS, TYPE_DECISION_MADE};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -60,12 +62,7 @@ impl Projection for CapturingProjection {
         }
         Ok(())
     }
-    fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, CgError> {
-        Ok(Graph::default())
-    }
-    fn resolve(&self, _mention: &str) -> Result<Option<String>, CgError> {
-        Ok(None)
-    }
+    crate::projection_reads_nothing!();
 }
 
 /// A `Projection` that records the positions handed to `apply` (in call order) and does NOT override
@@ -86,12 +83,7 @@ impl Projection for RecordingProjection {
         Ok(())
     }
     // apply_batch is deliberately NOT overridden: this projection inherits the trait DEFAULT.
-    fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, CgError> {
-        Ok(Graph::default())
-    }
-    fn resolve(&self, _mention: &str) -> Result<Option<String>, CgError> {
-        Ok(None)
-    }
+    crate::projection_reads_nothing!();
 }
 
 /// The shared authority `rigger::ingest::append_and_fold_batch` stamps each folded event with the

@@ -933,22 +933,8 @@ mod caller_wire_contract {
 /// re-declaring it.
 #[cfg(test)]
 mod locate_default {
-    use super::{Error, Graph, Located, Projection};
-    use crate::eventstore::Event;
-
-    struct NoLocate;
-
-    impl Projection for NoLocate {
-        fn apply(&self, _e: &Event) -> Result<(), Error> {
-            Ok(())
-        }
-        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
-            Ok(Graph::default())
-        }
-        fn resolve(&self, _mention: &str) -> Result<Option<String>, Error> {
-            Ok(None)
-        }
-    }
+    use super::{Located, Projection};
+    use crate::test_support::MinimalProjection;
 
     /// A projection with no locate support degrades HONESTLY to `Located::None` rather than
     /// erroring or panicking - the same honesty the [`crate::contextgraph::sqlite::Projector`]
@@ -956,6 +942,6 @@ mod locate_default {
     /// that never indexed definitions at all.
     #[test]
     fn a_projection_with_no_override_reports_none_never_errors() {
-        assert_eq!(NoLocate.locate("anything").unwrap(), Located::None);
+        assert_eq!(MinimalProjection.locate("anything").unwrap(), Located::None);
     }
 }

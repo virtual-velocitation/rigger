@@ -22,8 +22,11 @@
 //! Reprojection, route, Cluster, Lens}`), so they guard the exact public boundary a same-crate
 //! `super::` test is structurally blind to, and drive the served `route` end-to-end.
 
+mod common;
+
 use std::collections::HashMap;
 
+use common::fixtures::plain;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
     REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
@@ -46,16 +49,6 @@ fn def(id: &str, name: &str) -> Node {
     };
     n.attrs.insert("name".to_string(), name.to_string());
     n
-}
-
-/// A BARE cross-file placeholder code-entity: NO `name` attr, so a files re-grain resolves it by
-/// name-suffix to its defining file(s) rather than trusting its referencing-file id.
-fn bare(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    }
 }
 
 /// A plain node of a given kind (a `file` subject, or a `community` / `concept` super-node). A
@@ -733,7 +726,7 @@ fn ambiguous_files_graph() -> Graph {
     Graph {
         nodes: vec![
             node("concept/9/0", KIND_CONCEPT, Some("the idea")),
-            bare("src/caller.rs::amb"),
+            plain("src/caller.rs::amb", KIND_CODE_ENTITY),
             def("src/p/x.rs::amb", "amb"),
             def("src/q/y.rs::amb", "amb"),
         ],
@@ -879,7 +872,7 @@ fn unmatched_bare_graph() -> Graph {
     Graph {
         nodes: vec![
             node(UNMATCHED_CONCEPT, KIND_CONCEPT, Some("the idea")),
-            bare(EXTERNAL_BARE),
+            plain(EXTERNAL_BARE, KIND_CODE_ENTITY),
         ],
         edges: vec![edge(EXTERNAL_BARE, UNMATCHED_CONCEPT, REL_REALIZES)],
     }

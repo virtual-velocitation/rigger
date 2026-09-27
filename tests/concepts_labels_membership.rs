@@ -24,8 +24,11 @@
 //! file-to-file edge never enters it) and a PURE STAR (one hub, degree-1 leaves) for the single-hub
 //! cases. Every symbol used is always-compiled, so these run identically in BOTH feature lanes.
 
+mod common;
+
 use std::collections::BTreeMap;
 
+use common::fixtures::pair_map;
 use rigger::concepts::{derive, events, intent_layer, Derivation, DEFAULT_RESOLUTION};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -70,21 +73,11 @@ fn derive_default(g: &Graph) -> Derivation {
     derive(g, &intent_layer(g), DEFAULT_RESOLUTION)
 }
 
-/// The `node_id -> concept_id` membership map, for clear asserts.
-fn membership(d: &Derivation) -> BTreeMap<String, String> {
-    d.members.iter().cloned().collect()
-}
-
-/// The `concept_id -> label` map, for clear asserts.
-fn labels(d: &Derivation) -> BTreeMap<String, String> {
-    d.concepts.iter().cloned().collect()
-}
-
 /// The label of the concept `member` realizes: the derivation's answer to "what names this member's
 /// idea". Panics if `member` joined no concept - a caller that expects membership asserts it first.
 fn label_of(d: &Derivation, member: &str) -> String {
-    let concept = &membership(d)[member];
-    labels(d)[concept].clone()
+    let concept = &pair_map(&d.members)[member];
+    pair_map(&d.concepts)[concept].clone()
 }
 
 /// Fold `events` into a FRESH in-memory projection (positions assigned in order, as a rebuild replays
@@ -165,7 +158,7 @@ fn label_is_the_most_central_document_by_intent_degree() {
         ],
     };
     let d = derive_default(&g);
-    let m = membership(&d);
+    let m = pair_map(&d.members);
     assert_eq!(
         m[doc_hi], m[doc_lo],
         "both documents share one concept; got {m:?}"
@@ -199,7 +192,7 @@ fn label_ties_break_to_the_lexicographically_smallest_document() {
         ],
     };
     let d = derive_default(&g);
-    let m = membership(&d);
+    let m = pair_map(&d.members);
     assert_eq!(
         m[doc_a], m[doc_z],
         "both documents share one concept; got {m:?}"
@@ -220,7 +213,7 @@ fn a_rationale_is_not_a_label_source() {
     // document preference, would wrongly title the concept from the rationale.
     let g = doc_with_more_central_rationale();
     let d = derive_default(&g);
-    let m = membership(&d);
+    let m = pair_map(&d.members);
     assert_eq!(
         m["docs/kg.md"], m["src/graph/store.rs#L7"],
         "the doc and the rationale share one concept; got {m:?}"
@@ -241,7 +234,7 @@ fn the_folded_concept_node_carries_the_pass_computed_document_label() {
     // honest, document-first label survives the round trip through the event log into the graph.
     let g = doc_with_more_central_rationale();
     let d = derive_default(&g);
-    let concept_id = membership(&d)["docs/kg.md"].clone();
+    let concept_id = pair_map(&d.members)["docs/kg.md"].clone();
 
     let folded = fold(&events(&d));
     let concept_node = folded
@@ -343,7 +336,7 @@ fn a_code_node_with_no_intent_edge_belongs_to_no_concept() {
         ],
     };
     let d = derive_default(&g);
-    let m = membership(&d);
+    let m = pair_map(&d.members);
     // The real concept formed and grouped the document WITH the code it specifies.
     assert_eq!(
         m[doc], m["src/graph/a.rs"],

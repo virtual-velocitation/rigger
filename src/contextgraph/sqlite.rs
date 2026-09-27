@@ -2799,6 +2799,7 @@ mod tests {
         KIND_AGENT, KIND_GATE, KIND_UNIT, META_ACTOR, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED,
         REL_GATED_BY, REL_TOUCHES,
     };
+    use crate::test_support::apply_ref;
 
     fn apply_decision(
         p: &Projector,
@@ -7589,14 +7590,6 @@ mod tests {
             TYPE_CODE_ENTITY_EXTRACTED,
             serde_json::to_vec(&payload).unwrap(),
         );
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
-    /// Fold a code reference event (`file` references `name`) at `pos`.
-    fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
-        let payload = serde_json::json!({ "file": file, "name": name, "lang": "rust" });
-        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
         e.position = pos;
         p.apply(&e).unwrap();
     }

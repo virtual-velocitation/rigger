@@ -45,11 +45,15 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
+mod common;
+
 use std::collections::{BTreeSet, HashMap};
 use std::process::Command;
 
+use common::fixtures::edge;
+use common::fixtures::plain;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS,
+    Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS,
     REL_REALIZES, REL_REFERENCES, TIER_INFERRED,
 };
 use rigger::dash::{
@@ -70,26 +74,6 @@ const APPEND: &str = "src/store/log.rs::append";
 const INDEX: &str = "src/index/build.rs::index";
 const HELPER: &str = "src/util/misc.rs::helper";
 
-/// A code-entity node whose id names a file under a module directory (so the FILES lens folds it by
-/// that directory) - the members the CONCEPTS lens instead folds by the concept they realize.
-fn ce(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A design-doc node: under the concepts lens it folds by the concept it realizes alongside the code,
-/// grouping the idea's prose with its implementation across directory lines.
-fn doc(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_DESIGN_DOC.to_string(),
-        attrs: Default::default(),
-    }
-}
-
 /// A derived `KIND_CONCEPT` super-node carrying its deterministic display `label` attr (the intent
 /// derivation's pick, spec 54). Under the concepts lens it is a BUCKET, not a member, so it is
 /// excluded from every count and never carries its own membership.
@@ -101,29 +85,6 @@ fn concept(id: &str, label: &str) -> Node {
     };
     n.attrs.insert("label".to_string(), label.to_string());
     n
-}
-
-/// A membership-LESS node of an arbitrary kind (a dev-loop decision): under the concepts lens it must
-/// be entirely EXCLUDED (spec 63 c4) - no per-type bucket, so it never renders as a node here.
-fn plain(id: &str, kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel` at `tier`.
-fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: tier.to_string(),
-    }
 }
 
 /// The lens fixture. TWO derived concepts, each grouping a DOC with the code it governs across
@@ -140,11 +101,11 @@ fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
 fn lens_graph() -> Graph {
     Graph {
         nodes: vec![
-            doc(STORE_DOC),
-            doc(API_DOC),
-            ce(APPEND),
-            ce(INDEX),
-            ce(HELPER),
+            plain(STORE_DOC, KIND_DESIGN_DOC),
+            plain(API_DOC, KIND_DESIGN_DOC),
+            plain(APPEND, KIND_CODE_ENTITY),
+            plain(INDEX, KIND_CODE_ENTITY),
+            plain(HELPER, KIND_CODE_ENTITY),
             concept(C0, "the store"),
             concept(C1, "the api"),
             plain("d1", KIND_DECISION),
@@ -335,9 +296,9 @@ fn a_shared_member_of_two_equal_size_concepts_folds_to_the_lexicographically_sma
     // the primary. `concept/1/0` sorts before `concept/1/1`, so the shared member's primary is c0.
     let graph = Graph {
         nodes: vec![
-            doc("docs/alpha.md"),
-            doc("docs/beta.md"),
-            ce("src/x.rs::shared_fn"),
+            plain("docs/alpha.md", KIND_DESIGN_DOC),
+            plain("docs/beta.md", KIND_DESIGN_DOC),
+            plain("src/x.rs::shared_fn", KIND_CODE_ENTITY),
             concept(C0, "alpha"),
             concept(C1, "beta"),
         ],
@@ -420,7 +381,7 @@ fn concepts_lens_excludes_membershipless_nodes_of_any_kind_entirely() {
 fn concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs() {
     let graph = Graph {
         nodes: vec![
-            ce("src/only.rs::fn_a"),
+            plain("src/only.rs::fn_a", KIND_CODE_ENTITY),
             plain("decision-realizes", KIND_DECISION),
             concept(C0, "the idea"),
         ],

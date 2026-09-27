@@ -26,24 +26,16 @@
 //! here is feature-gated), so these tests run in both. No reference to any external tool or project;
 //! hyphens, never em dashes.
 
+mod common;
+
 use std::collections::HashMap;
 
+use common::fixtures::node_with_attrs as node;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING,
+    Edge, Graph, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING,
     KIND_LESSON, REL_ABOUT, REL_GOVERNS, REL_REALIZES, TIER_INFERRED,
 };
 use rigger::dash::{memory_rail, route, ConceptRef, MemoryRail, RationaleLeaf};
-
-fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: attrs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    }
-}
 
 fn edge(from: &str, to: &str, rel: &str) -> Edge {
     Edge {

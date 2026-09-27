@@ -536,6 +536,8 @@ fn number_groups(c: &Coupling, refined: &[usize]) -> Vec<usize> {
 mod tests {
     use super::*;
     use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
+    use crate::test_support::edge;
+    use crate::test_support::pair_map;
     use std::collections::BTreeMap as Map;
 
     /// Build one graph [`Node`] of a given kind, with an optional `name` attr (present => a real
@@ -549,19 +551,6 @@ mod tests {
             id: id.to_string(),
             kind: kind.to_string(),
             attrs,
-        }
-    }
-
-    /// Build one graph [`Edge`] of a given rel and tier.
-    fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
-        Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: rel.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: tier.to_string(),
         }
     }
 
@@ -603,11 +592,6 @@ mod tests {
             })
             .collect();
         Graph { nodes, edges: es }
-    }
-
-    /// The community id each node landed in, as a sorted `id -> community` map, for clear asserts.
-    fn assignment_map(a: &Assignment) -> BTreeMap<String, String> {
-        a.members.iter().cloned().collect()
     }
 
     /// A complete graph (clique) on `nodes` as `CALLS` edges at the extracted tier - a maximally
@@ -704,7 +688,7 @@ mod tests {
         let g = two_subsystem_graph();
         let c = Coupling::from_graph(&g);
         let a = detect(&c, DEFAULT_RESOLUTION);
-        let m = assignment_map(&a);
+        let m = pair_map(&a.members);
 
         assert_eq!(a.num_communities, 2, "two subsystems, not one merged blob");
 
@@ -877,7 +861,7 @@ mod tests {
         };
         let c = Coupling::from_graph(&g);
         let a = detect(&c, DEFAULT_RESOLUTION);
-        let m = assignment_map(&a);
+        let m = pair_map(&a.members);
 
         assert!(
             !m.contains_key("src/b.rs::foo"),
@@ -914,7 +898,7 @@ mod tests {
         };
         let c = Coupling::from_graph(&g);
         let a = detect(&c, DEFAULT_RESOLUTION);
-        let m = assignment_map(&a);
+        let m = pair_map(&a.members);
         // The bare node stays itself (two candidates => no resolution), so B couples only to the
         // unresolved placeholder, never to either real definition.
         assert!(
@@ -1040,7 +1024,7 @@ mod tests {
         // Pin the split: the two edge-disjoint halves land in DIFFERENT communities (proof the
         // disconnected community was actually split, not merely renamed), and the deterministic
         // numbering is stable.
-        let m = assignment_map(&a);
+        let m = pair_map(&a.members);
         assert_eq!(
             a.num_communities, 4,
             "hub + two split halves + the unrelated pair"
@@ -1101,7 +1085,7 @@ mod tests {
         // Pin the resulting assignment end-to-end through `detect` (this closes the branch): n1 alone,
         // its former neighbours split into the hub {n0,n4,n5} and the pair {n2,n3}.
         let a = detect(&c, res);
-        let m = assignment_map(&a);
+        let m = pair_map(&a.members);
         assert_eq!(a.num_communities, 3);
         assert_eq!(m["n1"], "community/2/1", "the squeezed bridge stands alone");
         assert_eq!(m["n0"], "community/2/0");

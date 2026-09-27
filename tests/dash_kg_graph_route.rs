@@ -20,12 +20,16 @@
 //! `dash`, `contextgraph` are compiled on BOTH the default and the `--no-default-features` lane (none
 //! feature-gated), so this guards the served boundary in both lanes.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use common::fixtures::chain_graph;
+use common::fixtures::star_graph;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
     REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
@@ -66,32 +70,6 @@ fn fixture_graph() -> Graph {
             edge("d1", "c1", REL_REFERENCES, TIER_INFERRED),
         ],
     }
-}
-
-/// A linear chain `n0 -> n1 -> ... -> n{len-1}` of BARE nodes (no summary / title / name), each edge
-/// `extracted`. A depth-`d` walk from `n0` reaches exactly {n0..nd}, so the served neighborhood's node
-/// count reads the EFFECTIVE (defaulted / clamped) depth straight off the wire; and a bare node's
-/// served `label` is its own id (`node_label`'s final fallback), pinned here at the boundary.
-fn chain_graph(len: usize) -> Graph {
-    let nodes = (0..len)
-        .map(|i| Node {
-            id: format!("n{i}"),
-            kind: KIND_UNIT.to_string(),
-            attrs: BTreeMap::new(),
-        })
-        .collect();
-    let edges = (0..len.saturating_sub(1))
-        .map(|i| Edge {
-            from: format!("n{i}"),
-            to: format!("n{}", i + 1),
-            rel: REL_REFERENCES.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: TIER_EXTRACTED.to_string(),
-        })
-        .collect();
-    Graph { nodes, edges }
 }
 
 /// Start `serve` on a FRESH ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
@@ -624,36 +602,6 @@ fn the_served_graph_route_percent_decodes_a_special_char_seed_over_the_socket() 
         ids.contains(raw_id) && ids.contains("src/conductor.rs"),
         "the decoded seed reaches its own node and its neighbor: {json}"
     );
-}
-
-/// A star graph: one `hub` wired to `spokes` bare leaf nodes (each edge `extracted`). A depth-1 walk
-/// from the hub carries every hub-spoke edge, so the hub's in-neighborhood degree is exactly `spokes`
-/// - the fixture the served GOD-NODE flag reads off the wire.
-fn star_graph(hub: &str, spokes: usize) -> Graph {
-    let mut nodes = vec![Node {
-        id: hub.to_string(),
-        kind: KIND_UNIT.to_string(),
-        attrs: BTreeMap::new(),
-    }];
-    let mut edges = Vec::new();
-    for i in 0..spokes {
-        let spoke = format!("{hub}-s{i}");
-        nodes.push(Node {
-            id: spoke.clone(),
-            kind: "code-entity".to_string(),
-            attrs: BTreeMap::new(),
-        });
-        edges.push(Edge {
-            from: hub.to_string(),
-            to: spoke,
-            rel: REL_REFERENCES.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: TIER_EXTRACTED.to_string(),
-        });
-    }
-    Graph { nodes, edges }
 }
 
 /// The SERVED `/api/graph` route carries the c6 QUERY-PATH + GOD-NODE analysis over the real socket:

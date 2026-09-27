@@ -17,27 +17,18 @@
 //! `dash` / `contextgraph` compile on BOTH the default and the `--no-default-features` lane (none
 //! feature-gated), so this guards the served boundary in both lanes.
 
-use std::collections::{BTreeMap, HashMap};
+mod common;
+
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
+use common::fixtures::summarized_node as node;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_DECISION, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, TIER_INFERRED,
+    Edge, Graph, KIND_DECISION, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs};
-
-fn node(id: &str, kind: &str, summary: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: if summary.is_empty() {
-            BTreeMap::new()
-        } else {
-            BTreeMap::from([("summary".to_string(), summary.to_string())])
-        },
-    }
-}
 
 fn edge(from: &str, to: &str, rel: &str) -> Edge {
     Edge {
