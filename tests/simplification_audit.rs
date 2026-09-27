@@ -4035,7 +4035,8 @@ fn render_section_4() -> String {
         crates all sit inside the sweep's scope - so a function with no production caller has \
         no public surface to protect and no reason to stay: it is deleted together with the \
         tests that exercise only it. Code a future change needs is added by that change, \
-        together with its caller.\n\n",
+        together with its caller. The audit enforces the rule: it fails whenever the ledger \
+        below holds any entry, and the failure names each one.\n\n",
     );
     out.push_str("### 4.3 The ledger\n\n");
     if real_dead_code_candidates().is_empty() {
@@ -6214,6 +6215,21 @@ fn real_dead_code_candidates() -> &'static [DeadCodeCandidate] {
     CACHE.get_or_init(|| {
         build_dead_code_candidates(real_workspace_files(), real_whole_file_test_set())
     })
+}
+
+/// Section 4.2's gate: the dead-code ledger must be empty. Panics naming every entry as
+/// `name (file:line)` so the failure says exactly what to delete.
+fn assert_dead_code_ledger_empty(candidates: &[DeadCodeCandidate]) {
+    let entries: Vec<String> = candidates
+        .iter()
+        .map(|c| format!("{} ({}:{})", c.name, c.file, c.line))
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "the dead-code ledger must be empty - delete each entry or give it a production \
+         caller:\n{}",
+        entries.join("\n")
+    );
 }
 
 /// [`real_dead_code_candidates`]'s own `lines` sidecar, in the SAME order - one shared
