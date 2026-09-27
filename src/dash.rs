@@ -2958,7 +2958,11 @@ impl Response {
         Self::new(status, content_type, body.into_bytes())
     }
     fn text(status: u16, body: &str) -> Self {
-        Self::new(status, "text/plain; charset=utf-8", body.as_bytes().to_vec())
+        Self::new(
+            status,
+            "text/plain; charset=utf-8",
+            body.as_bytes().to_vec(),
+        )
     }
     /// A binary asset served verbatim (spec 93 criterion 3: `/console/core.wasm` as
     /// `application/wasm`). Takes a `&'static [u8]` (an embedded artifact, never a runtime-
@@ -8630,7 +8634,6 @@ mod tests {
                     .expect("a port a real listener holds must resolve Some, not None")
             });
     }
-
 
     /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): the defect the
     /// adjudicator reproduced - a bind failure unrelated to any real conflict (permission error,
