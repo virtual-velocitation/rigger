@@ -3920,6 +3920,33 @@ mod tests {
         events
     }
 
+    /// A `GET target` against the router with no run, graph, progress or instances - the
+    /// static routes (the page, the console shell and its assets, an unknown path).
+    fn get_static(target: &str) -> Response {
+        route(
+            "GET",
+            target,
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        )
+    }
+
+    /// The served `/console` page, asserted to carry each `(needle, why)` - returned so a
+    /// caller can check further.
+    fn assert_console_page_carries(needles: &[(&str, &str)]) -> String {
+        let body = String::from_utf8(get_static("/console").body).unwrap();
+        for (needle, why) in needles {
+            assert!(body.contains(needle), "{why}: {body}");
+        }
+        body
+    }
+
     fn seeded_run() -> Vec<Event> {
         positioned(vec![
             ev(
@@ -4063,18 +4090,7 @@ mod tests {
     /// graph inputs (empty here, like the other static routes above).
     #[test]
     fn console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm() {
-        let r = route(
-            "GET",
-            "/console/core.wasm",
-            &[],
-            &Graph::default(),
-            &[],
-            &HashMap::new(),
-            3,
-            "rigger-run",
-            "origin/main",
-            &[],
-        );
+        let r = get_static("/console/core.wasm");
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "application/wasm");
         assert_eq!(r.body, CONSOLE_CORE_WASM);
@@ -4148,18 +4164,7 @@ mod tests {
     /// already proves for the sibling static route.
     #[test]
     fn console_route_serves_the_shell_page_with_mock_regions_and_both_theme_token_blocks() {
-        let r = route(
-            "GET",
-            "/console",
-            &[],
-            &Graph::default(),
-            &[],
-            &HashMap::new(),
-            3,
-            "rigger-run",
-            "origin/main",
-            &[],
-        );
+        let r = get_static("/console");
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "text/html; charset=utf-8");
         let body = String::from_utf8(r.body).unwrap();
@@ -4215,26 +4220,13 @@ mod tests {
     /// network font host, and carries no other `http(s)://` reference anywhere.
     #[test]
     fn console_route_never_references_an_external_url() {
-        let r = route(
-            "GET",
-            "/console",
-            &[],
-            &Graph::default(),
-            &[],
-            &HashMap::new(),
-            3,
-            "rigger-run",
-            "origin/main",
-            &[],
-        );
-        let body = String::from_utf8(r.body).unwrap();
+        let body = assert_console_page_carries(&[(
+            "/console/fonts/sora/Sora-400.woff2",
+            "fonts must be referenced from this page's own origin",
+        )]);
         assert!(
             !body.contains("http://") && !body.contains("https://"),
             "the console shell must reference no URL outside its own origin: {body}"
-        );
-        assert!(
-            body.contains("/console/fonts/sora/Sora-400.woff2"),
-            "fonts must be referenced from this page's own origin: {body}"
         );
     }
 
@@ -4255,18 +4247,7 @@ mod tests {
             "/console/fonts/jetbrains-mono/JetBrainsMono-500.woff2",
         ];
         for target in woff2_routes {
-            let r = route(
-                "GET",
-                target,
-                &[],
-                &Graph::default(),
-                &[],
-                &HashMap::new(),
-                3,
-                "rigger-run",
-                "origin/main",
-                &[],
-            );
+            let r = get_static(target);
             assert_eq!(r.status, 200, "{target} must serve 200");
             assert_eq!(r.content_type, "font/woff2", "{target} content type");
             assert!(
@@ -4282,18 +4263,7 @@ mod tests {
             "/console/fonts/jetbrains-mono/OFL.txt",
         ];
         for target in license_routes {
-            let r = route(
-                "GET",
-                target,
-                &[],
-                &Graph::default(),
-                &[],
-                &HashMap::new(),
-                3,
-                "rigger-run",
-                "origin/main",
-                &[],
-            );
+            let r = get_static(target);
             assert_eq!(r.status, 200, "{target} must serve 200");
             let body = String::from_utf8(r.body).unwrap();
             assert!(
@@ -4303,23 +4273,12 @@ mod tests {
         }
     }
 
-    /// An asset name the embedded set does not carry is a plain 404, like every other
-    /// unmatched path - no directory listing, no path traversal onto the real filesystem.
-    #[test]
-    fn console_fonts_route_404s_for_an_unknown_asset() {
-        let r = route(
-            "GET",
-            "/console/fonts/sora/../../../etc/passwd",
-            &[],
-            &Graph::default(),
-            &[],
-            &HashMap::new(),
-            3,
-            "rigger-run",
-            "origin/main",
-            &[],
-        );
-        assert_eq!(r.status, 404);
+    crate::test_cases! {
+        /// An asset name the embedded set does not carry is a plain 404, like every other
+        /// unmatched path - no directory listing, no path traversal onto the real filesystem.
+        console_fonts_route_404s_for_an_unknown_asset:
+            assert_eq!(get_static("/console/fonts/sora/../../../etc/passwd").status, 404);
+        unknown_get_path_is_404: assert_eq!(get_static("/does/not/exist").status, 404);
     }
 
     /// Spec 94 criterion 1 OWNS "the theme toggle's persistence in the browser's
@@ -4329,47 +4288,22 @@ mod tests {
     /// the same key, so a choice actually round-trips across a reload.
     #[test]
     fn console_page_wires_the_theme_toggles_persistence_round_trip() {
-        let r = route(
-            "GET",
-            "/console",
-            &[],
-            &Graph::default(),
-            &[],
-            &HashMap::new(),
-            3,
-            "rigger-run",
-            "origin/main",
-            &[],
-        );
-        let body = String::from_utf8(r.body).unwrap();
-        assert!(
-            body.contains("localStorage.getItem(THEME_KEY)"),
-            "must restore the persisted theme on load: {body}"
-        );
-        assert!(
-            body.contains("localStorage.setItem(THEME_KEY, next)"),
-            "must persist the theme on toggle: {body}"
-        );
-        assert!(
-            body.contains("themebtn"),
-            "the toggle button itself must be present: {body}"
-        );
+        assert_console_page_carries(&[
+            (
+                "localStorage.getItem(THEME_KEY)",
+                "must restore the persisted theme on load",
+            ),
+            (
+                "localStorage.setItem(THEME_KEY, next)",
+                "must persist the theme on toggle",
+            ),
+            ("themebtn", "the toggle button itself must be present"),
+        ]);
     }
 
     #[test]
     fn root_serves_the_embedded_page_with_the_placeholder_resolved() {
-        let r = route(
-            "GET",
-            "/",
-            &[],
-            &Graph::default(),
-            &[],
-            &HashMap::new(),
-            3,
-            "rigger-run",
-            "origin/main",
-            &[],
-        );
+        let r = get_static("/");
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "text/html; charset=utf-8");
         let body = String::from_utf8(r.body).unwrap();
@@ -4628,25 +4562,74 @@ mod tests {
         }
     }
 
+    /// A well-formed HTTP reply that carries NO dash header - any unrelated process holding
+    /// the port.
+    const NON_DASH_REPLY: &[u8] =
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
+
+    /// A loopback listener answering every connection with `reply`; returns its port.
+    fn serve_reply(reply: impl Into<Vec<u8>>) -> u16 {
+        let reply = reply.into();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(&reply);
+            }
+        });
+        port
+    }
+
+    /// A loopback holder that writes `prefix` to every connection, then dribbles one
+    /// newline-less byte every 100ms forever; returns its port.
+    fn serve_dribble(prefix: Vec<u8>) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                if s.write_all(&prefix).is_err() {
+                    continue;
+                }
+                let _ = s.flush();
+                loop {
+                    if s.write_all(b"a").is_err() || s.flush().is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        port
+    }
+
+    /// `dash_serving_on(port)` on a worker thread guarded by a 2s `recv_timeout`, so a
+    /// regression to an unbounded probe fails LOUD with `hang` instead of hanging the suite:
+    /// the verdict and the wall-clock time it took.
+    fn timed_dash_probe(port: u16, hang: &str) -> (bool, Duration) {
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let served = dash_serving_on(port);
+            let _ = tx.send((served, start.elapsed()));
+        });
+        rx.recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|_| panic!("{hang}"))
+    }
+
+    /// `dash_serving_pid_on` against a listener answering `reply` reports `expected`.
+    fn assert_pid_probe(reply: impl Into<Vec<u8>>, expected: Option<u32>, why: &str) {
+        assert_eq!(dash_serving_pid_on(serve_reply(reply)), expected, "{why}");
+    }
+
     /// Spec 50, criterion 1: `dash_serving_on` recognizes ONLY a rigger dash (by its
     /// [`DASH_HEADER`]). A raw listener that answers WITHOUT that header is not mistaken for a
     /// dash, so a genuine conflict with an unrelated process is never swallowed as a false
     /// singleton short-circuit.
     #[test]
     fn dash_serving_on_is_false_for_a_non_dash_listener() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                // A well-formed HTTP reply that carries NO dash header - any unrelated
-                // process holding the port.
-                let _ = s.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
-                );
-            }
-        });
         assert!(
-            !dash_serving_on(port),
+            !dash_serving_on(serve_reply(NON_DASH_REPLY)),
             "a non-dash listener must not be recognized as a rigger dash"
         );
     }
@@ -4661,50 +4644,22 @@ mod tests {
     /// hanging the whole suite.
     #[test]
     fn dash_serving_on_is_bounded_against_a_byte_dribbling_holder() {
-        use std::sync::mpsc;
-        use std::time::Instant;
-
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                // A plausible status-line start, then an endless newline-less dribble: one byte
-                // every 100ms, faster than any single per-read timeout expires but never a `\n`.
-                if s.write_all(b"HTTP/1.1 200 OK\r\nX-Filler: ").is_err() {
-                    continue;
-                }
-                let _ = s.flush();
-                loop {
-                    if s.write_all(b"a").is_err() || s.flush().is_err() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-        });
-
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let start = Instant::now();
-            let served = dash_serving_on(port);
-            let _ = tx.send((served, start.elapsed()));
-        });
-        match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok((served, elapsed)) => {
-                assert!(
-                    !served,
-                    "a dribbling non-dash holder must never be recognized as a rigger dash"
-                );
-                assert!(
-                    elapsed < Duration::from_secs(2),
-                    "dash_serving_on must be bounded against a dribbler; it took {elapsed:?}"
-                );
-            }
-            Err(_) => panic!(
-                "dash_serving_on HUNG against a byte-dribbling holder - it never returned within 2s \
-                 (the per-read-only timeout never bounds a newline-less dribble)"
-            ),
-        }
+        // A plausible status-line start, then an endless newline-less dribble: one byte
+        // every 100ms, faster than any single per-read timeout expires but never a `\n`.
+        let port = serve_dribble(b"HTTP/1.1 200 OK\r\nX-Filler: ".to_vec());
+        let (served, elapsed) = timed_dash_probe(
+            port,
+            "dash_serving_on HUNG against a byte-dribbling holder - it never returned within 2s \
+             (the per-read-only timeout never bounds a newline-less dribble)",
+        );
+        assert!(
+            !served,
+            "a dribbling non-dash holder must never be recognized as a rigger dash"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "dash_serving_on must be bounded against a dribbler; it took {elapsed:?}"
+        );
     }
 
     /// Spec 62 round 3 mutation-efficacy follow-up (probe_dash_head extraction,
@@ -4729,153 +4684,112 @@ mod tests {
     /// wall-clock bound well under the deadline separates them without racing a specific millisecond.
     #[test]
     fn dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block() {
-        use std::sync::mpsc;
-        use std::time::Instant;
+        // The real dash header, sent whole, immediately - then an endless newline-less
+        // dribble that never reaches the terminating blank line.
+        let port =
+            serve_dribble(format!("HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n").into_bytes());
+        let (served, elapsed) = timed_dash_probe(
+            port,
+            "dash_serving_on HUNG against a header-then-dribble holder - it never returned \
+             within 2s",
+        );
+        assert!(
+            served,
+            "a genuine DASH_HEADER line must be recognized even though the holder never \
+             finishes the header block"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "recognizing DASH_HEADER must short-circuit almost immediately, well under \
+             the probe's own 750ms deadline - it took {elapsed:?}, which is only \
+             possible if the early exit degraded into waiting out the block or the \
+             deadline instead"
+        );
+    }
 
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                // The real dash header, sent whole, immediately - then an endless newline-less
-                // dribble that never reaches the terminating blank line.
-                if s.write_all(format!("HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n").as_bytes())
-                    .is_err()
-                {
-                    continue;
-                }
-                let _ = s.flush();
-                loop {
-                    if s.write_all(b"a").is_err() || s.flush().is_err() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-        });
-
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let start = Instant::now();
-            let served = dash_serving_on(port);
-            let _ = tx.send((served, start.elapsed()));
-        });
-        match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok((served, elapsed)) => {
-                assert!(
-                    served,
-                    "a genuine DASH_HEADER line must be recognized even though the holder never \
-                     finishes the header block"
-                );
-                assert!(
-                    elapsed < Duration::from_millis(500),
-                    "recognizing DASH_HEADER must short-circuit almost immediately, well under \
-                     the probe's own 750ms deadline - it took {elapsed:?}, which is only \
-                     possible if the early exit degraded into waiting out the block or the \
-                     deadline instead"
-                );
-            }
-            Err(_) => panic!(
-                "dash_serving_on HUNG against a header-then-dribble holder - it never returned \
-                 within 2s"
+    crate::test_cases! {
+        /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race):
+        /// `dash_serving_pid_on` reports the pid a REAL rigger-dash-shaped response names via
+        /// [`DASH_HEADER_PID`] - the whole point being that a caller can learn WHO is actually
+        /// serving a port without assuming it is whichever process the caller itself happens to have
+        /// spawned. A fake listener stands in for the winner of a singleton race, answering with an
+        /// ARBITRARY pid value in the header (never the test process's own pid), so a pass here can
+        /// only be explained by the probe reading the header off the wire, not by any coincidental
+        /// match with `std::process::id()`.
+        dash_serving_pid_on_reports_the_pid_a_real_dash_response_names: assert_pid_probe(
+            // 424242 is deliberately NOT this test process's own pid.
+            format!(
+                "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
+                 424242\r\nConnection: close\r\n\r\n"
             ),
-        }
-    }
-
-    /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race):
-    /// `dash_serving_pid_on` reports the pid a REAL rigger-dash-shaped response names via
-    /// [`DASH_HEADER_PID`] - the whole point being that a caller can learn WHO is actually
-    /// serving a port without assuming it is whichever process the caller itself happens to have
-    /// spawned. A fake listener stands in for the winner of a singleton race, answering with an
-    /// ARBITRARY pid value in the header (never the test process's own pid), so a pass here can
-    /// only be explained by the probe reading the header off the wire, not by any coincidental
-    /// match with `std::process::id()`.
-    #[test]
-    fn dash_serving_pid_on_reports_the_pid_a_real_dash_response_names() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let winner_pid: u32 = 424_242; // deliberately NOT this test process's own pid
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                let _ = s.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
-                         {winner_pid}\r\nConnection: close\r\n\r\n"
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-        assert_eq!(
-            dash_serving_pid_on(port),
-            Some(winner_pid),
-            "the probe must report the EXACT pid the response names via X-Rigger-Dash-Pid"
+            Some(424_242),
+            "the probe must report the EXACT pid the response names via X-Rigger-Dash-Pid",
         );
-    }
-
-    /// Spec 62 round 2 mutation-efficacy follow-up (adv-u62c1-marker-pid-not-the-serving-pid-on-
-    /// singleton-race): [`dash_serving_pid_on`]'s read loop has its own local byte-cap constant
-    /// and a `head.len() >= <cap>` termination check, both of which matter, not merely
-    /// `head_block_ended` - a response whose header block is genuinely LARGER than the
-    /// fixed-size read buffer forces multiple `read` calls to assemble, so a wrong cap (too
-    /// small, or the comparison direction flipped) truncates the head BEFORE the real
-    /// [`DASH_HEADER_PID`] line ever arrives, well short of the block's actual end.
-    ///
-    /// The response here is ~2KB: status line, then ~2000 bytes of an unrelated padding header
-    /// (never matching either needle), THEN the real `DASH_HEADER`/`DASH_HEADER_PID` lines. Two
-    /// structural facts make the assertion robust regardless of exact OS-level TCP chunking:
-    /// (1) the read loop's own buffer is a fixed 512-byte array, so `Read::read` can never
-    /// return more than 512 bytes in one call - reaching the real content (past byte ~2030)
-    /// PROVABLY requires at least 4 calls; (2) since 1032 (`8 * 1024` mis-computed as `8 + 1024`
-    /// or `8 / 1024`) and the flipped-comparison cap are both far below 2030 while the real cap
-    /// (8192) is far above it, a wrong cap is GUARANTEED to trip - monotonically, on whichever
-    /// read call first crosses it - strictly before the padding ends, while the correct cap
-    /// never trips at all (this response never reaches 8192 bytes) and the loop instead runs to
-    /// completion exactly once `head_block_ended` sees the real trailing blank line.
-    #[test]
-    fn dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let winner_pid: u32 = 424_243; // deliberately NOT this test process's own pid
-        let padding = "A".repeat(2000);
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                let _ = s.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nX-Padding: {padding}\r\n{DASH_HEADER}: \
-                         probe\r\n{DASH_HEADER_PID}: {winner_pid}\r\nConnection: \
-                         close\r\n\r\n"
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-        assert_eq!(
-            dash_serving_pid_on(port),
-            Some(winner_pid),
+        /// Spec 62 round 2 mutation-efficacy follow-up (adv-u62c1-marker-pid-not-the-serving-pid-on-
+        /// singleton-race): [`dash_serving_pid_on`]'s read loop has its own local byte-cap constant
+        /// and a `head.len() >= <cap>` termination check, both of which matter, not merely
+        /// `head_block_ended` - a response whose header block is genuinely LARGER than the
+        /// fixed-size read buffer forces multiple `read` calls to assemble, so a wrong cap (too
+        /// small, or the comparison direction flipped) truncates the head BEFORE the real
+        /// [`DASH_HEADER_PID`] line ever arrives, well short of the block's actual end.
+        ///
+        /// The response here is ~2KB: status line, then ~2000 bytes of an unrelated padding header
+        /// (never matching either needle), THEN the real `DASH_HEADER`/`DASH_HEADER_PID` lines. Two
+        /// structural facts make the assertion robust regardless of exact OS-level TCP chunking:
+        /// (1) the read loop's own buffer is a fixed 512-byte array, so `Read::read` can never
+        /// return more than 512 bytes in one call - reaching the real content (past byte ~2030)
+        /// PROVABLY requires at least 4 calls; (2) since 1032 (`8 * 1024` mis-computed as `8 + 1024`
+        /// or `8 / 1024`) and the flipped-comparison cap are both far below 2030 while the real cap
+        /// (8192) is far above it, a wrong cap is GUARANTEED to trip - monotonically, on whichever
+        /// read call first crosses it - strictly before the padding ends, while the correct cap
+        /// never trips at all (this response never reaches 8192 bytes) and the loop instead runs to
+        /// completion exactly once `head_block_ended` sees the real trailing blank line.
+        dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls: assert_pid_probe(
+            // 424243 is deliberately NOT this test process's own pid.
+            format!(
+                "HTTP/1.1 200 OK\r\nX-Padding: {}\r\n{DASH_HEADER}: \
+                 probe\r\n{DASH_HEADER_PID}: 424243\r\nConnection: \
+                 close\r\n\r\n",
+                "A".repeat(2000)
+            ),
+            Some(424_243),
             "a head spanning many read() calls must still be fully assembled and parsed - \
-             a premature length-cap break truncates it before the real header lines arrive"
+             a premature length-cap break truncates it before the real header lines arrive",
         );
-    }
-
-    /// The false direction, mirroring `dash_serving_on_is_false_for_a_non_dash_listener`: a
-    /// listener that answers but carries no [`DASH_HEADER`] at all (an unrelated process holding
-    /// the port) must never be mistaken for a dash naming a pid, even if it happens to send a
-    /// same-shaped header by coincidence-free construction here (it sends none).
-    #[test]
-    fn dash_serving_pid_on_is_none_for_a_non_dash_listener() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                let _ = s.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
-                );
-            }
-        });
-        assert_eq!(
-            dash_serving_pid_on(port),
+        /// The false direction, mirroring `dash_serving_on_is_false_for_a_non_dash_listener`: a
+        /// listener that answers but carries no [`DASH_HEADER`] at all (an unrelated process holding
+        /// the port) must never be mistaken for a dash naming a pid, even if it happens to send a
+        /// same-shaped header by coincidence-free construction here (it sends none).
+        dash_serving_pid_on_is_none_for_a_non_dash_listener: assert_pid_probe(
+            NON_DASH_REPLY,
             None,
-            "a non-dash listener must never be reported as naming a serving pid"
+            "a non-dash listener must never be reported as naming a serving pid",
+        );
+        /// The sentinel arm of `dash_serving_pid_on`'s own `.parse().ok()` (spec 62 round 2, SDET
+        /// lens periphery: neither the mutation-efficacy accounting recorded in
+        /// `d-u62c1-mutation-accounting-round2` nor any existing test in this file exercises this
+        /// exact path - `cargo-mutants`' default mutator set never touches a `Result::ok()` call on
+        /// a std `.parse()`, so this arm is invisible to that tool and only a hand-written test
+        /// closes it). A listener that DOES carry a genuine `DASH_HEADER` (so the "is this even a
+        /// dash" check at the top of the function passes) but whose `DASH_HEADER_PID` value is not a
+        /// valid `u32` must resolve to `None`, never panic and never silently coerce to some other
+        /// value (e.g. `0`) - a malformed or truncated pid header must never be reported as a real
+        /// pid a caller could act on. A round-2 draft of the one production call site,
+        /// `spawn_run_dashboard_detached`, once used `dash_serving_pid_on(port).unwrap_or(pid)` -
+        /// this exact `None` was what let that (since-rejected,
+        /// adj-u62c1r2-verdict-reject-version-skew-fallback) fallback engage instead of recording a
+        /// nonsense pid. The current call site no longer falls back to a guessed pid at all: it
+        /// records the documented [`UNATTRIBUTED_PID`] sentinel on this `None` instead - so this
+        /// test's lasting job is proving `dash_serving_pid_on` itself never manufactures a value
+        /// from unparseable input, regardless of what any caller later does with the `None`.
+        dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number: assert_pid_probe(
+            format!(
+                "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
+                 not-a-number\r\nConnection: close\r\n\r\n"
+            ),
+            None,
+            "a non-numeric X-Rigger-Dash-Pid value must resolve to None, never panic or \
+             coerce to a default pid",
         );
     }
 
@@ -4885,46 +4799,6 @@ mod tests {
     fn dash_serving_pid_on_is_none_when_nothing_answers() {
         let port = free_port_from(45000).expect("a free loopback port must be available");
         assert_eq!(dash_serving_pid_on(port), None);
-    }
-
-    /// The sentinel arm of `dash_serving_pid_on`'s own `.parse().ok()` (spec 62 round 2, SDET
-    /// lens periphery: neither the mutation-efficacy accounting recorded in
-    /// `d-u62c1-mutation-accounting-round2` nor any existing test in this file exercises this
-    /// exact path - `cargo-mutants`' default mutator set never touches a `Result::ok()` call on
-    /// a std `.parse()`, so this arm is invisible to that tool and only a hand-written test
-    /// closes it). A listener that DOES carry a genuine `DASH_HEADER` (so the "is this even a
-    /// dash" check at the top of the function passes) but whose `DASH_HEADER_PID` value is not a
-    /// valid `u32` must resolve to `None`, never panic and never silently coerce to some other
-    /// value (e.g. `0`) - a malformed or truncated pid header must never be reported as a real
-    /// pid a caller could act on. A round-2 draft of the one production call site,
-    /// `spawn_run_dashboard_detached`, once used `dash_serving_pid_on(port).unwrap_or(pid)` -
-    /// this exact `None` was what let that (since-rejected,
-    /// adj-u62c1r2-verdict-reject-version-skew-fallback) fallback engage instead of recording a
-    /// nonsense pid. The current call site no longer falls back to a guessed pid at all: it
-    /// records the documented [`UNATTRIBUTED_PID`] sentinel on this `None` instead - so this
-    /// test's lasting job is proving `dash_serving_pid_on` itself never manufactures a value
-    /// from unparseable input, regardless of what any caller later does with the `None`.
-    #[test]
-    fn dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                let _ = s.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
-                         not-a-number\r\nConnection: close\r\n\r\n"
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-        assert_eq!(
-            dash_serving_pid_on(port),
-            None,
-            "a non-numeric X-Rigger-Dash-Pid value must resolve to None, never panic or \
-             coerce to a default pid"
-        );
     }
 
     /// Spec 50, criterion 1 (cold-race loser): when two dashes bind the fixed address at once, the
@@ -5879,23 +5753,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn unknown_get_path_is_404() {
-        let r = route(
-            "GET",
-            "/does/not/exist",
-            &[],
-            &Graph::default(),
-            &[],
-            &HashMap::new(),
-            3,
-            "rigger-run",
-            "origin/main",
-            &[],
-        );
-        assert_eq!(r.status, 404);
     }
 
     #[test]
@@ -8731,50 +8588,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn describe_held_port_names_this_process_when_it_holds_the_port_itself() {
+    /// With a real listener bound in this process, `describe(addr)` names this test process's
+    /// own pid as the holder of `addr`. Checked as the exact `by pid {N}` attribution phrase,
+    /// not a raw pid-string substring test: this project's mandatory pid-namespace test sandbox
+    /// (.cargo/pidns-runner.sh, every test binary here runs AS PID 1 of its own fresh namespace)
+    /// makes a raw substring check vacuous, since "1" trivially matches inside the loopback
+    /// address "127.0.0.1" regardless of what the message actually reports.
+    fn assert_names_this_process_as_holder(describe: impl Fn(SocketAddr) -> String) {
         if !Path::new("/proc").is_dir() {
             return;
         }
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let msg = describe_held_port(addr);
-        // Checked as the exact `by pid {N}` attribution phrase, not a raw pid-string substring
-        // test: this project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh,
-        // every test binary here runs AS PID 1 of its own fresh namespace) makes a raw substring
-        // check vacuous, since "1" trivially matches inside the loopback address "127.0.0.1"
-        // regardless of what the message actually reports.
-        assert!(
-            msg.contains(&format!("by pid {}", std::process::id())),
-            "describe_held_port must name this test process's own pid as the holder; got: {msg}"
-        );
-        assert!(msg.contains(&addr.to_string()), "got: {msg}");
-        drop(listener);
-    }
-
-    /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike
-    /// [`describe_held_port`] (whose one production caller, `cmd_dash`, only ever reaches it
-    /// AFTER the OS has already confirmed `AddrInUse`, so a `None` holder there still means a
-    /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] is defined in
-    /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
-    /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
-    /// never promote an unconfirmed holder to a claim regardless of who calls it. This is what let
-    /// round 4 rewire the step-path auto-start (`wait_for_dash_bind_or_diagnose`, `src/main.rs`,
-    /// whose bind attempt runs in a detached child with no observable `io::Error` at all, so it
-    /// has no upstream confirmation of its own to lean on) onto [`held_port_holder`] directly
-    /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming
-    /// this test process's own pid.
-    #[test]
-    fn describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed() {
-        if !Path::new("/proc").is_dir() {
-            return;
-        }
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let addr = listener.local_addr().unwrap();
-        let msg = describe_held_port_if_confirmed(addr)
-            .expect("a port a real listener holds must resolve Some, not None");
-        // Same exact-phrase check as `describe_held_port_names_this_process_when_it_holds_the_
-        // port_itself` above, for the same pid-namespace-sandbox reason.
+        let msg = describe(addr);
         assert!(
             msg.contains(&format!("by pid {}", std::process::id())),
             "must name this test process's own pid as the holder; got: {msg}"
@@ -8782,6 +8608,29 @@ mod tests {
         assert!(msg.contains(&addr.to_string()), "got: {msg}");
         drop(listener);
     }
+
+    crate::test_cases! {
+        describe_held_port_names_this_process_when_it_holds_the_port_itself:
+            assert_names_this_process_as_holder(describe_held_port);
+        /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): unlike
+        /// [`describe_held_port`] (whose one production caller, `cmd_dash`, only ever reaches it
+        /// AFTER the OS has already confirmed `AddrInUse`, so a `None` holder there still means a
+        /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] is defined in
+        /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
+        /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
+        /// never promote an unconfirmed holder to a claim regardless of who calls it. This is what let
+        /// round 4 rewire the step-path auto-start (`wait_for_dash_bind_or_diagnose`, `src/main.rs`,
+        /// whose bind attempt runs in a detached child with no observable `io::Error` at all, so it
+        /// has no upstream confirmation of its own to lean on) onto [`held_port_holder`] directly
+        /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming
+        /// this test process's own pid.
+        describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed:
+            assert_names_this_process_as_holder(|addr| {
+                describe_held_port_if_confirmed(addr)
+                    .expect("a port a real listener holds must resolve Some, not None")
+            });
+    }
+
 
     /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): the defect the
     /// adjudicator reproduced - a bind failure unrelated to any real conflict (permission error,
@@ -10304,40 +10153,37 @@ mod metadata_card_c2 {
         assert!(card.proof_evidence.is_empty());
     }
 
-    /// A non-code-entity subject (a file, here) carries no proof of its own - `proven_by`/
-    /// `proof_evidence` never read a same-named attr off a differently-kinded node, mirroring the
-    /// `file`/`line` gating just above `card`'s own proof-reading branch.
-    #[test]
-    fn card_of_a_file_reports_no_proof_of_its_own() {
+    /// A subject pushed onto the card fixture as `(id, kind, attrs)` reports `proven_by: 0`
+    /// and no proof evidence.
+    fn assert_card_reports_no_proof(id: &str, kind: &str, attrs: &[(&str, &str)]) {
         let mut g = card_graph();
-        g.nodes.push(node(
-            "combat.rs",
-            KIND_FILE,
-            &[("proven_by", "9"), ("proof_evidence", r#"["x.rs:1"]"#)],
-        ));
-        let card = card(&g, "combat.rs").expect("combat.rs is a graph node");
+        g.nodes.push(node(id, kind, attrs));
+        let card = card(&g, id).expect("the pushed subject is a graph node");
         assert_eq!(
             card.proven_by, 0,
-            "a file subject never reports proof - that is a code-entity-only fact"
+            "{id} must report no proof - proof is a well-formed code-entity-only fact"
         );
         assert!(card.proof_evidence.is_empty());
     }
 
-    /// A malformed `proof_evidence` attr (never produced by the real fold, but a defensive
-    /// contract every attr-reading surface in this codebase honors) degrades to an empty list
-    /// rather than panicking - matching `unwrap_or_default()`'s own graceful-degradation idiom
-    /// used throughout `card`.
-    #[test]
-    fn card_tolerates_a_malformed_proof_evidence_attr() {
-        let mut g = card_graph();
-        g.nodes.push(node(
+    crate::test_cases! {
+        /// A non-code-entity subject (a file, here) carries no proof of its own - `proven_by`/
+        /// `proof_evidence` never read a same-named attr off a differently-kinded node, mirroring the
+        /// `file`/`line` gating just above `card`'s own proof-reading branch.
+        card_of_a_file_reports_no_proof_of_its_own: assert_card_reports_no_proof(
+            "combat.rs",
+            KIND_FILE,
+            &[("proven_by", "9"), ("proof_evidence", r#"["x.rs:1"]"#)],
+        );
+        /// A malformed `proof_evidence` attr (never produced by the real fold, but a defensive
+        /// contract every attr-reading surface in this codebase honors) degrades to an empty list
+        /// rather than panicking - matching `unwrap_or_default()`'s own graceful-degradation idiom
+        /// used throughout `card`.
+        card_tolerates_a_malformed_proof_evidence_attr: assert_card_reports_no_proof(
             "combat.rs::odd",
             KIND_CODE_ENTITY,
             &[("name", "odd"), ("proof_evidence", "not json")],
-        ));
-        let card = card(&g, "combat.rs::odd").expect("combat.rs::odd is a graph node");
-        assert_eq!(card.proven_by, 0);
-        assert!(card.proof_evidence.is_empty());
+        );
     }
 
     /// A file subject's card lists the entities it CONTAINS as `top_entities` (reusing
