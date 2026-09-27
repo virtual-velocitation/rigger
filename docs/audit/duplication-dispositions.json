@@ -35,9 +35,9 @@
     "reason": "The `*_from_env` pair feeds the `RIGGER_TMPDIR` override to two different resolvers (create versus locate-only); only the call shape is shared."
   },
   {
-    "id": "dup-5d444b26662b",
+    "id": "dup-e0f2896fa7de",
     "disposition": "not-a-duplicate",
-    "reason": "`real_files` and `real_workspace_files` memoize two different scans of the tree; the only shared shape is the standard `OnceLock` memoization idiom."
+    "reason": "`real_files`, `real_workspace_files` and `real_map` memoize three different scans of the tree; the only shared shape is the standard `OnceLock` memoization idiom."
   },
   {
     "id": "dup-37f6bddf866b",

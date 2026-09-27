@@ -3242,7 +3242,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-ec5b0650a4a0",
+    "id": "dup-61beee8c3f8a",
     "classification": "semantic",
     "sites": [
       {
@@ -6607,12 +6607,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"| Conductor orchestration: gates, courier, step/run lifecycle | 19 | 8,257 | \\\n        the `courier_registry_refresh_{boundary,fence,periphery}` trio (3 files) \\\n        pair together in 6 clusters confined to just themselves (2-5 sites each; \\\n        excludes the whole-codebase Command::new/`.rigger`-path mandatory-sweep \\\n        clusters, section 2, that also happen to intersect them) |\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by \\\n        boundary-line count, per a direct read of each file), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -7047,7 +7042,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 760 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 759 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-6bb42578d223",
@@ -8417,7 +8412,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-918c13bc36d3",
+    "id": "dup-601e842d257a",
     "classification": "near",
     "sites": [
       {
@@ -8453,11 +8448,6 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match",
-        "content_hash": "626d6aed796ac54e"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "pluralize_functions_uses_singular_only_at_exactly_one",
         "content_hash": "626d6aed796ac54e"
       },
       {
@@ -9653,7 +9643,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` is the majority of that file's bulk (56-70% by \\\n        boundary-line count, per a direct read of each file), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -9663,7 +9653,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"- Scope: `src/dash.rs::process_state` (`src/dash.rs:627-635`) and \\\n        `src/main.rs::pgid_of` (`src/main.rs:25030-25043`) each independently re-derive \\\n        `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \\\n        (`pid_starttime`/`read_ppid`, `src/reap.rs:214-231`) already parses - the exact \\\n        \\\"second mutation authority\\\" example spec 85's own Goal names and spec 62's \\\n        capstone previously caught (`{readers_id}`, {readers_sites} sites across \\\n        {proc_reader_files}), plus {literal_sites} raw `/proc`-path string literals scattered \\\n        across {literal_files} files with no shared composer (`{literals_id}`). Both clusters' \\\n        own `proposed_home` \\\n        agree: `src/reap.rs` \\\n        becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \\\n        re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \\\n        production server, so it is the actual active-correctness risk this tier-1 placement \\\n        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:14089`) \\\n        and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \\\n        rides in this same item only because it shares `{literals_id}`/`{readers_id}`'s one \\\n        root cause \\\n        and one proposed fix with `process_state`, not because retiring it retires any live \\\n        risk of its own.\\n\\\n        - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \\\n        `tests/cli.rs:24990-25003`, re-points at the same call).\\n\\\n        - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \\\n        parsing bodies in favor of calling `reap.rs`'s existing parser.\\n\\\n        - Risk: low for both halves, for two different reasons. Section 3's own disposition \\\n        already establishes `process_state` as a duplicate READ-only reimplementation, never a \\\n        bypassed mutation path - nothing this touches can signal or kill a process, so it \\\n        carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower \\\n        still: being test-only, retiring it is ordinary test cleanup, not a \\\n        correctness-risk retirement - it is sequenced here for shared-fix convenience, not \\\n        because it independently needed tier-1 urgency.\\n\\\n        - Unblocks: retires the codebase's only currently-known live instance of the \\\n        \\\"duplicate implementation reconciled after the fact\\\" pattern the operator's \\\n        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a \\\n        free byproduct, `main.rs`'s own test-only duplicate parser.\\n\\n\"",
+        "name": "\"- Scope: `src/dash.rs::process_state` independently re-derives `/proc/<pid>/stat` \\\n        fields that `src/reap.rs` (`pid_starttime`/`read_ppid`) already parses - the exact \\\n        \\\"second mutation authority\\\" example spec 85's own Goal names and spec 62's \\\n        capstone previously caught (`{readers_id}`, {readers_sites} sites across \\\n        {proc_reader_files}), plus {literal_sites} raw `/proc`-path string literals scattered \\\n        across {literal_files} files with no shared composer (`{literals_id}`). Both clusters' \\\n        own `proposed_home` agree: `src/reap.rs` becomes the one `/proc`-reading module; \\\n        `dash.rs` calls it instead of re-parsing. `process_state` is reachable from `dash`'s \\\n        own always-on production server, so it is the actual active-correctness risk this \\\n        tier-1 placement is about; the cluster's test-only readers (such as the shared \\\n        `tests/common/fixtures/host.rs::pgid_of` fixture) earn no tier-1 placement on their \\\n        own and ride in this same item only because they share its root cause.\\n\\\n        - Files: `src/dash.rs`, `src/reap.rs`, plus the test-only readers `{readers_id}` \\\n        names.\\n\\\n        - Expected line delta: negative - retires `process_state`'s own parsing body in favor \\\n        of calling `reap.rs`'s existing parser.\\n\\\n        - Risk: low. Section 3's own disposition already establishes `process_state` as a \\\n        duplicate READ-only reimplementation, never a bypassed mutation path - nothing this \\\n        touches can signal or end a process, so it carries none of the no-os-kill gate's own \\\n        risk surface; retiring the test-only readers is ordinary test cleanup.\\n\\\n        - Unblocks: retires the codebase's only currently-known live instance of the \\\n        \\\"duplicate implementation reconciled after the fact\\\" pattern the operator's \\\n        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -9706,7 +9696,7 @@
     "note": "mandatory sweep: /proc-path string literals - 56 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-8e67cb260888",
+    "id": "dup-1a85bca8b768",
     "classification": "semantic",
     "sites": [
       {
@@ -9767,7 +9757,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "render_section_6",
-        "content_hash": "fab433caaf76cd8c"
+        "content_hash": "80401a652bbf30cd"
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -19491,7 +19481,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-5d444b26662b",
+    "id": "dup-e0f2896fa7de",
     "classification": "exact",
     "sites": [
       {
@@ -19501,11 +19491,16 @@
       },
       {
         "file": "tests/simplification_audit.rs",
+        "name": "real_map",
+        "content_hash": "fcd06bf2471db90e"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
         "name": "real_workspace_files",
         "content_hash": "fcd06bf2471db90e"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
