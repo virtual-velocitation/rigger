@@ -960,18 +960,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn is_reapable_base_refuses_a_dir_that_is_not_under_the_given_authorized_root() {
-        // The repo root is a real, existing dir - just not under `authorized_root` (here,
-        // its own `.rigger/tmp` subdir).
+    /// `is_reapable_base` refuses `base_of(repo)` as a base under the repo's own `.rigger/tmp`
+    /// authorized root.
+    fn assert_is_reapable_base_refuses(base_of: fn(&FakeRepo) -> PathBuf) {
         let repo = FakeRepo::new();
-        assert_eq!(is_reapable_base(&repo.root_path, &repo.tmp), None);
+        assert_eq!(is_reapable_base(&base_of(&repo), &repo.tmp), None);
     }
 
-    #[test]
-    fn is_reapable_base_refuses_the_authorized_root_itself() {
-        let repo = FakeRepo::new();
-        assert_eq!(is_reapable_base(&repo.tmp, &repo.tmp), None);
+    crate::test_cases! { assert_is_reapable_base_refuses;
+        /// The repo root is a real, existing dir - just not under `authorized_root` (here, its
+        /// own `.rigger/tmp` subdir).
+        is_reapable_base_refuses_a_dir_that_is_not_under_the_given_authorized_root: (
+            |repo| repo.root_path.clone(),
+        );
+        is_reapable_base_refuses_the_authorized_root_itself: (|repo| repo.tmp.clone());
     }
 
     #[test]
