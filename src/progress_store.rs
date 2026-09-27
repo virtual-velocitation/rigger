@@ -7,7 +7,7 @@
 //! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
-use crate::progress::{AgentProgress, SpawnLaunched, StopFailure, STREAM};
+use crate::progress::{AgentProgress, RunStamped, SpawnLaunched, StopFailure, STREAM};
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
@@ -24,7 +24,7 @@ pub fn record(
         activity: activity.to_string(),
     };
     let ev = progress
-        .to_event(run_id)
+        .to_stamped_event(run_id)
         .map_err(|e| Error::Backend(format!("serialize AgentProgress: {e}")))?;
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
@@ -42,7 +42,7 @@ pub fn record_launch(
     launch: &SpawnLaunched,
 ) -> Result<Position, Error> {
     let ev = launch
-        .to_event(run_id)
+        .to_stamped_event(run_id)
         .map_err(|e| Error::Backend(format!("serialize SpawnLaunched: {e}")))?;
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
@@ -62,7 +62,7 @@ pub fn record_stop_failure(
     stop_failure: &StopFailure,
 ) -> Result<Position, Error> {
     let ev = stop_failure
-        .to_event(run_id)
+        .to_stamped_event(run_id)
         .map_err(|e| Error::Backend(format!("serialize StopFailure: {e}")))?;
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?

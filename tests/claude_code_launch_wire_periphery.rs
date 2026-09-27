@@ -9,7 +9,7 @@
 //!
 //! WHY THIS FILE, DISTINCT FROM THE IMPLEMENTER'S OWN TESTS. `src/driver/claude_code.rs`'s
 //! own `mod tests`, and `src/progress.rs`'s / `src/progress_store.rs`'s own `mod tests`,
-//! prove `Driver::launch`, `build_args`, `SpawnLaunched::to_event` and
+//! prove `Driver::launch`, `build_args`, `SpawnLaunched::to_stamped_event` and
 //! `progress_store::record_launch` IN PROCESS - every one of them against
 //! `Store::open(":memory:")`, a store that lives and dies with the single test function
 //! that opened it, and every one of them constructing `Driver` with BOTH `bin` and
