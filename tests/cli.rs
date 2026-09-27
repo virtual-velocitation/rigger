@@ -16472,272 +16472,226 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     let _ = child.wait();
 }
 
-/// Spec 69, criterion 4 ("`rigger status` never lies about the dash"): a recorded dash URL
-/// backed by a marker naming a port NOTHING serves is a stale breadcrumb from a crashed or
-/// killed dash - status must withhold the URL and print the truthful not-serving line instead,
-/// naming the marker's pid and both self-heal paths. No real dash or driver is started here;
-/// the store is seeded directly (as `release_ready_*` do) and the marker's port is one
-/// `free_loopback_port` reserved-then-released, so it is genuinely unbound at status-read time.
-#[test]
-fn status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_store(root);
-
-    let port = free_loopback_port();
-    let rigger_dir = root.join(".rigger");
-    std::fs::write(
-        rigger_dir.join("dash.url"),
-        format!("http://127.0.0.1:{port}/"),
-    )
-    .unwrap();
-    // The on-disk marker format is `port\npid\n` (`dash::DashMarker::serialize`).
-    std::fs::write(rigger_dir.join("dash.marker"), format!("{port}\n4242\n")).unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["status"]);
-    assert!(ok, "rigger status must succeed; stderr:\n{err}");
-    assert!(
-        !out.contains(&format!("http://127.0.0.1:{port}/")),
-        "a dead marker must withhold the stale URL, never print it; stdout:\n{out}"
-    );
-    assert!(
-        out.contains("dashboard: not serving (marker names dead pid 4242)"),
-        "status must print the truthful not-serving line naming the marker's pid; stdout:\n{out}"
-    );
-    assert!(
-        out.contains("run 'rigger dash' or the next step restarts it"),
-        "the not-serving line must name both self-heal paths; stdout:\n{out}"
-    );
-
-    // `--json` carries the SAME truth (round 2: a real, testable assertion, not a vacuous
-    // one) - a `"dashboard"` object naming `"not_serving"` and the dead pid is appended to
-    // the (here empty) in-flight-agent array; the dead URL never appears anywhere in it.
-    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
-    assert!(
-        json_ok,
-        "rigger status --json must succeed; stderr:\n{json_err}"
-    );
-    assert!(
-        !json_out.contains(&format!("http://127.0.0.1:{port}/")),
-        "`--json` must never carry the dead URL either; stdout:\n{json_out}"
-    );
-    let json_value: serde_json::Value = serde_json::from_str(&json_out)
-        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
-    assert_eq!(
-        json_value,
-        serde_json::json!([{"dashboard": {"status": "not_serving", "pid": 4242}}]),
-        "`--json` must carry the not-serving truth as an appended dashboard entry; \
-         stdout:\n{json_out}"
-    );
-}
-
-/// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
-/// sdet-u62c1r4-display-only-still-violates-spec69c4-literal-text): the sibling above proves a
-/// REAL dead pid renders truthfully; this proves the [`dash::UNATTRIBUTED_PID`] SENTINEL (spec
-/// 62 round 4 - written by `spawn_run_dashboard_detached` when a port was confirmed serving but
-/// the real serving process could not be attributed) never renders as a fabricated "dead pid 0"
-/// once that same port has since stopped serving. Before this fix, `rigger status` printed
-/// literally that - a lie, since `0` is never a real, assigned, dying process pid - a direct
-/// violation of spec 69 criterion 4's "never lies about the dash" text. This must render
-/// EXACTLY like the no-matching-marker case: no pid named at all, in both the text line and
-/// `--json`'s `"pid"` field.
-#[test]
-fn status_never_names_the_unattributed_pid_sentinel_as_a_dead_process() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_store(root);
-
-    let port = free_loopback_port();
-    let rigger_dir = root.join(".rigger");
-    std::fs::write(
-        rigger_dir.join("dash.url"),
-        format!("http://127.0.0.1:{port}/"),
-    )
-    .unwrap();
-    // The documented sentinel (`dash::UNATTRIBUTED_PID` == 0), on-disk in the same
-    // `port\npid\n` shape `spawn_run_dashboard_detached` actually writes it in.
-    std::fs::write(rigger_dir.join("dash.marker"), format!("{port}\n0\n")).unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["status"]);
-    assert!(ok, "rigger status must succeed; stderr:\n{err}");
-    assert!(
-        !out.contains(&format!("http://127.0.0.1:{port}/")),
-        "a dead marker must withhold the stale URL, never print it; stdout:\n{out}"
-    );
-    assert!(
-        !out.contains("marker names dead pid"),
-        "the sentinel pid must never be printed as a fabricated dead process - it was never a \
-         real, assigned pid; stdout:\n{out}"
-    );
-    assert!(
-        out.contains("dashboard: not serving (recorded url is unreachable)"),
-        "a sentinel-pid marker must render exactly like the no-matching-marker case; \
-         stdout:\n{out}"
-    );
-
-    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
-    assert!(
-        json_ok,
-        "rigger status --json must succeed; stderr:\n{json_err}"
-    );
-    let json_value: serde_json::Value = serde_json::from_str(&json_out)
-        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
-    assert_eq!(
-        json_value,
-        serde_json::json!([{"dashboard": {"status": "not_serving", "pid": null}}]),
-        "`--json` must carry `null`, never the sentinel `0`, as the pid; stdout:\n{json_out}"
-    );
-}
-
-/// Spec 69, criterion 4 - the SIBLING of the not-serving proof above, and the one branch no
-/// unit test can reach: `dash_status`'s own unit test injects a stand-in `still_serving`
-/// closure, so it proves the DECISION but never the WIRING - that `cmd_status` reads a real
-/// on-disk marker and hands its port to the real `dash::dash_serving_on` TCP probe. A real
-/// standalone `rigger dash` is spawned (as `a_dropped_guard_reaps_a_standalone_rigger_dash`
-/// does) so the marker names a port something GENUINELY answers; `rigger status` (a separate
-/// process) must keep trusting and printing the URL exactly as it did before this criterion,
-/// never confusing a live marker for a dead one.
-#[test]
-fn status_shows_the_url_when_the_recorded_marker_names_a_genuinely_serving_dash() {
+/// A standalone `rigger dash` serving `root` on loopback `port`, waited on until it genuinely
+/// serves its page (a marker written before the dash finishes binding would race the probe);
+/// torn down and failed loudly when it never comes up. The caller owns the returned child.
+fn serving_dash(root: &Path, port: u16) -> std::process::Child {
     use std::process::Stdio;
 
-    let dir = temp_project();
-    let root = dir.path();
-    seed_store(root);
-
-    let port = free_loopback_port();
     let mut dash = common::rigger_courier()
         .args(["dash", "--port", &port.to_string()])
         .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("failed to spawn `rigger dash`");
-    // Wait for it to actually come up before writing its pid into the marker - a marker
-    // written before the dash finishes binding would race `dash_serving_on`'s probe.
-    if http_probe(&format!("127.0.0.1:{port}"), "/").is_none() {
+        .expect("failed to spawn a serving `rigger dash`");
+    let url = format!("http://127.0.0.1:{port}/");
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
         let _ = dash.kill();
         let _ = dash.wait();
-        panic!("the standalone `rigger dash` never came up on port {port}");
+        panic!("the serving `rigger dash` never came up at {url}");
     }
-    let pid = dash.id();
-
-    let rigger_dir = root.join(".rigger");
-    let url = format!("http://127.0.0.1:{port}/");
-    std::fs::write(rigger_dir.join("dash.url"), &url).unwrap();
-    // Same on-disk marker format as the not-serving sibling test above, but naming a port and
-    // pid that genuinely answer.
-    std::fs::write(rigger_dir.join("dash.marker"), format!("{port}\n{pid}\n")).unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["status"]);
-    // `--json` carries the SAME truth (spec 69, criterion 4's third clause), so it is proven
-    // here too, before the dash is torn down (the JSON path probes the real marker port just
-    // as the text path does).
-    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
-    let _ = dash.kill();
-    let _ = dash.wait();
-
-    assert!(ok, "rigger status must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(&format!("dashboard: {url}")),
-        "a marker proven serving must keep the recorded URL trusted and shown, unchanged from \
-         before this criterion; stdout:\n{out}"
-    );
-
-    assert!(
-        json_ok,
-        "rigger status --json must succeed; stderr:\n{json_err}"
-    );
-    let json_value: serde_json::Value = serde_json::from_str(&json_out)
-        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
-    assert_eq!(
-        json_value,
-        serde_json::json!([{"dashboard": {"status": "serving", "url": url}}]),
-        "`--json` must carry the serving truth as an appended dashboard entry; \
-         stdout:\n{json_out}"
-    );
+    dash
 }
 
-/// Spec 69, criterion 4, round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker naming
-/// a DIFFERENT port than the recorded url describes some OTHER dash - two independent
-/// dash-starting paths write `dash.url` and `dash.marker` separately (one records a URL alone
-/// on a free-searched port, the other records both together on a fixed port) and neither is
-/// ever cleared, so a project that has used both can be left with breadcrumbs naming two
-/// different dashes. `dash_status`'s own unit test proves the DECISION in isolation; this
-/// proves the WIRING - that `cmd_status` reads the real on-disk pair and never lets a
-/// mismatched marker's own port/pid stand in for proof about the recorded url. The url's OWN
-/// port is a REAL, standalone `rigger dash` here (not just an unbound port), so this proves the
-/// round-1 harmful direction stays closed: a mismatched marker must never suppress a
-/// genuinely-alive url just because the marker itself points elsewhere.
-#[test]
-fn status_trusts_a_genuinely_alive_url_even_with_a_mismatched_marker() {
-    use std::process::Stdio;
+/// Record the dash breadcrumbs a dash-starting path leaves under `root`'s `.rigger/`: the
+/// `dash.url` it serves at and the `dash.marker` naming `marker_port` and `pid` (the on-disk
+/// marker format is `port\npid\n`, `dash::DashMarker::serialize`).
+fn write_dash_breadcrumbs(root: &Path, url: &str, marker_port: u16, pid: u32) {
+    let rigger_dir = root.join(".rigger");
+    std::fs::write(rigger_dir.join("dash.url"), url).unwrap();
+    std::fs::write(
+        rigger_dir.join("dash.marker"),
+        format!("{marker_port}\n{pid}\n"),
+    )
+    .unwrap();
+}
 
+/// `rigger status` and `rigger status --json` over the same project, run back to back (so a
+/// live dash can be torn down between reading and asserting).
+struct StatusReads {
+    text: (String, String, bool),
+    json: (String, String, bool),
+}
+
+impl StatusReads {
+    fn of(root: &Path) -> Self {
+        StatusReads {
+            text: run_rigger(root, &["status"]),
+            json: run_rigger(root, &["status", "--json"]),
+        }
+    }
+
+    /// Both reads succeeded; returns the text stdout and the parsed `--json` value, which
+    /// carries the SAME dashboard truth as an appended `{"dashboard": ...}` entry.
+    fn checked(self) -> (String, serde_json::Value) {
+        let (out, err, ok) = self.text;
+        assert!(ok, "rigger status must succeed; stderr:\n{err}");
+        let (json_out, json_err, json_ok) = self.json;
+        assert!(
+            json_ok,
+            "rigger status --json must succeed; stderr:\n{json_err}"
+        );
+        let json_value: serde_json::Value = serde_json::from_str(&json_out)
+            .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
+        (out, json_value)
+    }
+}
+
+/// A not-serving marker (naming `pid`) beside a `dash.url` nothing answers: `rigger status`
+/// withholds the stale URL, prints every line in `says`, prints none of `never`, and `--json`
+/// carries the SAME truth - `"not_serving"` with `json_pid` - appended to the (here empty)
+/// in-flight-agent array.
+fn assert_status_withholds_a_dead_dash_url(
+    pid: u32,
+    says: &[&str],
+    never: &[&str],
+    json_pid: serde_json::Value,
+) {
     let dir = temp_project();
     let root = dir.path();
     seed_store(root);
+    let port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{port}/");
+    write_dash_breadcrumbs(root, &url, port, pid);
 
-    let url_port = free_loopback_port();
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &url_port.to_string()])
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
-    if http_probe(&format!("127.0.0.1:{url_port}"), "/").is_none() {
-        let _ = dash.kill();
-        let _ = dash.wait();
-        panic!("the standalone `rigger dash` never came up on port {url_port}");
+    let (out, json) = StatusReads::of(root).checked();
+    assert!(
+        !out.contains(&url),
+        "a dead marker must withhold the stale URL, never print it; stdout:\n{out}"
+    );
+    for line in says {
+        assert!(
+            out.contains(line),
+            "status must print the truthful not-serving {line:?}; stdout:\n{out}"
+        );
+    }
+    for line in never {
+        assert!(
+            !out.contains(line),
+            "status must never print {line:?}; stdout:\n{out}"
+        );
+    }
+    assert_eq!(
+        json,
+        serde_json::json!([{"dashboard": {"status": "not_serving", "pid": json_pid}}]),
+        "`--json` must carry the not-serving truth as an appended dashboard entry"
+    );
+}
+
+rigger::test_cases! {
+    /// Spec 69, criterion 4 ("`rigger status` never lies about the dash"): a recorded dash URL
+    /// backed by a marker naming a port NOTHING serves is a stale breadcrumb from a crashed or
+    /// killed dash - status must withhold the URL and print the truthful not-serving line instead,
+    /// naming the marker's pid and both self-heal paths. No real dash or driver is started here;
+    /// the store is seeded directly (as `release_ready_*` do) and the marker's port is one
+    /// `free_loopback_port` reserved-then-released, so it is genuinely unbound at status-read time.
+    status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash:
+        assert_status_withholds_a_dead_dash_url(
+            4242,
+            &[
+                "dashboard: not serving (marker names dead pid 4242)",
+                // Both self-heal paths are named.
+                "run 'rigger dash' or the next step restarts it",
+            ],
+            &[],
+            serde_json::json!(4242),
+        );
+    /// Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status,
+    /// sdet-u62c1r4-display-only-still-violates-spec69c4-literal-text): the sibling above proves a
+    /// REAL dead pid renders truthfully; this proves the [`dash::UNATTRIBUTED_PID`] SENTINEL (spec
+    /// 62 round 4 - written by `spawn_run_dashboard_detached` when a port was confirmed serving but
+    /// the real serving process could not be attributed) never renders as a fabricated "dead pid 0"
+    /// once that same port has since stopped serving. Before this fix, `rigger status` printed
+    /// literally that - a lie, since `0` is never a real, assigned, dying process pid - a direct
+    /// violation of spec 69 criterion 4's "never lies about the dash" text. This must render
+    /// EXACTLY like the no-matching-marker case: no pid named at all, in both the text line and
+    /// `--json`'s `"pid"` field.
+    ///
+    /// The marker carries the documented sentinel (`dash::UNATTRIBUTED_PID` == 0), on-disk in
+    /// the same shape `spawn_run_dashboard_detached` actually writes it in; it renders exactly
+    /// like the no-matching-marker case, never as a fabricated dead process, and `--json` carries
+    /// `null`, never the sentinel `0`.
+    status_never_names_the_unattributed_pid_sentinel_as_a_dead_process:
+        assert_status_withholds_a_dead_dash_url(
+            0,
+            &["dashboard: not serving (recorded url is unreachable)"],
+            &["marker names dead pid"],
+            serde_json::Value::Null,
+        );
+}
+
+/// A `dash.url` a genuinely serving dash answers on, beside a marker naming that dash's own
+/// port and pid - or, with `mismatched_marker`, a stale breadcrumb from the OTHER dash-starting
+/// path (a different, unbound port and a placeholder pid, never consulted: only the url's own
+/// port is probed). Either way `rigger status` keeps the recorded URL trusted and shown, never
+/// reads it as dead, and `--json` - read before the dash is torn down, since the JSON path
+/// probes the real port just as the text path does - carries the SAME serving truth.
+fn assert_status_trusts_a_serving_dash_url(mismatched_marker: bool) {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let port = free_loopback_port();
+    let mut dash = serving_dash(root, port);
+    let url = format!("http://127.0.0.1:{port}/");
+    if mismatched_marker {
+        let marker_port = free_loopback_port();
+        assert_ne!(
+            port, marker_port,
+            "the shared free_loopback_port ledger guarantees distinct ports"
+        );
+        write_dash_breadcrumbs(root, &url, marker_port, 4242);
+    } else {
+        write_dash_breadcrumbs(root, &url, port, dash.id());
     }
 
-    let marker_port = free_loopback_port();
-    assert_ne!(
-        url_port, marker_port,
-        "the shared free_loopback_port ledger guarantees distinct ports"
-    );
-
-    let rigger_dir = root.join(".rigger");
-    let url = format!("http://127.0.0.1:{url_port}/");
-    std::fs::write(rigger_dir.join("dash.url"), &url).unwrap();
-    // A stale breadcrumb from the OTHER dash-starting path: a different, unbound port - the
-    // pid is a placeholder, never consulted (a mismatched marker's own port/pid play no part
-    // in the decision at all; only the url's own port is probed).
-    std::fs::write(
-        rigger_dir.join("dash.marker"),
-        format!("{marker_port}\n4242\n"),
-    )
-    .unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["status"]);
-    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    let reads = StatusReads::of(root);
     let _ = dash.kill();
     let _ = dash.wait();
 
-    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    let (out, json) = reads.checked();
     assert!(
         out.contains(&format!("dashboard: {url}")),
-        "a mismatched marker must never suppress a genuinely-alive url; stdout:\n{out}"
+        "a genuinely serving url must stay trusted and shown; stdout:\n{out}"
     );
     assert!(
         !out.contains("not serving"),
-        "a mismatched marker must never be read as proof this url is dead - the false \
-         not-serving lie that would hide a working dashboard; stdout:\n{out}"
+        "a serving url must never be read as dead - the false not-serving lie that would hide \
+         a working dashboard; stdout:\n{out}"
     );
-
-    assert!(
-        json_ok,
-        "rigger status --json must succeed; stderr:\n{json_err}"
-    );
-    let json_value: serde_json::Value = serde_json::from_str(&json_out)
-        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
     assert_eq!(
-        json_value,
+        json,
         serde_json::json!([{"dashboard": {"status": "serving", "url": url}}]),
-        "`--json` must carry the SAME genuinely-alive truth; stdout:\n{json_out}"
+        "`--json` must carry the serving truth as an appended dashboard entry"
     );
+}
+
+rigger::test_cases! {
+    /// Spec 69, criterion 4 - the SIBLING of the not-serving proof above, and the one branch no
+    /// unit test can reach: `dash_status`'s own unit test injects a stand-in `still_serving`
+    /// closure, so it proves the DECISION but never the WIRING - that `cmd_status` reads a real
+    /// on-disk marker and hands its port to the real `dash::dash_serving_on` TCP probe. A real
+    /// standalone `rigger dash` is spawned (as `a_dropped_guard_reaps_a_standalone_rigger_dash`
+    /// does) so the marker names a port something GENUINELY answers; `rigger status` (a separate
+    /// process) must keep trusting and printing the URL exactly as it did before this criterion,
+    /// never confusing a live marker for a dead one.
+    status_shows_the_url_when_the_recorded_marker_names_a_genuinely_serving_dash:
+        assert_status_trusts_a_serving_dash_url(false);
+    /// Spec 69, criterion 4, round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker naming
+    /// a DIFFERENT port than the recorded url describes some OTHER dash - two independent
+    /// dash-starting paths write `dash.url` and `dash.marker` separately (one records a URL alone
+    /// on a free-searched port, the other records both together on a fixed port) and neither is
+    /// ever cleared, so a project that has used both can be left with breadcrumbs naming two
+    /// different dashes. `dash_status`'s own unit test proves the DECISION in isolation; this
+    /// proves the WIRING - that `cmd_status` reads the real on-disk pair and never lets a
+    /// mismatched marker's own port/pid stand in for proof about the recorded url. The url's OWN
+    /// port is a REAL, standalone `rigger dash` here (not just an unbound port), so this proves the
+    /// round-1 harmful direction stays closed: a mismatched marker must never suppress a
+    /// genuinely-alive url just because the marker itself points elsewhere.
+    status_trusts_a_genuinely_alive_url_even_with_a_mismatched_marker:
+        assert_status_trusts_a_serving_dash_url(true);
 }
 
 /// Spec 69, criterion 4, round 3 (adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url): the
@@ -16755,52 +16709,28 @@ fn status_trusts_a_genuinely_alive_url_even_with_a_mismatched_marker() {
 /// be a second lie in the opposite direction).
 #[test]
 fn status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverified() {
-    use std::process::Stdio;
-
     let dir = temp_project();
     let root = dir.path();
     seed_store(root);
-
     let url_port = free_loopback_port();
     let marker_port = free_loopback_port();
     assert_ne!(
         url_port, marker_port,
         "the shared free_loopback_port ledger guarantees distinct ports"
     );
-
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &marker_port.to_string()])
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
-    if http_probe(&format!("127.0.0.1:{marker_port}"), "/").is_none() {
-        let _ = dash.kill();
-        let _ = dash.wait();
-        panic!("the standalone `rigger dash` never came up on port {marker_port}");
-    }
+    let mut dash = serving_dash(root, marker_port);
     let marker_pid = dash.id();
-
-    let rigger_dir = root.join(".rigger");
     // Genuinely dead: url_port was reserved-then-released by `free_loopback_port` and nothing
-    // else binds it, so it is unbound at status-read time.
+    // else binds it, so it is unbound at status-read time; the marker names the OTHER,
+    // genuinely-alive dash - a real, live, but unrelated pid/port.
     let url = format!("http://127.0.0.1:{url_port}/");
-    std::fs::write(rigger_dir.join("dash.url"), &url).unwrap();
-    // Names the OTHER, genuinely-alive dash - a real, live, but unrelated pid/port.
-    std::fs::write(
-        rigger_dir.join("dash.marker"),
-        format!("{marker_port}\n{marker_pid}\n"),
-    )
-    .unwrap();
+    write_dash_breadcrumbs(root, &url, marker_port, marker_pid);
 
-    let (out, err, ok) = run_rigger(root, &["status"]);
-    let (json_out, json_err, json_ok) = run_rigger(root, &["status", "--json"]);
+    let reads = StatusReads::of(root);
     let _ = dash.kill();
     let _ = dash.wait();
 
-    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    let (out, json) = reads.checked();
     assert!(
         !out.contains(&url),
         "a genuinely dead url must never be printed as trusted, even with a live-but-\
@@ -16819,18 +16749,10 @@ fn status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverif
         "the mismatched marker's pid must never be printed as though it belonged to this \
          dead url; stdout:\n{out}"
     );
-
-    assert!(
-        json_ok,
-        "rigger status --json must succeed; stderr:\n{json_err}"
-    );
-    let json_value: serde_json::Value = serde_json::from_str(&json_out)
-        .unwrap_or_else(|e| panic!("`--json` must print valid JSON: {e}; stdout:\n{json_out}"));
     assert_eq!(
-        json_value,
+        json,
         serde_json::json!([{"dashboard": {"status": "not_serving", "pid": null}}]),
-        "`--json` must carry the same truth: not serving, with no fabricated pid; \
-         stdout:\n{json_out}"
+        "`--json` must carry the same truth: not serving, with no fabricated pid"
     );
 }
 
@@ -18383,27 +18305,13 @@ fn watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_n
 /// marker), and asserts `rigger watch --once` reports no anomaly.
 #[test]
 fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port() {
-    use std::process::Stdio;
-
     let proj = temp_project();
     let root = proj.path();
     seed_store(root);
 
     let dash_port = free_loopback_port();
     let url = format!("http://127.0.0.1:{dash_port}/");
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &dash_port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn a serving `rigger dash`");
-    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        let _ = dash.kill();
-        let _ = dash.wait();
-        panic!("the serving `rigger dash` never came up at {url}");
-    }
+    let mut dash = serving_dash(root, dash_port);
 
     // Exactly the marker-absent shape: only `.rigger/dash.url` recorded, no
     // `.rigger/dash.marker` - the URL points at a port a REAL dash answers on.
@@ -21156,31 +21064,15 @@ fn step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved() {
 /// failed assertion never leaks a dashboard.
 #[test]
 fn step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_childs() {
-    use std::process::Stdio;
-
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     write_two_stage_workflow(root);
     let dash_port = free_loopback_port();
-    let url = format!("http://127.0.0.1:{dash_port}/");
 
     // The WINNER: a real, serving `rigger dash` fully up BEFORE the step ever spawns its own -
     // so the step's own detached spawn is deterministically the LOSING side of the race.
-    let mut winner = common::rigger_courier()
-        .args(["dash", "--port", &dash_port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn the winning `rigger dash`");
+    let mut winner = serving_dash(root, dash_port);
     let winner_pid = winner.id();
-
-    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        let _ = winner.kill();
-        let _ = winner.wait();
-        panic!("the winning `rigger dash` never came up at {url}");
-    }
 
     // The LOSER: `rigger step`'s own always-on ensure spawns a SECOND `rigger dash` at the same
     // fixed address for this fresh project (no local marker exists yet); it must lose the race,
@@ -24434,26 +24326,12 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
 #[test]
 fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     use rigger::dash::dash_serving_on;
-    use std::process::Stdio;
 
     // Case 1 - a REAL serving `rigger dash`: `dash_serving_on` must recognize it (TRUE).
     let proj = temp_project();
     let root = proj.path();
     let dash_port = free_loopback_port();
-    let url = format!("http://127.0.0.1:{dash_port}/");
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &dash_port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn a serving `rigger dash`");
-    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        let _ = dash.kill();
-        let _ = dash.wait();
-        panic!("the serving `rigger dash` never came up at {url}");
-    }
+    let mut dash = serving_dash(root, dash_port);
     let recognized_real = dash_serving_on(dash_port);
 
     // Case 2 - a NON-dash holder that never answers the probe: `dash_serving_on` must reject it
