@@ -18860,7 +18860,7 @@ mod tests {
     #[cfg(feature = "symbols")]
     #[test]
     fn the_grounding_path_populates_the_unified_graph_from_the_live_project() {
-        let real_src = include_str!("run.rs");
+        let real_src = include_str!("../crates/rigger-domain/src/run.rs");
         let real_doc = include_str!("../specs/29c-unified-traversal-tiers.md");
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();

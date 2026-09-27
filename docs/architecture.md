@@ -375,7 +375,7 @@ stream up front and skips units already integrated. The Conductor is the sole wr
 *projections*; agents only ever *append events*.
 
 ```rust
-// src/ledger.rs - RunState is projected from the event log by folding the run
+// crates/rigger-domain/src/ledger.rs - RunState is projected from the event log by folding the run
 // events; the conductor is the only writer. `ledger::project(events)` rebuilds it.
 pub struct RunState {
     pub units: BTreeMap<String, Unit>,
@@ -462,7 +462,7 @@ and catch-up subscriptions that replay then go live. Both backends implement exa
 so swapping backends is a configuration change, not an architecture change.
 
 ```rust
-// src/eventstore/mod.rs
+// crates/rigger-domain/src/eventstore.rs
 pub trait EventStore: Send + Sync {
     /// Append events to the end of a stream under an optimistic-concurrency
     /// expectation, reporting what was ACTUALLY written: one slot per event handed in,
@@ -624,7 +624,7 @@ its **design intent**, and the **decisions** that shaped it. Event sourcing is t
 persistence mechanism underneath, not the framing.
 
 ```rust
-// src/contextgraph/mod.rs
+// crates/rigger-domain/src/contextgraph.rs
 pub struct Node {
     pub id: String,                       // stable id (entity-resolved)
     pub kind: String,                     // "decision" | "artifact" | "concept" | "lesson" | ...
@@ -674,11 +674,11 @@ request-time computations, which would jitter the view on every poll and break t
 rebuildable-projection invariant. Each runs as a deterministic pass over the projection and
 records its result as events, so a rebuild reproduces it byte-identically:
 
-- **Coupling communities** (`rigger graph communities`, `src/community.rs`) - community
+- **Coupling communities** (`rigger graph communities`, `crates/rigger-domain/src/community.rs`) - community
   detection over the call/reference edges, seeded over a deterministic edge ordering, emitting
   `IN_COMMUNITY` membership edges at a chosen resolution grain. This is "which functions
   actually work together", a different grouping from the directory tree.
-- **Intent concepts** (`rigger graph concepts`, `src/concepts.rs`) - a grouping over the
+- **Intent concepts** (`rigger graph concepts`, `crates/rigger-domain/src/concepts.rs`) - a grouping over the
   design-intent layer into the ideas a project is *about* ("the grounding pipeline"), emitting
   concept nodes and `REALIZES` membership edges, labelled deterministically with a
   model-assisted refinement that has a deterministic fallback.

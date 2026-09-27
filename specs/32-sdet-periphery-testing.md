@@ -20,7 +20,7 @@ SAME committed tree the gates and reviewers see.
 is a review LENS with tools `[Read, Grep, Glob, Bash]` - no `Edit`/`Write` - so its prompt's "write
 the failing test first" is aspirational; it physically cannot author. This spec adds a NEW agent
 `.rigger/agents/sdet-author.md` with `Edit`/`Write` + `isolation: worktree` (shaped like
-`rust-engineer.md`), a new role token in `src/spawn.rs` (alongside `ROLE_IMPLEMENTER`), and a spawn
+`rust-engineer.md`), a new role token in `crates/rigger-domain/src/spawn.rs` (alongside `ROLE_IMPLEMENTER`), and a spawn
 call in `run_single_stage` that parks it at the seam above. It is always spawned (config-driven,
 defaulting on) and self-scopes.
 
@@ -76,7 +76,7 @@ a reject, in the constraints-recheck category. No role grades its own artifact.
 
 - [ ] a test proves a distinct, write-capable SDET-AUTHOR ROLE exists: a new agent
   `.rigger/agents/sdet-author.md` with `Edit`/`Write` tools + `isolation: worktree` (separate from the
-  read-only `sdet` review lens), plus its role token in `src/spawn.rs`. This criterion OWNS the
+  read-only `sdet` review lens), plus its role token in `crates/rigger-domain/src/spawn.rs`. This criterion OWNS the
   sdet-author role definition; it does NOT own the conductor spawn wiring (the spawn-placement criterion
   below).
 - [ ] a test proves the conductor SPAWNS the sdet-author at the build seam - after the implementer

@@ -301,7 +301,7 @@ pub fn short_run_id(run_id: &str) -> String {
 /// to (`adv-u88c2-r2-criterion-id-unscoped-crosses-specs`) - one canonical spec-path-to-
 /// identity derivation, never a second parallel normalization that could drift from
 /// [`pr_head_branch`]'s.
-pub(crate) fn spec_stem(spec_path: &str) -> String {
+pub fn spec_stem(spec_path: &str) -> String {
     let raw = std::path::Path::new(spec_path)
         .file_stem()
         .and_then(|s| s.to_str())

@@ -7,13 +7,13 @@ perceived or how it spent a run. Measured on the 2026-09-26 store (2,497,006
 events, 609 MB payload, 1.4 GB file): 2,443,614 events (97.9%) are the derived index -
 `EdgeInferred` 2,101,788, `DocLinkExtracted` 206,363, `CodeEntityExtracted` 133,591,
 `DocConceptExtracted` 1,872 - re-derivable from the tree and already folded into `graph.db` at emit time
-(`ingest::append_and_fold_batch`, `src/ingest.rs:46`; `RunCtx::emit_keyed_batch`,
+(`ingest::append_and_fold_batch`, `src/ingest.rs:48`; `RunCtx::emit_keyed_batch`,
 `src/conductor.rs:3261`), so the log's copy has no production reader: `graph.db` is a persisted
 incremental projection, no command rebuilds it from the log (only tests do,
 `src/contextgraph/sqlite.rs:7177`), and `src/docs.rs:728` forbids deleting it. They are
 appended on every step (`conductor.rs:10557`), on every landed merge (`conductor.rs:9504`) and
 by `rigger graph build` (`src/main.rs:4737`); spec 60's guard against re-accumulation is a dedup
-inside the two ingest sinks (`project_scoped_replay_keys`, `src/ingest.rs:518`), and the store
+inside the two ingest sinks (`project_scoped_replay_keys`, `crates/rigger-domain/src/ingest.rs:160`), and the store
 itself accepts any derived append. Spec 101 stops READING them;
 nothing stops WRITING them. 35,334 events are a run's own
 mechanics and carry 333 MB, 55% of every byte: `SpawnRequested` alone is 6,729 events and
@@ -45,7 +45,7 @@ EPISODIC is every other type. The three sets are code-owned constants beside
 seam loudly, so a future event type is classified the day it is added.
 
 **PERCEPTION IS A LEDGER ENTRY, NOT A PAYLOAD.** The two fold-at-emit seams,
-`ingest::append_and_fold_batch` (`src/ingest.rs:46`) and `RunCtx::emit_keyed_batch`
+`ingest::append_and_fold_batch` (`src/ingest.rs:48`) and `RunCtx::emit_keyed_batch`
 (`src/conductor.rs:3261`), append ONE event per file generation,
 `GenerationIngested { prefix, file, blob, extractor }`, where `blob` is the git blob id of the
 content ingested and `extractor` the extraction version, and fold the extracted batch
@@ -56,7 +56,7 @@ the ledger event's position and carrying the generation's replay key
 `src/main.rs:4670`) goes through the same seam. A
 deleted file appends `GenerationIngested { blob: "" }` and supersedes its live structural
 edges exactly as a new generation does. The offline passes (`cmd_graph_communities`, `src/main.rs:4774`, whose only event writer is
-`community::events`, `src/community.rs:363`; `cmd_graph_concepts`, `main.rs:4872`) append one
+`community::events`, `crates/rigger-domain/src/community.rs:363`; `cmd_graph_concepts`, `main.rs:4872`) append one
 `PassRecorded { pass, input_hash, resolution }` and fold their membership edges the same way. No derived payload is appended to the log by any path; the
 store's append seam rejects a `DERIVED_INDEX_TYPES` append outright.
 
@@ -171,7 +171,7 @@ to matter, and its `--derived` compaction is the migration's code path. `progres
   event; an archived run is a no-op; an empty finished run writes nothing; a live run is
   refused by name. This criterion OWNS the constraints walk.
 - [ ] a test proves THE STORE REFUSES AN UNCLASSIFIED OR DERIVED APPEND: `EventStore::append`
-  (`src/eventstore/mod.rs:545`) rejects, naming the type, any event whose type is in none of
+  (`crates/rigger-domain/src/eventstore.rs:522`) rejects, naming the type, any event whose type is in none of
   the three classes or is one of `DERIVED_INDEX_TYPES`, pinned at that seam against the store's
   classification table, where an in-memory or caller-side check is NOT an implementation. This
   criterion OWNS the append-seam refusal; the ingest-sink write path and its dedup are

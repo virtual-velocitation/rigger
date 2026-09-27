@@ -9,12 +9,12 @@ that bounds cross-run growth automatically (measured: 87% of the graph was dead-
 
 ## Design
 
-Model the distiller on `src/playbooks.rs`, which already consolidates `LessonLearned` into a
+Model the distiller on `crates/rigger-domain/src/playbooks.rs`, which already consolidates `LessonLearned` into a
 rebuildable projection. Mirror its shape:
 
 - `distill(events) -> Vec<Digest>` - fold the target events into a `BTreeMap` keyed by file, each
   value a digest (summary + count + contributing run ids), dedup-by-normalized-summary, sorted for
-  determinism (mirror `playbooks::distill`, `src/playbooks.rs`).
+  determinism (mirror `playbooks::distill`, `crates/rigger-domain/src/playbooks.rs`).
 - a `Digest` projection struct with a stable slug id (`fnv1a_64` over the file + summary, mirroring
   `playbooks::Playbook` / `POOL_SUBDIR`), the per-file summary, the trigger file, and the fold
   count.

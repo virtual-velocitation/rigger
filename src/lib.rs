@@ -15,7 +15,7 @@
 // by function: where a file mixed both (`spawn.rs`, `run.rs`, `progress.rs`), the impure
 // half moved to its own `_store` file (`spawn_store`, `run_store`, `progress_store`).
 
-pub mod blocker;
+pub use rigger_domain::blocker;
 /// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
 /// caps how many actual compiler invocations run at once, across every rigger process on
 /// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
@@ -26,11 +26,7 @@ pub mod canary;
 /// The write half of [`canary`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod canary_store;
-/// Deterministic coupling-community detection (spec 53, the CODE lens): the offline pass that
-/// groups code entities and files by how densely they call and reference one another, regardless of
-/// directory, and records the result as `CommunityAssigned` events the always-compiled fold turns
-/// into `IN_COMMUNITY` membership edges. Always compiled and proven in both feature lanes.
-pub mod community;
+pub use rigger_domain::community;
 pub mod concepts;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod conductor;
@@ -70,7 +66,7 @@ pub mod ingest;
 /// Instruction injection: the built-in engineering law and the operator's
 /// `.rigger/instructions/*.md` layered into every spawned agent's system prompt.
 pub mod instructions;
-pub mod ledger;
+pub use rigger_domain::ledger;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod liveness;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -91,7 +87,7 @@ pub mod reap;
 /// without a coordination protocol. Discovery only - never a source of truth, never a credential.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod registry;
-pub mod run;
+pub use rigger_domain::run;
 /// The write half of [`run`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod run_store;

@@ -25,5 +25,11 @@ serde_path_to_error = "0.1"
 serde_yaml = "0.9"
 thiserror = "2"
 
+# `Event::mint`'s store arm draws a fresh event id from `uuid` (the recorded clock-and-entropy
+# violation, see tests/boundary_audit.rs DOMAIN_VIOLATIONS). Target-gated exactly as in the root
+# manifest: the `wasm32` core lane never builds it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { version = "1", features = ["v4"] }
+
 [lints]
 workspace = true

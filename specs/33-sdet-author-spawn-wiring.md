@@ -3,7 +3,7 @@
 **Goal:** the CODE half of the SDET periphery-testing feature (spec 32): wire the conductor to
 spawn the operator-provided `sdet-author` agent at the build seam, so on every unit the SDET
 authors its periphery tests into the same committed tree the gates and reviewers judge. This
-spec touches ONLY code (`src/conductor.rs`, `src/spawn.rs`); the personas (`sdet-author.md`,
+spec touches ONLY code (`src/conductor.rs`, `crates/rigger-domain/src/spawn.rs`); the personas (`sdet-author.md`,
 the `adversary.md` surface-completeness hunt) are operator-authored config, deliberately NOT
 built here - a run pins its definition, so a spec that edited the personas would drift its own
 definition and (for the adversary) self-apply its new review rule to its own units. Splitting
@@ -19,7 +19,7 @@ on remediation. The implementer spawn is parked at `~L3358-3401`; it emits green
 BETWEEN the green emit and the commit, in the SAME worktree (`req.dir`), so its authored
 periphery tests are committed with the unit and seen by the gates.
 
-- **Role token.** Add `ROLE_SDET_AUTHOR` (or the `lens_role`-style equivalent) in `src/spawn.rs`
+- **Role token.** Add `ROLE_SDET_AUTHOR` (or the `lens_role`-style equivalent) in `crates/rigger-domain/src/spawn.rs`
   alongside `ROLE_IMPLEMENTER`, for the deterministic spawn id.
 - **Spawn call.** In `run_single_stage`, after the implementer's green status and before the
   commit, spawn the agent whose id is `sdet-author` (resolved from `.rigger/agents/` like every

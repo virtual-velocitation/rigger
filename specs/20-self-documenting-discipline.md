@@ -15,7 +15,7 @@ surface (specs 18, 19, 21).
 Builds on `cmd_setup` / `install_workflow` (`src/main.rs`), the drift-report pattern
 already in `cmd_validate` / `validate_advisories` (`src/main.rs`), and the concrete code
 facts the runtime uses: `DEFAULT_BASE_REF`, `dash::DEFAULT_PORT`, the remediation bound
-(`MAX_RETRIES` in `src/safety.rs` / `max_retries` in `src/config.rs`), the verdict-line
+(`MAX_RETRIES` in `crates/rigger-domain/src/safety.rs` / `max_retries` in `src/config.rs`), the verdict-line
 literal read by `verdict_approves` (`src/conductor.rs`), the subcommand dispatch table
 (`src/main.rs`), the gating-role set (`ReviewPanel` in `src/config.rs`), and the
 spec-shape rules (spec 18, Unit 4).

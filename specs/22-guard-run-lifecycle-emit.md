@@ -20,14 +20,14 @@ is that the emit surface accepts an ARBITRARY event type.
 `cmd_emit` in `src/main.rs`) and `rigger_emit` (the MCP tool, `tool_emit`). It reads the
 `type` field with no allowlist and appends it to the run stream, so `rigger emit
 RunStarted '{...}'` lands a run boundary in the live store. Run boundaries (`RunStarted`,
-`TYPE_RUN_STARTED` in `src/run.rs`) are minted ONLY by the conductor's run lifecycle
+`TYPE_RUN_STARTED` in `crates/rigger-domain/src/run.rs`) are minted ONLY by the conductor's run lifecycle
 (`start_fresh` / `ensure_started`) - a path that does NOT go through `emit_event` and is
 therefore unaffected by this change.
 
 **Unit 1 - allowlist the emit surface (touches `src/mcpserver.rs`).** In the shared
 `emit_event` core, ALLOWLIST exactly the agent-emittable context event types - the
 context-graph `TYPE_*` set: `DecisionMade`, `ReviewFinding`, `LessonLearned` (referenced
-from the `src/contextgraph` constants so the list stays in sync, never hand-copied). REFUSE
+from the `crates/rigger-domain/src/contextgraph.rs` constants so the list stays in sync, never hand-copied). REFUSE
 any other type - especially any run-lifecycle / orchestration event (`RunStarted`, and
 peers like `RunEnded`/`SpawnRequested`/`SpawnResult`/`UnitEscalated`) - with a clear,
 actionable error naming the offending type and directing the caller to the right tool:
@@ -46,7 +46,7 @@ injectable.
   the guard must not be able to reproduce the store corruption this spec fixes; a unit
   test over an isolated store never touches the real store and never walks up. Flag this
   to the adjudicator: reject any test that shells out to `rigger emit` against the repo.
-- The conductor's own `RunStarted` minting (`src/run.rs` `start_fresh`/`ensure_started`)
+- The conductor's own `RunStarted` minting (`crates/rigger-domain/src/run.rs` `start_fresh`/`ensure_started`)
   is UNCHANGED and must stay green - it does not go through `emit_event`.
 - The three context emits agents already make (`DecisionMade`, `ReviewFinding`,
   `LessonLearned`) keep working byte-for-byte.

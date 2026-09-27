@@ -207,7 +207,7 @@ implementation detail in a non-criteria Notes section.* The distinction from §3
 deliberate: §3.1 catches a deterministic hang and hard-errors; §3.2 catches a
 probabilistic smell and advises.
 
-_Code:_ `extract_criteria` (`src/spec.rs`); `cmd_validate` (`src/main.rs`).
+_Code:_ `extract_criteria` (`crates/rigger-domain/src/spec.rs`); `cmd_validate` (`src/main.rs`).
 
 ### 3.3 Planner ↔ baseline robustness
 
@@ -357,8 +357,8 @@ unit being worked.
   fixed one.
 
 _Code:_ `meta`, `phaseOf`, the `log()` sites (`workflows/rigger.js`); `SpawnRequest`
-(`src/spawn.rs`); the `Stage.coverage` source and the wire in `rigger step`
-(`src/conductor.rs`, `src/spawn.rs`).
+(`crates/rigger-domain/src/spawn.rs`); the `Stage.coverage` source and the wire in `rigger step`
+(`src/conductor.rs`, `crates/rigger-domain/src/spawn.rs`).
 
 ### 4.4 Dashboard responsive redesign
 
@@ -502,7 +502,7 @@ highest-uncertainty unit and is specified with tests that prove lessons survive 
 active-run decisions survive while superseded-run decisions are dropped.
 
 _Code:_ a new reset path (`src/main.rs`); `Projector` and the graph store
-(`src/contextgraph/`); the run-boundary source in `src/run.rs`.
+(`src/contextgraph/`); the run-boundary source in `crates/rigger-domain/src/run.rs`.
 
 ### 6.2 `rigger peers` provenance
 

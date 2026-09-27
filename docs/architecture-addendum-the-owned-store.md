@@ -35,8 +35,8 @@ archive finished runs, and they do so behind the two store ports. What remains a
 the engine itself, and the engine is wrong in three ways that no read discipline fixes:
 
 - **It is a foreign engine under a log-shaped workload.** Across 10,135 lines of store code
-  behind two ports of five and six methods (`EventStore`, `src/eventstore/mod.rs:522`;
-  `Projection`, `src/contextgraph/mod.rs:773`), the relational surface in use is four joins
+  behind two ports of five and six methods (`EventStore`, `crates/rigger-domain/src/eventstore.rs:499`;
+  `Projection`, `crates/rigger-domain/src/contextgraph.rs:531`), the relational surface in use is four joins
   and no trigger, view or full-text index; the log is one table (`src/eventstore/sqlite.rs:21`)
   and the progress side-store is a second instance of the same engine over the same schema.
   SQL is being used as a B-tree with transactions and a file format. Its bundled C library

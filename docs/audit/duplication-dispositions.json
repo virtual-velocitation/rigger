@@ -60,12 +60,12 @@
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
   {
-    "id": "dup-a7aab8169c0b",
+    "id": "dup-4911d89b3d03",
     "disposition": "not-a-duplicate",
     "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
   },
   {
-    "id": "dup-566726473a7a",
+    "id": "dup-a9ed3e0e9d47",
     "disposition": "not-a-duplicate",
     "reason": "Three slice accessors returning three different fields of three different types (community nodes, filter types, failure rules)."
   },
@@ -95,7 +95,7 @@
     "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
   },
   {
-    "id": "dup-12715fa5fa13",
+    "id": "dup-bb7aa56f67d8",
     "disposition": "not-a-duplicate",
     "reason": "Two builder setters on two different types setting different fields (`valid_from` on an event, `meta` on a spawn result)."
   },
@@ -470,7 +470,7 @@
     "reason": "No second stat parse remains: `stat_field_after_comm` is the one `/proc/<pid>/stat` parser, `read_ppid` reads the different `/status` file, `pgid_of` calls the parser (only its panic message names the path), and the rest are this audit's own sweep and fixture strings."
   },
   {
-    "id": "dup-c1fc122a08fb",
+    "id": "dup-3885489aa2a0",
     "disposition": "not-a-duplicate",
     "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store, the on-disk run stream) and call it."
   },
@@ -490,7 +490,7 @@
     "reason": "`Heartbeat::start` spawns a heartbeat thread while `McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor."
   },
   {
-    "id": "dup-a17e83ea2e51",
+    "id": "dup-781b5348543b",
     "disposition": "not-a-duplicate",
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
@@ -520,12 +520,12 @@
     "reason": "`unit_branch` names a unit's git branch while `key_expr` builds a SQL key expression; both are one-line `format!` calls over different templates."
   },
   {
-    "id": "dup-42e20190c39c",
+    "id": "dup-da9e46413ab9",
     "disposition": "not-a-duplicate",
     "reason": "Accessors that each clone a different recorded field of a different test double or channel (spawn ids, calls, targets, mutants dirs, store fences, build-cache guards, placements, receiver, error); the lock-and-clone line is the whole body."
   },
   {
-    "id": "dup-a3fe93ea3850",
+    "id": "dup-5fb59803c9f3",
     "disposition": "not-a-duplicate",
     "reason": "`spawned` reads a test driver's spawn log while `covers` tests an interval against a position; the shared shape is a one-line lookup."
   },
@@ -565,7 +565,7 @@
     "reason": "Three struct projections into different output shapes (a map candidate, the responsibility-map wire record and its line-number record) over different source types."
   },
   {
-    "id": "dup-601e842d257a",
+    "id": "dup-65d6d5073566",
     "disposition": "not-a-duplicate",
     "reason": "Unit tests of different functions (module-of, district-purpose, short run id, spec stem, impl self-type, where-clause stripping, identifier kind) that share only the assert-equality shape."
   },
@@ -630,7 +630,7 @@
     "reason": "Three enum-to-string mappings over different enums (edge direction to SQL, entity kind, language)."
   },
   {
-    "id": "dup-806054b76345",
+    "id": "dup-474b79b66e9e",
     "disposition": "not-a-duplicate",
     "reason": "`as_str`/`response` map four different enums (failure cause, gate outcome, ledger status, watch response) to their own strings."
   },
@@ -645,7 +645,7 @@
     "reason": "Two cold-start tests over different readers (the spec store load and the workflow-definition projection), each asserting its own empty result."
   },
   {
-    "id": "dup-f6d1231a427d",
+    "id": "dup-e9220ec4784e",
     "disposition": "not-a-duplicate",
     "reason": "`derived_key_parts` is the production splitter while the periphery `split` is the test's independent oracle that must not reuse it."
   },
@@ -665,7 +665,7 @@
     "reason": "`dir_size_bytes` is the production measure while the periphery `dir_bytes` is the test's independent oracle with its own symlink handling."
   },
   {
-    "id": "dup-17538867af44",
+    "id": "dup-d02cffac777c",
     "disposition": "not-a-duplicate",
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
   },

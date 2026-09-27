@@ -3,7 +3,7 @@
 **Goal:** rigger is a hive mind: its graph holds the project's whole understanding and serves
 each persona the slice it needs, and the append-only log is only the persistence underneath.
 That log is stored today by an embedded SQL engine (`rusqlite` with the bundled
-C library, `Cargo.toml:150`) behind a five-method port (`EventStore`, `src/eventstore/mod.rs:522`).
+C library, `Cargo.toml:150`) behind a five-method port (`EventStore`, `crates/rigger-domain/src/eventstore.rs:499`).
 The engine is the one C dependency in the build, it knows nothing of runs, and it is the
 reason the `store` lane cannot join the pure `core` lane. This project's log holds 2,497,006
 events in 1.44 GB, of which 149 runs' mechanics and 17,424 knowledge events are the only

@@ -4,7 +4,7 @@
 
 **Goal:** Ship the KurrentDB-shaped `EventStore` trait, an embedded SQLite adapter, and a backend-agnostic contract suite that any store (SQLite now, KurrentDB in Phase 2) must pass.
 
-**Architecture:** An `eventstore` module (`src/eventstore/mod.rs`) defines the trait and value types. An `eventstore::sqlite` module implements it over bundled `rusqlite` (a single SQLite file, no external service). An `eventstore::contract` module exposes `assert_contract(store)` so every backend proves identical behavior; that shared suite is the test-proxy fidelity the architecture calls for.
+**Architecture:** An `eventstore` module (`crates/rigger-domain/src/eventstore.rs`) defines the trait and value types. An `eventstore::sqlite` module implements it over bundled `rusqlite` (a single SQLite file, no external service). An `eventstore::contract` module exposes `assert_contract(store)` so every backend proves identical behavior; that shared suite is the test-proxy fidelity the architecture calls for.
 
 **Tech Stack:** Rust (edition 2021), `rusqlite` with the `bundled` feature (SQLite compiled in, no system dependency), the standard `#[test]` harness, `tempfile` for temp DBs in dev-tests.
 
@@ -17,7 +17,7 @@
 
 ## File structure
 
-- `src/eventstore/mod.rs` - the trait + value types: `Event`, `Position`, `Direction`, `ExpectedRevision`, `Filter`, `Error`, `EventStore`, `Subscription`.
+- `crates/rigger-domain/src/eventstore.rs` - the trait + value types: `Event`, `Position`, `Direction`, `ExpectedRevision`, `Filter`, `Error`, `EventStore`, `Subscription`.
 - `src/eventstore/sqlite.rs` - the SQLite adapter: `Store::open`, plus the `EventStore` impl (`append`, `read_stream`, `read_all`, `subscribe_all`).
 - `src/eventstore/contract.rs` - `assert_contract(store: &dyn EventStore)`, the backend-agnostic suite.
 - `#[cfg(test)]` modules in `sqlite.rs` (and `namespace.rs`) call `assert_contract` against a fresh store, plus any sqlite-specific tests.
@@ -25,7 +25,7 @@
 ## Trait (the contract every backend implements)
 
 ```rust
-// src/eventstore/mod.rs
+// crates/rigger-domain/src/eventstore.rs
 pub type Position = u64; // global $all order, assigned by the store on append
 
 pub enum Direction { Forward, Backward }
@@ -101,10 +101,10 @@ CREATE INDEX IF NOT EXISTS idx_events_stream ON events(stream);
 
 ### Task 1: Crate deps + trait + types
 
-**Files:** Create `src/eventstore/mod.rs`; modify `Cargo.toml` (add `rusqlite` with the `bundled` feature, `uuid`, `thiserror`).
+**Files:** Create `crates/rigger-domain/src/eventstore.rs`; modify `Cargo.toml` (add `rusqlite` with the `bundled` feature, `uuid`, `thiserror`).
 
 - [ ] Add the dependencies in `Cargo.toml`: `rusqlite = { version = "0.32", features = ["bundled"] }`, `uuid` (v4), `thiserror`; `cargo build`.
-- [ ] Write `src/eventstore/mod.rs` with the trait + types above (no behavior beyond `Event::new`). Add `pub mod eventstore;` in `src/lib.rs`.
+- [ ] Write `crates/rigger-domain/src/eventstore.rs` with the trait + types above (no behavior beyond `Event::new`). Add `pub mod eventstore;` in `src/lib.rs`.
 - [ ] Write a tiny `#[cfg(test)]` test that constructs an `Event` via `Event::new`, formats `Error::Conflict { stream }`, and asserts the message contains the stream; `cargo test eventstore` and watch it pass (pure value code).
 - [ ] Commit: `feat(eventstore): trait and value types`.
 

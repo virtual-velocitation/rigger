@@ -153,7 +153,7 @@ fn architecture_names_the_current_store_and_inspector_surface() {
 
 #[test]
 fn architecture_renders_the_event_store_port_the_source_declares() {
-    let declared = append_return_type(&repo_text("src/eventstore/mod.rs"));
+    let declared = append_return_type(&repo_text("crates/rigger-domain/src/eventstore.rs"));
     let rendered = append_return_type(&repo_text("docs/architecture.md"));
 
     assert_eq!(

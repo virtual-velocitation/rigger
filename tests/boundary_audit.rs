@@ -262,50 +262,8 @@ fn an_outward_edge_and_an_unknown_crate_are_reported() {
 /// Domain-responsibility items still in the root crate, `(file, item, lesson)`: each one's code,
 /// or a type it cannot be separated from, reaches for an adapter (the clock, a process, the
 /// filesystem, an adapter's type), so it waits for a port. The lesson records the port plus the
-/// adapter move that lets it join `rigger-domain`; an item that folds `Event` waits on the
-/// `Event` entry's lesson.
+/// adapter move that lets it join `rigger-domain`.
 const DEFERRED_DOMAIN_ITEMS: &[(&str, &str, &str)] = &[
-    (
-        "src/eventstore/mod.rs",
-        "Event",
-        "lesson-split-domain-event-mint",
-    ),
-    (
-        "src/ledger.rs",
-        "RunState",
-        "lesson-split-domain-event-mint",
-    ),
-    ("src/run.rs", "RunStarted", "lesson-split-domain-event-mint"),
-    (
-        "src/blocker.rs",
-        "Blocker",
-        "lesson-split-domain-event-mint",
-    ),
-    (
-        "src/spawn.rs",
-        "SpawnEvent",
-        "lesson-split-domain-event-mint",
-    ),
-    (
-        "src/progress.rs",
-        "consolidate",
-        "lesson-split-domain-event-mint",
-    ),
-    (
-        "src/concepts.rs",
-        "derive",
-        "lesson-split-domain-event-mint",
-    ),
-    (
-        "src/playbooks.rs",
-        "distill",
-        "lesson-split-domain-event-mint",
-    ),
-    (
-        "src/ingest.rs",
-        "project_scoped_replay_keys",
-        "lesson-split-domain-event-mint",
-    ),
     (
         "src/config.rs",
         "Config",
@@ -385,14 +343,53 @@ fn stale_deferred_items(root: &Path, entries: &[(&str, &str, &str)]) -> Vec<Stri
         .collect()
 }
 
+// ---------------------------------------------------------------------------------------------
+// Rule 1c: inward-dependency violations inside the domain crate
+// ---------------------------------------------------------------------------------------------
+
+/// Items placed in `rigger-domain` by their responsibility that still reach for something the
+/// domain must not know, `(file, item, what it reaches for, lesson)`. The lesson records the port
+/// that removes the reach; the entry goes when the item stops declaring it at that location.
+const DOMAIN_VIOLATIONS: &[(&str, &str, &str, &str)] = &[(
+    "crates/rigger-domain/src/eventstore.rs",
+    "mint",
+    "the clock (SystemTime::now) and entropy (uuid::Uuid::new_v4)",
+    "lesson-split-domain-event-mint-clock-id",
+)];
+
+/// Every [`DOMAIN_VIOLATIONS`]-shaped entry under `root` whose item is no longer declared in its
+/// file, or whose file is outside the domain crate.
+fn stale_domain_violations(root: &Path, entries: &[(&str, &str, &str, &str)]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|&(file, item, reach, lesson)| {
+            let text = fs::read_to_string(root.join(file)).unwrap_or_default();
+            if !file.starts_with(DOMAIN_SRC) {
+                Some(format!(
+                    "({file:?}, {item:?}, {reach:?}, {lesson:?}): {file} is not in {DOMAIN_SRC}"
+                ))
+            } else if !declares(&text, item) {
+                Some(format!(
+                    "({file:?}, {item:?}, {reach:?}, {lesson:?}): `{item}` is no longer declared \
+                     in {file}; delete the entry"
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 #[test]
-fn every_deferred_domain_item_is_still_deferred() {
-    let stale = stale_deferred_items(&repo_root(), DEFERRED_DOMAIN_ITEMS);
+fn every_domain_allowlist_entry_is_still_live() {
+    let root = repo_root();
+    let mut stale = stale_deferred_items(&root, DEFERRED_DOMAIN_ITEMS);
+    stale.extend(stale_domain_violations(&root, DOMAIN_VIOLATIONS));
     assert!(stale.is_empty(), "{}", stale.join("\n"));
 }
 
 #[test]
-fn a_deferred_item_that_moved_or_vanished_is_reported() {
+fn a_domain_allowlist_entry_that_moved_or_vanished_is_reported() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     write_file(
@@ -403,17 +400,36 @@ fn a_deferred_item_that_moved_or_vanished_is_reported() {
     write_file(
         root,
         "crates/rigger-domain/src/ledger.rs",
-        "pub fn fold() {}\n",
+        "pub fn fold() {}\nimpl RunState {\n    fn mint() {}\n}\n",
     );
-    let entries = [
+    let deferred = [
         ("src/ledger.rs", "RunState", "l1"),
         ("src/ledger.rs", "fold", "l2"),
         ("src/ledger.rs", "Gone", "l3"),
     ];
-    let stale = stale_deferred_items(root, &entries);
+    let stale = stale_deferred_items(root, &deferred);
     assert_eq!(stale.len(), 2, "{stale:#?}");
     assert!(stale[0].contains("`fold` is now declared in crates/rigger-domain/src"));
     assert!(stale[1].contains("`Gone` is no longer declared in src/ledger.rs"));
+    let violations = [
+        (
+            "crates/rigger-domain/src/ledger.rs",
+            "mint",
+            "the clock",
+            "l4",
+        ),
+        (
+            "crates/rigger-domain/src/ledger.rs",
+            "gone",
+            "the clock",
+            "l5",
+        ),
+        ("src/ledger.rs", "fold", "the clock", "l6"),
+    ];
+    let stale = stale_domain_violations(root, &violations);
+    assert_eq!(stale.len(), 2, "{stale:#?}");
+    assert!(stale[0].contains("`gone` is no longer declared"));
+    assert!(stale[1].contains("is not in crates/rigger-domain/src"));
 }
 
 // ---------------------------------------------------------------------------------------------

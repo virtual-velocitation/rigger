@@ -531,7 +531,7 @@ rigger::test_cases! {
     the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances:
         assert_absent_from_dead_code(
             &[
-                ("is_grep_fallback", Some("src/progress.rs")),
+                ("is_grep_fallback", Some("crates/rigger-domain/src/progress.rs")),
                 ("is_snapshot_drift", Some("src/metrics.rs")),
             ],
             "this is a real, previously-unreported instance of the same Method-category \
@@ -541,7 +541,7 @@ rigger::test_cases! {
     /// Round 3, mechanism B - THE RULE's own explicitly accepted precision trade ("a local variable
     /// or struct field sharing a fn's bare name now keeps that fn looking alive too - a false
     /// negative, never a false positive"): `placements` (kept alive by `Appended`'s own
-    /// `self.placements` field access, e.g. `src/eventstore/mod.rs:173`), `written` (kept alive by
+    /// `self.placements` field access, e.g. `crates/rigger-domain/src/eventstore.rs:201`), `written` (kept alive by
     /// the `written` binding in a `matches!` pattern at `src/watch.rs:528`), and `rules` (kept alive
     /// by `Taxonomy`'s own `self.rules` field access, e.g. `src/failure.rs:238`) each have NO
     /// call-shaped production reference of their own - verified by hand, each is provably dead by
@@ -554,7 +554,7 @@ rigger::test_cases! {
     getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent:
         assert_absent_from_dead_code(
             &[
-                ("placements", Some("src/eventstore/mod.rs")),
+                ("placements", Some("crates/rigger-domain/src/eventstore.rs")),
                 ("written", Some("src/watch.rs")),
                 ("rules", Some("src/failure.rs")),
             ],

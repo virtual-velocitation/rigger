@@ -2,13 +2,19 @@
   "spec": "93",
   "criterion": "1 - THE CORE LANE IS PURE",
   "core_modules": [
+    "crates/rigger-domain/src/blocker.rs",
+    "crates/rigger-domain/src/community.rs",
+    "crates/rigger-domain/src/concepts.rs",
     "crates/rigger-domain/src/config.rs",
+    "crates/rigger-domain/src/contextgraph.rs",
+    "crates/rigger-domain/src/eventstore.rs",
     "crates/rigger-domain/src/failure.rs",
+    "crates/rigger-domain/src/ledger.rs",
+    "crates/rigger-domain/src/progress.rs",
+    "crates/rigger-domain/src/run.rs",
     "crates/rigger-domain/src/safety.rs",
     "crates/rigger-domain/src/spawn.rs",
-    "src/blocker.rs",
     "src/canary.rs",
-    "src/community.rs",
     "src/concepts.rs",
     "src/config.rs",
     "src/console/mod.rs",
@@ -17,13 +23,10 @@
     "src/contextgraph/query.rs",
     "src/eventstore/mod.rs",
     "src/eventstore/namespace.rs",
-    "src/ledger.rs",
     "src/metrics.rs",
     "src/progress.rs",
-    "src/run.rs",
     "src/spawn.rs"
-  ],
-  "core_modules_note": "The exact set of `pub mod X;` / `mod X;` declarations in src/lib.rs (and their own always-on submodules: contextgraph::mod's `sqlite` is gated so excluded, eventstore::mod's `sqlite`/`kurrentdb`/`contract` are gated so excluded, `namespace` is not so included; console::mod's `map` submodule, spec 84 criterion 1's map engine, is likewise not gated so included - console.rs itself became console/mod.rs when that submodule was added) that carry NO `#[cfg(any(feature = \"store\", not(feature = \"core\")))]` gate - i.e. the modules the `core` feature ships - plus the same ungated declarations in crates/rigger-domain/src/lib.rs, the domain ring the root re-exports (its gated `playbooks`, `review`, `spec` and `wave` are excluded). `budget`, `conductor`, `dash`, `distiller`, `docs`, `driver`, `gate`, `grounder`, `hooks`, `ingest`, `liveness`, `mcpserver`, `parallel`, `playbooks`, `reap`, `registry`, `sidecar`, `spec`, `watch`, `worktree`, and the five `*_store` write-half siblings are all gated and so excluded from this list.",
+  ],  "core_modules_note": "The exact set of `pub mod X;` / `mod X;` declarations in src/lib.rs (and their own always-on submodules: contextgraph::mod's `sqlite` is gated so excluded, eventstore::mod's `sqlite`/`kurrentdb`/`contract` are gated so excluded, `namespace` is not so included; console::mod's `map` submodule, spec 84 criterion 1's map engine, is likewise not gated so included - console.rs itself became console/mod.rs when that submodule was added) that carry NO `#[cfg(any(feature = \"store\", not(feature = \"core\")))]` gate - i.e. the modules the `core` feature ships - plus the same ungated declarations in crates/rigger-domain/src/lib.rs, the domain ring the root re-exports (its gated `ingest`, `playbooks`, `review`, `spec` and `wave` are excluded). `budget`, `conductor`, `dash`, `distiller`, `docs`, `driver`, `gate`, `grounder`, `hooks`, `ingest`, `liveness`, `mcpserver`, `parallel`, `playbooks`, `reap`, `registry`, `sidecar`, `spec`, `watch`, `worktree`, and the five `*_store` write-half siblings are all gated and so excluded from this list.",
   "banned_patterns": {
     "std_paths": ["std::fs", "std::process", "std::net", "SystemTime::now"],
     "crates": ["rusqlite", "tokio::", "use tokio", "rustix::", "use rustix", "fs2::", "use fs2", "ignore::", "use ignore", "uuid::", "use uuid", "kurrentdb::", "use kurrentdb"],
@@ -33,17 +36,17 @@
   ,
   "found_occurrences": [
     {
-      "file": "src/eventstore/mod.rs",
-      "line": 128,
+      "file": "crates/rigger-domain/src/eventstore.rs",
+      "line": 105,
       "pattern": "uuid::",
-      "gated_by_line": 126,
+      "gated_by_line": 103,
       "reason": "Event::new's mint() store-arm mints the id's real entropy via uuid; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint() below, returning an empty id) satisfying the same call site under core-only - see that module's own doc on the split."
     },
     {
-      "file": "src/eventstore/mod.rs",
-      "line": 128,
+      "file": "crates/rigger-domain/src/eventstore.rs",
+      "line": 105,
       "pattern": "SystemTime::now",
-      "gated_by_line": 126,
+      "gated_by_line": 103,
       "reason": "Event::new's mint() store-arm reads the real clock; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint() below, returning SystemTime::UNIX_EPOCH) satisfying the same call site under core-only - CONSTRAINTS WALK's 'the core has no now(), every age arrives as an input'."
     }
   ],

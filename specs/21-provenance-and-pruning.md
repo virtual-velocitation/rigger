@@ -10,11 +10,11 @@ active run (which would throw away the memory). This spec implements Workstream 
 ## Design
 
 Builds on the whole-stream context graph (`Projector`, `src/contextgraph/`), the run
-boundary (`RunStarted`, `current_run`, `start_fresh` in `src/run.rs`), and the read paths
+boundary (`RunStarted`, `current_run`, `start_fresh` in `crates/rigger-domain/src/run.rs`), and the read paths
 `rigger peers` and grounding (`graph_context` in `src/conductor.rs`). The graph has no
 run column today; attribution is derived from the event stream.
 
-**Unit 1 - RunStarted-boundary attribution (touches `src/contextgraph/`, `src/run.rs`).**
+**Unit 1 - RunStarted-boundary attribution (touches `src/contextgraph/`, `crates/rigger-domain/src/run.rs`).**
 Derive, for each decision/finding node, the run it belongs to: the run whose
 `[RunStarted, next RunStarted)` event-position window contains the event that produced the
 node. `LessonLearned` is exempt - it is durable cross-run value and is never attributed

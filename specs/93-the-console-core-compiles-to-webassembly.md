@@ -1,8 +1,8 @@
 # 93 - The console core compiles to WebAssembly
 
-**Goal:** the projection code the conductor runs is already pure Rust - `src/ledger.rs`,
-`src/metrics.rs`, `src/progress.rs`, `src/blocker.rs`, `src/run.rs`, `src/community.rs`,
-`src/concepts.rs`, `src/contextgraph/mod.rs` and the fold half of `src/spawn.rs` import no
+**Goal:** the projection code the conductor runs is already pure Rust - `crates/rigger-domain/src/ledger.rs`,
+`src/metrics.rs`, `crates/rigger-domain/src/progress.rs`, `crates/rigger-domain/src/blocker.rs`, `crates/rigger-domain/src/run.rs`, `crates/rigger-domain/src/community.rs`,
+`crates/rigger-domain/src/concepts.rs`, `crates/rigger-domain/src/contextgraph.rs` and the fold half of `crates/rigger-domain/src/spawn.rs` import no
 `rusqlite`, `tokio`, `std::fs`, `std::process` or `std::net` - yet the library cannot be built
 without its I/O dependencies, because every one of them (`rusqlite`, `kurrentdb`, `tokio`,
 `rustix`, `fs2`, `ignore`, `uuid`) is unconditional in `Cargo.toml`. So the dashboard page

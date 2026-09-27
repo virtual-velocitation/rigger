@@ -133,7 +133,7 @@ retrievable via `rigger peers`. It runs as a projection over the log (§2.1), ca
 provenance (§2.3), and preserves `LessonLearned`. This is the automatic form of what
 `reset --runs` does by hand and keeps grounding lean over months, not just after a manual prune.
 
-_Code:_ a new distiller module modeled on `src/playbooks.rs`; folds into the graph projection;
+_Code:_ a new distiller module modeled on `crates/rigger-domain/src/playbooks.rs`; folds into the graph projection;
 shares the `RunStarted`-boundary attribution with `reset --runs`.
 
 ## 6. Workstream D — Unified event-sourced knowledge graph

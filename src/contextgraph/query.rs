@@ -27,10 +27,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::contextgraph::{
-    Edge, Error, Graph, Node, Position, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, REL_ABOUT, REL_CONTAINS, REL_GOVERNS,
-    REL_IN_COMMUNITY, REL_REALIZES,
+    Edge, Error, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION,
+    KIND_FILE, KIND_FINDING, KIND_LESSON, REL_ABOUT, REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY,
+    REL_REALIZES,
 };
+use crate::eventstore::Position;
 
 /// The default hop bound for a seeded [`neighborhood`] walk (spec 30 c5) - the same breadth an
 /// agent's own blast-radius grounding walk uses (`subgraph` calls it, and `rigger graph --around`

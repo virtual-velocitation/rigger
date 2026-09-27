@@ -1,7 +1,7 @@
 # 105 - A run holds through an outage and resumes by itself
 
 **Goal:** an API-side failure has no place in the run's model. `RunStarted` is the only
-run-level event (`src/run.rs:33`); the failure taxonomy classifies gate output only
+run-level event (`crates/rigger-domain/src/run.rs:33`); the failure taxonomy classifies gate output only
 (`crates/rigger-domain/src/failure.rs:23`), so a spawn error charges the unit; the liveness sweep measures wall
 time (`src/liveness.rs:342`), so after a 17 h credential outage the first step read a marker
 61,963 s stale, recorded a liveness fault and halted; needs-you knows three conditions
@@ -57,7 +57,7 @@ WHAT A PERSON SEES, decided: `rigger status` opens with
 `HELD <duration> - <cause> - <action>; the run resumes by itself`. The dock gains the kind
 `held`, ranked first when the cause needs a person (credential, billing, account, model);
 the statusline health word `held` outranks `working`; attention gains the crossings `held`
-and `released` (`src/ledger.rs:169`). `rigger validate` reports the auth method from
+and `released` (`crates/rigger-domain/src/ledger.rs:169`). `rigger validate` reports the auth method from
 `claude auth status --json` and warns when a run rides a login that can expire, naming the
 subscription's long-lived token.
 

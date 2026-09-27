@@ -4267,14 +4267,17 @@ fn render_section_3(files: &[FileScan]) -> String {
         utility that happens to live in the `symbols` module, not a grounding \
         operation reached through the port. The broader duplication this primitive \
         is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per \
-        `src/community.rs:{}`'s own comment) is a separately tracked cross-cutting \
+        `crates/rigger-domain/src/community.rs:{}`'s own comment) is a separately tracked cross-cutting \
         refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's \
         concern.\n\n",
         line_of(INGEST, "store::content_hash("),
         line_of("src/canary_store.rs", "store::content_hash("),
         cite_fn(files, "src/grounder/symbols/store.rs", "content_hash"),
         line_of("src/canary_store.rs", "parallel"),
-        line_of("src/community.rs", "arch-u2i-fnv1a-fourth-parallel-copy"),
+        line_of(
+            "crates/rigger-domain/src/community.rs",
+            "arch-u2i-fnv1a-fourth-parallel-copy",
+        ),
     );
     out.push_str(
         "CHECKED AND CLEAN (three of five ports fully clean; the other two, \
@@ -4345,10 +4348,10 @@ fn render_section_3(files: &[FileScan]) -> String {
     );
     let use_case_files = [
         CONDUCTOR,
-        "src/blocker.rs",
+        "crates/rigger-domain/src/blocker.rs",
         "crates/rigger-domain/src/spec.rs",
         "src/watch.rs",
-        "src/community.rs",
+        "crates/rigger-domain/src/community.rs",
     ];
     let infra = ["rusqlite", "reqwest", "tonic", "tokio", "kurrentdb"];
     for rel in use_case_files {

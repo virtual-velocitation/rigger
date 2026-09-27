@@ -45,14 +45,14 @@ the verdict line"), instead of folding the empty verdict as a reject and remedia
 This is the diagnostic use of events: events explain the failure, the result channel
 still decides.
 
-**Unit 4 - spec-shape lint (touches `src/main.rs`, `src/spec.rs`).** `rigger validate`
+**Unit 4 - spec-shape lint (touches `src/main.rs`, `crates/rigger-domain/src/spec.rs`).** `rigger validate`
 today accepts no spec argument. Make it accept an optional spec path and emit ADVISORY
 warnings (heuristic, never a hard failure) that name the rule and recommend the fix, for:
 a checkbox containing multiple observable behaviors; indented sub-bullets under a checkbox
 that read as separate criteria; a criterion long enough that a verbatim planner copy is
 unreliable. Each advisory recommends "one observable behavior per criterion; put type
 shapes and detail in a non-criteria Notes section." Reuses `extract_criteria`
-(`src/spec.rs`).
+(`crates/rigger-domain/src/spec.rs`).
 
 **Unit 5 - planner-to-baseline stable-id match (touches `src/conductor.rs`).** The
 conductor reconciles a planner's proposed unit against its baseline by comparing the

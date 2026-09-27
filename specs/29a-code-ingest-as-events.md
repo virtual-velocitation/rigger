@@ -19,7 +19,7 @@ routes its output through the event log:
   fold is always compiled.
 - **Fold.** New fold arms in `Projection::apply` -> `fold` (`src/contextgraph/sqlite.rs`) turn
   those events into `code-entity` nodes (kind added alongside the existing `KIND_*` consts in
-  `src/contextgraph/mod.rs`), a `file` container node, and structural edges.
+  `crates/rigger-domain/src/contextgraph.rs`), a `file` container node, and structural edges.
 - **Tier.** Each structural edge carries a confidence tier: explicit-in-source
   (calls / imports / inherits) folds as EXTRACTED; derived (transitive / re-export) as INFERRED;
   grep-visible-only (macro body / reflection string / dynamic) as AMBIGUOUS. The tier is a first-

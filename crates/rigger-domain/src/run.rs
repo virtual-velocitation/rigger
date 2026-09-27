@@ -123,7 +123,7 @@ impl RunStarted {
     /// can name the run's actual base (spec 38, criterion 3). `pub(crate)`: the impure mint
     /// path ([`crate::run_store::start_fresh`]) is the only caller outside this module.
     #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
-    pub(crate) fn to_event(&self) -> Result<Event, serde_json::Error> {
+    pub fn to_event(&self) -> Result<Event, serde_json::Error> {
         let mut ev = Event::new(TYPE_RUN_STARTED, serde_json::to_vec(self)?)
             .with_meta(META_RUN_ID, &self.run);
         if !self.base.is_empty() {

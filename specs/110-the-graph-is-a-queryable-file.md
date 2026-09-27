@@ -3,7 +3,7 @@
 **Goal:** the graph is the hive's memory: it holds the project's whole understanding and each
 persona is served the slice it needs from it. Today it lives in an embedded SQL database
 (`.rigger/graph.db`, 73 MB, 61,950 nodes, 91,694 edges, `src/contextgraph/sqlite.rs`, 8,307
-lines) behind a six-method port (`Projection`, `src/contextgraph/mod.rs:773`). Every process
+lines) behind a six-method port (`Projection`, `crates/rigger-domain/src/contextgraph.rs:531`). Every process
 that asks the graph a question opens the engine; nothing holds the graph resident for the
 process that folds it thousands of times per run. This spec ships section 5.5, 5.7's snapshot
 operation and 5.8 of docs/architecture-addendum-the-owned-store.md: the graph is a

@@ -24,7 +24,7 @@ promise that resolves to text or to null, so rigger infers what it needs to know
 | when the run needs a person | polling by the operator session | about 60 unanswerable polls in one night |
 | how long a step may run | a 10-minute tool cap on the agent that relays `rigger step` | every longer gate or integration step is detached by hand |
 
-Spawn errors bypass the failure taxonomy (`src/failure.rs` classifies gate output only), so
+Spawn errors bypass the failure taxonomy (`crates/rigger-domain/src/failure.rs` classifies gate output only), so
 an API outage charges a unit's remediation attempts. `RunStarted` is the only run-level
 event; no held state exists. A chat message typed during a run reaches the relay agent and
 halts the driver. Three drivers exist and none is whole: the CLI driver blocks on

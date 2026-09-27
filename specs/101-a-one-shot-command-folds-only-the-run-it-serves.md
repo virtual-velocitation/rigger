@@ -10,7 +10,7 @@ report of that day) - while the run those commands served spans 67,456 events
 edges ~1.62 million are superseded generations of files that were later re-ingested
 (`gc/<file>@<hash>#<n>` keys: a file edit re-records every edge of the file under a new
 generation). `src/conductor.rs` calls `read_stream(STREAM, 0, Direction::Forward)` at 108
-sites, `src/main.rs` at 36, `src/run.rs` at 22. Five agents each calling rigger a few times a
+sites, `src/main.rs` at 36, `crates/rigger-domain/src/run.rs` at 22. Five agents each calling rigger a few times a
 minute put 15 to 25 GB of baseline pressure on a 62 GB machine before a single cargo build.
 
 ## Design

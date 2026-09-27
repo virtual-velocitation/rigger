@@ -65,7 +65,7 @@ skills, and push-side guardrails that land anomalies in the orchestrator's own s
   `dashboard: not serving (marker names dead pid <N>) - run 'rigger dash' or the next step
   restarts it`. `--json` carries the same truth.
 - **The step wire carries attention; the driver relays it** (`src/main.rs::cmd_step` /
-  `src/spawn.rs::Step`, then `workflows/rigger.js`): ONE additive, serde-defaulted
+  `crates/rigger-domain/src/spawn.rs::Step`, then `workflows/rigger.js`): ONE additive, serde-defaulted
   `attention` array on the step's JSON line, stamped by `rigger step` from live conductor
   state exactly as `halted` is - the driver never scrapes or infers. Entries: unit ESCALATED,
   run HALTED with reason, Nth worker death on one unit, budget crossing its final tenth, and
