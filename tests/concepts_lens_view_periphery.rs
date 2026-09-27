@@ -50,7 +50,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::fixtures::edge;
-use common::fixtures::labelled_node;
+use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
 use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
 use common::served::node_harness_passes;
@@ -97,8 +97,8 @@ fn lens_graph() -> Graph {
             plain(APPEND, KIND_CODE_ENTITY),
             plain(INDEX, KIND_CODE_ENTITY),
             plain(HELPER, KIND_CODE_ENTITY),
-            labelled_node(C0, KIND_CONCEPT, Some("the store")),
-            labelled_node(C1, KIND_CONCEPT, Some("the api")),
+            node_with_optional_attrs(C0, KIND_CONCEPT, &[("label", Some("the store"))]),
+            node_with_optional_attrs(C1, KIND_CONCEPT, &[("label", Some("the api"))]),
             plain("d1", KIND_DECISION),
         ],
         edges: vec![
@@ -273,8 +273,8 @@ fn a_shared_member_of_two_equal_size_concepts_folds_to_the_lexicographically_sma
             plain("docs/alpha.md", KIND_DESIGN_DOC),
             plain("docs/beta.md", KIND_DESIGN_DOC),
             plain("src/x.rs::shared_fn", KIND_CODE_ENTITY),
-            labelled_node(C0, KIND_CONCEPT, Some("alpha")),
-            labelled_node(C1, KIND_CONCEPT, Some("beta")),
+            node_with_optional_attrs(C0, KIND_CONCEPT, &[("label", Some("alpha"))]),
+            node_with_optional_attrs(C1, KIND_CONCEPT, &[("label", Some("beta"))]),
         ],
         edges: vec![
             // concept/1/0 = {docs/alpha.md, shared_fn} (size 2).
@@ -357,7 +357,7 @@ fn concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs() 
         nodes: vec![
             plain("src/only.rs::fn_a", KIND_CODE_ENTITY),
             plain("decision-realizes", KIND_DECISION),
-            labelled_node(C0, KIND_CONCEPT, Some("the idea")),
+            node_with_optional_attrs(C0, KIND_CONCEPT, &[("label", Some("the idea"))]),
         ],
         edges: vec![
             edge("src/only.rs::fn_a", C0, REL_REALIZES, TIER_INFERRED),

@@ -288,7 +288,7 @@ mod tests {
     #[cfg(any(feature = "store", not(feature = "core")))]
     use crate::contextgraph::sqlite::Projector;
     use crate::test_support::edge;
-    use crate::test_support::entity_node;
+    use crate::test_support::node_with_optional_attrs;
     // `Projection` (the `.whole()` trait) and the two rel constants are needed only by the
     // sqlite-backed rebuild test above, gated the same way for the same reason.
     #[cfg(any(feature = "store", not(feature = "core")))]
@@ -330,14 +330,30 @@ mod tests {
         let rationale = "src/graph/index.rs#L5";
 
         let mut nodes = vec![
-            entity_node(doc_a, KIND_DESIGN_DOC, Some("The knowledge graph"), None),
-            entity_node(doc_b, KIND_HANDBOOK_RULE, Some("Review adjudication"), None),
-            entity_node(rationale, KIND_RATIONALE, Some("why index by name"), None),
-            entity_node(rat_file, KIND_FILE, None, None),
-            entity_node("d-noise", KIND_DECISION, None, None),
+            node_with_optional_attrs(
+                doc_a,
+                KIND_DESIGN_DOC,
+                &[("title", Some("The knowledge graph")), ("name", None)],
+            ),
+            node_with_optional_attrs(
+                doc_b,
+                KIND_HANDBOOK_RULE,
+                &[("title", Some("Review adjudication")), ("name", None)],
+            ),
+            node_with_optional_attrs(
+                rationale,
+                KIND_RATIONALE,
+                &[("title", Some("why index by name")), ("name", None)],
+            ),
+            node_with_optional_attrs(rat_file, KIND_FILE, &[("title", None), ("name", None)]),
+            node_with_optional_attrs("d-noise", KIND_DECISION, &[("title", None), ("name", None)]),
         ];
         for f in a_files.iter().chain(b_files.iter()) {
-            nodes.push(entity_node(f, KIND_FILE, None, None));
+            nodes.push(node_with_optional_attrs(
+                f,
+                KIND_FILE,
+                &[("title", None), ("name", None)],
+            ));
         }
 
         let mut edges = Vec::new();

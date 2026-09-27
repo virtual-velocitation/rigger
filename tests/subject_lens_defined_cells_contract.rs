@@ -23,7 +23,7 @@ mod common;
 
 use common::fixtures::def_node as def;
 use common::fixtures::edge;
-use common::fixtures::labelled_node as node;
+use common::fixtures::node_with_optional_attrs;
 use common::lens::{lens, shared_member_graph, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
 use rigger::contextgraph::TIER_EXTRACTED;
@@ -49,7 +49,11 @@ const WIDE_CONCEPT: &str = "concept/2/0";
 /// (one bucket of size `big`, whose key sorts AFTER every `src/fNN.rs`). A coupling edge `f00 -> f01`
 /// is always added so a within-kept-set super-edge is present to assert against.
 fn per_file_graph(single: usize, big: usize) -> Graph {
-    let mut nodes = vec![node(WIDE_CONCEPT, KIND_CONCEPT, Some("wide"))];
+    let mut nodes = vec![node_with_optional_attrs(
+        WIDE_CONCEPT,
+        KIND_CONCEPT,
+        &[("label", Some("wide"))],
+    )];
     let mut edges = Vec::new();
     for i in 0..single {
         // Zero-padded so the file KEY order is lexicographic 00 < 01 < ... : the largest fNN key is
@@ -234,9 +238,9 @@ const COMM_B: &str = "community/1/1";
 fn full_in_budget_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(PLAIN_CONCEPT, KIND_CONCEPT, Some("plain")),
-            node(COMM_A, KIND_COMMUNITY, Some("a")),
-            node(COMM_B, KIND_COMMUNITY, Some("b")),
+            node_with_optional_attrs(PLAIN_CONCEPT, KIND_CONCEPT, &[("label", Some("plain"))]),
+            node_with_optional_attrs(COMM_A, KIND_COMMUNITY, &[("label", Some("a"))]),
+            node_with_optional_attrs(COMM_B, KIND_COMMUNITY, &[("label", Some("b"))]),
             def("src/one.rs::x", "x"),
             def("src/two.rs::y", "y"),
         ],
@@ -326,7 +330,7 @@ fn the_empty_cell_message_constants_hold_their_documented_values() {
     // And the constants are exactly what a memberless derived cell emits (constant <-> behavior).
     let graph = Graph {
         nodes: vec![
-            node("concept/9/0", KIND_CONCEPT, Some("idea")),
+            node_with_optional_attrs("concept/9/0", KIND_CONCEPT, &[("label", Some("idea"))]),
             def("src/z.rs::only", "only"),
         ],
         edges: vec![edge(

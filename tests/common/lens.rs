@@ -3,7 +3,7 @@
 use rigger::contextgraph::{Graph, KIND_CODE_ENTITY, KIND_CONCEPT, REL_REALIZES, TIER_EXTRACTED};
 use rigger::dash::{clustered_overview, Cluster, ClusterEdge, Lens};
 
-use super::fixtures::{edge, labelled_node, node_with_attrs};
+use super::fixtures::{edge, node_with_attrs, node_with_optional_attrs};
 
 /// Lens `name` (`code`, `concepts`, ...) at resolution grain `1`.
 pub fn lens(name: &str) -> Lens {
@@ -26,8 +26,8 @@ pub fn shared_member_graph() -> Graph {
     let realizes = |from: &str, to: &str| edge(from, to, REL_REALIZES, TIER_EXTRACTED);
     Graph {
         nodes: vec![
-            labelled_node(SUB_C, KIND_CONCEPT, Some("cc")),
-            labelled_node(OTHER_D, KIND_CONCEPT, Some("dd")),
+            node_with_optional_attrs(SUB_C, KIND_CONCEPT, &[("label", Some("cc"))]),
+            node_with_optional_attrs(OTHER_D, KIND_CONCEPT, &[("label", Some("dd"))]),
             def(SHARED_MEMBER, "m"),
             def(SOLO_MEMBER, "n"),
             def("src/c.rs::p", "p"),

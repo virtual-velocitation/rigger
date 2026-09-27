@@ -17,6 +17,18 @@ pub fn plain(id: &str, kind: &str) -> Node {
     }
 }
 
+/// A `kind` node carrying each of `attrs` that has a value (an ingested document's `title`, a
+/// code entity's `name`, a display `label`, ...).
+pub fn node_with_optional_attrs(id: &str, kind: &str, attrs: &[(&str, Option<&str>)]) -> Node {
+    let mut n = plain(id, kind);
+    for (key, value) in attrs {
+        if let Some(v) = value {
+            n.attrs.insert(key.to_string(), v.to_string());
+        }
+    }
+    n
+}
+
 /// A `kind` node carrying `attrs`.
 pub fn node_with_attrs(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
     Node {
@@ -27,19 +39,6 @@ pub fn node_with_attrs(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
     }
-}
-
-/// A `kind` node carrying the optional `title` (an ingested document) and `name` (a code entity)
-/// attributes - the two a concept label is picked from, in that preference order.
-pub fn entity_node(id: &str, kind: &str, title: Option<&str>, name: Option<&str>) -> Node {
-    let mut n = plain(id, kind);
-    if let Some(t) = title {
-        n.attrs.insert("title".to_string(), t.to_string());
-    }
-    if let Some(nm) = name {
-        n.attrs.insert("name".to_string(), nm.to_string());
-    }
-    n
 }
 
 /// A `kind` node carrying a `summary` attribute, or no attribute at all when `summary` is empty.
@@ -148,15 +147,6 @@ impl rigger::contextgraph::Projection for MinimalProjection {
     projection_reads_nothing!();
 }
 
-/// A `kind` node carrying its display `label`, when it has one.
-pub fn labelled_node(id: &str, kind: &str, label: Option<&str>) -> Node {
-    let mut n = plain(id, kind);
-    if let Some(l) = label {
-        n.attrs.insert("label".to_string(), l.to_string());
-    }
-    n
-}
-
 /// The id of spoke `i` of a many-spoke graph fixture: a code entity in `file`, zero-padded so the
 /// ids sort in spoke order.
 pub fn spoke_id(file: &str, i: usize) -> String {
@@ -237,5 +227,9 @@ pub fn subject_graph() -> Graph {
 /// A code-entity DEFINITION node: its `name` attr marks it a real definition (not a bare
 /// cross-file placeholder), exactly as the extraction fold records.
 pub fn def_node(id: &str, name: &str) -> Node {
-    entity_node(id, KIND_CODE_ENTITY, None, Some(name))
+    node_with_optional_attrs(
+        id,
+        KIND_CODE_ENTITY,
+        &[("title", None), ("name", Some(name))],
+    )
 }

@@ -1200,52 +1200,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn skill_render_is_parameterized_by_every_fact() {
-        let ctx = sentinel_ctx();
-        let out = render_using_rigger_skill(&ctx);
-        assert!(out.contains("SENTINEL/base-ref"), "base_ref not rendered");
-        assert!(out.contains("65531"), "dash_port not rendered");
-        assert!(out.contains("999"), "max_retries not rendered");
-        assert!(
-            out.contains("sentinelverdict"),
-            "verdict_approve not rendered"
-        );
-        assert!(
-            out.contains("sentinel-rule-a"),
-            "spec_shape_rule not rendered"
-        );
-        assert!(
-            out.contains("sentinel recommendation text"),
-            "spec_shape_recommendation not rendered"
-        );
-        assert!(out.contains("sentinelcmd-a"), "subcommand not rendered");
-        assert!(
-            out.contains("sentinel grep-guard message"),
-            "grep_guard_message not rendered"
-        );
+    /// Every sentinel fact both renders carry: `(sentinel value, the fact it stands for)`.
+    const SHARED_SENTINEL_FACTS: &[(&str, &str)] = &[
+        ("SENTINEL/base-ref", "base_ref"),
+        ("65531", "dash_port"),
+        ("999", "max_retries"),
+        ("sentinelverdict", "verdict_approve"),
+        ("sentinel-rule-a", "spec_shape_rule"),
+        ("sentinelcmd-a", "subcommand"),
+        ("sentinel grep-guard message", "grep_guard_message"),
+    ];
+
+    /// `render` over the sentinel context carries every shared sentinel fact plus `extra`.
+    fn assert_renders_every_fact(render: fn(&DocsContext) -> String, extra: &[(&str, &str)]) {
+        let out = render(&sentinel_ctx());
+        for (sentinel, fact) in SHARED_SENTINEL_FACTS.iter().chain(extra) {
+            assert!(out.contains(sentinel), "{fact} not rendered");
+        }
     }
 
-    #[test]
-    fn handbook_render_is_parameterized_by_every_fact() {
-        let ctx = sentinel_ctx();
-        let out = render_handbook_discipline(&ctx);
-        assert!(out.contains("SENTINEL/base-ref"), "base_ref not rendered");
-        assert!(out.contains("65531"), "dash_port not rendered");
-        assert!(out.contains("999"), "max_retries not rendered");
-        assert!(
-            out.contains("sentinelverdict"),
-            "verdict_approve not rendered"
+    crate::test_cases! {
+        skill_render_is_parameterized_by_every_fact: assert_renders_every_fact(
+            render_using_rigger_skill,
+            &[("sentinel recommendation text", "spec_shape_recommendation")],
         );
-        assert!(
-            out.contains("sentinel-rule-a"),
-            "spec_shape_rule not rendered"
-        );
-        assert!(out.contains("sentinelcmd-a"), "subcommand not rendered");
-        assert!(
-            out.contains("sentinel grep-guard message"),
-            "grep_guard_message not rendered"
-        );
+        handbook_render_is_parameterized_by_every_fact:
+            assert_renders_every_fact(render_handbook_discipline, &[]);
     }
 
     #[test]

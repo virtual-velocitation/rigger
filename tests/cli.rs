@@ -2252,16 +2252,10 @@ fn two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs() {
 /// no-match-empty / k-cap contract). Pinning grep keeps the test focused on the literal
 /// grounder's behavior.
 fn write_grounder_workflow(root: &Path, grounder: &str) {
-    let rigger = root.join(".rigger");
-    // The agents/ dir must exist for `config::load` to succeed; without it the load
-    // fails and `cmd_ground` falls back to the UNSET grounder (which resolves to
+    // `write_scaffold` creates the agents/ dir `config::load` needs even with no agents; without
+    // it the load fails and `cmd_ground` falls back to the UNSET grounder (which resolves to
     // symbols), so the pinned `grounder` would never take effect.
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        format!("defaults:\n  grounder: {grounder}\n"),
-    )
-    .unwrap();
+    write_scaffold(root, &[], &format!("defaults:\n  grounder: {grounder}\n"));
 }
 
 /// `rigger ground "<query>"` returns repo references (`file:line: <text>`) from the
@@ -14988,6 +14982,26 @@ fn seed_two_runs_with_models(root: &Path, project: &str, prev_model: &str, curr_
         .unwrap();
 }
 
+/// `rigger validate` over a fresh, `rigger init`-scaffolded project `project` seeded with two
+/// runs whose resolved model moved from `prior` to `current`; asserts it exits 0 (model drift
+/// only ever advises) and returns (stdout, stderr).
+fn validate_after_model_move(project: &str, prior: &str, current: &str) -> (String, String) {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_two_runs_with_models(root, project, prior, current);
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate exits 0 on a {prior} -> {current} move (drift only advises); stderr:\n{err}"
+    );
+    (out, err)
+}
+
 /// Spec 13b, unit 1 (`rigger validate` clause): a tier whose resolved model id re-pointed
 /// since the previous run makes `rigger validate` WARN on stderr (exit 0) and recommend the
 /// drift-gated canary, while an unchanged model stays silent. The no-change control and the
@@ -14995,19 +15009,8 @@ fn seed_two_runs_with_models(root: &Path, project: &str, prev_model: &str, curr_
 #[test]
 fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
     // The no-change control: both runs resolve `opus` identically -> validate is drift-silent.
-    let control = temp_project();
-    let croot = control.path();
-    let (_o, err, ok) = run_rigger(croot, &["init"]);
-    assert!(
-        ok,
-        "rigger init must scaffold a valid config; stderr:\n{err}"
-    );
-    seed_two_runs_with_models(croot, "drift-control", "claude-opus-4-1", "claude-opus-4-1");
-    let (out, err, ok) = run_rigger(croot, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed on a steady model; stderr:\n{err}"
-    );
+    let (out, err) =
+        validate_after_model_move("drift-control", "claude-opus-4-1", "claude-opus-4-1");
     assert!(
         out.contains("config valid"),
         "validate still prints its config summary; stdout:\n{out}"
@@ -15018,19 +15021,8 @@ fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
     );
 
     // The seeded re-point: `opus` resolves to a different concrete model in the second run.
-    let drift = temp_project();
-    let droot = drift.path();
-    let (_o, err, ok) = run_rigger(droot, &["init"]);
-    assert!(
-        ok,
-        "rigger init must scaffold a valid config; stderr:\n{err}"
-    );
-    seed_two_runs_with_models(droot, "drift-repoint", "claude-opus-4-1", "claude-opus-4-8");
-    let (_out, err, ok) = run_rigger(droot, &["validate"]);
-    assert!(
-        ok,
-        "validate WARNS but still exits 0 on model drift; stderr:\n{err}"
-    );
+    let (_out, err) =
+        validate_after_model_move("drift-repoint", "claude-opus-4-1", "claude-opus-4-8");
     assert!(
         err.to_lowercase().contains("resolved model id changed")
             && err.contains("opus")
@@ -15050,23 +15042,10 @@ fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
 /// never the mandate-style warning a real model-base change draws.
 #[test]
 fn validate_advises_softly_on_a_snapshot_only_date_suffix_bump() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_o, err, ok) = run_rigger(root, &["init"]);
-    assert!(
-        ok,
-        "rigger init must scaffold a valid config; stderr:\n{err}"
-    );
-    seed_two_runs_with_models(
-        root,
+    let (_out, err) = validate_after_model_move(
         "drift-snapshot-bump",
         "claude-sonnet-4-5-20250929",
         "claude-sonnet-4-5-20260210",
-    );
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate still exits 0 on a snapshot-only bump; stderr:\n{err}"
     );
     assert!(
         err.contains("claude-sonnet-4-5-20250929") && err.contains("claude-sonnet-4-5-20260210"),
@@ -15453,20 +15432,14 @@ fn version_and_dash_dash_version_report_the_derived_version_and_build_provenance
 /// adjudicator agent `judge` carrying `adjudicator_body`, so `rigger validate` exercises
 /// the gating-persona verdict-line lint (spec 18, unit 1) over a real config on disk.
 fn write_gating_lint_project(root: &Path, adjudicator_body: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        format!(
-            "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\n{adjudicator_body}\n"
-        ),
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    let judge = format!(
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\n{adjudicator_body}\n"
+    );
+    write_scaffold(
+        root,
+        &[("judge", &judge)],
         "defaults:\n  grounder: nop\n  review:\n    adjudicator: judge\n",
-    )
-    .unwrap();
+    );
 }
 
 /// spec 18, unit 1 (done-when): `rigger validate` HARD-errors on a config whose gating

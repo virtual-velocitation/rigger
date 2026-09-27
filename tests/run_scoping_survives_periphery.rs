@@ -34,6 +34,7 @@
 
 mod common;
 
+use common::fixtures::count_of_type;
 use common::fixtures::run_log;
 use common::fixtures::NoopDriver;
 use rigger::conductor::{run, Deps, META_REPLAY_KEY};
@@ -108,10 +109,6 @@ fn keys_of(events: &[Event], type_: &str) -> Vec<String> {
         .filter(|e| e.type_ == type_)
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect()
-}
-
-fn count_of_type(events: &[Event], type_: &str) -> usize {
-    events.iter().filter(|e| e.type_ == type_).count()
 }
 
 /// CONTRACT at the crate boundary: a run's own keyed lifecycle emits are RUN-scoped, so what a

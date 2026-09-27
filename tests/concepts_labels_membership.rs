@@ -27,7 +27,7 @@
 mod common;
 
 use common::fixtures::edge;
-use common::fixtures::entity_node as node;
+use common::fixtures::node_with_optional_attrs;
 use common::fixtures::pair_map;
 use rigger::concepts::{derive, events, intent_layer, Derivation, DEFAULT_RESOLUTION};
 use rigger::contextgraph::sqlite::Projector;
@@ -72,16 +72,31 @@ fn doc_with_more_central_rationale() -> Graph {
     let rationale = "src/graph/store.rs#L7";
     Graph {
         nodes: vec![
-            node(doc, KIND_DESIGN_DOC, Some("The knowledge graph"), None),
-            node(
+            node_with_optional_attrs(
+                doc,
+                KIND_DESIGN_DOC,
+                &[("title", Some("The knowledge graph")), ("name", None)],
+            ),
+            node_with_optional_attrs(
                 rationale,
                 KIND_RATIONALE,
-                Some("why we index by name"),
-                None,
+                &[("title", Some("why we index by name")), ("name", None)],
             ),
-            node("src/graph/store.rs", KIND_FILE, None, None),
-            node("src/graph/a.rs", KIND_FILE, None, None),
-            node("src/graph/b.rs", KIND_FILE, None, None),
+            node_with_optional_attrs(
+                "src/graph/store.rs",
+                KIND_FILE,
+                &[("title", None), ("name", None)],
+            ),
+            node_with_optional_attrs(
+                "src/graph/a.rs",
+                KIND_FILE,
+                &[("title", None), ("name", None)],
+            ),
+            node_with_optional_attrs(
+                "src/graph/b.rs",
+                KIND_FILE,
+                &[("title", None), ("name", None)],
+            ),
         ],
         edges: vec![
             // The rationale is the star hub (degree 4): it explains three files and references the doc.
@@ -129,16 +144,11 @@ rigger::test_cases! {
     label_is_the_most_central_document_by_intent_degree: assert_documents_share_a_concept_labelled_by(
         &Graph {
             nodes: vec![
-                node("docs/zzz-kg.md", KIND_DESIGN_DOC, Some("The knowledge graph"), None),
-                node(
-                    "docs/aaa-review.md",
-                    KIND_HANDBOOK_RULE,
-                    Some("Review adjudication"),
-                    None,
-                ),
-                node("src/core/f1.rs", KIND_FILE, None, None),
-                node("src/core/f2.rs", KIND_FILE, None, None),
-                node("src/core/f3.rs", KIND_FILE, None, None),
+                node_with_optional_attrs("docs/zzz-kg.md", KIND_DESIGN_DOC, &[("title", Some("The knowledge graph")), ("name", None)]),
+                node_with_optional_attrs("docs/aaa-review.md", KIND_HANDBOOK_RULE, &[("title", Some("Review adjudication")), ("name", None)]),
+                node_with_optional_attrs("src/core/f1.rs", KIND_FILE, &[("title", None), ("name", None)]),
+                node_with_optional_attrs("src/core/f2.rs", KIND_FILE, &[("title", None), ("name", None)]),
+                node_with_optional_attrs("src/core/f3.rs", KIND_FILE, &[("title", None), ("name", None)]),
             ],
             edges: vec![
                 edge("docs/zzz-kg.md", "src/core/f1.rs", REL_SPECIFIES, TIER_EXTRACTED),
@@ -161,9 +171,9 @@ rigger::test_cases! {
         assert_documents_share_a_concept_labelled_by(
             &Graph {
                 nodes: vec![
-                    node("docs/a-alpha.md", KIND_DESIGN_DOC, Some("Alpha idea"), None),
-                    node("docs/z-omega.md", KIND_DESIGN_DOC, Some("Omega idea"), None),
-                    node("src/shared.rs", KIND_FILE, None, None),
+                    node_with_optional_attrs("docs/a-alpha.md", KIND_DESIGN_DOC, &[("title", Some("Alpha idea")), ("name", None)]),
+                    node_with_optional_attrs("docs/z-omega.md", KIND_DESIGN_DOC, &[("title", Some("Omega idea")), ("name", None)]),
+                    node_with_optional_attrs("src/shared.rs", KIND_FILE, &[("title", None), ("name", None)]),
                 ],
                 edges: vec![
                     edge("docs/a-alpha.md", "docs/z-omega.md", REL_DOC_REFERENCES, TIER_EXTRACTED),
@@ -235,10 +245,22 @@ const HUB: &str = "src/zzz_hub.rs";
 fn label_of_the_documentless_hub(hub_name: Option<&str>) -> String {
     let g = Graph {
         nodes: vec![
-            node(HUB, KIND_FILE, None, hub_name),
-            node("src/aaa.rs#L1", KIND_RATIONALE, Some("why a"), None),
-            node("src/bbb.rs#L1", KIND_RATIONALE, Some("why b"), None),
-            node("src/ccc.rs#L1", KIND_RATIONALE, Some("why c"), None),
+            node_with_optional_attrs(HUB, KIND_FILE, &[("title", None), ("name", hub_name)]),
+            node_with_optional_attrs(
+                "src/aaa.rs#L1",
+                KIND_RATIONALE,
+                &[("title", Some("why a")), ("name", None)],
+            ),
+            node_with_optional_attrs(
+                "src/bbb.rs#L1",
+                KIND_RATIONALE,
+                &[("title", Some("why b")), ("name", None)],
+            ),
+            node_with_optional_attrs(
+                "src/ccc.rs#L1",
+                KIND_RATIONALE,
+                &[("title", Some("why c")), ("name", None)],
+            ),
         ],
         edges: vec![
             edge("src/aaa.rs#L1", HUB, REL_EXPLAINS, TIER_EXTRACTED),
@@ -282,11 +304,23 @@ fn a_code_node_with_no_intent_edge_belongs_to_no_concept() {
     let orphan = "src/generated/noise.rs";
     let g = Graph {
         nodes: vec![
-            node(doc, KIND_DESIGN_DOC, Some("The knowledge graph"), None),
-            node("src/graph/a.rs", KIND_FILE, None, None),
-            node("src/graph/b.rs", KIND_FILE, None, None),
-            node("d-noise", KIND_DECISION, None, None),
-            node(orphan, KIND_FILE, None, None),
+            node_with_optional_attrs(
+                doc,
+                KIND_DESIGN_DOC,
+                &[("title", Some("The knowledge graph")), ("name", None)],
+            ),
+            node_with_optional_attrs(
+                "src/graph/a.rs",
+                KIND_FILE,
+                &[("title", None), ("name", None)],
+            ),
+            node_with_optional_attrs(
+                "src/graph/b.rs",
+                KIND_FILE,
+                &[("title", None), ("name", None)],
+            ),
+            node_with_optional_attrs("d-noise", KIND_DECISION, &[("title", None), ("name", None)]),
+            node_with_optional_attrs(orphan, KIND_FILE, &[("title", None), ("name", None)]),
         ],
         edges: vec![
             // A real concept: the design-doc specifies two files (a pure star, one connected region).

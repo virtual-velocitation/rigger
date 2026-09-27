@@ -28,33 +28,13 @@
 use std::path::{Path, PathBuf};
 
 mod common;
-use common::fixtures::{fan_out_stage, workflow_cfg};
+use common::fixtures::{fan_out_stage, workflow_cfg, NoopDriver};
 use common::git::temp_git_project_with_commit;
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config};
+use rigger::conductor::{run, Deps};
+use rigger::config::Config;
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
-
-/// A no-op `AgentDriver`: every assertion in this file is about the FILESYSTEM side effect a
-/// real `ExecRunner` gate and a real unit worktree leave behind, never about agent output
-/// content, so the driver itself only has to satisfy the port contract.
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: "ok".into(),
-            resolved_model: String::new(),
-        })
-    }
-}
 
 /// A single-stage, single-unit fan-out workflow (mirrors every other periphery file's
 /// minimal `implement-template`-shaped fixture) whose real `ExecRunner` gate is a trivial

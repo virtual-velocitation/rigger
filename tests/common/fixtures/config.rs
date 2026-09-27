@@ -105,6 +105,13 @@ pub fn scratch_cfg(repo_path: &str) -> Config {
     cfg
 }
 
+/// [`scratch_cfg`] declaring the always-passing gate `g`.
+pub fn gated_scratch_cfg(repo_path: &str) -> Config {
+    let mut cfg = scratch_cfg(repo_path);
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg
+}
+
 /// A config of one bare [`agent`] per id in `agents`, one `core` gate per `(name, run)` in
 /// `gates`, and `stages`, each keyed by its own name.
 pub fn workflow_cfg(agents: &[&str], gates: &[(&str, &str)], stages: Vec<Stage>) -> Config {

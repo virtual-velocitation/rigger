@@ -30,7 +30,7 @@ mod common;
 
 use common::fixtures::def_node as def;
 use common::fixtures::edge;
-use common::fixtures::labelled_node;
+use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
 use common::lens::lens;
 use common::served::served_json;
@@ -71,9 +71,9 @@ const RUN_DEF_TWO: &str = "src/two/y.rs::run";
 fn reproj_graph() -> Graph {
     Graph {
         nodes: vec![
-            labelled_node(CONCEPT, KIND_CONCEPT, Some("the pipeline")),
-            labelled_node(C0, KIND_COMMUNITY, Some("foo")),
-            labelled_node(C1, KIND_COMMUNITY, Some("baz")),
+            node_with_optional_attrs(CONCEPT, KIND_CONCEPT, &[("label", Some("the pipeline"))]),
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
+            node_with_optional_attrs(C1, KIND_COMMUNITY, &[("label", Some("baz"))]),
             def(FOO, "foo"),
             def(BAR, "bar"),
             def(BAZ, "baz"),

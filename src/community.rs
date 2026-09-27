@@ -537,7 +537,7 @@ mod tests {
     use super::*;
     use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
     use crate::test_support::edge;
-    use crate::test_support::entity_node;
+    use crate::test_support::node_with_optional_attrs;
     use crate::test_support::pair_map;
     use std::collections::BTreeMap as Map;
 
@@ -835,10 +835,18 @@ mod tests {
         // B and A would sit in different components and never share a community.
         let g = Graph {
             nodes: vec![
-                entity_node("src/a.rs", KIND_FILE, None, None),
-                entity_node("src/a.rs::foo", KIND_CODE_ENTITY, None, Some("foo")),
-                entity_node("src/b.rs", KIND_FILE, None, None),
-                entity_node("src/b.rs::foo", KIND_CODE_ENTITY, None, None), // bare cross-file placeholder
+                node_with_optional_attrs("src/a.rs", KIND_FILE, &[("title", None), ("name", None)]),
+                node_with_optional_attrs(
+                    "src/a.rs::foo",
+                    KIND_CODE_ENTITY,
+                    &[("title", None), ("name", Some("foo"))],
+                ),
+                node_with_optional_attrs("src/b.rs", KIND_FILE, &[("title", None), ("name", None)]),
+                node_with_optional_attrs(
+                    "src/b.rs::foo",
+                    KIND_CODE_ENTITY,
+                    &[("title", None), ("name", None)],
+                ), // bare cross-file placeholder
             ],
             edges: vec![
                 edge("src/a.rs", "src/a.rs::foo", REL_CONTAINS, TIER_EXTRACTED),
@@ -871,10 +879,22 @@ mod tests {
         // not spuriously fuse the two candidate definitions' subsystems.
         let g = Graph {
             nodes: vec![
-                entity_node("src/a.rs::foo", KIND_CODE_ENTITY, None, Some("foo")),
-                entity_node("src/x.rs::foo", KIND_CODE_ENTITY, None, Some("foo")),
-                entity_node("src/b.rs", KIND_FILE, None, None),
-                entity_node("src/b.rs::foo", KIND_CODE_ENTITY, None, None),
+                node_with_optional_attrs(
+                    "src/a.rs::foo",
+                    KIND_CODE_ENTITY,
+                    &[("title", None), ("name", Some("foo"))],
+                ),
+                node_with_optional_attrs(
+                    "src/x.rs::foo",
+                    KIND_CODE_ENTITY,
+                    &[("title", None), ("name", Some("foo"))],
+                ),
+                node_with_optional_attrs("src/b.rs", KIND_FILE, &[("title", None), ("name", None)]),
+                node_with_optional_attrs(
+                    "src/b.rs::foo",
+                    KIND_CODE_ENTITY,
+                    &[("title", None), ("name", None)],
+                ),
             ],
             edges: vec![edge(
                 "src/b.rs",

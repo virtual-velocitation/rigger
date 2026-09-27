@@ -13957,6 +13957,7 @@ mod tests {
     use crate::test_support::agent;
     use crate::test_support::agent_with_prompt;
     use crate::test_support::commit_at_fixed_date;
+    use crate::test_support::count_of_type;
     use crate::test_support::gate_def;
     use crate::test_support::gate_def_inputs;
     use crate::test_support::git_ok;
@@ -14005,11 +14006,6 @@ mod tests {
                 graph: None,
                 criteria,
             }
-        }
-
-        /// Whether `events` hold any event of type `type_`.
-        pub(super) fn has_type(events: &[Event], type_: &str) -> bool {
-            events.iter().any(|e| e.type_ == type_)
         }
 
         /// Run `cfg` under `driver` over a fresh store with the stub dependencies; returns the
@@ -15423,6 +15419,14 @@ mod tests {
         read_results: Mutex<HashMap<String, String>>,
     }
     impl Stub {
+        /// A stub whose every spawn answers `output`, otherwise [`Stub::new`].
+        fn answering(output: &str) -> Self {
+            Stub {
+                output: output.into(),
+                ..Stub::new()
+            }
+        }
+
         fn new() -> Self {
             Stub {
                 write_file: None,
@@ -18191,10 +18195,7 @@ mod tests {
         // criterion - and the review tiers approve, so the plan stage integrates and the
         // per-criterion implement wave runs. The decomposition under test is the
         // conductor's, not the agents'.
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, criteria.clone());
         run(&cfg, &deps).expect("the real spec must decompose and run without a coverage gap");
 
@@ -19578,21 +19579,20 @@ mod tests {
         // (1) The RUN emitted all four extraction event types into the store - it ingested the
         // project itself, closing the empty-prod-graph gap.
         let emitted = st_store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let count = |t: &str| emitted.iter().filter(|e| e.type_ == t).count();
         assert!(
-            count(contextgraph::TYPE_CODE_ENTITY_EXTRACTED) > 0,
+            count_of_type(&emitted, contextgraph::TYPE_CODE_ENTITY_EXTRACTED) > 0,
             "the run must extract the real source's definitions into CodeEntityExtracted events"
         );
         assert!(
-            count(contextgraph::TYPE_EDGE_INFERRED) > 0,
+            count_of_type(&emitted, contextgraph::TYPE_EDGE_INFERRED) > 0,
             "the run must infer the real source's references into EdgeInferred events"
         );
         assert!(
-            count(contextgraph::TYPE_DOC_CONCEPT_EXTRACTED) > 0,
+            count_of_type(&emitted, contextgraph::TYPE_DOC_CONCEPT_EXTRACTED) > 0,
             "the run must ingest the real design doc into DocConcept events"
         );
         assert!(
-            count(contextgraph::TYPE_DOC_LINK_EXTRACTED) > 0,
+            count_of_type(&emitted, contextgraph::TYPE_DOC_LINK_EXTRACTED) > 0,
             "the run must ingest the real design doc's links into DocLink events"
         );
 
@@ -19980,8 +19980,6 @@ mod tests {
                 })
                 .count()
         };
-        let of_type =
-            |events: &[Event], t: &str| -> usize { events.iter().filter(|e| e.type_ == t).count() };
         let campaign = |unit: &str, criterion: &str| -> Config {
             let mut cfg = Config::default();
             cfg.agents.insert("a".into(), agent("a"));
@@ -20012,13 +20010,13 @@ mod tests {
 
         let after_one = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
-            of_type(&after_one, contextgraph::TYPE_CODE_ENTITY_EXTRACTED) > 0
-                && of_type(&after_one, contextgraph::TYPE_EDGE_INFERRED) > 0,
+            count_of_type(&after_one, contextgraph::TYPE_CODE_ENTITY_EXTRACTED) > 0
+                && count_of_type(&after_one, contextgraph::TYPE_EDGE_INFERRED) > 0,
             "sanity: the first run ingests the code half of the derived index"
         );
         assert!(
-            of_type(&after_one, contextgraph::TYPE_DOC_CONCEPT_EXTRACTED) > 0
-                && of_type(&after_one, contextgraph::TYPE_DOC_LINK_EXTRACTED) > 0,
+            count_of_type(&after_one, contextgraph::TYPE_DOC_CONCEPT_EXTRACTED) > 0
+                && count_of_type(&after_one, contextgraph::TYPE_DOC_LINK_EXTRACTED) > 0,
             "sanity: the first run ingests the design half of the derived index"
         );
         let first_derived = derived(&after_one);
@@ -20041,7 +20039,7 @@ mod tests {
 
         let after_two = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
-            of_type(&after_two, crate::run::TYPE_RUN_STARTED),
+            count_of_type(&after_two, crate::run::TYPE_RUN_STARTED),
             2,
             "the second campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
         );
@@ -20580,8 +20578,6 @@ mod tests {
                 })
                 .count()
         };
-        let of_type =
-            |events: &[Event], t: &str| -> usize { events.iter().filter(|e| e.type_ == t).count() };
 
         let first = campaign("first criterion");
         assert_eq!(
@@ -20611,7 +20607,7 @@ mod tests {
         );
         let after_two = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
-            of_type(&after_two, crate::run::TYPE_RUN_STARTED),
+            count_of_type(&after_two, crate::run::TYPE_RUN_STARTED),
             2,
             "the second campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
         );
@@ -23532,10 +23528,7 @@ mod tests {
 
         // The adjudicator always rejects, so the resumed attempt can only fail again -
         // and with attempts already at 2, that next failure must escalate.
-        let driver = Stub {
-            output: r#"{"verdict":"reject","issues":[]}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
 
@@ -23845,10 +23838,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"reject","issues":[]}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -23858,21 +23848,11 @@ mod tests {
         );
     }
 
-    /// A driver whose every spawn outputs an explicit `{"verdict":"approve"}` - the fail-closed
-    /// adjudicator (item 2) approves only on one; only the adjudicator's output is run through
-    /// verdict_approves.
-    fn approving_stub() -> Stub {
-        Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        }
-    }
-
-    /// Run `cfg` under [`approving_stub`], grounded by `grounder`; returns the run state, the
-    /// driver and the store.
+    /// Run `cfg` under a stub whose every spawn approves, grounded by `grounder`; returns the run
+    /// state, the driver and the store.
     fn approving_run(cfg: &Config, grounder: Option<&dyn Grounder>) -> (RunState, Stub, Store) {
         let st = Store::open(":memory:").unwrap();
-        let driver = approving_stub();
+        let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = Deps {
             grounder,
             ..stub_deps(&st, &driver, Vec::new())
@@ -23962,10 +23942,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"reject","issues":[]}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(
@@ -24257,10 +24234,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
@@ -24649,10 +24623,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
@@ -25954,10 +25925,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
 
@@ -26118,10 +26086,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
 
@@ -27062,21 +27027,12 @@ mod tests {
         cfg
     }
 
-    /// A driver whose every spawn outputs `{"verdict":"reject","issues":[]}` - only the
-    /// adjudicator's output gates, so the implementer keeps producing a green diff each retry.
-    fn rejecting_stub() -> Stub {
-        Stub {
-            output: r#"{"verdict":"reject","issues":[]}"#.into(),
-            ..Stub::new()
-        }
-    }
-
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
         // failure: it blocks THAT unit's integration and remediates, escalating after
         // the retry bound - EVEN THOUGH the unit's static gates pass.
-        let driver = rejecting_stub();
+        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let (rs, events) = run_logged(&per_unit_panel_cfg(None), &driver);
         assert_eq!(
             rs.units["implement"].status,
@@ -27095,11 +27051,11 @@ mod tests {
             "the adjudicator must have rendered the gating verdict"
         );
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_INTEGRATED),
+            count_of_type(&events, ledger::TYPE_UNIT_INTEGRATED) == 0,
             "a rejected unit must emit no UnitIntegrated"
         );
         assert!(
-            has_type(&events, ledger::TYPE_UNIT_FAILED),
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED) > 0,
             "a rejected unit must record a UnitFailed as it remediates"
         );
     }
@@ -27137,10 +27093,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // Every spawn returns a reject verdict; only the adjudicator's gates, but the
         // adjudicator never relents - so the unit can only ever escalate.
-        let driver = Stub {
-            output: r#"{"verdict":"reject","issues":[]}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         // The run RETURNS (Ok) - it does not loop forever.
         let rs = run(&cfg, &deps).unwrap();
@@ -27208,7 +27161,7 @@ mod tests {
         // attempts). The review panel (lenses + adversary + adjudicator) and gates are
         // byte-identical across every bound, so this isolates the depth.
         let escalation_run = |max_retries: u32| -> (u32, ledger::Status, u32) {
-            let driver = rejecting_stub();
+            let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
             let (rs, _events) = run_logged(&per_unit_panel_cfg(Some(max_retries)), &driver);
             let order = driver.call_order.lock().unwrap().clone();
             let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
@@ -27295,10 +27248,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"reject","issues":[]}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         let order = driver.call_order.lock().unwrap().clone();
@@ -27348,10 +27298,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"reject","issues":[]}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
 
         // First window: escalates after exactly the configured 2 attempts.
@@ -27576,11 +27523,11 @@ mod tests {
             "the adjudicator must have rejected every earlier attempt and approved the last; attempts were {adj_attempts:?}"
         );
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_ESCALATED),
+            count_of_type(&events, ledger::TYPE_UNIT_ESCALATED) == 0,
             "{kind} approved must record NO UnitEscalated"
         );
         assert!(
-            has_type(&events, ledger::TYPE_UNIT_INTEGRATED),
+            count_of_type(&events, ledger::TYPE_UNIT_INTEGRATED) > 0,
             "{kind} approved must record a UnitIntegrated"
         );
     }
@@ -28375,7 +28322,7 @@ mod tests {
             "the budget breaker must stop the second wave before it starts"
         );
         assert!(
-            has_type(&events, TYPE_BUDGET_EXHAUSTED),
+            count_of_type(&events, TYPE_BUDGET_EXHAUSTED) > 0,
             "tripping the budget must emit a BudgetExhausted event"
         );
     }
@@ -28384,7 +28331,7 @@ mod tests {
     fn budget_exhaustion_aborts_the_task() {
         let (_rs, events) = run_logged(&budget_of_one_over_a_chain(), &Stub::new());
         assert!(
-            has_type(&events, TYPE_TASK_ABORTED),
+            count_of_type(&events, TYPE_TASK_ABORTED) > 0,
             "a tripped budget must abort the task"
         );
     }
@@ -28858,7 +28805,7 @@ mod tests {
             "the manual stage is paused, not failed"
         );
         assert!(
-            has_type(&events, TYPE_MANUAL_REVIEW),
+            count_of_type(&events, TYPE_MANUAL_REVIEW) > 0,
             "a manual stage must emit ManualReview"
         );
     }
@@ -29267,7 +29214,7 @@ mod tests {
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_INTEGRATED),
+            count_of_type(&events, ledger::TYPE_UNIT_INTEGRATED) == 0,
             "an `on_pass: none` stage must emit no UnitIntegrated"
         );
     }
@@ -30553,7 +30500,7 @@ mod tests {
              reviewed={reviewed_sha:?} verified={verified_sha:?}"
         );
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_FAILED),
+            !count_of_type(&events, ledger::TYPE_UNIT_FAILED) > 0,
             "the residue must charge NO remediation attempt - the round's own verdict \
              (approve) is the only outcome ever recorded, never an extra UnitFailed"
         );
@@ -30580,7 +30527,7 @@ mod tests {
             ..stub
         });
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_FAILED),
+            !count_of_type(&events, ledger::TYPE_UNIT_FAILED) > 0,
             "a moved tip charges NO remediation attempt - infrastructure hygiene, not a \
              gate failure or a review verdict"
         );
@@ -30846,7 +30793,7 @@ mod tests {
              verified={verified_sha:?} residue_tip={residue_tip:?}"
         );
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_FAILED),
+            !count_of_type(&events, ledger::TYPE_UNIT_FAILED) > 0,
             "reviewer residue hygiene across {shape} charges NO remediation attempt"
         );
         assert_residue_named_and_never_merged(&events, &repo_path, "feature.rs", residue);
@@ -32364,10 +32311,7 @@ mod tests {
         );
         // A substantive lens result so the standalone review proceeds (an empty result
         // would trip the Gap-18 respawn loop).
-        let driver = Stub {
-            output: "reviewed the diff".into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering("reviewed the diff");
         assert!(
             spawned_parallel(review, "lens", &driver),
             "a standalone review stage spawns its lenses on the parallel fan-out path"
@@ -32403,10 +32347,7 @@ mod tests {
             },
         );
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: "reviewed the diff".into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering("reviewed the diff");
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             store: &store,
@@ -32688,7 +32629,7 @@ mod tests {
         // sibling must not change that.
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_FAILED),
+            !count_of_type(&events, ledger::TYPE_UNIT_FAILED) > 0,
             "a degenerate-reviewer halt must not charge the unit an attempt (no UnitFailed)"
         );
         assert_review_worktree_kept(
@@ -32802,10 +32743,7 @@ mod tests {
         // proving nothing about THIS call site's guard), so the adversary's spawn is a
         // genuinely NEW, over-budget spawn `reserve_spawn` refuses deterministically (one
         // spawn attempted at a time here - no race, unlike two concurrent lenses would be).
-        let driver = Stub {
-            output: "reviewed the diff".into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering("reviewed the diff");
         let (outcome, repo, _store) = standalone_review_run(&["lens"], "adv", Some(1), &driver);
         outcome.expect("a budget-refused review spawn halts the run cleanly, it does not error");
         assert!(
@@ -33115,10 +33053,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         run(&cfg, &deps).unwrap();
         let lens_prompt = driver.prompts_for("lens").pop().unwrap();
@@ -33179,7 +33114,7 @@ mod tests {
             "an unparseable adjudicator verdict must NOT approve (fail-closed)"
         );
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_INTEGRATED),
+            count_of_type(&events, ledger::TYPE_UNIT_INTEGRATED) == 0,
             "an unapproved unit must emit no UnitIntegrated"
         );
     }
@@ -33700,10 +33635,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // A substantive lens result so the review proceeds (an empty result would trip
         // the Gap-18 respawn loop).
-        let driver = Stub {
-            output: "reviewed the diff".into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering("reviewed the diff");
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
@@ -33758,10 +33690,7 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         let rs = run(&cfg, &deps).unwrap();
         // The stage reached its DAG-terminal state with the EXPLICIT no-artifact
@@ -37505,7 +37434,7 @@ mod tests {
         }
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
-            !has_type(&events, ledger::TYPE_UNIT_FAILED),
+            !count_of_type(&events, ledger::TYPE_UNIT_FAILED) > 0,
             "a conflict that resolves within the same call never records a UnitFailed"
         );
         let calls = driver.calls.lock().unwrap().clone();
@@ -37985,7 +37914,7 @@ mod tests {
         // the deferred gate's ratchet - the same HOLD the inline site gives the identical
         // fault. This is the pinned single-authority invariant the reject demanded.
         assert!(
-            !has_type(&events, TYPE_GATE_DEMOTED),
+            count_of_type(&events, TYPE_GATE_DEMOTED) == 0,
             "a persistent infra fault at a deferred gate must HOLD the ratchet (FailNoDemote), not demote it"
         );
     }
@@ -38437,10 +38366,7 @@ mod tests {
         let runner = RecordingRunner::new(&[]);
         // Every review agent returns a reject verdict; only the adjudicator's gates the
         // unit, so `s` retries to the bound and escalates.
-        let driver = Stub {
-            output: r#"{"verdict":"reject","issues":[]}"#.into(),
-            ..Stub::new()
-        };
+        let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = Deps {
             store: &st,
             driver: &driver,

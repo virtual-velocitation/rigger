@@ -48,10 +48,9 @@ mod common;
 use common::git::run_git;
 
 use common::fixtures::count_status_marker;
-use common::fixtures::gate_def;
+use common::fixtures::gated_scratch_cfg;
 use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
-use common::fixtures::scratch_cfg;
 use common::fixtures::A_WORK_DRIVER;
 use common::git::git_commit_all;
 use common::git::temp_git_project_with_commit;
@@ -153,8 +152,7 @@ fn has_postmerge_gate_verdict(events: &[Event], unit: &str, attempt: u32, gate: 
 }
 
 fn base_cfg(repo_path: &str) -> Config {
-    let mut cfg = scratch_cfg(repo_path);
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    let mut cfg = gated_scratch_cfg(repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));

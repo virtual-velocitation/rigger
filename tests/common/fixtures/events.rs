@@ -14,6 +14,11 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
+/// How many of `events` are of type `type_`.
+pub fn count_of_type(events: &[Event], type_: &str) -> usize {
+    events.iter().filter(|e| e.type_ == type_).count()
+}
+
 /// `events` stamped with 1-based log positions, as the store stamps them on append, so a
 /// position-sensitive read (a cursor, `?since=`, a position-ordered fold) sees a realistic
 /// monotonic stream.

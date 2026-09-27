@@ -17,27 +17,20 @@
 mod common;
 use common::git::run_git;
 
-use common::fixtures::gate_def;
+use common::fixtures::gated_scratch_cfg;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
-use common::fixtures::scratch_cfg;
 use common::fixtures::FifoAtLandingDriver;
 use common::git::temp_git_project_with_commit;
 use common::git::trimmed_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
-use rigger::config::{AgentDef, Config};
+use rigger::config::AgentDef;
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
-
-fn base_cfg(repo_path: &str) -> Config {
-    let mut cfg = scratch_cfg(repo_path);
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
-    cfg
-}
 
 /// A single unit ("unit-a") whose implementer both does its own real work (a fresh `new.txt`
 /// on its own worktree branch) AND, in the SAME spawn, deposits local content at the exact
@@ -76,7 +69,7 @@ fn a_land_refused_for_local_changes_names_the_blocking_path_and_charges_no_attem
         repo: repo_path.clone(),
         stray_content: "STRAY LOCAL CONTENT\n",
     };
-    let mut cfg = base_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -220,7 +213,7 @@ fn a_land_refused_names_a_unit_branch_whose_tip_already_holds_identical_content(
         repo: repo_path.clone(),
         stray_content: stray,
     };
-    let mut cfg = base_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -264,7 +257,7 @@ fn a_land_refused_for_a_fifo_blocking_path_never_hangs_and_still_names_it() {
         repo: repo_path.clone(),
         file: "new.txt",
     };
-    let mut cfg = base_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));

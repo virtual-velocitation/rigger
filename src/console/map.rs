@@ -2787,39 +2787,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn legend_blast_radius_row_is_amber_and_named() {
+    /// The legend row `id` exists, draws with `treatment`, and carries exactly `colour` - a
+    /// fixed swatch only where the row's colour is not kind-specific.
+    fn assert_legend_row(id: &str, treatment: &str, colour: Option<&str>) {
         let entries = legend();
         let row = entries
             .iter()
-            .find(|e| e.id == "blast-radius")
-            .expect("the legend must name the blast-radius ring");
-        assert_eq!(row.colour.as_deref(), Some(BLAST_RADIUS_COLOUR));
-        assert_eq!(row.treatment, "amber-ring");
+            .find(|e| e.id == id)
+            .unwrap_or_else(|| panic!("the legend must name the {id} row"));
+        assert_eq!(row.treatment, treatment, "the {id} row's treatment");
+        assert_eq!(row.colour.as_deref(), colour, "the {id} row's fixed swatch");
     }
 
-    #[test]
-    fn legend_district_pill_row_is_small_caps_with_no_fixed_colour() {
-        let entries = legend();
-        let row = entries
-            .iter()
-            .find(|e| e.id == "district-pill")
-            .expect("the legend must name the district pill");
-        assert_eq!(row.treatment, "small-caps-pill");
-        assert_eq!(
-            row.colour, None,
-            "a district pill's colour is not kind-specific - it carries no fixed swatch"
-        );
-    }
-
-    #[test]
-    fn legend_selection_row_names_underline_and_italic_relation_treatment() {
-        let entries = legend();
-        let row = entries
-            .iter()
-            .find(|e| e.id == "selection")
-            .expect("the legend must name the lit selection");
-        assert_eq!(row.treatment, "underline-name-italic-relation");
+    crate::test_cases! {
+        legend_blast_radius_row_is_amber_and_named:
+            assert_legend_row("blast-radius", "amber-ring", Some(BLAST_RADIUS_COLOUR));
+        /// A district pill's colour is not kind-specific - it carries no fixed swatch.
+        legend_district_pill_row_is_small_caps_with_no_fixed_colour:
+            assert_legend_row("district-pill", "small-caps-pill", None);
+        legend_selection_row_names_underline_and_italic_relation_treatment:
+            assert_legend_row("selection", "underline-name-italic-relation", None);
     }
 
     #[test]

@@ -45,7 +45,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::fixtures::edge;
-use common::fixtures::labelled_node;
+use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
 use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
 use common::served::served;
@@ -86,8 +86,8 @@ fn lens_graph() -> Graph {
             plain(BAR, KIND_CODE_ENTITY),
             plain(BAZ, KIND_CODE_ENTITY),
             plain(QUX, KIND_CODE_ENTITY),
-            labelled_node(C0, KIND_COMMUNITY, Some("foo")),
-            labelled_node(C1, KIND_COMMUNITY, Some("baz")),
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
+            node_with_optional_attrs(C1, KIND_COMMUNITY, &[("label", Some("baz"))]),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -257,7 +257,7 @@ fn code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membersh
         nodes: vec![
             plain(FOO, KIND_CODE_ENTITY),
             plain(BAR, KIND_CODE_ENTITY),
-            labelled_node(C0, KIND_COMMUNITY, Some("foo")),
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
             file_node,
         ],
         edges: vec![
@@ -317,7 +317,7 @@ fn code_lens_excludes_a_membership_less_code_entity_entirely() {
         nodes: vec![
             plain(FOO, KIND_CODE_ENTITY),
             plain(BAR, KIND_CODE_ENTITY),
-            labelled_node(C0, KIND_COMMUNITY, Some("foo")),
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
             plain(LONER, KIND_CODE_ENTITY),
         ],
         edges: vec![
@@ -399,7 +399,10 @@ fn code_lens_overview_carries_the_empty_state_when_only_a_non_code_entity_carrie
         .attrs
         .insert("name".to_string(), FILE_MEMBER.to_string());
     let graph = Graph {
-        nodes: vec![labelled_node(C0, KIND_COMMUNITY, Some("foo")), file_node],
+        nodes: vec![
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
+            file_node,
+        ],
         edges: vec![
             // The ONLY live community membership in the whole graph belongs to a file, not a code
             // entity - `Buckets::underived` (kind-blind) reads `false` even though the code lens's own

@@ -271,6 +271,7 @@ use common::cli::write_workflow;
 use common::fixtures::bare_deps;
 use common::fixtures::count_status_marker;
 use common::fixtures::gate_def;
+use common::fixtures::gated_scratch_cfg;
 use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
@@ -578,13 +579,12 @@ fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regene
         retry_blast_radius: Mutex::new(None),
     };
 
-    let mut cfg = scratch_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["docs/audit/*".into()],
         run: "printf 'REGENERATED\\n' > docs/audit/report.md".into(),
     }];
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -962,13 +962,12 @@ fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_sh
         calls: Mutex::new(Vec::new()),
     };
 
-    let mut cfg = scratch_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["c.rs".into()],
         run: "printf 'REAL_SHELL_WOULD_WRITE_THIS\\n' > c.rs".into(),
     }];
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -1160,13 +1159,12 @@ fn regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_land_meanwhile(
         release_rx: Mutex::new(release_rx),
     };
 
-    let mut cfg = scratch_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["c.rs".into()],
         run: "printf 'REGENERATED\\n' > c.rs".into(),
     }];
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -1368,13 +1366,12 @@ fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resum
     .unwrap();
     git_commit_all(&repo_path, "base c.rs + docs/audit/report.md");
 
-    let mut cfg = scratch_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["docs/audit/*".into()],
         run: "printf 'REGENERATED\\n' > docs/audit/report.md".into(),
     }];
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -1546,8 +1543,7 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
         repo: repo_path.clone(),
     };
 
-    let mut cfg = scratch_cfg(&repo_path);
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -1719,13 +1715,12 @@ fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate
     std::fs::write(Path::new(&repo_path).join("gen.txt"), "BASE_GEN\n").unwrap();
     git_commit_all(&repo_path, "base c.rs + gen.txt");
 
-    let mut cfg = scratch_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["gen.txt".into()],
         run: "printf 'REGENERATED\\n' > gen.txt".into(),
     }];
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -1880,8 +1875,7 @@ fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
-    let mut cfg = scratch_cfg(&repo_path);
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -1949,8 +1943,7 @@ fn a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4() {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
-    let mut cfg = scratch_cfg(&repo_path);
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -2093,13 +2086,12 @@ fn a_crash_right_after_placeholder_staging_resumes_and_completes_row_2() {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
-    let mut cfg = scratch_cfg(&repo_path);
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["gen.txt".into()],
         run: "printf 'REGENERATED\\n' > gen.txt".into(),
     }];
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -2249,13 +2241,12 @@ fn confined_conflict_driver(repo: &str) -> SiblingConflictDriver {
 /// Shared config for the confined and mixed regeneration fixtures: one regenerate rule on
 /// `gen.txt`, room for the one conflict-resolution retry each drives.
 fn regenerating_cfg(repo_path: &str) -> Config {
-    let mut cfg = scratch_cfg(repo_path);
+    let mut cfg = gated_scratch_cfg(repo_path);
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["gen.txt".into()],
         run: "printf 'REGENERATED\\n' > gen.txt".into(),
     }];
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -2400,8 +2391,7 @@ fn assert_after_record_crash_resumes(before: &str, after: &'static str, on_disk:
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
-    let mut cfg = scratch_cfg(&repo_path);
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
@@ -2846,8 +2836,7 @@ fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_l
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
-    let mut cfg = scratch_cfg(&repo_path);
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    let mut cfg = gated_scratch_cfg(&repo_path);
     cfg.workflow
         .stages
         .insert("unit-a".into(), mk_stage("unit-a", "g"));

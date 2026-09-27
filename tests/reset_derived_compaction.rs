@@ -23,6 +23,7 @@
 mod common;
 
 use common::cli::keyed;
+use common::cli::read_run_events;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
@@ -543,14 +544,6 @@ fn fold_snapshot(events: &[Event], project: &str, path: &Path) -> (Vec<String>, 
     (nodes, edges)
 }
 
-fn read_log(root: &Path) -> Vec<Event> {
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap()
-}
-
 #[test]
 fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_appends() {
     let dir = temp_rigger_project();
@@ -566,7 +559,11 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
     let id = run_stream_identity(root);
 
     let scratch = tempfile::tempdir().unwrap();
-    let before_graph = fold_snapshot(&read_log(root), &id, &scratch.path().join("before.db"));
+    let before_graph = fold_snapshot(
+        &read_run_events(root),
+        &id,
+        &scratch.path().join("before.db"),
+    );
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
@@ -576,7 +573,11 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
     // the identical live graph - the same nodes, the same live edges, the same provenance AND the
     // same bitemporal valid-from, because the prune carries a pruned key's earliest valid-time
     // onto the recording it keeps.
-    let after_graph = fold_snapshot(&read_log(root), &id, &scratch.path().join("after.db"));
+    let after_graph = fold_snapshot(
+        &read_run_events(root),
+        &id,
+        &scratch.path().join("after.db"),
+    );
     assert_eq!(
         after_graph.0, before_graph.0,
         "the compacted log must fold to the same nodes"

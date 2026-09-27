@@ -199,6 +199,7 @@ mod common;
 use common::git::{commit_at_fixed_date, git_ok, git_out, init_repo as init_repo_at, run_git};
 
 use common::fixtures::agent;
+use common::fixtures::plan_stage;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
     META_COMPENSATE_TARGET, REVIEW_ONLY_NO_ARTIFACT, STREAM,
@@ -369,15 +370,6 @@ impl AgentDriver for PlanAmendDriver {
             output: format!("{} ok", a.id),
             resolved_model: String::new(),
         })
-    }
-}
-
-fn plan_stage() -> Stage {
-    Stage {
-        name: "plan".into(),
-        agent: "planner".into(),
-        produces: "dag".into(),
-        ..Default::default()
     }
 }
 

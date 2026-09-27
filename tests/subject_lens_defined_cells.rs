@@ -34,7 +34,7 @@ mod common;
 
 use common::fixtures::def_node as def;
 use common::fixtures::edge;
-use common::fixtures::labelled_node as node;
+use common::fixtures::node_with_optional_attrs;
 use common::lens::{lens, shared_member_graph, OTHER_D, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
 use rigger::contextgraph::TIER_EXTRACTED;
@@ -72,9 +72,9 @@ const COMM_Y: &str = "community/1/1";
 fn communities_no_concepts_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(FILE_SUBJECT, KIND_FILE, None),
-            node(COMM_X, KIND_COMMUNITY, Some("x")),
-            node(COMM_Y, KIND_COMMUNITY, Some("y")),
+            node_with_optional_attrs(FILE_SUBJECT, KIND_FILE, &[("label", None)]),
+            node_with_optional_attrs(COMM_X, KIND_COMMUNITY, &[("label", Some("x"))]),
+            node_with_optional_attrs(COMM_Y, KIND_COMMUNITY, &[("label", Some("y"))]),
             def("src/pkg/mod.rs::e1", "e1"),
             def("src/pkg/mod.rs::e2", "e2"),
         ],
@@ -159,7 +159,7 @@ const CONCEPT_ONLY: &str = "concept/5/0";
 fn the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no_message() {
     let graph = Graph {
         nodes: vec![
-            node(CONCEPT_ONLY, KIND_CONCEPT, Some("idea")),
+            node_with_optional_attrs(CONCEPT_ONLY, KIND_CONCEPT, &[("label", Some("idea"))]),
             def("src/a.rs::only", "only"),
         ],
         edges: vec![edge(
@@ -219,9 +219,9 @@ const MIXED_CONCEPT: &str = "concept/1/0";
 fn mixed_membership_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(MIXED_FILE, KIND_FILE, None),
-            node(MIXED_COMM, KIND_COMMUNITY, Some("cx")),
-            node(MIXED_CONCEPT, KIND_CONCEPT, Some("cc")),
+            node_with_optional_attrs(MIXED_FILE, KIND_FILE, &[("label", None)]),
+            node_with_optional_attrs(MIXED_COMM, KIND_COMMUNITY, &[("label", Some("cx"))]),
+            node_with_optional_attrs(MIXED_CONCEPT, KIND_CONCEPT, &[("label", Some("cc"))]),
             def("src/mix/mod.rs::e1", "e1"),
             def("src/mix/mod.rs::e2", "e2"),
         ],
@@ -379,7 +379,11 @@ const WIDE_CONCEPT: &str = "concept/2/0";
 /// bucket and one wholly within the kept set.
 fn wide_files_graph() -> Graph {
     let n = CLUSTER_RENDER_BUDGET + 1;
-    let mut nodes = vec![node(WIDE_CONCEPT, KIND_CONCEPT, Some("wide"))];
+    let mut nodes = vec![node_with_optional_attrs(
+        WIDE_CONCEPT,
+        KIND_CONCEPT,
+        &[("label", Some("wide"))],
+    )];
     let mut edges = Vec::new();
     for i in 0..n {
         // Zero-padded so the file KEY ordering is lexicographic 00 < 01 < ... < 60: the largest key
@@ -465,7 +469,7 @@ fn a_wide_regrain_caps_to_the_render_budget_and_prunes_dangling_edges() {
     let small = reproject(
         &Graph {
             nodes: vec![
-                node(WIDE_CONCEPT, KIND_CONCEPT, Some("wide")),
+                node_with_optional_attrs(WIDE_CONCEPT, KIND_CONCEPT, &[("label", Some("wide"))]),
                 def("src/one.rs::a", "a"),
             ],
             edges: vec![edge(

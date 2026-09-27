@@ -26,7 +26,7 @@ mod common;
 
 use common::fixtures::def_node as def;
 use common::fixtures::edge;
-use common::fixtures::labelled_node as node;
+use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
 use common::fixtures::summarized_node;
 use common::lens::lens;
@@ -87,9 +87,13 @@ const CONCEPT_B: &str = "concept/1/1";
 fn community_over_concepts_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
-            node(CONCEPT_A, KIND_CONCEPT, Some("ingest")),
-            node(CONCEPT_B, KIND_CONCEPT, Some("render")),
+            node_with_optional_attrs(
+                COMMUNITY,
+                KIND_COMMUNITY,
+                &[("label", Some("the subsystem"))],
+            ),
+            node_with_optional_attrs(CONCEPT_A, KIND_CONCEPT, &[("label", Some("ingest"))]),
+            node_with_optional_attrs(CONCEPT_B, KIND_CONCEPT, &[("label", Some("render"))]),
             def("src/a/m1.rs::m1", "m1"),
             def("src/a/m2.rs::m2", "m2"),
             def("src/b/m3.rs::m3", "m3"),
@@ -203,8 +207,8 @@ rigger::test_cases! {
     reprojection_admits_a_realizing_member_of_any_kind_under_the_concepts_lens: reprojects_to(
         Graph {
             nodes: vec![
-                node(NOKIND_COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
-                node(NOKIND_CONCEPT, KIND_CONCEPT, Some("the idea")),
+                node_with_optional_attrs(NOKIND_COMMUNITY, KIND_COMMUNITY, &[("label", Some("the subsystem"))]),
+                node_with_optional_attrs(NOKIND_CONCEPT, KIND_CONCEPT, &[("label", Some("the idea"))]),
                 def(NOKIND_ENTITY, "m5"),
                 summarized_node(NOKIND_DECISION, KIND_DECISION, "why this matters"),
             ],
@@ -243,7 +247,7 @@ rigger::test_cases! {
     reprojection_carries_empty_state_when_no_member_realizes_any_concept_under_the_concepts_lens: reprojects_to(
         Graph {
             nodes: vec![
-                node(BLANK_COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
+                node_with_optional_attrs(BLANK_COMMUNITY, KIND_COMMUNITY, &[("label", Some("the subsystem"))]),
                 def(BLANK_ENTITY, "m6"),
                 summarized_node(BLANK_DECISION, KIND_DECISION, "unrelated to any concept"),
             ],
@@ -318,9 +322,9 @@ const COMM_BETA: &str = "community/1/1";
 fn file_over_code_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(FILE_SUBJECT, KIND_FILE, None),
-            node(COMM_ALPHA, KIND_COMMUNITY, Some("alpha")),
-            node(COMM_BETA, KIND_COMMUNITY, Some("beta")),
+            node_with_optional_attrs(FILE_SUBJECT, KIND_FILE, &[("label", None)]),
+            node_with_optional_attrs(COMM_ALPHA, KIND_COMMUNITY, &[("label", Some("alpha"))]),
+            node_with_optional_attrs(COMM_BETA, KIND_COMMUNITY, &[("label", Some("beta"))]),
             def("src/pkg/mod.rs::e1", "e1"),
             def("src/pkg/mod.rs::e2", "e2"),
             def("src/pkg/mod.rs::e3", "e3"),
@@ -461,8 +465,8 @@ rigger::test_cases! {
     reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens: reprojects_to(
         Graph {
             nodes: vec![
-                node(PURITY_CONCEPT, KIND_CONCEPT, Some("the idea")),
-                node(PURITY_COMMUNITY, KIND_COMMUNITY, Some("alpha")),
+                node_with_optional_attrs(PURITY_CONCEPT, KIND_CONCEPT, &[("label", Some("the idea"))]),
+                node_with_optional_attrs(PURITY_COMMUNITY, KIND_COMMUNITY, &[("label", Some("alpha"))]),
                 summarized_node(PURITY_DECISION, KIND_DECISION, "why this matters"),
                 def(PURITY_ENTITY, "m"),
             ],
@@ -504,8 +508,8 @@ rigger::test_cases! {
     reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community_membership: reprojects_to(
         Graph {
             nodes: vec![
-                node(INFLATE_CONCEPT, KIND_CONCEPT, Some("the idea")),
-                node(INFLATE_COMMUNITY, KIND_COMMUNITY, Some("beta")),
+                node_with_optional_attrs(INFLATE_CONCEPT, KIND_CONCEPT, &[("label", Some("the idea"))]),
+                node_with_optional_attrs(INFLATE_COMMUNITY, KIND_COMMUNITY, &[("label", Some("beta"))]),
                 summarized_node(INFLATE_DECISION, KIND_DECISION, "why this also matters"),
                 def(INFLATE_ENTITY, "n"),
             ],
@@ -549,8 +553,8 @@ rigger::test_cases! {
     reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded: reprojects_to(
         Graph {
             nodes: vec![
-                node(SOLE_CONCEPT, KIND_CONCEPT, Some("the idea")),
-                node(SOLE_COMMUNITY, KIND_COMMUNITY, Some("gamma")),
+                node_with_optional_attrs(SOLE_CONCEPT, KIND_CONCEPT, &[("label", Some("the idea"))]),
+                node_with_optional_attrs(SOLE_COMMUNITY, KIND_COMMUNITY, &[("label", Some("gamma"))]),
                 summarized_node(SOLE_DECISION, KIND_DECISION, "why this also matters"),
             ],
             edges: vec![
@@ -622,7 +626,11 @@ fn reprojection_clears_the_empty_state_caption_when_a_real_membership_lands_a_bu
     let graph = Graph {
         nodes: vec![
             def(LANDED_ENTITY, "p"),
-            node(LANDED_COMMUNITY, KIND_COMMUNITY, Some("delta")),
+            node_with_optional_attrs(
+                LANDED_COMMUNITY,
+                KIND_COMMUNITY,
+                &[("label", Some("delta"))],
+            ),
         ],
         edges: vec![edge(
             LANDED_ENTITY,
@@ -687,7 +695,7 @@ fn unknown_subject_yields_an_empty_reprojection() {
 fn ambiguous_files_graph() -> Graph {
     Graph {
         nodes: vec![
-            node("concept/9/0", KIND_CONCEPT, Some("the idea")),
+            node_with_optional_attrs("concept/9/0", KIND_CONCEPT, &[("label", Some("the idea"))]),
             plain("src/caller.rs::amb", KIND_CODE_ENTITY),
             def("src/p/x.rs::amb", "amb"),
             def("src/q/y.rs::amb", "amb"),
@@ -838,7 +846,11 @@ const EXTERNAL_BARE: &str = "src/caller.rs::external_symbol";
 fn unmatched_bare_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(UNMATCHED_CONCEPT, KIND_CONCEPT, Some("the idea")),
+            node_with_optional_attrs(
+                UNMATCHED_CONCEPT,
+                KIND_CONCEPT,
+                &[("label", Some("the idea"))],
+            ),
             plain(EXTERNAL_BARE, KIND_CODE_ENTITY),
         ],
         edges: vec![edge(
@@ -909,7 +921,11 @@ const DECISION_SUBJECT: &str = "d-u55c1-a-decision-node";
 fn a_singleton_subject_with_no_file_identity_is_marked_unresolved_under_files_never_a_kind_bucket()
 {
     let graph = Graph {
-        nodes: vec![node(DECISION_SUBJECT, KIND_DECISION, None)],
+        nodes: vec![node_with_optional_attrs(
+            DECISION_SUBJECT,
+            KIND_DECISION,
+            &[("label", None)],
+        )],
         edges: vec![],
     };
 

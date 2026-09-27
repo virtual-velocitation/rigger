@@ -38,24 +38,15 @@
 
 mod common;
 
+use common::fixtures::edge;
 use common::fixtures::node_with_attrs as node;
 use rigger::contextgraph::query::{
     card, cluster_detail, clustered_overview, graph_load, graph_query, neighborhood, path, search,
     Lens, SearchHit, DEFAULT_COMMUNITY_RESOLUTION, SEARCH_RESULT_LIMIT,
 };
-use rigger::contextgraph::{Edge, Graph, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, REL_CONTAINS};
-
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 1,
-        valid_to: None,
-        source: 7,
-        tier: "extracted".to_string(),
-    }
-}
+use rigger::contextgraph::{
+    Edge, Graph, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, REL_CONTAINS, TIER_EXTRACTED,
+};
 
 /// A small graph built purely from the PUBLIC `Node`/`Edge`/`Graph` fields - spec 93 criterion 5's
 /// wire-form claim only means something if a caller outside the crate can build one at all.
@@ -71,7 +62,12 @@ fn fixture_graph() -> Graph {
                 &[("summary", "the query engine moves with the ops")],
             ),
         ],
-        edges: vec![edge("src/a.rs", "src/a.rs::widget", REL_CONTAINS)],
+        edges: vec![edge(
+            "src/a.rs",
+            "src/a.rs::widget",
+            REL_CONTAINS,
+            TIER_EXTRACTED,
+        )],
     }
 }
 
