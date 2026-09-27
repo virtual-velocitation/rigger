@@ -19,6 +19,7 @@ pub mod git;
 pub mod lens;
 pub mod repo;
 pub mod served;
+pub mod workflow_probe;
 
 #[allow(unused_imports)]
 pub use fixtures::wait_until;

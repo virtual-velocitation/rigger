@@ -29,6 +29,7 @@ use common::fixtures::pgid_of;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::rigger_bin;
+use common::workflow_probe::write_workflow;
 
 /// Extract a JSON string field's value from a one-line JSON object `line` - a tiny reader
 /// for asserting on `rigger step`'s printed wave without a JSON dependency in the test crate.
@@ -12497,12 +12498,6 @@ fn replay_re_drives_the_trajectory_and_diffs_stats_without_touching_the_real_str
     );
 }
 
-/// Write `yaml` as the project's `.rigger/workflow.yml` - a candidate config a replay
-/// re-drives the recorded baseline trajectory under.
-fn write_candidate_workflow(root: &Path, yaml: &str) {
-    std::fs::write(root.join(".rigger").join("workflow.yml"), yaml).unwrap();
-}
-
 /// A candidate variant of `write_gated_reviewed_workflow` with the review panel REMOVED:
 /// the `solo` unit still gates but no adjudicator reviews it. Re-driving the baseline
 /// trajectory (which recorded a review approve) under THIS config must drop `review
@@ -12539,7 +12534,7 @@ fn replay_candidate_column_reacts_to_a_changed_config() {
     git_ok(root, &["config", "user.name", "t"]);
     git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
     git_ok(root, &["commit", "-q", "-m", "reviewed config"]);
-    write_candidate_workflow(root, NO_REVIEW_WORKFLOW);
+    write_workflow(&root.join(".rigger"), NO_REVIEW_WORKFLOW);
     git_ok(root, &["add", ".rigger/workflow.yml"]);
     git_ok(root, &["commit", "-q", "-m", "review removed"]);
 
@@ -12602,7 +12597,7 @@ fn replay_removing_a_gate_lowers_the_candidate_gate_runs() {
     git_ok(root, &["config", "user.name", "t"]);
     git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
     git_ok(root, &["commit", "-q", "-m", "gated config"]);
-    write_candidate_workflow(root, NO_GATE_WORKFLOW);
+    write_workflow(&root.join(".rigger"), NO_GATE_WORKFLOW);
     git_ok(root, &["add", ".rigger/workflow.yml"]);
     git_ok(root, &["commit", "-q", "-m", "gate removed"]);
 
@@ -12673,7 +12668,7 @@ fn replay_an_added_gate_fails_safe_and_never_fabricates_a_pass() {
     git_ok(root, &["config", "user.name", "t"]);
     git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
     git_ok(root, &["commit", "-q", "-m", "gated config"]);
-    write_candidate_workflow(root, ADDED_GATE_WORKFLOW);
+    write_workflow(&root.join(".rigger"), ADDED_GATE_WORKFLOW);
     git_ok(root, &["add", ".rigger/workflow.yml"]);
     git_ok(root, &["commit", "-q", "-m", "gate added"]);
 
@@ -12742,7 +12737,7 @@ fn replay_an_uncovered_candidate_spawn_parks_and_still_prints_a_partial_column()
     git_ok(root, &["config", "user.name", "t"]);
     git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
     git_ok(root, &["commit", "-q", "-m", "single-stage config"]);
-    write_candidate_workflow(root, EXTRA_STAGE_WORKFLOW);
+    write_workflow(&root.join(".rigger"), EXTRA_STAGE_WORKFLOW);
     git_ok(root, &["add", ".rigger/workflow.yml"]);
     git_ok(root, &["commit", "-q", "-m", "extra stage added"]);
 

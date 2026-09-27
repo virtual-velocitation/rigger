@@ -35,6 +35,7 @@ use std::process::Output;
 mod common;
 use common::cli::event_log;
 use common::cli::temp_project_with_rigger_dir;
+use common::workflow_probe::write_workflow;
 
 /// An unreachable but well-formed server address: nothing listens on this loopback port, so the
 /// eager connect (fail-fast) is refused immediately. We prove WHICH backend the authority selected,
@@ -53,11 +54,6 @@ fn write_store_conn(root: &Path, conn: &str) {
 fn make_store_conn_unreadable(root: &Path) {
     std::fs::create_dir(root.join(".rigger").join("store.conn"))
         .expect("place a directory where store.conn goes");
-}
-
-/// Write `<root>/.rigger/workflow.yml` pinning `store:` (rung 4, the committed project config).
-fn write_store_config(root: &Path, body: &str) {
-    std::fs::write(root.join(".rigger").join("workflow.yml"), body).expect("write workflow.yml");
 }
 
 /// Run `rigger result <id> --error <msg>` in `root` with NO `--eventstore` flag and NO
@@ -145,8 +141,8 @@ fn the_committed_store_config_selects_the_server_over_the_default() {
     // non-secret URL), no env, no flag, no secret file -> the bare courier resolves the server.
     let project = temp_project_with_rigger_dir();
     let root = project.path();
-    write_store_config(
-        root,
+    write_workflow(
+        &root.join(".rigger"),
         &format!("store:\n  backend: kurrentdb\n  url: \"{UNREACHABLE}\"\n"),
     );
     let out = run_bare_courier(root);
@@ -158,7 +154,7 @@ fn a_committed_sqlite_store_config_resolves_the_local_log() {
     // Rung 4 can also pin sqlite explicitly: the bare courier takes the local walk-up.
     let project = temp_project_with_rigger_dir();
     let root = project.path();
-    write_store_config(root, "store:\n  backend: sqlite\n");
+    write_workflow(&root.join(".rigger"), "store:\n  backend: sqlite\n");
     let out = run_bare_courier(root);
     assert_selected_sqlite(&out, root, "committed store: sqlite resolves the local log");
 }
@@ -170,7 +166,7 @@ fn the_secret_file_selects_the_server_and_beats_the_committed_config() {
     let project = temp_project_with_rigger_dir();
     let root = project.path();
     write_store_conn(root, UNREACHABLE);
-    write_store_config(root, "store:\n  backend: sqlite\n");
+    write_workflow(&root.join(".rigger"), "store:\n  backend: sqlite\n");
     let out = run_bare_courier(root);
     assert_selected_server(
         &out,
@@ -185,7 +181,7 @@ fn the_environment_beats_the_committed_config() {
     // the environment must win, so the courier resolves the server.
     let project = temp_project_with_rigger_dir();
     let root = project.path();
-    write_store_config(root, "store:\n  backend: sqlite\n");
+    write_workflow(&root.join(".rigger"), "store:\n  backend: sqlite\n");
     let out = run_courier_with_env(root, UNREACHABLE);
     assert_selected_server(
         &out,
@@ -262,7 +258,7 @@ fn an_unknown_committed_backend_surfaces_loudly_not_a_silent_sqlite_fallback() {
     // cover the OTHER two silent-fallback classes; this closes the invalid-value one.
     let project = temp_project_with_rigger_dir();
     let root = project.path();
-    write_store_config(root, "store:\n  backend: bogus\n");
+    write_workflow(&root.join(".rigger"), "store:\n  backend: bogus\n");
     let out = run_bare_courier(root);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -308,7 +304,7 @@ fn a_committed_kurrentdb_backend_with_no_credential_names_all_three_sources() {
     // through the shipped binary, and fabricates no local log.
     let project = temp_project_with_rigger_dir();
     let root = project.path();
-    write_store_config(root, "store:\n  backend: kurrentdb\n");
+    write_workflow(&root.join(".rigger"), "store:\n  backend: kurrentdb\n");
     let out = run_bare_courier(root);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
