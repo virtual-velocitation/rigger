@@ -43,13 +43,13 @@ impl ToolError {
 
 impl From<String> for ToolError {
     fn from(message: String) -> Self {
-        ToolError::new(INTERNAL_ERROR, message)
+        Self::new(INTERNAL_ERROR, message)
     }
 }
 
 impl From<&str> for ToolError {
     fn from(message: &str) -> Self {
-        ToolError::new(INTERNAL_ERROR, message)
+        Self::new(INTERNAL_ERROR, message)
     }
 }
 
