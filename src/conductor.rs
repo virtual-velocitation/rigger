@@ -27743,7 +27743,6 @@ mod tests {
         // `a_budget_halt_stamps_an_attention_entry` above, whose blocking `Stub` driver
         // completes a run in one `run()` call and so cannot exercise a SECOND poll against an
         // still-halted, still-parked run).
-        use crate::driver::replay::ReplayDriver;
 
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -27761,14 +27760,8 @@ mod tests {
             );
         }
 
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
+        let st = started_store();
+        let step = |st: &Store| replay_step(&cfg, st);
 
         // Round 1: `w1`'s implementer is admitted (budget 0 -> 1) and parks unanswered; `w2`'s
         // is REFUSED (budget already spent) - the breaker trips, crossing both the budget halt
@@ -27919,18 +27912,11 @@ mod tests {
         // This test pins the OTHER half of that division: `run()` in isolation must stay
         // silent on it, so a future change does not silently reintroduce a second, competing
         // hung-detector inside `compute_attention` alongside main.rs's.
-        use crate::driver::replay::ReplayDriver;
 
         let cfg = one_gated_stage_cfg("u");
 
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
+        let st = started_store();
+        let step = |st: &Store| replay_step(&cfg, st);
 
         // Round 1: the implementer's attempt 0 is freshly parked - nothing crosses yet.
         let rs = step(&st);
@@ -28162,7 +28148,6 @@ mod tests {
         // (18 = 20 - 20/10); recording their results and stepping again folds them to
         // Integrated with NOTHING new to reserve, so the second call's before/after spawn
         // count is unchanged at 18 - already past, not a fresh crossing.
-        use crate::driver::replay::ReplayDriver;
 
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -28181,14 +28166,8 @@ mod tests {
             );
         }
 
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
+        let st = started_store();
+        let step = |st: &Store| replay_step(&cfg, st);
 
         // Call 1: all 18 disjoint units are ready at once and park together in one wave -
         // the crossing.
