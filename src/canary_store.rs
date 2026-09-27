@@ -1036,7 +1036,10 @@ mod tests {
     /// scoring logic. If the lens tier still ran one spawn at a time, the first lens's
     /// `wait()` would never see its siblings arrive and the test would hang - reaching the
     /// assertions below at all is the proof that the lenses were in flight together,
-    /// mirroring `map_ordered_engages_every_worker_deterministically`'s barrier proof.
+    /// mirroring `map_ordered_engages_every_worker_deterministically`'s barrier proof. The
+    /// item-sharding tests size the barrier to the TOTAL concurrent lens spawns summed across
+    /// every in-flight item's fan-out, proving item sharding and lens fan-out are genuinely
+    /// COMBINED, not each bounded independently by the same `jobs` number twice over.
     struct BarrierGatedLenses {
         barrier: std::sync::Barrier,
         inner: Scripted,
@@ -1365,31 +1368,6 @@ mod tests {
         );
     }
 
-    /// A driver that blocks EVERY spawn it receives on a shared barrier before delegating
-    /// to a real `Scripted` driver's scoring logic - proving TOTAL concurrent spawns
-    /// (summed across every in-flight item's lens fan-out together) reach the barrier's
-    /// size, i.e. that item sharding and lens fan-out are genuinely COMBINED, not each
-    /// bounded independently by the same `jobs` number twice over.
-    struct BarrierGatedEverySpawn {
-        barrier: std::sync::Barrier,
-        inner: Scripted,
-    }
-
-    impl AgentDriver for BarrierGatedEverySpawn {
-        fn spawn(
-            &self,
-            a: &AgentDef,
-            prompt: &str,
-            opts: &SpawnOpts,
-            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-        ) -> Result<AgentResult, Error> {
-            if a.id != "adv" && a.id != "adj" {
-                self.barrier.wait();
-            }
-            self.inner.spawn(a, prompt, opts, emit)
-        }
-    }
-
     #[test]
     fn run_canary_shards_independent_items_concurrently_at_the_scheduling_seam() {
         // Three items, one lens each, jobs=3 so spawn_budget picks item_workers=3,
@@ -1404,7 +1382,7 @@ mod tests {
             item("i2", "off-by-one", true, "reject", "lens"),
             item("i3", "off-by-one", true, "reject", "lens"),
         ];
-        let driver = BarrierGatedEverySpawn {
+        let driver = BarrierGatedLenses {
             barrier: std::sync::Barrier::new(3),
             inner: Scripted {
                 catching_tier: TIER_LENS,
@@ -1440,7 +1418,7 @@ mod tests {
             item("i2", "off-by-one", true, "reject", "lens"),
             item("i3", "off-by-one", true, "reject", "lens"),
         ];
-        let driver = BarrierGatedEverySpawn {
+        let driver = BarrierGatedLenses {
             barrier: std::sync::Barrier::new(6),
             inner: Scripted {
                 catching_tier: TIER_LENS,
