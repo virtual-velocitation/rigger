@@ -310,12 +310,11 @@ fn integration_mark(e: &Event) -> Option<ScrubMark> {
     })
 }
 
-/// [`Event::recorded_at`] as Unix seconds, `0` on a pre-epoch time (never produced by a
-/// real store, but never trusted blindly) - the same degrade-not-panic conversion
-/// [`crate::dash::unix_seconds`] keeps for the identical field, kept as this module's
-/// own copy because `dash` is a `store`-gated module `console` (a `core` one) cannot
-/// depend on.
-fn unix_seconds(t: std::time::SystemTime) -> u64 {
+/// A [`std::time::SystemTime`] as Unix seconds, `0` on a pre-epoch time (never produced by a
+/// real store, but never trusted blindly) - the ONE degrade-not-panic clock conversion both
+/// this module and `dash` convert [`Event::recorded_at`] through, living here because
+/// `console` is the `core` module `dash` can depend on, never the reverse.
+pub(crate) fn unix_seconds(t: std::time::SystemTime) -> u64 {
     t.duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)

@@ -29,10 +29,11 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 
+use crate::console::unix_seconds;
 use crate::contextgraph::{
     CallGraph, Direction, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_FINDING,
     REL_SUPERSEDES, TIER_INFERRED,
@@ -2743,16 +2744,6 @@ fn field_str_array(e: &Event, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Unix seconds for a [`SystemTime`], never failing (a pre-epoch time - never produced by a
-/// real store - degrades to `0` rather than panicking). The one authority [`now_unix`] and
-/// [`console_progress_wire`] both convert through, so a clock-conversion bug cannot drift
-/// between them.
-fn unix_seconds(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn now_unix() -> u64 {
     unix_seconds(SystemTime::now())
 }
@@ -5369,7 +5360,7 @@ mod tests {
     fn console_event_wire_carries_recorded_at() {
         let mut e = ev("UnitIntegrated", r#"{"id":"u1","commit":"abc123"}"#);
         e.position = 42;
-        e.recorded_at = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        e.recorded_at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let v = console_event_wire(&e);
         assert_eq!(v["recorded_at"], 1_700_000_000);
     }
