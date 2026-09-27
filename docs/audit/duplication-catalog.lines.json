@@ -4084,8 +4084,8 @@
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7814,
-        "end_line": 7834
+        "start_line": 7817,
+        "end_line": 7837
       }
     ]
   },
@@ -4129,8 +4129,8 @@
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1001,
-        "end_line": 1008
+        "start_line": 993,
+        "end_line": 1000
       },
       {
         "file": "tests/concepts_fold_periphery.rs",
@@ -4194,8 +4194,8 @@
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7634,
-        "end_line": 7642
+        "start_line": 7637,
+        "end_line": 7645
       }
     ]
   },
@@ -4394,8 +4394,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7543,
-        "end_line": 7545
+        "start_line": 7546,
+        "end_line": 7548
       },
       {
         "file": "src/main.rs",
@@ -4409,13 +4409,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7856,
-        "end_line": 7887
+        "start_line": 7859,
+        "end_line": 7890
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8132,
-        "end_line": 8163
+        "start_line": 8135,
+        "end_line": 8166
       }
     ]
   },
@@ -6504,13 +6504,13 @@
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1064,
-        "end_line": 1105
+        "start_line": 1056,
+        "end_line": 1097
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1108,
-        "end_line": 1162
+        "start_line": 1100,
+        "end_line": 1154
       }
     ]
   },

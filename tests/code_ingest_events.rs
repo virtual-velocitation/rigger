@@ -864,8 +864,6 @@ fn one_edge_tier(g: &rigger::contextgraph::Graph, rel: &str, to: &str) -> String
 
 #[test]
 fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
-    use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
-
     // Persistence + reopen boundary the inside-out tier tests are structurally blind to: every
     // in-crate tier test folds into a fresh `:memory:` connection (never re-opened, never
     // re-migrated), and the one on-disk unit test only proves the EXTRACTED *backfill* of a
@@ -918,12 +916,6 @@ fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
         "ambiguous",
         "a define-nowhere reference persists at the ambiguous tier across the reopen"
     );
-
-    // The public consts still carry those exact literals: the API name and the persisted value
-    // cannot silently diverge (a rename of a const would redden this before it corrupts a db).
-    assert_eq!(TIER_EXTRACTED, "extracted");
-    assert_eq!(TIER_INFERRED, "inferred");
-    assert_eq!(TIER_AMBIGUOUS, "ambiguous");
 
     // Safe-superset (addendum 2.4) holds after the reopen too: tiering drops NO reference - all
     // three folded references read back, each carrying exactly one of the three tiers.

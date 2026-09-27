@@ -7503,9 +7503,12 @@ mod tests {
     #[test]
     fn tier_default_matches_the_extracted_const() {
         // The `SCHEMA` / migration SQL hard-codes the tier column default as the literal 'extracted'
-        // (a const cannot be spliced into the SQL literal). Pin that it stays in lockstep with
-        // TIER_EXTRACTED, so a rename of the const can never silently diverge from the stored value.
+        // (a const cannot be spliced into the SQL literal), and every persisted tier is read back as
+        // its literal. Pin all three in lockstep with their consts, so a rename of a const can never
+        // silently diverge from the stored value.
         assert_eq!(TIER_EXTRACTED, "extracted");
+        assert_eq!(TIER_INFERRED, "inferred");
+        assert_eq!(TIER_AMBIGUOUS, "ambiguous");
     }
 
     // ---- spec 29a criterion 4: the code graph is REBUILDABLE from the log ----

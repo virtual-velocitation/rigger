@@ -3477,7 +3477,7 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/contextgraph/sqlite.rs:2787-2800` `subgraph_finds_the_governing_decision`
-- `src/contextgraph/sqlite.rs:7814-7834` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
+- `src/contextgraph/sqlite.rs:7817-7837` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
 
 #### `dup-f33f59e9bcbf` (near, 9 sites)
 
@@ -3492,7 +3492,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/contextgraph/sqlite.rs:4531-4538` `apply_batch_ref`
 - `src/contextgraph/sqlite.rs:6060-6070` `apply_unit_integrated`
 - `tests/code_ingest_events.rs:841-848` `apply_ref_json`
-- `tests/code_ingest_events.rs:1001-1008` `apply_ref_fresh`
+- `tests/code_ingest_events.rs:993-1000` `apply_ref_fresh`
 - `tests/concepts_fold_periphery.rs:52-59` `realized`
 
 #### `dup-f84eec928003` (near, 2 sites)
@@ -3529,7 +3529,7 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/contextgraph/sqlite.rs:6603-6605` `edge_projects`
-- `src/contextgraph/sqlite.rs:7634-7642` `index_names`
+- `src/contextgraph/sqlite.rs:7637-7645` `index_names`
 
 #### `dup-332233e2a08c` (semantic, 34 sites)
 
@@ -3587,7 +3587,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7543-7545` `edge_desc`
+- `src/contextgraph/sqlite.rs:7546-7548` `edge_desc`
 - `src/main.rs:8605-8611` `runs_menu_line`
 
 #### `dup-da0e76ab77ee` (near, 2 sites)
@@ -3596,8 +3596,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7856-7887` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
-- `src/contextgraph/sqlite.rs:8132-8163` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
+- `src/contextgraph/sqlite.rs:7859-7890` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
+- `src/contextgraph/sqlite.rs:8135-8166` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
 #### `dup-7e2622206b71` (semantic, 48 sites)
 
@@ -4696,8 +4696,8 @@ Proposed home: `code_ingest_events::support (consolidate these 2 sites into one 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/code_ingest_events.rs:1064-1105` `a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary`
-- `tests/code_ingest_events.rs:1108-1162` `a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_reference`
+- `tests/code_ingest_events.rs:1056-1097` `a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary`
+- `tests/code_ingest_events.rs:1100-1154` `a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_reference`
 
 #### `dup-d46432042e0c` (near, 2 sites)
 
@@ -5085,7 +5085,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (
 
 - `src/blocker.rs:128-130` `full_line` - no duplicate found by reading
 - `src/contextgraph/query.rs:1234-1240` `whole_graph_degree` - no duplicate found by reading
-- `src/contextgraph/sqlite.rs:7504-7509` `tier_default_matches_the_extracted_const` - no duplicate found by reading
+- `src/contextgraph/sqlite.rs:7504-7512` `tier_default_matches_the_extracted_const` - no duplicate found by reading
 - `src/eventstore/namespace.rs:222-226` `passes_the_contract` - no duplicate found by reading
 - `src/eventstore/sqlite.rs:461-485` `measure_derived_duplication` - no duplicate found by reading
 - `src/eventstore/sqlite.rs:1485-1498` `measure_derived_duplication_is_read_only_and_never_deletes` - no duplicate found by reading
