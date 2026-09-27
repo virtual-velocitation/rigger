@@ -17078,20 +17078,10 @@ fn docs_renders_every_registry_skill_including_planning_a_spec() {
     );
 }
 
-/// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS, end to
-/// end): the discipline is not merely present in an in-process render - it must survive the
-/// whole composition path (docs_context -> render -> write) that the real `rigger docs`
-/// binary drives, so it reaches the two consumer-facing files an author commits and ships.
-/// Driving the built binary and reading the WRITTEN skill and handbook proves the section
-/// actually LANDS in what consumers get, and that the shipped text carries the truthful WHY:
-/// graph.db is a PERSISTENT incremental projection (a step never re-folds the whole
-/// history), so across runs it accumulates dead-run rows no live query reads, which `rigger
-/// reset --runs` prunes to reclaim the disk they held. The implementer's in-process
-/// `discipline_carries_graph_hygiene_pre_run_reset` unit test pins the render output; this
-/// periphery layer pins that the write path in the built binary carries it all the way to
-/// the consumer's files - something an in-process render assertion cannot prove.
-#[test]
-fn docs_ships_graph_hygiene_guidance_to_consumers() {
+/// Drive the built `rigger docs` binary over a fresh project and return the two
+/// consumer-facing files it WRITES - the skill and the handbook chapter - after asserting it
+/// succeeded and reported writing both paths.
+fn consumer_docs_written_by_the_binary() -> [String; 2] {
     let proj = temp_project();
     let root = proj.path();
 
@@ -17106,6 +17096,24 @@ fn docs_ships_graph_hygiene_guidance_to_consumers() {
         .expect("the skill was rendered to disk");
     let handbook = std::fs::read_to_string(root.join("docs/handbook/using-rigger.md"))
         .expect("the handbook chapter was rendered to disk");
+    [skill, handbook]
+}
+
+/// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS, end to
+/// end): the discipline is not merely present in an in-process render - it must survive the
+/// whole composition path (docs_context -> render -> write) that the real `rigger docs`
+/// binary drives, so it reaches the two consumer-facing files an author commits and ships.
+/// Driving the built binary and reading the WRITTEN skill and handbook proves the section
+/// actually LANDS in what consumers get, and that the shipped text carries the truthful WHY:
+/// graph.db is a PERSISTENT incremental projection (a step never re-folds the whole
+/// history), so across runs it accumulates dead-run rows no live query reads, which `rigger
+/// reset --runs` prunes to reclaim the disk they held. The implementer's in-process
+/// `discipline_carries_graph_hygiene_pre_run_reset` unit test pins the render output; this
+/// periphery layer pins that the write path in the built binary carries it all the way to
+/// the consumer's files - something an in-process render assertion cannot prove.
+#[test]
+fn docs_ships_graph_hygiene_guidance_to_consumers() {
+    let [skill, handbook] = consumer_docs_written_by_the_binary();
 
     // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the graph-hygiene
     // section, name the pre-run command, and frame the truthful WHY (a persistent
@@ -17169,20 +17177,7 @@ fn docs_ships_graph_hygiene_guidance_to_consumers() {
 /// prove.
 #[test]
 fn docs_ships_three_verb_lookup_guidance_to_consumers() {
-    let proj = temp_project();
-    let root = proj.path();
-
-    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
-    assert!(
-        stdout.contains("skills/using-rigger/SKILL.md") && stdout.contains("using-rigger.md"),
-        "rigger docs must report writing both consumer-facing paths; got: {stdout}"
-    );
-
-    let skill = std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md"))
-        .expect("the skill was rendered to disk");
-    let handbook = std::fs::read_to_string(root.join("docs/handbook/using-rigger.md"))
-        .expect("the handbook chapter was rendered to disk");
+    let [skill, handbook] = consumer_docs_written_by_the_binary();
 
     // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the lookup guidance: all
     // three verbs with their one-line jobs, and the grep-fallback reporting instruction. Both render
@@ -17213,6 +17208,85 @@ fn docs_ships_three_verb_lookup_guidance_to_consumers() {
     }
 }
 
+/// A freshly initialized project whose committed docs `rigger docs` just rendered, proven in
+/// sync: `rigger validate` passes over it.
+fn docs_rendered_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_o, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_o, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must pass when every committed doc is in sync; stderr:\n{err}"
+    );
+    dir
+}
+
+/// The committed `skills/<name>/SKILL.md` path of each registry skill in `names`.
+fn skill_rels(names: &[&str]) -> Vec<String> {
+    names
+        .iter()
+        .map(|name| format!("skills/{name}/SKILL.md"))
+        .collect()
+}
+
+/// Drift each committed output in `drifted` in turn (under a docs-rendered `root`): `rigger
+/// validate` FAILS naming exactly that output and the `rigger docs` fix - never another
+/// `drifted` sibling nor any `untouched` output - and passes again once it is re-rendered,
+/// with every untouched output still in place (the gate is not stuck failing, and a per-file
+/// wiring bug in any ONE path is caught only by drifting that path).
+fn assert_each_output_drifts_alone(root: &Path, drifted: &[String], untouched: &[String]) {
+    for rel in drifted {
+        let path = root.join(rel);
+        assert!(path.exists(), "rigger docs must have written {rel}");
+
+        append_line(&path, "hand-edited line the render never emits");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(!ok, "validate must FAIL when {rel} drifts; stderr:\n{err}");
+        assert!(
+            err.contains(rel.as_str()) && err.contains("rigger docs"),
+            "the drift failure must name the drifted {rel} and the `rigger docs` fix; \
+             stderr:\n{err}"
+        );
+        for other in drifted
+            .iter()
+            .chain(untouched)
+            .filter(|other| *other != rel)
+        {
+            assert!(
+                !err.contains(other.as_str()),
+                "{rel} alone drifted, but the failure also names untouched {other}; \
+                 stderr:\n{err}"
+            );
+        }
+
+        let (_o, _e, ok) = run_rigger(root, &["docs"]);
+        assert!(ok, "re-rendering the docs must succeed");
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate must pass again once {rel}'s drift is re-rendered; stderr:\n{err}"
+        );
+    }
+    for rel in untouched {
+        assert!(
+            root.join(rel).exists(),
+            "the untouched {rel} was never disturbed and must still exist"
+        );
+    }
+}
+
+/// [`assert_each_output_drifts_alone`] over a fresh [`docs_rendered_project`].
+fn assert_the_drift_gate_covers(drifted: Vec<String>, untouched: Vec<String>) {
+    let dir = docs_rendered_project();
+    assert_each_output_drifts_alone(dir.path(), &drifted, &untouched);
+}
+
 /// Spec 20, unit 2 (the drift GATE, end to end): `rigger validate` FAILS LOUDLY when the
 /// committed `using-rigger` skill or the handbook discipline chapter has drifted from a
 /// fresh render, and PASSES when they are in sync - this is what makes the discipline STAY
@@ -17223,22 +17297,8 @@ fn docs_ships_three_verb_lookup_guidance_to_consumers() {
 /// once the docs are re-rendered - so it fails on real drift, not permanently.
 #[test]
 fn validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_sync() {
-    let dir = temp_project();
+    let dir = docs_rendered_project();
     let root = dir.path();
-
-    // A valid config so validate reaches the drift gate (past config load + the hard lints).
-    let (_o, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    // Render the committed docs from code -> the skill and handbook are now IN SYNC.
-    let (_o, err, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
-    let skill_path = root.join("skills/using-rigger/SKILL.md");
-    let handbook_path = root.join("docs/handbook/using-rigger.md");
-    assert!(
-        skill_path.exists() && handbook_path.exists(),
-        "rigger docs must have written both committed outputs"
-    );
 
     // IN SYNC -> validate PASSES (exit 0) and says nothing about docs drift.
     let (out, err, ok) = run_rigger(root, &["validate"]);
@@ -17255,112 +17315,89 @@ fn validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_
         "validate must not report docs drift when the committed docs are in sync; stderr:\n{err}"
     );
 
-    // DRIFT the skill with a hand edit the render never emits -> validate FAILS (non-zero),
-    // naming the drifted skill file and the `rigger docs` fix.
-    append_line(&skill_path, "hand-edited line the render never emits");
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !ok,
-        "validate must FAIL (non-zero exit) when the committed skill drifts from a fresh \
-         render; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("skills/using-rigger/SKILL.md") && err.contains("rigger docs"),
-        "the drift failure must name the drifted skill file and the `rigger docs` fix; \
-         stderr:\n{err}"
-    );
-
-    // Re-render restores sync -> validate PASSES again (the gate is not stuck failing).
-    let (_o, _e, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "re-rendering the docs must succeed");
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must PASS again once the drifted docs are re-rendered; stderr:\n{err}"
-    );
-
-    // DRIFT the handbook chapter -> validate FAILS naming the handbook, proving BOTH
-    // committed outputs are gated (not just the skill).
-    append_line(
-        &handbook_path,
-        "hand-edited handbook line the render never emits",
-    );
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !ok,
-        "validate must FAIL when the committed handbook discipline chapter drifts; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("docs/handbook/using-rigger.md") && err.contains("rigger docs"),
-        "the drift failure must name the drifted handbook chapter and the fix; stderr:\n{err}"
+    // BOTH committed outputs are gated (not just the skill).
+    assert_each_output_drifts_alone(
+        root,
+        &[
+            "skills/using-rigger/SKILL.md".to_string(),
+            "docs/handbook/using-rigger.md".to_string(),
+        ],
+        &[],
     );
 }
 
-/// Spec 68, criterion 1 (the docs-drift GATE covers the WHOLE registry, end to end): `rigger
-/// validate` FAILS when the committed `planning-a-spec` skill - the second, generalized
-/// registry entry - drifts from a fresh render, even while the pre-existing `using-rigger`
-/// skill and the handbook stay perfectly in sync; and it stays SILENT about the untouched
-/// original entry. The sibling
-/// `validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_sync` test
-/// proves the ORIGINAL entry is still gated; this one proves the gate was not merely widened
-/// to accept a second file without actually CHECKING it - a regression the implementer's own
-/// in-process `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` unit test
-/// (which only proves `docs_drift`'s CALLER loops over the registry's names, not that each
-/// iteration's byte comparison is wired to the right file) would not catch.
-#[test]
-fn validate_docs_drift_gate_covers_the_second_registry_entry() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_o, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let (_o, err, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
-
-    let planning_path = root.join("skills/planning-a-spec/SKILL.md");
-    let using_rigger_path = root.join("skills/using-rigger/SKILL.md");
-    assert!(
-        planning_path.exists(),
-        "rigger docs must have written the second registry entry"
-    );
-
-    // IN SYNC -> validate passes.
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must pass when every registry entry is in sync; stderr:\n{err}"
-    );
-
-    // Drift ONLY the second registry entry; the original entry and the handbook stay fresh.
-    append_line(&planning_path, "hand-edited line the render never emits");
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !ok,
-        "validate must FAIL when the SECOND registry entry drifts, even though the original \
-         entry is untouched; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("skills/planning-a-spec/SKILL.md") && err.contains("rigger docs"),
-        "the drift failure must name the drifted second entry and the `rigger docs` fix; \
-         stderr:\n{err}"
-    );
-    assert!(
-        !err.contains("skills/using-rigger/SKILL.md"),
-        "the untouched original entry must NOT be reported as drifted; stderr:\n{err}"
-    );
-
-    // Re-render restores sync -> validate passes again (the gate is not stuck failing).
-    let (_o, _e, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "re-rendering the docs must succeed");
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must pass again once the second entry's drift is re-rendered; stderr:\n{err}"
-    );
-    assert!(
-        using_rigger_path.exists(),
-        "the original entry was never touched and must still exist"
-    );
+rigger::test_cases! {
+    /// Spec 68, criterion 1 (the docs-drift GATE covers the WHOLE registry, end to end): `rigger
+    /// validate` FAILS when the committed `planning-a-spec` skill - the second, generalized
+    /// registry entry - drifts from a fresh render, even while the pre-existing `using-rigger`
+    /// skill and the handbook stay perfectly in sync; and it stays SILENT about the untouched
+    /// original entry. The sibling
+    /// `validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_sync` test
+    /// proves the ORIGINAL entry is still gated; this one proves the gate was not merely widened
+    /// to accept a second file without actually CHECKING it - a regression the implementer's own
+    /// in-process `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` unit test
+    /// (which only proves `docs_drift`'s CALLER loops over the registry's names, not that each
+    /// iteration's byte comparison is wired to the right file) would not catch.
+    validate_docs_drift_gate_covers_the_second_registry_entry:
+        assert_the_drift_gate_covers(
+            skill_rels(&["planning-a-spec"]),
+            skill_rels(&["using-rigger"]),
+        );
+    /// Spec 66, criterion 2 (the docs-drift GATE covers the WHOLE handbook-page list, end to
+    /// end): `rigger validate` FAILS when the committed planning field guide - the second entry
+    /// in the binary's handbook-page list - drifts from a fresh render, even while the
+    /// pre-existing `using-rigger.md` chapter and every registry skill stay perfectly in sync;
+    /// and it stays SILENT about those untouched outputs. Mirrors
+    /// `validate_docs_drift_gate_covers_the_second_registry_entry` (spec 68, criterion 1) for the
+    /// separate handbook-page list: proves the drift gate was not merely widened to accept a
+    /// second handbook file without actually CHECKING it byte-for-byte - a class the
+    /// implementer's in-process `docs_drift` unit test (which drives `docs_drift` by calling the
+    /// Rust function directly, never through the built binary's argument parsing and exit-code
+    /// plumbing) cannot rule out.
+    validate_docs_drift_gate_covers_the_planning_field_guide_page:
+        assert_the_drift_gate_covers(
+            vec!["docs/handbook/planning-field-guide.md".to_string()],
+            vec![
+                "docs/handbook/using-rigger.md".to_string(),
+                "skills/using-rigger/SKILL.md".to_string(),
+            ],
+        );
+    /// Spec 68, criterion 2 (the docs-drift GATE covers all FIVE new entries individually, end to
+    /// end): `rigger validate` fails when exactly ONE per-operation skill has drifted, names that
+    /// skill (and no other registry member), and passes again once it is re-rendered - proven for
+    /// EACH of the five in turn, not just one representative. The sibling
+    /// `validate_docs_drift_gate_covers_the_second_registry_entry` test proved the gate was
+    /// genuinely wired (not just widened to accept a second file without checking it) for
+    /// `planning-a-spec`; that same class of per-file wiring bug could affect any ONE of these
+    /// five committed paths independently (`docs_drift` builds its check list by mapping each
+    /// registry name through `skill_source_rel`, so a copy-paste mistake in that mapping for a
+    /// single entry would only be caught by exercising that entry's own path, not by exercising
+    /// any other).
+    validate_docs_drift_gate_covers_each_per_operation_skill:
+        assert_the_drift_gate_covers(
+            skill_rels(&PER_OPERATION_SKILL_NAMES),
+            skill_rels(&["using-rigger", "planning-a-spec"]),
+        );
+    /// Spec 69, criterion 1 (the docs-drift GATE covers all THREE new entries individually, end
+    /// to end, through the compiled binary): `rigger validate` fails when exactly ONE
+    /// watch-discipline skill has drifted, names that skill (and no other registry member -
+    /// neither a sibling watch-discipline skill nor a pre-existing entry from an earlier family),
+    /// and passes again once it is re-rendered - proven for EACH of the three in turn. Mirrors
+    /// the sibling `validate_docs_drift_gate_covers_each_per_operation_skill` test's rationale:
+    /// `docs_drift` builds its check list by mapping each registry name through
+    /// `skill_source_rel`, so a copy-paste mistake in that mapping for any ONE of these three
+    /// entries would only be caught by exercising that entry's own path, not by exercising any
+    /// other - and only a real subprocess run proves the compiled binary's exit status and
+    /// stderr wording, which the implementer's in-process tests never invoke.
+    validate_docs_drift_gate_covers_each_watching_discipline_skill:
+        assert_the_drift_gate_covers(
+            skill_rels(&WATCHING_DISCIPLINE_SKILL_NAMES),
+            [
+                skill_rels(&PER_OPERATION_SKILL_NAMES),
+                skill_rels(&["using-rigger", "planning-a-spec"]),
+            ]
+            .concat(),
+        );
 }
 
 /// Spec 66, criterion 2 (the render pipeline covers the WHOLE handbook-page list, end to
@@ -17443,74 +17480,6 @@ fn docs_renders_the_planning_field_guide_second_handbook_page() {
         std::fs::read_to_string(&handbook_path).unwrap(),
         handbook,
         "the untouched first entry is byte-identical after rendering the second"
-    );
-}
-
-/// Spec 66, criterion 2 (the docs-drift GATE covers the WHOLE handbook-page list, end to
-/// end): `rigger validate` FAILS when the committed planning field guide - the second entry
-/// in the binary's handbook-page list - drifts from a fresh render, even while the
-/// pre-existing `using-rigger.md` chapter and every registry skill stay perfectly in sync;
-/// and it stays SILENT about those untouched outputs. Mirrors
-/// `validate_docs_drift_gate_covers_the_second_registry_entry` (spec 68, criterion 1) for the
-/// separate handbook-page list: proves the drift gate was not merely widened to accept a
-/// second handbook file without actually CHECKING it byte-for-byte - a class the
-/// implementer's in-process `docs_drift` unit test (which drives `docs_drift` by calling the
-/// Rust function directly, never through the built binary's argument parsing and exit-code
-/// plumbing) cannot rule out.
-#[test]
-fn validate_docs_drift_gate_covers_the_planning_field_guide_page() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_o, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let (_o, err, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
-
-    let guide_path = root.join("docs/handbook/planning-field-guide.md");
-    let handbook_path = root.join("docs/handbook/using-rigger.md");
-    let skill_path = root.join("skills/using-rigger/SKILL.md");
-    assert!(
-        guide_path.exists(),
-        "rigger docs must have written the planning field guide handbook page"
-    );
-
-    // IN SYNC -> validate passes.
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must pass when every handbook page is in sync; stderr:\n{err}"
-    );
-
-    // Drift ONLY the planning field guide; the pre-existing handbook and the skill stay fresh.
-    append_line(&guide_path, "hand-edited line the render never emits");
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        !ok,
-        "validate must FAIL when the planning field guide drifts, even though the original \
-         handbook chapter is untouched; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("docs/handbook/planning-field-guide.md") && err.contains("rigger docs"),
-        "the drift failure must name the drifted guide and the `rigger docs` fix; stderr:\n{err}"
-    );
-    assert!(
-        !err.contains("docs/handbook/using-rigger.md")
-            && !err.contains("skills/using-rigger/SKILL.md"),
-        "the untouched handbook chapter and skill must NOT be reported as drifted; stderr:\n{err}"
-    );
-
-    // Re-render restores sync -> validate passes again (the gate is not stuck failing).
-    let (_o, _e, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "re-rendering the docs must succeed");
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must pass again once the guide's drift is re-rendered; stderr:\n{err}"
-    );
-    assert!(
-        handbook_path.exists() && skill_path.exists(),
-        "the untouched original entries were never disturbed and must still exist"
     );
 }
 
@@ -17674,29 +17643,18 @@ const PER_OPERATION_SKILL_NAMES: [&str; 5] = [
     "rigger-handle-an-escalation",
 ];
 
-/// Spec 68, criterion 2 (the render pipeline reaches all FIVE new registry entries, end to
-/// end): `rigger docs` renders every per-operation skill spec 68, criterion 2 adds - not just
-/// the pre-existing `using-rigger`/`planning-a-spec` pair the sibling tests above drive - each
-/// to its own committed `skills/<name>/SKILL.md` path, with its own loadable frontmatter and
-/// the structurally-stamped operator-binary prohibition. The sibling
-/// `docs_renders_every_registry_skill_including_planning_a_spec` test proved the render
-/// pipeline reaches a SECOND entry; it never drove the five entries THIS unit adds, so a
-/// path-wiring bug specific to one of them (skill_source_rel mapping a name to the wrong
-/// directory, or a registry entry silently dropped from the loop) would satisfy every existing
-/// binary-driving test and only show up here. The implementer's own in-process
-/// `write_docs_writes_every_registry_skill_plus_the_handbook` and
-/// `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` tests (src/main.rs) call
-/// `write_docs`/`install_skills` directly in-process; this drives the actual COMPILED binary
-/// and reads back what it wrote to disk, which an in-process call cannot prove.
-#[test]
-fn docs_renders_every_per_operation_skill_through_the_compiled_binary() {
+/// Drive the COMPILED `rigger docs` over a fresh project and prove it renders each registry
+/// skill in `names` to its own committed `skills/<name>/SKILL.md` - reported, opening with its
+/// own loadable frontmatter, carrying its Procedure/Anti-move sections and the
+/// structurally-stamped operator-binary prohibition, and byte-stable across a second render.
+fn docs_rendered_skill_family(names: &[&str]) -> tempfile::TempDir {
     let proj = temp_project();
     let root = proj.path();
 
     let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
     assert!(ok, "rigger docs must succeed; stderr: {stderr}");
 
-    for name in PER_OPERATION_SKILL_NAMES {
+    for &name in names {
         let rel = format!("skills/{name}/SKILL.md");
         assert!(
             stdout.contains(&rel),
@@ -17732,79 +17690,26 @@ fn docs_renders_every_per_operation_skill_through_the_compiled_binary() {
             "{name}: a second render must be byte-identical"
         );
     }
+    proj
 }
 
-/// Spec 68, criterion 2 (the docs-drift GATE covers all FIVE new entries individually, end to
-/// end): `rigger validate` fails when exactly ONE per-operation skill has drifted, names that
-/// skill (and no other registry member), and passes again once it is re-rendered - proven for
-/// EACH of the five in turn, not just one representative. The sibling
-/// `validate_docs_drift_gate_covers_the_second_registry_entry` test proved the gate was
-/// genuinely wired (not just widened to accept a second file without checking it) for
-/// `planning-a-spec`; that same class of per-file wiring bug could affect any ONE of these
-/// five committed paths independently (`docs_drift` builds its check list by mapping each
-/// registry name through `skill_source_rel`, so a copy-paste mistake in that mapping for a
-/// single entry would only be caught by exercising that entry's own path, not by exercising
-/// any other).
+/// Spec 68, criterion 2 (the render pipeline reaches all FIVE new registry entries, end to
+/// end): `rigger docs` renders every per-operation skill spec 68, criterion 2 adds - not just
+/// the pre-existing `using-rigger`/`planning-a-spec` pair the sibling tests above drive - each
+/// to its own committed `skills/<name>/SKILL.md` path, with its own loadable frontmatter and
+/// the structurally-stamped operator-binary prohibition. The sibling
+/// `docs_renders_every_registry_skill_including_planning_a_spec` test proved the render
+/// pipeline reaches a SECOND entry; it never drove the five entries THIS unit adds, so a
+/// path-wiring bug specific to one of them (skill_source_rel mapping a name to the wrong
+/// directory, or a registry entry silently dropped from the loop) would satisfy every existing
+/// binary-driving test and only show up here. The implementer's own in-process
+/// `write_docs_writes_every_registry_skill_plus_the_handbook` and
+/// `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` tests (src/main.rs) call
+/// `write_docs`/`install_skills` directly in-process; this drives the actual COMPILED binary
+/// and reads back what it wrote to disk, which an in-process call cannot prove.
 #[test]
-fn validate_docs_drift_gate_covers_each_per_operation_skill() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_o, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let (_o, err, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
-
-    // Baseline: every committed doc, including all five new entries, starts in sync.
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must pass when every registry entry (including the five new ones) is in \
-         sync; stderr:\n{err}"
-    );
-
-    for name in PER_OPERATION_SKILL_NAMES {
-        let path = root.join(format!("skills/{name}/SKILL.md"));
-        assert!(
-            path.exists(),
-            "rigger docs must have written {name}'s skill"
-        );
-
-        append_line(&path, "hand-edited line the render never emits");
-        let (_out, err, ok) = run_rigger(root, &["validate"]);
-        assert!(!ok, "validate must FAIL when {name} drifts; stderr:\n{err}");
-        assert!(
-            err.contains(&format!("skills/{name}/SKILL.md")) && err.contains("rigger docs"),
-            "the drift failure must name the drifted {name} skill and the `rigger docs` fix; \
-             stderr:\n{err}"
-        );
-        for other in PER_OPERATION_SKILL_NAMES
-            .iter()
-            .filter(|other| **other != name)
-        {
-            assert!(
-                !err.contains(&format!("skills/{other}/SKILL.md")),
-                "{name} alone drifted, but the failure also names untouched {other}; \
-                 stderr:\n{err}"
-            );
-        }
-        assert!(
-            !err.contains("skills/using-rigger/SKILL.md")
-                && !err.contains("skills/planning-a-spec/SKILL.md"),
-            "{name} alone drifted, but the failure also names an untouched pre-existing \
-             registry entry; stderr:\n{err}"
-        );
-
-        // Re-render restores sync for every entry -> validate passes again before the next
-        // iteration drifts a different one.
-        let (_o, _e, ok) = run_rigger(root, &["docs"]);
-        assert!(ok, "re-rendering the docs must succeed");
-        let (_out, err, ok) = run_rigger(root, &["validate"]);
-        assert!(
-            ok,
-            "validate must pass again once {name}'s drift is re-rendered; stderr:\n{err}"
-        );
-    }
+fn docs_renders_every_per_operation_skill_through_the_compiled_binary() {
+    docs_rendered_skill_family(&PER_OPERATION_SKILL_NAMES);
 }
 
 /// `rigger setup` installs every skill in `names` into the consumer project at its own
@@ -17920,48 +17825,8 @@ const WATCHING_DISCIPLINE_SKILL_NAMES: [&str; 3] = [
 /// just the render function's own return value the unit tests already check in-process.
 #[test]
 fn docs_renders_every_watching_discipline_skill_through_the_compiled_binary() {
-    let proj = temp_project();
+    let proj = docs_rendered_skill_family(&WATCHING_DISCIPLINE_SKILL_NAMES);
     let root = proj.path();
-
-    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
-
-    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
-        let rel = format!("skills/{name}/SKILL.md");
-        assert!(
-            stdout.contains(&rel),
-            "rigger docs must report rendering {name} at {rel}; got: {stdout}"
-        );
-
-        let path = root.join(&rel);
-        let rendered = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("rigger docs must have written {rel}: {e}"));
-        assert!(
-            rendered.starts_with(&format!("---\nname: {name}\n")),
-            "{name}: must open with its own loadable frontmatter; got: {}",
-            &rendered[..rendered.len().min(60)]
-        );
-        assert!(
-            rendered.contains("## Procedure") && rendered.contains("## Anti-move"),
-            "{name}: rendered skill must carry its Procedure and Anti-move sections; \
-             got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("## Operator binary boundary")
-                && rendered.contains("never installs, replaces, or modifies the operator's"),
-            "{name}: rendered skill must carry the structurally-stamped operator-binary \
-             prohibition; got:\n{rendered}"
-        );
-
-        // Byte-stable across runs (the drift check the next test relies on depends on this).
-        let (_o2, _e2, ok2) = run_rigger(root, &["docs"]);
-        assert!(ok2, "a second `rigger docs` run must succeed");
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            rendered,
-            "{name}: a second render must be byte-identical"
-        );
-    }
 
     // Each skill's own runtime-pinned content reaches the file the compiled binary actually
     // wrote - not just the render function's in-process return value.
@@ -18014,87 +17879,6 @@ fn docs_renders_every_watching_discipline_skill_through_the_compiled_binary() {
         "rigger-diagnose-churn on disk must cross-link the churn-signature table rather than \
          duplicate it; got:\n{diagnose_churn}"
     );
-}
-
-/// Spec 69, criterion 1 (the docs-drift GATE covers all THREE new entries individually, end
-/// to end, through the compiled binary): `rigger validate` fails when exactly ONE
-/// watch-discipline skill has drifted, names that skill (and no other registry member -
-/// neither a sibling watch-discipline skill nor a pre-existing entry from an earlier family),
-/// and passes again once it is re-rendered - proven for EACH of the three in turn. Mirrors
-/// the sibling `validate_docs_drift_gate_covers_each_per_operation_skill` test's rationale:
-/// `docs_drift` builds its check list by mapping each registry name through
-/// `skill_source_rel`, so a copy-paste mistake in that mapping for any ONE of these three
-/// entries would only be caught by exercising that entry's own path, not by exercising any
-/// other - and only a real subprocess run proves the compiled binary's exit status and
-/// stderr wording, which the implementer's in-process tests never invoke.
-#[test]
-fn validate_docs_drift_gate_covers_each_watching_discipline_skill() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_o, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let (_o, err, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
-
-    // Baseline: every committed doc, including all three watch-discipline entries, starts in
-    // sync.
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must pass when every registry entry (including the three watch-discipline \
-         ones) is in sync; stderr:\n{err}"
-    );
-
-    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
-        let path = root.join(format!("skills/{name}/SKILL.md"));
-        assert!(
-            path.exists(),
-            "rigger docs must have written {name}'s skill"
-        );
-
-        append_line(&path, "hand-edited line the render never emits");
-        let (_out, err, ok) = run_rigger(root, &["validate"]);
-        assert!(!ok, "validate must FAIL when {name} drifts; stderr:\n{err}");
-        assert!(
-            err.contains(&format!("skills/{name}/SKILL.md")) && err.contains("rigger docs"),
-            "the drift failure must name the drifted {name} skill and the `rigger docs` fix; \
-             stderr:\n{err}"
-        );
-        for other in WATCHING_DISCIPLINE_SKILL_NAMES
-            .iter()
-            .filter(|other| **other != name)
-        {
-            assert!(
-                !err.contains(&format!("skills/{other}/SKILL.md")),
-                "{name} alone drifted, but the failure also names untouched sibling {other}; \
-                 stderr:\n{err}"
-            );
-        }
-        for other in PER_OPERATION_SKILL_NAMES {
-            assert!(
-                !err.contains(&format!("skills/{other}/SKILL.md")),
-                "{name} alone drifted, but the failure also names an untouched \
-                 per-operation-family entry {other}; stderr:\n{err}"
-            );
-        }
-        assert!(
-            !err.contains("skills/using-rigger/SKILL.md")
-                && !err.contains("skills/planning-a-spec/SKILL.md"),
-            "{name} alone drifted, but the failure also names an untouched pre-existing \
-             registry entry; stderr:\n{err}"
-        );
-
-        // Re-render restores sync for every entry -> validate passes again before the next
-        // iteration drifts a different one.
-        let (_o, _e, ok) = run_rigger(root, &["docs"]);
-        assert!(ok, "re-rendering the docs must succeed");
-        let (_out, err, ok) = run_rigger(root, &["validate"]);
-        assert!(
-            ok,
-            "validate must pass again once {name}'s drift is re-rendered; stderr:\n{err}"
-        );
-    }
 }
 
 rigger::test_cases! {
@@ -28819,16 +28603,7 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
 /// hide.
 #[test]
 fn docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["docs"]);
-    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
-
-    let skill = std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md"))
-        .expect("the skill must be rendered");
-    let handbook = std::fs::read_to_string(root.join("docs/handbook/using-rigger.md"))
-        .expect("the handbook must be rendered");
+    let [skill, handbook] = consumer_docs_written_by_the_binary();
 
     for (label, out) in [("skill", &skill), ("handbook", &handbook)] {
         assert!(
