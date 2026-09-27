@@ -39,6 +39,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "common/source_audit.rs"]
+mod source_audit;
+use source_audit::Finding;
+
 /// The ONLY reason this exists: see SOURCE HYGIENE above. Every fragment pair this file
 /// needs to assemble - a detection needle, or a fixture line proving detection - goes
 /// through here so the two halves are never adjacent as literal text in this file's source.
@@ -62,26 +66,20 @@ fn is_word_char(c: char) -> bool {
 fn kill_word() -> String {
     join("ki", "ll")
 }
-fn pkill_word() -> String {
-    join("p", &kill_word())
+/// The kill word with `prefix` in front of it (the p-kill and x-kill utility names).
+fn prefixed_kill(prefix: &str) -> String {
+    join(prefix, &kill_word())
 }
-fn killall_word() -> String {
-    join(&kill_word(), "all")
-}
-fn xkill_word() -> String {
-    join("x", &kill_word())
-}
-fn pg_signal_word() -> String {
-    join(&kill_word(), "pg")
+/// The kill word with `suffix` after it (the kill-all utility, the process-group call name).
+fn suffixed_kill(suffix: &str) -> String {
+    join(&kill_word(), suffix)
 }
 fn kill_process_open() -> String {
     join(&join(&kill_word(), "_process"), "(")
 }
-fn libc_kill_open() -> String {
-    join("libc::", &join(&kill_word(), "("))
-}
-fn signal_kill_open() -> String {
-    join("signal::", &join(&kill_word(), "("))
+/// An opened call of the kill function through `module` (`libc::`, `signal::`).
+fn module_kill_open(module: &str) -> String {
+    join(module, &suffixed_kill("("))
 }
 
 /// The exact set of words the Command::new shell-out shape and the bare shell
@@ -89,7 +87,7 @@ fn signal_kill_open() -> String {
 /// enumeration), largest-first so `killall` is tried before its own prefix `kill` at the
 /// same start position.
 fn shell_kill_words() -> Vec<String> {
-    vec![killall_word(), kill_word()]
+    vec![suffixed_kill("all"), kill_word()]
 }
 
 // ---------------------------------------------------------------------------------------
@@ -105,7 +103,12 @@ fn shell_kill_words() -> Vec<String> {
 fn shape_command_new_signal(line: &str) -> bool {
     let chars: Vec<char> = line.chars().collect();
     let marker: Vec<char> = "Command::new(".chars().collect();
-    let words = [pkill_word(), killall_word(), xkill_word(), kill_word()];
+    let words = [
+        prefixed_kill("p"),
+        suffixed_kill("all"),
+        prefixed_kill("x"),
+        kill_word(),
+    ];
     let mlen = marker.len();
     if chars.len() < mlen + 1 {
         return false;
@@ -154,7 +157,7 @@ fn shape_shell_kill_dash(line: &str) -> bool {
 /// the bare word, delimited on both sides so it is never matched inside a longer identifier.
 fn shape_pkill(line: &str) -> bool {
     let chars: Vec<char> = line.chars().collect();
-    let word: Vec<char> = pkill_word().chars().collect();
+    let word: Vec<char> = prefixed_kill("p").chars().collect();
     let wlen = word.len();
     if chars.len() < wlen + 2 {
         return false;
@@ -170,26 +173,21 @@ fn shape_pkill(line: &str) -> bool {
     false
 }
 
-/// The libc process-group signal call name (see `.rigger/workflow.yml`), banned as a bare
-/// substring anywhere - no delimiter required.
-fn shape_pg_signal(line: &str) -> bool {
-    line.contains(&pg_signal_word())
-}
-
-/// A direct call through `libc` (see `.rigger/workflow.yml` for the literal pattern).
-fn shape_libc_kill(line: &str) -> bool {
-    line.contains(&libc_kill_open())
-}
-
-/// A direct call through a `signal` module (see `.rigger/workflow.yml`).
-fn shape_signal_kill(line: &str) -> bool {
-    line.contains(&signal_kill_open())
-}
-
-/// The sanctioned rustix signal call itself (see `.rigger/workflow.yml`); forbidden
-/// everywhere OTHER than the two sanctioned files (checked by the caller, not here).
-fn shape_direct_rustix_call(line: &str) -> bool {
-    line.contains(&kill_process_open())
+/// The four bare-substring shapes (see `.rigger/workflow.yml` for each literal pattern),
+/// banned anywhere on a line with no delimiter required, each with its finding label: the libc
+/// process-group signal call name; a direct call through `libc`; a direct call through a
+/// `signal` module; and the sanctioned rustix signal call itself - forbidden everywhere OTHER
+/// than the two sanctioned files (checked by the caller, not here).
+fn substring_shapes() -> [(String, &'static str); 4] {
+    [
+        (suffixed_kill("pg"), "libc process-group signal call"),
+        (module_kill_open("libc::"), "direct libc signal call"),
+        (module_kill_open("signal::"), "direct signal-module call"),
+        (
+            kill_process_open(),
+            "the sanctioned rustix signal call used outside its two sanctioned sites",
+        ),
+    ]
 }
 
 /// `\.arg\(.--.\)` - the bare `--` argv separator passed to `.arg(...)`.
@@ -245,29 +243,6 @@ fn shape_format_dash_brace(line: &str) -> bool {
 /// path, independent of `.rigger/workflow.yml`'s copy.
 const SANCTIONED_FILES: [&str; 2] = ["src/reap.rs", "tests/common/mod.rs"];
 
-/// One forbidden-shape hit: which file, which 1-based line, which shape, and the offending
-/// line text (for the failure message only - never re-scanned).
-#[derive(Debug, Clone)]
-struct Finding {
-    file: String,
-    line_no: usize,
-    shape: &'static str,
-    line_text: String,
-}
-
-impl std::fmt::Display for Finding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}:{}: {} - `{}`",
-            self.file,
-            self.line_no,
-            self.shape,
-            self.line_text.trim()
-        )
-    }
-}
-
 /// Every forbidden shape found in one line of a file that is NOT one of the two sanctioned
 /// lifecycle helpers - the gate's full nine-shape ban.
 fn general_hits(line: &str) -> Vec<&'static str> {
@@ -281,17 +256,10 @@ fn general_hits(line: &str) -> Vec<&'static str> {
     if shape_pkill(line) {
         hits.push("standalone p-kill token");
     }
-    if shape_pg_signal(line) {
-        hits.push("libc process-group signal call");
-    }
-    if shape_libc_kill(line) {
-        hits.push("direct libc signal call");
-    }
-    if shape_signal_kill(line) {
-        hits.push("direct signal-module call");
-    }
-    if shape_direct_rustix_call(line) {
-        hits.push("the sanctioned rustix signal call used outside its two sanctioned sites");
+    for (needle, label) in substring_shapes() {
+        if line.contains(&needle) {
+            hits.push(label);
+        }
     }
     if shape_arg_dashdash(line) {
         hits.push("-- argv separator passed to .arg(...)");
@@ -379,13 +347,7 @@ fn scan_tree(root: &Path) -> Vec<Finding> {
 mod tests {
     use super::*;
 
-    fn write_file(root: &Path, rel: &str, content: &str) {
-        let path = root.join(rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(&path, content).unwrap();
-    }
+    use source_audit::write_file;
 
     #[test]
     fn a_clean_fixture_tree_yields_no_findings() {
@@ -415,7 +377,7 @@ mod tests {
         // shape, so this fixture isolates the Command::new shape alone.
         let line = format!(
             "let _ = std::process::Command::new(\"{}\");\n",
-            killall_word()
+            suffixed_kill("all")
         );
         write_file(root.path(), "src/somewhere.rs", &line);
         let findings = scan_tree(root.path());
@@ -438,7 +400,7 @@ mod tests {
     #[test]
     fn standalone_pkill_token_is_caught() {
         let root = tempfile::tempdir().unwrap();
-        let line = format!("let cmd = \"{}\";\n", pkill_word());
+        let line = format!("let cmd = \"{}\";\n", prefixed_kill("p"));
         write_file(root.path(), "tests/somewhere_test.rs", &line);
         let findings = scan_tree(root.path());
         assert_eq!(findings.len(), 1, "{findings:?}");
@@ -448,7 +410,7 @@ mod tests {
     #[test]
     fn pg_signal_call_name_is_caught() {
         let root = tempfile::tempdir().unwrap();
-        let line = format!("unsafe {{ libc2::{}(pgid, 9); }}\n", pg_signal_word());
+        let line = format!("unsafe {{ libc2::{}(pgid, 9); }}\n", suffixed_kill("pg"));
         write_file(root.path(), "src/somewhere.rs", &line);
         let findings = scan_tree(root.path());
         assert_eq!(findings.len(), 1, "{findings:?}");
@@ -458,7 +420,7 @@ mod tests {
     #[test]
     fn libc_kill_call_is_caught_outside_the_sanctioned_files() {
         let root = tempfile::tempdir().unwrap();
-        let line = format!("unsafe {{ {}pid, 9); }}\n", libc_kill_open());
+        let line = format!("unsafe {{ {}pid, 9); }}\n", module_kill_open("libc::"));
         write_file(root.path(), "src/somewhere.rs", &line);
         let findings = scan_tree(root.path());
         assert_eq!(findings.len(), 1, "{findings:?}");
@@ -468,7 +430,7 @@ mod tests {
     #[test]
     fn signal_kill_call_is_caught_outside_the_sanctioned_files() {
         let root = tempfile::tempdir().unwrap();
-        let line = format!("{}pid, term); }}\n", signal_kill_open());
+        let line = format!("{}pid, term); }}\n", module_kill_open("signal::"));
         write_file(root.path(), "src/somewhere.rs", &line);
         let findings = scan_tree(root.path());
         assert_eq!(findings.len(), 1, "{findings:?}");
@@ -518,7 +480,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let content = format!(
             "fn a() {{}}\nfn b() {{}}\nlet cmd = \"{}\";\nfn c() {{}}\n",
-            pkill_word()
+            prefixed_kill("p")
         );
         write_file(root.path(), "src/multi_line.rs", &content);
         let findings = scan_tree(root.path());
@@ -555,7 +517,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let line = format!(
             "let _ = std::process::Command::new(\"{}\");\n",
-            killall_word()
+            suffixed_kill("all")
         );
         write_file(root.path(), "src/reap.rs", &line);
         let findings = scan_tree(root.path());
@@ -603,7 +565,7 @@ mod tests {
         // Same violation, but rooted outside src/ and tests/ entirely - must be invisible.
         let line = format!(
             "let _ = std::process::Command::new(\"{}\");\n",
-            pkill_word()
+            prefixed_kill("p")
         );
         write_file(root.path(), "scripts/somewhere.rs", &line);
         let findings = scan_tree(root.path());
@@ -613,24 +575,16 @@ mod tests {
         );
     }
 
-    /// The Done-when-c3 acceptance test itself: `tests/no_os_kill_audit.rs` scans the REAL,
-    /// currently checked-out `src/` and `tests/` trees (resolved from `CARGO_MANIFEST_DIR`,
-    /// never the process CWD) and finds zero forbidden shapes - proving criteria 1 and 2
-    /// (THE TEST HELPER, THE REAPER) actually converted every prior unsafe termination site,
-    /// and that no other `#[cfg(test)]` module or integration suite introduced a new one.
-    #[test]
-    fn the_real_tree_carries_no_forbidden_pattern() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let findings = scan_tree(&root);
-        assert!(
-            findings.is_empty(),
-            "no-os-kill audit found {} forbidden pattern(s) in the real tree:\n{}",
-            findings.len(),
-            findings
-                .iter()
-                .map(|f| f.to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
+    rigger::test_cases! {
+        /// The Done-when-c3 acceptance test itself: `tests/no_os_kill_audit.rs` scans the REAL,
+        /// currently checked-out `src/` and `tests/` trees (resolved from `CARGO_MANIFEST_DIR`,
+        /// never the process CWD) and finds zero forbidden shapes - proving criteria 1 and 2
+        /// (THE TEST HELPER, THE REAPER) actually converted every prior unsafe termination site,
+        /// and that no other `#[cfg(test)]` module or integration suite introduced a new one.
+        the_real_tree_carries_no_forbidden_pattern: source_audit::assert_real_tree_clean(
+            scan_tree,
+            "no-os-kill audit",
+            "forbidden pattern(s)",
         );
     }
 }

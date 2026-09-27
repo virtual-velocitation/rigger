@@ -97,6 +97,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "common/source_audit.rs"]
+mod source_audit;
+use source_audit::Finding;
+
 /// The reap authorities a covered removal site's enclosing function calls (spec 79's Design
 /// and `u79c1-rewiring-complete-and-exemption-marker`): the two direct calls every routed
 /// worktree.rs site makes, plus the two `src/main.rs` wrapper helpers spec 79's Design section
@@ -116,29 +120,6 @@ const REAP_AUTHORITIES: [&str; 5] = [
 /// human-authored reason is actually sound, only that an exemption was deliberately claimed at
 /// this site rather than merely inferred from an unrelated nearby comment.
 const EXEMPTION_MARKER: &str = "reap-exempt";
-
-/// One bare-removal finding: which file, which 1-based line, which shape, and the offending
-/// line's own text (for the failure message only - never re-scanned).
-#[derive(Debug, Clone)]
-struct Finding {
-    file: String,
-    line_no: usize,
-    shape: &'static str,
-    line_text: String,
-}
-
-impl std::fmt::Display for Finding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}:{}: {} - `{}`",
-            self.file,
-            self.line_no,
-            self.shape,
-            self.line_text.trim()
-        )
-    }
-}
 
 /// The number of leading ASCII space characters on `line` - this audit's sole proxy for
 /// "indentation level", since every file it scans is rustfmt-clean (a build-gate
@@ -842,19 +823,32 @@ fn find_exemption_markers(root: &Path) -> Vec<(String, usize)> {
 mod tests {
     use super::*;
 
-    fn write_file(root: &Path, rel: &str, content: &str) {
-        let path = root.join(rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(&path, content).unwrap();
+    use source_audit::write_file;
+
+    /// Scan a fixture tree holding the one file `rel`, with `fixture` as its content.
+    fn scan_fixture(rel: &str, fixture: &str) -> Vec<Finding> {
+        let root = tempfile::tempdir().unwrap();
+        write_file(root.path(), rel, fixture);
+        scan_tree(root.path())
     }
 
-    #[test]
-    fn a_clean_fixture_tree_yields_no_findings() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+    /// The fixture's removal is covered (or never scanned at all): no finding.
+    fn assert_covered(rel: &str, fixture: &str, why: &str) {
+        let findings = scan_fixture(rel, fixture);
+        assert!(findings.is_empty(), "{why}; {findings:?}");
+    }
+
+    /// The fixture carries exactly one uncovered removal - on 1-based `line`, when given.
+    fn assert_flagged(rel: &str, fixture: &str, line: Option<usize>, why: &str) {
+        let findings = scan_fixture(rel, fixture);
+        assert_eq!(findings.len(), 1, "{why}; {findings:?}");
+        if let Some(line) = line {
+            assert_eq!(findings[0].line_no, line, "{why}; {findings:?}");
+        }
+    }
+
+    rigger::test_cases! {
+        a_clean_fixture_tree_yields_no_findings: assert_covered(
             "src/worktree.rs",
             "\
 fn clear_worktree_dir(dir: &str, authorized_root: &str) {
@@ -862,11 +856,7 @@ fn clear_worktree_dir(dir: &str, authorized_root: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "expected no findings, got {findings:?}"
+            "expected no findings",
         );
     }
 
@@ -911,11 +901,8 @@ fn f(repo: &str, dir: &str) {
         );
     }
 
-    #[test]
-    fn a_reap_call_anywhere_earlier_in_the_enclosing_function_covers_the_removal() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+    rigger::test_cases! {
+        a_reap_call_anywhere_earlier_in_the_enclosing_function_covers_the_removal: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(dir: &str, root: &str) {
@@ -926,23 +913,14 @@ fn f(dir: &str, root: &str) {
     let _ = also;
 }
 ",
+            "a reap call earlier in the SAME function must cover the removal",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a reap call earlier in the SAME function must cover the removal; {findings:?}"
-        );
-    }
 
-    /// ROUND-3 FIX (upholding
-    /// `sdet-u79c2r2-authority-name-in-prose-comment-still-falsely-covers`): a reap-authority
-    /// NAME appearing only in a prose comment - never a real call - must not be mistaken for
-    /// coverage, mirroring `scan_tree`'s own removal-line comment guard.
-    #[test]
-    fn a_reap_authority_name_in_a_prose_comment_never_covers_the_removal() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-3 FIX (upholding
+        /// `sdet-u79c2r2-authority-name-in-prose-comment-still-falsely-covers`): a reap-authority
+        /// NAME appearing only in a prose comment - never a real call - must not be mistaken for
+        /// coverage, mirroring `scan_tree`'s own removal-line comment guard.
+        a_reap_authority_name_in_a_prose_comment_never_covers_the_removal: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -950,26 +928,16 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            Some(3),
+            "an authority name in prose, with no real call, must never cover",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "an authority name in prose, with no real call, must never cover; {findings:?}"
-        );
-        assert_eq!(findings[0].line_no, 3, "{findings:?}");
-    }
 
-    /// ROUND-4 FIX (upholding
-    /// `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-comment-still-falsely-covers`):
-    /// the round-3 comment guard only skips a line whose TRIMMED text starts with `//` - a
-    /// TRAILING comment on a real code line that happens to name a reap authority must still
-    /// never be mistaken for a real call.
-    #[test]
-    fn a_reap_authority_name_in_a_trailing_comment_never_covers_the_removal() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-4 FIX (upholding
+        /// `arch-u79c2r3-comment-guard-is-whole-line-only-trailing-comment-still-falsely-covers`):
+        /// the round-3 comment guard only skips a line whose TRIMMED text starts with `//` - a
+        /// TRAILING comment on a real code line that happens to name a reap authority must still
+        /// never be mistaken for a real call.
+        a_reap_authority_name_in_a_trailing_comment_never_covers_the_removal: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -978,24 +946,14 @@ fn f(dir: &str) {
     let _ = x;
 }
 ",
+            None,
+            "an authority name in a TRAILING comment, with no real call, must never cover",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "an authority name in a TRAILING comment, with no real call, must never cover; \
-             {findings:?}"
-        );
-    }
 
-    /// ROUND-4 FIX: a real reap call is unaffected by the trailing-comment fix above when a
-    /// harmless comment follows it on the SAME line - the call itself sits before the `//`,
-    /// so it must still cover.
-    #[test]
-    fn a_real_reap_call_with_a_trailing_comment_on_the_same_line_still_covers() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-4 FIX: a real reap call is unaffected by the trailing-comment fix above when a
+        /// harmless comment follows it on the SAME line - the call itself sits before the `//`,
+        /// so it must still cover.
+        a_real_reap_call_with_a_trailing_comment_on_the_same_line_still_covers: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1003,24 +961,15 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            "a real call followed by a harmless trailing comment must still cover",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a real call followed by a harmless trailing comment must still cover; {findings:?}"
-        );
-    }
 
-    /// ROUND-4 FIX (upholding
-    /// `sdet-u79c2r3-exemption-marker-check-has-no-comment-guard-at-all`): the round-3
-    /// EXEMPTION_MARKER check has no comment requirement at all - the marker substring living
-    /// inside a non-comment string literal (a log message) must never be mistaken for a
-    /// deliberately claimed exemption.
-    #[test]
-    fn an_exemption_marker_inside_a_non_comment_string_literal_never_covers_the_removal() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-4 FIX (upholding
+        /// `sdet-u79c2r3-exemption-marker-check-has-no-comment-guard-at-all`): the round-3
+        /// EXEMPTION_MARKER check has no comment requirement at all - the marker substring living
+        /// inside a non-comment string literal (a log message) must never be mistaken for a
+        /// deliberately claimed exemption.
+        an_exemption_marker_inside_a_non_comment_string_literal_never_covers_the_removal: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1028,50 +977,31 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
+            None,
             "reap-exempt inside a non-comment string literal must never be mistaken for a \
-             claimed exemption; {findings:?}"
+             claimed exemption",
         );
-    }
 
-    /// ROUND-4 FIX: the exemption marker must still cover when it lives in a genuine TRAILING
-    /// comment on the same line as real code (not just a whole-line comment), proving the
-    /// comment-guard fix above does not over-narrow the marker check to whole-line-only.
-    #[test]
-    fn an_exemption_marker_in_a_trailing_comment_after_real_code_still_covers() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-4 FIX: the exemption marker must still cover when it lives in a genuine TRAILING
+        /// comment on the same line as real code (not just a whole-line comment), proving the
+        /// comment-guard fix above does not over-narrow the marker check to whole-line-only.
+        an_exemption_marker_in_a_trailing_comment_after_real_code_still_covers: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir); // reap-exempt (spec 79, criterion 2): trailing form
 }
 ",
+            "a marker in a genuine trailing comment after real code must still cover",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a marker in a genuine trailing comment after real code must still cover; \
-             {findings:?}"
-        );
-    }
 
-    /// ROUND-4 FIX (upholding
-    /// `adv-u79c2r3-authority-match-inside-noncomment-string-literal-uncaught-by-either-fix`,
-    /// reproducing the adjudicator's own probe byte-for-byte): a reap-authority NAME living
-    /// inside a non-comment string literal (a log message, never a real call) must never be
-    /// mistaken for coverage - neither the comment-guard fix nor the exemption-marker fix above
-    /// catches this shape on its own.
-    #[test]
-    fn a_reap_authority_name_inside_a_non_comment_string_literal_never_covers_the_removal() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-4 FIX (upholding
+        /// `adv-u79c2r3-authority-match-inside-noncomment-string-literal-uncaught-by-either-fix`,
+        /// reproducing the adjudicator's own probe byte-for-byte): a reap-authority NAME living
+        /// inside a non-comment string literal (a log message, never a real call) must never be
+        /// mistaken for coverage - neither the comment-guard fix nor the exemption-marker fix above
+        /// catches this shape on its own.
+        a_reap_authority_name_inside_a_non_comment_string_literal_never_covers_the_removal: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1079,27 +1009,18 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
+            None,
             "a reap-authority name inside a non-comment string literal must never be mistaken \
-             for a real call; {findings:?}"
+             for a real call",
         );
-    }
 
-    /// ROUND-5 FIX (upholding
-    /// `sdet-u79c2r4-block-comment-authority-name-still-falsely-covers` and
-    /// `arch-u79c2r4-uphold-block-comment-defeats-sole-gatekeeper-guarantee`): a reap-authority
-    /// NAME sitting only inside a single-line `/* ... */` block comment - never a real call -
-    /// must not be mistaken for coverage, the same class [`effective_code`] already closes for
-    /// `//` comments and non-comment string literals.
-    #[test]
-    fn a_reap_authority_name_inside_a_single_line_block_comment_never_covers_the_removal() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-5 FIX (upholding
+        /// `sdet-u79c2r4-block-comment-authority-name-still-falsely-covers` and
+        /// `arch-u79c2r4-uphold-block-comment-defeats-sole-gatekeeper-guarantee`): a reap-authority
+        /// NAME sitting only inside a single-line `/* ... */` block comment - never a real call -
+        /// must not be mistaken for coverage, the same class [`effective_code`] already closes for
+        /// `//` comments and non-comment string literals.
+        a_reap_authority_name_inside_a_single_line_block_comment_never_covers_the_removal: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1107,24 +1028,15 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
+            None,
             "an authority name inside a single-line block comment, with no real call, must \
-             never cover; {findings:?}"
+             never cover",
         );
-    }
 
-    /// ROUND-5 FIX: a real reap call is unaffected by the block-comment stripping fix above
-    /// when a harmless single-line block comment sits before it on the SAME line - the call
-    /// itself still sits in effective code once the comment span is dropped.
-    #[test]
-    fn a_real_reap_call_with_a_single_line_block_comment_on_the_same_line_still_covers() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-5 FIX: a real reap call is unaffected by the block-comment stripping fix above
+        /// when a harmless single-line block comment sits before it on the SAME line - the call
+        /// itself still sits in effective code once the comment span is dropped.
+        a_real_reap_call_with_a_single_line_block_comment_on_the_same_line_still_covers: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1132,27 +1044,16 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            "a real call preceded by a harmless same-line block comment must still cover",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a real call preceded by a harmless same-line block comment must still cover; \
-             {findings:?}"
-        );
-    }
 
-    /// ROUND-5 FIX (upholding
-    /// `adv-u79c2r4-reap-authorities-branch-still-function-wide-not-site-scoped`): a reap call
-    /// that genuinely covers an EARLIER removal in the same function must never bleed onto a
-    /// LATER, wholly unrelated and unreaped removal - the REAP_AUTHORITIES scan is now bounded
-    /// below by the identical nearest-preceding-removal [`exemption_window`] the sibling
-    /// EXEMPTION_MARKER branch already used starting round-3.
-    #[test]
-    fn a_reap_call_covering_one_removal_never_bleeds_onto_a_later_unrelated_removal_in_the_same_function(
-    ) {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-5 FIX (upholding
+        /// `adv-u79c2r4-reap-authorities-branch-still-function-wide-not-site-scoped`): a reap call
+        /// that genuinely covers an EARLIER removal in the same function must never bleed onto a
+        /// LATER, wholly unrelated and unreaped removal - the REAP_AUTHORITIES scan is now bounded
+        /// below by the identical nearest-preceding-removal [`exemption_window`] the sibling
+        /// EXEMPTION_MARKER branch already used starting round-3.
+        a_reap_call_covering_one_removal_never_bleeds_onto_a_later_unrelated_removal_in_the_same_function: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir_a: &str, dir_b: &str) {
@@ -1161,37 +1062,23 @@ fn f(dir_a: &str, dir_b: &str) {
     let _ = std::fs::remove_dir_all(dir_b);
 }
 ",
+            Some(4),
+            "dir_a's reap call must not bleed onto the unrelated, unreaped dir_b removal - the \
+             unreaped dir_b removal is the one that must be flagged",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "dir_a's reap call must not bleed onto the unrelated, unreaped dir_b removal; \
-             {findings:?}"
-        );
-        assert_eq!(
-            findings[0].line_no, 4,
-            "the unreaped dir_b removal is the one that must be flagged; {findings:?}"
-        );
-    }
 
-    /// ROUND-5 FIX regression guard: the windowing fix above must NOT sever a real,
-    /// already-shipped idiom this exact tree uses twice (`reap_then_remove_worktree` in
-    /// `src/main.rs`, `clear_worktree_dir` in `src/worktree.rs`) - reap once, attempt a `git
-    /// worktree remove`, and fall back to a bare `fs::remove_dir_all` of the SAME directory
-    /// only when that attempt fails. The one preceding reap call must still cover the bare
-    /// fallback even though a [`worktree_remove_shape`] line (itself also a removal-shaped scan
-    /// target, and itself covered by that same reap call) sits between them. Empirically this
-    /// is the exact regression a first draft of the round-5 fix introduced (reusing
-    /// `exemption_window`'s window unmodified for REAP_AUTHORITIES too broke both real sites)
-    /// before landing on the narrower [`reap_authorities_window_start`] bound this test now
-    /// pins down.
-    #[test]
-    fn a_reap_call_still_covers_a_bare_fallback_removal_across_an_intervening_worktree_remove_attempt_of_the_same_dir(
-    ) {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-5 FIX regression guard: the windowing fix above must NOT sever a real,
+        /// already-shipped idiom this exact tree uses twice (`reap_then_remove_worktree` in
+        /// `src/main.rs`, `clear_worktree_dir` in `src/worktree.rs`) - reap once, attempt a `git
+        /// worktree remove`, and fall back to a bare `fs::remove_dir_all` of the SAME directory
+        /// only when that attempt fails. The one preceding reap call must still cover the bare
+        /// fallback even though a [`worktree_remove_shape`] line (itself also a removal-shaped scan
+        /// target, and itself covered by that same reap call) sits between them. Empirically this
+        /// is the exact regression a first draft of the round-5 fix introduced (reusing
+        /// `exemption_window`'s window unmodified for REAP_AUTHORITIES too broke both real sites)
+        /// before landing on the narrower [`reap_authorities_window_start`] bound this test now
+        /// pins down.
+        a_reap_call_still_covers_a_bare_fallback_removal_across_an_intervening_worktree_remove_attempt_of_the_same_dir: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(dir: &str, root: &str) {
@@ -1207,20 +1094,11 @@ fn f(dir: &str, root: &str) {
     }
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
             "one reap call must still cover BOTH the worktree-remove attempt and its own bare \
-             fallback for the same dir; {findings:?}"
+             fallback for the same dir",
         );
-    }
 
-    #[test]
-    fn the_exemption_marker_covers_a_removal_with_no_reap_call() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        the_exemption_marker_covers_a_removal_with_no_reap_call: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1229,19 +1107,10 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            "the recognized exemption marker must cover the removal",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "the recognized exemption marker must cover the removal; {findings:?}"
-        );
-    }
 
-    #[test]
-    fn the_exemption_marker_in_the_functions_own_doc_comment_above_the_signature_also_covers_it() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        the_exemption_marker_in_the_functions_own_doc_comment_above_the_signature_also_covers_it: assert_covered(
             "src/somewhere.rs",
             "\
 /// reap-exempt (spec 79, criterion 2): mirrors heal_corrupt_worktree_admin - the marker sits
@@ -1250,19 +1119,10 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            "a marker in the fn's own leading doc comment must cover the removal",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a marker in the fn's own leading doc comment must cover the removal; {findings:?}"
-        );
-    }
 
-    #[test]
-    fn an_arbitrary_comment_is_never_mistaken_for_the_exemption_marker() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        an_arbitrary_comment_is_never_mistaken_for_the_exemption_marker: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1270,20 +1130,11 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            None,
+            "an unrecognized comment must not be accepted as a claimed exemption",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "an unrecognized comment must not be accepted as a claimed exemption; {findings:?}"
-        );
-    }
 
-    #[test]
-    fn a_reap_call_only_in_a_sibling_function_never_covers_this_one() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        a_reap_call_only_in_a_sibling_function_never_covers_this_one: assert_flagged(
             "src/somewhere.rs",
             "\
 fn helper_with_reap(dir: &str, root: &str) {
@@ -1294,24 +1145,12 @@ fn bare_sibling(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            Some(6),
+            "a reap call in a DIFFERENT function must not cover this one's removal - attributed \
+             to bare_sibling",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "a reap call in a DIFFERENT function must not cover this one's removal; {findings:?}"
-        );
-        assert_eq!(
-            findings[0].line_no, 6,
-            "attributed to bare_sibling; {findings:?}"
-        );
-    }
 
-    #[test]
-    fn a_removal_inside_a_cfg_test_mod_block_is_never_scanned() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        a_removal_inside_a_cfg_test_mod_block_is_never_scanned: assert_covered(
             "src/somewhere.rs",
             "\
 #[cfg(test)]
@@ -1321,19 +1160,10 @@ mod tests {
     }
 }
 ",
+            "a #[cfg(test)] mod block is out of this spec's scope",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a #[cfg(test)] mod block is out of this spec's scope; {findings:?}"
-        );
-    }
 
-    #[test]
-    fn a_removal_inside_a_standalone_cfg_test_fn_is_never_scanned_and_a_later_real_fn_still_is() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        a_removal_inside_a_standalone_cfg_test_fn_is_never_scanned_and_a_later_real_fn_still_is: assert_flagged(
             "src/somewhere.rs",
             "\
 #[cfg(test)]
@@ -1345,20 +1175,11 @@ fn production(dir2: &str) {
     let _ = std::fs::remove_dir_all(dir2);
 }
 ",
+            Some(7),
+            "only the production fn's removal is flagged",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert_eq!(
-            findings[0].line_no, 7,
-            "only the production fn's removal is flagged; {findings:?}"
-        );
-    }
 
-    #[test]
-    fn stacked_cfg_attributes_before_a_test_mod_still_exclude_it() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        stacked_cfg_attributes_before_a_test_mod_still_exclude_it: assert_covered(
             "src/somewhere.rs",
             "\
 #[cfg(test)]
@@ -1369,19 +1190,10 @@ mod corpus_gates {
     }
 }
 ",
+            "a stacked second attribute before the mod must not defeat the exclusion",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a stacked second attribute before the mod must not defeat the exclusion; {findings:?}"
-        );
-    }
 
-    #[test]
-    fn a_doc_comment_mentioning_the_cfg_test_attribute_in_prose_is_never_mistaken_for_it() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        a_doc_comment_mentioning_the_cfg_test_attribute_in_prose_is_never_mistaken_for_it: assert_flagged(
             "src/somewhere.rs",
             "\
 //! This module's tests live under a #[cfg(test)] mod declared below.
@@ -1389,20 +1201,11 @@ fn production(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            None,
+            "prose merely mentioning the attribute must not exclude real code",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "prose merely mentioning the attribute must not exclude real code; {findings:?}"
-        );
-    }
 
-    #[test]
-    fn a_semicolon_terminated_cfg_test_item_excludes_only_itself() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        a_semicolon_terminated_cfg_test_item_excludes_only_itself: assert_flagged(
             "src/lib.rs",
             "\
 #[cfg(test)]
@@ -1412,32 +1215,18 @@ fn production(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
+            Some(5),
+            "the semicolon-terminated declaration excludes only itself",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "the semicolon-terminated declaration excludes only itself; {findings:?}"
-        );
-        assert_eq!(findings[0].line_no, 5, "{findings:?}");
-    }
 
-    #[test]
-    fn a_bare_removal_under_tests_is_never_scanned() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        a_bare_removal_under_tests_is_never_scanned: assert_covered(
             "tests/somewhere.rs",
             "\
 fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "spec 79's audit is src/ only, never tests/; {findings:?}"
+            "spec 79's audit is src/ only, never tests/",
         );
     }
 
@@ -1461,11 +1250,8 @@ fn c() {}
         assert_eq!(findings[0].line_no, 3, "{findings:?}");
     }
 
-    #[test]
-    fn a_multi_line_fn_signature_still_resolves_its_own_closing_brace() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+    rigger::test_cases! {
+        a_multi_line_fn_signature_still_resolves_its_own_closing_brace: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(
@@ -1477,25 +1263,16 @@ fn f(
     let _ = root;
 }
 ",
+            "a multi-line signature must still resolve the same enclosing span",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a multi-line signature must still resolve the same enclosing span; {findings:?}"
-        );
-    }
 
-    /// ROUND-2 FIX (spec 79 c2, adjudication `adj-u79c2-verdict-reject-detection-blind-
-    /// spots`, upholding `arch-u79c2-coverage-check-is-unordered-co-occurrence-not-reap-
-    /// then-remove`): a reap call sitting AFTER the removal it supposedly authorizes is
-    /// the exact inverted remove-then-reap anti-pattern spec 79's own Design text exists
-    /// to forbid ("removed ONLY through a reap-then-remove path") - it must never be
-    /// mistaken for coverage.
-    #[test]
-    fn a_reap_call_after_the_removal_never_covers_it_remove_then_reap_is_still_flagged() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-2 FIX (spec 79 c2, adjudication `adj-u79c2-verdict-reject-detection-blind-
+        /// spots`, upholding `arch-u79c2-coverage-check-is-unordered-co-occurrence-not-reap-
+        /// then-remove`): a reap call sitting AFTER the removal it supposedly authorizes is
+        /// the exact inverted remove-then-reap anti-pattern spec 79's own Design text exists
+        /// to forbid ("removed ONLY through a reap-then-remove path") - it must never be
+        /// mistaken for coverage.
+        a_reap_call_after_the_removal_never_covers_it_remove_then_reap_is_still_flagged: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir: &str, root: &str) {
@@ -1503,26 +1280,15 @@ fn f(dir: &str, root: &str) {
     reap_processes_rooted_under(std::path::Path::new(dir), std::path::Path::new(root));
 }
 ",
+            Some(2),
+            "a reap call textually AFTER the removal (remove-then-reap) must never cover it",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "a reap call textually AFTER the removal (remove-then-reap) must never cover it; \
-             {findings:?}"
-        );
-        assert_eq!(findings[0].line_no, 2, "{findings:?}");
-    }
 
-    /// ROUND-2 FIX: an exemption marker has no such ordering requirement of its own (it is
-    /// a documented human claim about the whole function, not a call with a
-    /// happens-before relationship to the removal) - it must keep covering the removal
-    /// even when the comment sits textually AFTER it in the function body.
-    #[test]
-    fn an_exemption_marker_after_the_removal_still_covers_it() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-2 FIX: an exemption marker has no such ordering requirement of its own (it is
+        /// a documented human claim about the whole function, not a call with a
+        /// happens-before relationship to the removal) - it must keep covering the removal
+        /// even when the comment sits textually AFTER it in the function body.
+        an_exemption_marker_after_the_removal_still_covers_it: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1531,25 +1297,15 @@ fn f(dir: &str) {
     // function and nothing is ever spawned with a cwd inside it.
 }
 ",
+            "the exemption marker is order-independent, unlike a reap-authority call",
         );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "the exemption marker is order-independent, unlike a reap-authority call; \
-             {findings:?}"
-        );
-    }
 
-    /// ROUND-3 FIX (upholding
-    /// `arch-u79c2r2-exemption-marker-function-wide-not-site-scoped`): an exemption claimed
-    /// for ONE removal in a multi-removal function must never silently cover an unrelated,
-    /// unexempted second removal elsewhere in that same function - the marker's coverage is
-    /// bounded to the segment between the removal sites, not the whole enclosing function.
-    #[test]
-    fn an_exemption_marker_attached_to_one_removal_never_covers_an_unrelated_second_removal() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-3 FIX (upholding
+        /// `arch-u79c2r2-exemption-marker-function-wide-not-site-scoped`): an exemption claimed
+        /// for ONE removal in a multi-removal function must never silently cover an unrelated,
+        /// unexempted second removal elsewhere in that same function - the marker's coverage is
+        /// bounded to the segment between the removal sites, not the whole enclosing function.
+        an_exemption_marker_attached_to_one_removal_never_covers_an_unrelated_second_removal: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir_a: &str, dir_b: &str) {
@@ -1559,29 +1315,17 @@ fn f(dir_a: &str, dir_b: &str) {
     let _ = std::fs::remove_dir_all(dir_b);
 }
 ",
+            Some(5),
+            "dir_a's exemption must not bleed onto the unrelated dir_b removal - the unexempted \
+             dir_b removal is the one that must be flagged",
         );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
-            "dir_a's exemption must not bleed onto the unrelated dir_b removal; {findings:?}"
-        );
-        assert_eq!(
-            findings[0].line_no, 5,
-            "the unexempted dir_b removal is the one that must be flagged; {findings:?}"
-        );
-    }
 
-    /// ROUND-2 FIX (upholding `adv-u79c2-authorized-root-value-blind-textual-match`):
-    /// `reap_dir_before_removal(dir, "")` is src/worktree.rs's own sanctioned no-op form
-    /// (its doc comment: "Pass `""` when the caller has no such root... the reap becomes
-    /// a no-op") - a GUARANTEED no-op at runtime, textually indistinguishable from a
-    /// genuinely-effective call under a name-only substring match. It must never cover.
-    #[test]
-    fn a_literal_empty_string_authorized_root_argument_never_covers_the_removal() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// ROUND-2 FIX (upholding `adv-u79c2-authorized-root-value-blind-textual-match`):
+        /// `reap_dir_before_removal(dir, "")` is src/worktree.rs's own sanctioned no-op form
+        /// (its doc comment: "Pass `""` when the caller has no such root... the reap becomes
+        /// a no-op") - a GUARANTEED no-op at runtime, textually indistinguishable from a
+        /// genuinely-effective call under a name-only substring match. It must never cover.
+        a_literal_empty_string_authorized_root_argument_never_covers_the_removal: assert_flagged(
             "src/somewhere.rs",
             "\
 fn f(dir: &str) {
@@ -1589,25 +1333,16 @@ fn f(dir: &str) {
     let _ = std::fs::remove_dir_all(dir);
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert_eq!(
-            findings.len(),
-            1,
+            None,
             "reap_dir_before_removal(dir, \"\") reaps nothing at runtime and must never be \
-             mistaken for real coverage; {findings:?}"
+             mistaken for real coverage",
         );
-    }
 
-    /// A real (non-empty) `authorized_root` argument must keep covering, including when
-    /// rustfmt wraps the call's own argument list across multiple lines (proves the
-    /// argument-value check's call-text extraction is not accidentally single-line-only,
-    /// the same class of blindness as the worktree/remove multi-line fix below).
-    #[test]
-    fn a_non_empty_authorized_root_argument_still_covers_even_when_the_call_wraps_across_lines() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+        /// A real (non-empty) `authorized_root` argument must keep covering, including when
+        /// rustfmt wraps the call's own argument list across multiple lines (proves the
+        /// argument-value check's call-text extraction is not accidentally single-line-only,
+        /// the same class of blindness as the worktree/remove multi-line fix below).
+        a_non_empty_authorized_root_argument_still_covers_even_when_the_call_wraps_across_lines: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(a_very_long_directory_argument_name: &str, a_very_long_authorized_root_argument_name: &str) {
@@ -1618,11 +1353,7 @@ fn f(a_very_long_directory_argument_name: &str, a_very_long_authorized_root_argu
     let _ = std::fs::remove_dir_all(a_very_long_directory_argument_name);
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "a non-empty authorized_root must still cover across a wrapped call; {findings:?}"
+            "a non-empty authorized_root must still cover across a wrapped call",
         );
     }
 
@@ -1664,15 +1395,12 @@ fn f(repo: &str, a_realistically_long_directory_variable_name: &str) {
         );
     }
 
-    /// A `"worktree"` token with no paired `"remove"` token anywhere nearby (e.g. a
-    /// wrapped `git worktree list --porcelain` call) must never be mistaken for the
-    /// forbidden shape - the window lookahead must not over-trigger on an unrelated git
-    /// subcommand that merely happens to also take `"worktree"` as its first arg.
-    #[test]
-    fn a_worktree_token_with_no_nearby_remove_token_is_never_mistaken_for_the_shape() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(
-            root.path(),
+    rigger::test_cases! {
+        /// A `"worktree"` token with no paired `"remove"` token anywhere nearby (e.g. a
+        /// wrapped `git worktree list --porcelain` call) must never be mistaken for the
+        /// forbidden shape - the window lookahead must not over-trigger on an unrelated git
+        /// subcommand that merely happens to also take `"worktree"` as its first arg.
+        a_worktree_token_with_no_nearby_remove_token_is_never_mistaken_for_the_shape: assert_covered(
             "src/somewhere.rs",
             "\
 fn f(repo: &str) {
@@ -1681,12 +1409,7 @@ fn f(repo: &str) {
         .output();
 }
 ",
-        );
-        let findings = scan_tree(root.path());
-        assert!(
-            findings.is_empty(),
-            "\"worktree\" without a nearby \"remove\" token is not the forbidden shape; \
-             {findings:?}"
+            "\"worktree\" without a nearby \"remove\" token is not the forbidden shape",
         );
     }
 
@@ -1716,24 +1439,16 @@ fn g(dir: &str) {
         assert_eq!(hits, vec![("src/a.rs".to_string(), 2)], "{hits:?}");
     }
 
-    /// The Done-when acceptance test itself: `tests/reap_before_removal_audit.rs` scans the
-    /// REAL, currently checked-out `src/` tree (resolved from `CARGO_MANIFEST_DIR`, never the
-    /// process CWD) and finds zero bare-removal sites - proving criterion 1's rewiring
-    /// (`u79c1-rewiring-complete-and-exemption-marker`) actually covers or exempts every
-    /// production site, and that no later change introduced a new one.
-    #[test]
-    fn the_real_tree_carries_no_bare_removal() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let findings = scan_tree(&root);
-        assert!(
-            findings.is_empty(),
-            "bare-removal audit found {} uncovered/unexempted site(s) in the real tree:\n{}",
-            findings.len(),
-            findings
-                .iter()
-                .map(|f| f.to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
+    rigger::test_cases! {
+        /// The Done-when acceptance test itself: `tests/reap_before_removal_audit.rs` scans the
+        /// REAL, currently checked-out `src/` tree (resolved from `CARGO_MANIFEST_DIR`, never the
+        /// process CWD) and finds zero bare-removal sites - proving criterion 1's rewiring
+        /// (`u79c1-rewiring-complete-and-exemption-marker`) actually covers or exempts every
+        /// production site, and that no later change introduced a new one.
+        the_real_tree_carries_no_bare_removal: source_audit::assert_real_tree_clean(
+            scan_tree,
+            "bare-removal audit",
+            "uncovered/unexempted site(s)",
         );
     }
 
