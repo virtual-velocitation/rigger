@@ -878,6 +878,60 @@ fn line_criterion(text: &str) -> Vec<Option<usize>> {
 mod tests {
     use super::*;
 
+    /// Shared case bodies for the table-driven test families below ([`test_cases!`]).
+    mod support {
+        use super::*;
+        use std::fmt::Debug;
+
+        /// `extract_criteria` returns exactly `expected` for `text`.
+        pub(super) fn assert_extracts(text: &str, expected: &[&str]) {
+            assert_eq!(extract_criteria(text), expected);
+        }
+
+        /// A check stayed silent: `got` is empty (`why` prefixes the failure's dump of it).
+        pub(super) fn assert_silent<T: Debug>(got: Vec<T>, why: &str) {
+            assert!(got.is_empty(), "{why}{got:?}");
+        }
+
+        /// A check fired: `got` is non-empty (`why` prefixes the failure's dump of it).
+        pub(super) fn assert_fires<T: Debug>(got: Vec<T>, why: &str) {
+            assert!(!got.is_empty(), "{why}{got:?}");
+        }
+
+        /// Some advisory is attributed to Done-when criterion `criterion`.
+        pub(super) fn assert_flags_criterion(
+            advisories: Vec<LintAdvisory>,
+            criterion: usize,
+            why: &str,
+        ) {
+            assert!(
+                advisories.iter().any(|a| a.criterion == Some(criterion)),
+                "{why}{advisories:?}"
+            );
+        }
+
+        /// Some advisory's detail names `detail`.
+        pub(super) fn assert_flags_detail(advisories: Vec<LintAdvisory>, detail: &str, why: &str) {
+            assert!(
+                advisories.iter().any(|a| a.detail.contains(detail)),
+                "{why}{advisories:?}"
+            );
+        }
+
+        /// The first advisory of `class` (which must exist - else `missing`) is attributed to
+        /// `criterion`.
+        pub(super) fn assert_attributed(
+            advisories: Vec<LintAdvisory>,
+            class: &str,
+            missing: &str,
+            criterion: Option<usize>,
+        ) {
+            let hit = advisories.iter().find(|a| a.class == class).expect(missing);
+            assert_eq!(hit.criterion, criterion);
+        }
+    }
+    use support::*;
+
     #[test]
     fn extracts_checkbox_criteria() {
         let text = "# Feature\n\nsome prose\n\n- [ ] the store passes the contract suite\n- [x] the graph supersedes\n* [ ] the conductor integrates\n\n- a plain bullet is ignored\n";
@@ -903,108 +957,95 @@ mod tests {
     // stripped and are joined with single spaces. Pinned at the src/spec.rs seam.
     // -----------------------------------------------------------------------------------
 
-    /// A checkbox wrapping across three-plus physical lines, with an OWNS sentence on the
-    /// THIRD line, is returned as one single-spaced, indentation-stripped string - the
-    /// truncation this unit exists to fix (previously only the first physical line was
-    /// kept, silently dropping the OWNS sentence).
-    #[test]
-    fn extract_criteria_joins_a_three_line_wrap_including_the_owns_sentence_on_line_three() {
-        let text = "## Done when\n\n\
-            - [ ] a test proves something that wraps across\n\
-            \x20\x20three physical lines and needs a bit more room to make its\n\
-            \x20\x20point. This criterion OWNS the wrap boundary.\n\
-            - [ ] a short, single-line criterion\n";
-        assert_eq!(
-            extract_criteria(text),
-            [
+    test_cases! {
+        /// A checkbox wrapping across three-plus physical lines, with an OWNS sentence on the
+        /// THIRD line, is returned as one single-spaced, indentation-stripped string - the
+        /// truncation this unit exists to fix (previously only the first physical line was
+        /// kept, silently dropping the OWNS sentence).
+        extract_criteria_joins_a_three_line_wrap_including_the_owns_sentence_on_line_three => assert_extracts(
+            "## Done when\n\n\
+                - [ ] a test proves something that wraps across\n\
+                \x20\x20three physical lines and needs a bit more room to make its\n\
+                \x20\x20point. This criterion OWNS the wrap boundary.\n\
+                - [ ] a short, single-line criterion\n",
+            &[
                 "a test proves something that wraps across three physical lines and needs \
                  a bit more room to make its point. This criterion OWNS the wrap boundary.",
                 "a short, single-line criterion",
-            ]
+            ],
         );
     }
 
-    /// Adjacent checkboxes with NO blank line between them: a wrapped continuation line
-    /// belongs to the checkbox above it, but the next checkbox marker immediately ends that
-    /// block - the two criteria's text never bleeds into each other.
-    #[test]
-    fn extract_criteria_stops_a_wrap_at_the_next_checkbox_item_with_no_blank_line_between() {
-        let text = "## Done when\n\n\
-            - [ ] the first behaviour continues\n\
-            \x20\x20onto a second physical line\n\
-            - [ ] the second behaviour\n";
-        assert_eq!(
-            extract_criteria(text),
-            [
+    test_cases! {
+        /// Adjacent checkboxes with NO blank line between them: a wrapped continuation line
+        /// belongs to the checkbox above it, but the next checkbox marker immediately ends that
+        /// block - the two criteria's text never bleeds into each other.
+        extract_criteria_stops_a_wrap_at_the_next_checkbox_item_with_no_blank_line_between => assert_extracts(
+            "## Done when\n\n\
+                - [ ] the first behaviour continues\n\
+                \x20\x20onto a second physical line\n\
+                - [ ] the second behaviour\n",
+            &[
                 "the first behaviour continues onto a second physical line",
                 "the second behaviour",
-            ]
+            ],
         );
     }
 
-    /// A blank line ends a checkbox's block: prose that follows a blank line - even prose
-    /// that reads as a natural continuation of the sentence above - is NOT joined into the
-    /// criterion above it.
-    #[test]
-    fn extract_criteria_stops_a_wrap_at_a_blank_line_and_excludes_the_prose_after_it() {
-        let text = "## Done when\n\n\
-            - [ ] the first behaviour\n\
-            \x20\x20wraps onto a second line\n\
-            \n\
-            some unrelated prose that must not be joined into criterion one\n";
-        assert_eq!(
-            extract_criteria(text),
-            ["the first behaviour wraps onto a second line"]
+    test_cases! {
+        /// A blank line ends a checkbox's block: prose that follows a blank line - even prose
+        /// that reads as a natural continuation of the sentence above - is NOT joined into the
+        /// criterion above it.
+        extract_criteria_stops_a_wrap_at_a_blank_line_and_excludes_the_prose_after_it => assert_extracts(
+            "## Done when\n\n\
+                - [ ] the first behaviour\n\
+                \x20\x20wraps onto a second line\n\
+                \n\
+                some unrelated prose that must not be joined into criterion one\n",
+            &["the first behaviour wraps onto a second line"],
         );
     }
 
-    /// A heading line ends a checkbox's block, the same as a blank line does - text after
-    /// the heading is not joined into the criterion above it.
-    #[test]
-    fn extract_criteria_stops_a_wrap_at_a_following_heading() {
-        let text = "## Done when\n\n\
-            - [ ] the first behaviour\n\
-            \x20\x20wraps onto a second line\n\
-            ## Notes\n\
-            more prose here, not a criterion\n";
-        assert_eq!(
-            extract_criteria(text),
-            ["the first behaviour wraps onto a second line"]
+    test_cases! {
+        /// A heading line ends a checkbox's block, the same as a blank line does - text after
+        /// the heading is not joined into the criterion above it.
+        extract_criteria_stops_a_wrap_at_a_following_heading => assert_extracts(
+            "## Done when\n\n\
+                - [ ] the first behaviour\n\
+                \x20\x20wraps onto a second line\n\
+                ## Notes\n\
+                more prose here, not a criterion\n",
+            &["the first behaviour wraps onto a second line"],
         );
     }
 
-    /// A nested sub-bullet (a plain `-`/`*` line with no checkbox marker, indented under a
-    /// checkbox) is PART of that checkbox's text, joined the same way as any other
-    /// continuation line - the spec-shape lint discourages authors from writing this shape,
-    /// but the extractor must not silently drop what they wrote.
-    #[test]
-    fn extract_criteria_includes_a_nested_sub_bullet_as_part_of_the_criterion_text() {
-        let text = "## Done when\n\n\
-            - [ ] the first behaviour\n\
-            \x20\x20- a nested sub-bullet note\n\
-            \x20\x20- another nested sub-bullet\n\
-            - [ ] the second behaviour\n";
-        assert_eq!(
-            extract_criteria(text),
-            [
+    test_cases! {
+        /// A nested sub-bullet (a plain `-`/`*` line with no checkbox marker, indented under a
+        /// checkbox) is PART of that checkbox's text, joined the same way as any other
+        /// continuation line - the spec-shape lint discourages authors from writing this shape,
+        /// but the extractor must not silently drop what they wrote.
+        extract_criteria_includes_a_nested_sub_bullet_as_part_of_the_criterion_text => assert_extracts(
+            "## Done when\n\n\
+                - [ ] the first behaviour\n\
+                \x20\x20- a nested sub-bullet note\n\
+                \x20\x20- another nested sub-bullet\n\
+                - [ ] the second behaviour\n",
+            &[
                 "the first behaviour - a nested sub-bullet note - another nested sub-bullet",
                 "the second behaviour",
-            ]
+            ],
         );
     }
 
-    /// A clean single-behavior spec emits NO spec-shape advisory - the Unit-4 no-false
-    /// positive requirement: each criterion is one short observable behavior.
-    #[test]
-    fn clean_single_behavior_spec_is_silent() {
-        let text = "# Feature\n\n## Done when\n\n\
-            - [ ] the store passes the contract suite\n\
-            - [ ] the graph projector supersedes an older decision\n\
-            - [ ] the conductor integrates an approved unit\n";
-        assert!(
-            spec_shape_advisories(text).is_empty(),
-            "a clean single-behavior spec must yield no advisory; got: {:?}",
-            spec_shape_advisories(text)
+    test_cases! {
+        /// A clean single-behavior spec emits NO spec-shape advisory - the Unit-4 no-false
+        /// positive requirement: each criterion is one short observable behavior.
+        clean_single_behavior_spec_is_silent => assert_silent(
+            spec_shape_advisories("# Feature\n\n## Done when\n\n\
+                - [ ] the store passes the contract suite\n\
+                - [ ] the graph projector supersedes an older decision\n\
+                - [ ] the conductor integrates an approved unit\n"),
+            "a clean single-behavior spec must yield no advisory; got: ",
         );
     }
 
@@ -1205,16 +1246,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn path_tokens_ignores_prose_flags_versions_types_and_urls() {
-        let criteria = vec![
-            "refuse and/or warn, pass --base <ref>, see https://example.com/x.html".to_string(),
-            "a bare word config, a Type::Name, rigger_emit, and version 0.1.0".to_string(),
-        ];
-        assert!(
-            path_tokens(&criteria).is_empty(),
-            "no non-path token may be read as a path; got {:?}",
-            path_tokens(&criteria)
+    test_cases! {
+        path_tokens_ignores_prose_flags_versions_types_and_urls => assert_silent(
+            path_tokens(&[
+                "refuse and/or warn, pass --base <ref>, see https://example.com/x.html".to_string(),
+                "a bare word config, a Type::Name, rigger_emit, and version 0.1.0".to_string(),
+            ]),
+            "no non-path token may be read as a path; got ",
         );
     }
 
@@ -1233,17 +1271,14 @@ mod tests {
         assert_eq!(path_tokens(&criteria), [".github/workflows/ci.yml"]);
     }
 
-    #[test]
-    fn path_tokens_requires_an_alphabetic_extension_and_a_separator() {
+    test_cases! {
         // No separator, or a directory-only / numeric-tail token, never qualifies.
-        let criteria = vec![
-            "main.rs Cargo.toml".to_string(), // no slash
-            "crates/foo/ and foo/1.2.3".to_string(),
-        ];
-        assert!(
-            path_tokens(&criteria).is_empty(),
-            "got {:?}",
-            path_tokens(&criteria)
+        path_tokens_requires_an_alphabetic_extension_and_a_separator => assert_silent(
+            path_tokens(&[
+                "main.rs Cargo.toml".to_string(), // no slash
+                "crates/foo/ and foo/1.2.3".to_string(),
+            ]),
+            "got ",
         );
     }
 
@@ -1253,18 +1288,15 @@ mod tests {
     // checkbox_text (no second parser), surfaced through spec_lint_advisories.
     // -----------------------------------------------------------------------------------
 
-    /// F1 ownership: below three criteria, the ownership check stays silent even when
-    /// NONE of the criteria carry an OWNS/owner sentence - a collision needs at least two
-    /// other criteria to collide with.
-    #[test]
-    fn ownership_check_is_silent_below_three_criteria() {
-        let text = "## Done when\n\n\
-            - [ ] the store passes the contract suite\n\
-            - [ ] the graph projector supersedes an older decision\n";
-        assert!(
-            ownership_advisories(text).is_empty(),
-            "two criteria must never draw an ownership advisory; got: {:?}",
-            ownership_advisories(text)
+    test_cases! {
+        /// F1 ownership: below three criteria, the ownership check stays silent even when
+        /// NONE of the criteria carry an OWNS/owner sentence - a collision needs at least two
+        /// other criteria to collide with.
+        ownership_check_is_silent_below_three_criteria => assert_silent(
+            ownership_advisories("## Done when\n\n\
+                - [ ] the store passes the contract suite\n\
+                - [ ] the graph projector supersedes an older decision\n"),
+            "two criteria must never draw an ownership advisory; got: ",
         );
     }
 
@@ -1405,55 +1437,47 @@ mod tests {
         );
     }
 
-    /// `criterion_blocks` must join a checkbox's continuation lines with a SEPARATING
-    /// SPACE, not concatenate them directly - a dropped separator can accidentally weld
-    /// two words across a line break into one that spuriously satisfies
-    /// `carries_owner_sentence`'s substring check (e.g. "own" + "ership" -> "ownership",
-    /// which contains "owner").
-    #[test]
-    fn ownership_check_does_not_let_a_dropped_word_boundary_fake_an_owns_sentence() {
-        let text = "## Done when\n\n\
-            - [ ] the widget adopts a new own\n\
-            \x20\x20ership model for the config\n\
-            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
-            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
-            path.\n";
-        assert!(
-            ownership_advisories(text)
-                .iter()
-                .any(|a| a.criterion == Some(1)),
+    test_cases! {
+        /// `criterion_blocks` must join a checkbox's continuation lines with a SEPARATING
+        /// SPACE, not concatenate them directly - a dropped separator can accidentally weld
+        /// two words across a line break into one that spuriously satisfies
+        /// `carries_owner_sentence`'s substring check (e.g. "own" + "ership" -> "ownership",
+        /// which contains "owner").
+        ownership_check_does_not_let_a_dropped_word_boundary_fake_an_owns_sentence => assert_flags_criterion(
+            ownership_advisories("## Done when\n\n\
+                - [ ] the widget adopts a new own\n\
+                \x20\x20ership model for the config\n\
+                - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+                - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+                path.\n"),
+            1,
             "criterion 1 has no real OWNS/owner sentence - \"own\" and \"ership\" sit on \
-             separate lines and must NOT be welded into a false \"ownership\" match; got: \
-             {:?}",
-            ownership_advisories(text)
+                 separate lines and must NOT be welded into a false \"ownership\" match; got: \
+                 ",
         );
     }
 
-    /// The sibling of the test above, closing the same defect class with a fixture the
-    /// welded word "ownership" cannot exercise: "own" welded straight to "ership" still
-    /// fails `find_word_across_hyphen`'s OWN after-boundary check (the trailing "ship"
-    /// keeps it from matching standalone "owner"), so that fixture cannot tell a correct
-    /// join from a dropped-separator weld apart. Splitting "own" from "er" instead welds
-    /// into EXACTLY the five letters "owner" with nothing trailing - a weld
-    /// `find_word_across_hyphen`'s boundary check cannot distinguish from a genuine
-    /// standalone word, so only the separating space stands between this fixture and a
-    /// false ownership claim.
-    #[test]
-    fn ownership_check_does_not_let_a_dropped_word_boundary_weld_own_and_er_into_owner() {
-        let text = "## Done when\n\n\
-            - [ ] the widget locks down its own\n\
-            \x20\x20er and simpler path through the config\n\
-            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
-            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
-            path.\n";
-        assert!(
-            ownership_advisories(text)
-                .iter()
-                .any(|a| a.criterion == Some(1)),
+    test_cases! {
+        /// The sibling of the test above, closing the same defect class with a fixture the
+        /// welded word "ownership" cannot exercise: "own" welded straight to "ership" still
+        /// fails `find_word_across_hyphen`'s OWN after-boundary check (the trailing "ship"
+        /// keeps it from matching standalone "owner"), so that fixture cannot tell a correct
+        /// join from a dropped-separator weld apart. Splitting "own" from "er" instead welds
+        /// into EXACTLY the five letters "owner" with nothing trailing - a weld
+        /// `find_word_across_hyphen`'s boundary check cannot distinguish from a genuine
+        /// standalone word, so only the separating space stands between this fixture and a
+        /// false ownership claim.
+        ownership_check_does_not_let_a_dropped_word_boundary_weld_own_and_er_into_owner => assert_flags_criterion(
+            ownership_advisories("## Done when\n\n\
+                - [ ] the widget locks down its own\n\
+                \x20\x20er and simpler path through the config\n\
+                - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+                - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+                path.\n"),
+            1,
             "criterion 1 has no real OWNS/owner sentence - \"own\" and \"er\" sit on \
-             separate lines and must NOT be welded into a false standalone \"owner\" match; \
-             got: {:?}",
-            ownership_advisories(text)
+                 separate lines and must NOT be welded into a false standalone \"owner\" match; \
+                 got: ",
         );
     }
 
@@ -1604,67 +1628,55 @@ mod tests {
         );
     }
 
-    /// F4 open dispositions: "either" is a substring of "neither", so a sentence using
-    /// "neither ... or" must NOT be misread as the "either ... or" draft-smell pairing
-    /// just because "either" appears as a fragment of "neither".
-    #[test]
-    fn disposition_check_does_not_match_either_inside_neither() {
-        let text = "## Design\n\nThis works in neither case A or case B.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// F4 open dispositions: "either" is a substring of "neither", so a sentence using
+        /// "neither ... or" must NOT be misread as the "either ... or" draft-smell pairing
+        /// just because "either" appears as a fragment of "neither".
+        disposition_check_does_not_match_either_inside_neither => assert_silent(
+            disposition_advisories("## Design\n\nThis works in neither case A or case B.\n"),
             "\"neither\" contains \"either\" as a substring; that must not false-fire the \
-             either...or pairing; got: {:?}",
-            disposition_advisories(text)
+                 either...or pairing; got: ",
         );
     }
 
-    /// F4 open dispositions: "or" is itself a substring of ordinary words - "original",
-    /// "order", "orphan" - so a standalone "either" earlier on the line must not make a
-    /// LATER, unrelated "or"-prefixed word false-fire as the disjunction's second half. The
-    /// fixture sentence has a real standalone "either" but no real disjunction at all.
-    #[test]
-    fn disposition_check_does_not_match_or_inside_a_later_word() {
-        let text = "## Design\n\n\
-            Either approach works well; the original design remains valid throughout.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// F4 open dispositions: "or" is itself a substring of ordinary words - "original",
+        /// "order", "orphan" - so a standalone "either" earlier on the line must not make a
+        /// LATER, unrelated "or"-prefixed word false-fire as the disjunction's second half. The
+        /// fixture sentence has a real standalone "either" but no real disjunction at all.
+        disposition_check_does_not_match_or_inside_a_later_word => assert_silent(
+            disposition_advisories("## Design\n\n\
+                Either approach works well; the original design remains valid throughout.\n"),
             "\"original\" contains \" or\" as a substring; that must not false-fire the \
-             either...or pairing when there is no standalone \"or\" on the line; got: {:?}",
-            disposition_advisories(text)
+                 either...or pairing when there is no standalone \"or\" on the line; got: ",
         );
     }
 
-    /// F4 open dispositions: "worth considering" must be matched as a STANDALONE phrase
-    /// the same way either/or already are - a hyphenated compound noun like "self-worth"
-    /// immediately followed by "considering" is ordinary prose, not the hedging
-    /// disposition the check exists to catch, and must not false-fire just because the
-    /// bare substring "worth considering" happens to appear across the hyphen boundary.
-    #[test]
-    fn disposition_check_does_not_match_worth_considering_across_a_hyphenated_compound() {
-        let text = "## Design\n\n\
-            A fair price reflects self-worth considering every relevant factor.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// F4 open dispositions: "worth considering" must be matched as a STANDALONE phrase
+        /// the same way either/or already are - a hyphenated compound noun like "self-worth"
+        /// immediately followed by "considering" is ordinary prose, not the hedging
+        /// disposition the check exists to catch, and must not false-fire just because the
+        /// bare substring "worth considering" happens to appear across the hyphen boundary.
+        disposition_check_does_not_match_worth_considering_across_a_hyphenated_compound => assert_silent(
+            disposition_advisories("## Design\n\n\
+                A fair price reflects self-worth considering every relevant factor.\n"),
             "\"self-worth\" is a hyphenated compound noun; its trailing \"worth\" followed \
-             by \"considering\" must not false-fire the worth-considering draft-smell \
-             phrase; got: {:?}",
-            disposition_advisories(text)
+                 by \"considering\" must not false-fire the worth-considering draft-smell \
+                 phrase; got: ",
         );
     }
 
-    /// F4 open dispositions: a smell phrase NAMED in double quotes - the field guide's own
-    /// convention for listing the exact phrases it watches for (see specs/66's Design
-    /// bullet, which quotes all three) - must not false-positive, the same as a backtick
-    /// code span already does not.
-    #[test]
-    fn disposition_check_ignores_a_phrase_named_in_double_quotes() {
-        let text = "## Design\n\nThe lint watches for draft-smell phrases: \"worth \
-            considering\", \"either ... or\", \"could instead\".\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// F4 open dispositions: a smell phrase NAMED in double quotes - the field guide's own
+        /// convention for listing the exact phrases it watches for (see specs/66's Design
+        /// bullet, which quotes all three) - must not false-positive, the same as a backtick
+        /// code span already does not.
+        disposition_check_ignores_a_phrase_named_in_double_quotes => assert_silent(
+            disposition_advisories("## Design\n\nThe lint watches for draft-smell phrases: \"worth \
+                considering\", \"either ... or\", \"could instead\".\n"),
             "a phrase NAMED in double quotes (not used as open prose) must not \
-             false-positive; got: {:?}",
-            disposition_advisories(text)
+                 false-positive; got: ",
         );
     }
 
@@ -1685,24 +1697,21 @@ mod tests {
         );
     }
 
-    /// Round-5 REJECT remedy (`adj-u66c3-r5-reject-selfclean-live-violation`,
-    /// `adv-u66c3-r5-f4-either-or-false-fires-on-a-decided-disposition-rule`): "satisfied
-    /// either by A or by B" is the field guide's own decided-disposition idiom (specs/68's
-    /// Global constraints and all four Done-when criteria use it verbatim) - it names two
-    /// concrete, already-accepted satisfaction paths, not an open question about which
-    /// outcome occurs, so it must never trip F4.
-    #[test]
-    fn disposition_check_does_not_match_a_satisfied_either_or_decided_disposition() {
-        let text = "## Global constraints\n\n\
-            - Disposition for criteria 1-4: each may be satisfied either by fresh \
-            implementation or by independently re-verifying already-integrated code at the \
-            run's base commit - the evidence bar for the re-verify path is rerunning that \
-            criterion's own pinned tests plus both feature lanes.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// Round-5 REJECT remedy (`adj-u66c3-r5-reject-selfclean-live-violation`,
+        /// `adv-u66c3-r5-f4-either-or-false-fires-on-a-decided-disposition-rule`): "satisfied
+        /// either by A or by B" is the field guide's own decided-disposition idiom (specs/68's
+        /// Global constraints and all four Done-when criteria use it verbatim) - it names two
+        /// concrete, already-accepted satisfaction paths, not an open question about which
+        /// outcome occurs, so it must never trip F4.
+        disposition_check_does_not_match_a_satisfied_either_or_decided_disposition => assert_silent(
+            disposition_advisories("## Global constraints\n\n\
+                - Disposition for criteria 1-4: each may be satisfied either by fresh \
+                implementation or by independently re-verifying already-integrated code at the \
+                run's base commit - the evidence bar for the re-verify path is rerunning that \
+                criterion's own pinned tests plus both feature lanes.\n"),
             "a \"satisfied either ... or ...\" decided-disposition sentence must not \
-             false-fire F4; got: {:?}",
-            disposition_advisories(text)
+                 false-fire F4; got: ",
         );
     }
 
@@ -1725,101 +1734,85 @@ mod tests {
         assert!(advisories[0].detail.contains("either"));
     }
 
-    /// The "satisfied" governing word must be the STANDALONE word immediately preceding
-    /// "either" - a negated form like "unsatisfied either ... or ..." is a different word
-    /// (word-boundary check, not a bare suffix match) and must still be read as an open
-    /// hedge, not silently swallowed by the decided-disposition exemption.
-    #[test]
-    fn disposition_check_does_not_exempt_unsatisfied_either_or() {
-        let text = "## Design\n\nthe criterion remains unsatisfied either by retry or by \
-            escalation, undecided.\n";
-        assert!(
-            !disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// The "satisfied" governing word must be the STANDALONE word immediately preceding
+        /// "either" - a negated form like "unsatisfied either ... or ..." is a different word
+        /// (word-boundary check, not a bare suffix match) and must still be read as an open
+        /// hedge, not silently swallowed by the decided-disposition exemption.
+        disposition_check_does_not_exempt_unsatisfied_either_or => assert_fires(
+            disposition_advisories("## Design\n\nthe criterion remains unsatisfied either by retry or by \
+                escalation, undecided.\n"),
             "\"unsatisfied\" is a different word from \"satisfied\" - the exemption must not \
-             match a bare suffix; got: {:?}",
-            disposition_advisories(text)
+                 match a bare suffix; got: ",
         );
     }
 
-    /// Corpus-wide sweep residual (found reproducing round 5's fix on the real specs/68
-    /// file, not named individually in the REJECT verdict): "either" also has an ordinary,
-    /// non-disjunctive sense ("one of the two") with no "or" of its own - specs/68
-    /// criterion 1's "cannot bypass either surface" - followed, in a LATER unrelated clause
-    /// on the same physical line, by a genuine standalone "or" ("installs, replaces, or
-    /// modifies"). Before the either...or pairing was bounded to one clause, this unrelated
-    /// pair false-fired F4. It must not.
-    #[test]
-    fn disposition_check_does_not_pair_a_non_disjunctive_either_with_a_faraway_unrelated_or() {
-        let text = "## Design\n\nan entry cannot bypass either surface; a test also proves \
-            an agent never installs, replaces, or modifies the operator's binary.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// Corpus-wide sweep residual (found reproducing round 5's fix on the real specs/68
+        /// file, not named individually in the REJECT verdict): "either" also has an ordinary,
+        /// non-disjunctive sense ("one of the two") with no "or" of its own - specs/68
+        /// criterion 1's "cannot bypass either surface" - followed, in a LATER unrelated clause
+        /// on the same physical line, by a genuine standalone "or" ("installs, replaces, or
+        /// modifies"). Before the either...or pairing was bounded to one clause, this unrelated
+        /// pair false-fired F4. It must not.
+        disposition_check_does_not_pair_a_non_disjunctive_either_with_a_faraway_unrelated_or => assert_silent(
+            disposition_advisories("## Design\n\nan entry cannot bypass either surface; a test also proves \
+                an agent never installs, replaces, or modifies the operator's binary.\n"),
             "\"either surface\" has no \"or\" of its own; a faraway, unrelated \"or\" in a \
-             later clause must not be misread as its pair; got: {:?}",
-            disposition_advisories(text)
+                 later clause must not be misread as its pair; got: ",
         );
     }
 
-    /// The clause bound must not swallow a GENUINE disjunction that follows a
-    /// non-disjunctive "either" earlier on the same line - the scan must keep looking past
-    /// the first, non-paired "either" rather than stopping there.
-    #[test]
-    fn disposition_check_finds_a_genuine_hedge_after_an_earlier_non_disjunctive_either() {
-        let text = "## Design\n\nan entry cannot bypass either surface; either the daemon \
-            retries or it escalates, undecided.\n";
-        let advisories = disposition_advisories(text);
-        assert!(
-            advisories.iter().any(|a| a.detail.contains("either")),
+    test_cases! {
+        /// The clause bound must not swallow a GENUINE disjunction that follows a
+        /// non-disjunctive "either" earlier on the same line - the scan must keep looking past
+        /// the first, non-paired "either" rather than stopping there.
+        disposition_check_finds_a_genuine_hedge_after_an_earlier_non_disjunctive_either => assert_flags_detail(
+            disposition_advisories("## Design\n\nan entry cannot bypass either surface; either the daemon \
+                retries or it escalates, undecided.\n"),
+            "either",
             "a genuine hedge later on the line must still be caught even though an earlier, \
-             non-disjunctive \"either\" precedes it; got: {advisories:?}"
+                 non-disjunctive \"either\" precedes it; got: ",
         );
     }
 
-    /// A bare "either ... or" hedge with no governing "satisfied" word at all is unaffected
-    /// by the exemption and still flags - the baseline case the exemption must not weaken.
-    #[test]
-    fn disposition_check_still_flags_a_bare_either_or_with_no_satisfied_word() {
-        let text = "## Design\n\nreindex either retires or re-points to the symbol index, \
-            whichever the surviving command surface makes honest.\n";
-        assert!(
-            !disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// A bare "either ... or" hedge with no governing "satisfied" word at all is unaffected
+        /// by the exemption and still flags - the baseline case the exemption must not weaken.
+        disposition_check_still_flags_a_bare_either_or_with_no_satisfied_word => assert_fires(
+            disposition_advisories("## Design\n\nreindex either retires or re-points to the symbol index, \
+                whichever the surviving command surface makes honest.\n"),
             "a bare either...or hedge with no \"satisfied\" governing word must still be \
-             flagged; got: {:?}",
-            disposition_advisories(text)
+                 flagged; got: ",
         );
     }
 
-    /// The double-quote exemption must track its OPENING delimiter all the way to the
-    /// matching CLOSE, not merely blank a couple of characters after the opening mark -
-    /// padding right after the quote (before the phrase itself starts) must not let the
-    /// phrase later in the same span leak into the prose scan.
-    #[test]
-    fn disposition_check_ignores_a_wide_double_quoted_span() {
-        let text =
-            "## Design\n\nThe phrase is named here: \" worth considering \" as an example.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
-            "the whole double-quoted span must be exempt regardless of its width; got: {:?}",
-            disposition_advisories(text)
+    test_cases! {
+        /// The double-quote exemption must track its OPENING delimiter all the way to the
+        /// matching CLOSE, not merely blank a couple of characters after the opening mark -
+        /// padding right after the quote (before the phrase itself starts) must not let the
+        /// phrase later in the same span leak into the prose scan.
+        disposition_check_ignores_a_wide_double_quoted_span => assert_silent(
+            disposition_advisories(
+                "## Design\n\nThe phrase is named here: \" worth considering \" as an example.\n",
+            ),
+            "the whole double-quoted span must be exempt regardless of its width; got: ",
         );
     }
 
-    /// Round-9 REJECT remedy (`adj-u66c3-r9-verdict-reject`,
-    /// `adv-u66c3-r9-strip-inline-code-resets-per-line-crossline-quote-false-fires`): the
-    /// quote-open span state must carry across a hard-wrapped paragraph's line boundary, not
-    /// reset at each physical line. A double-quoted phrase whose closing delimiter falls on
-    /// the NEXT line must stay exempt for its whole span, including the continuation line's
-    /// content up to the close.
-    #[test]
-    fn disposition_check_ignores_a_double_quoted_span_that_crosses_a_line_wrap() {
-        let text = "## Design\n\n\
-            The plan states: \"we\n\
-            could instead retry\" as the documented phrasing.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// Round-9 REJECT remedy (`adj-u66c3-r9-verdict-reject`,
+        /// `adv-u66c3-r9-strip-inline-code-resets-per-line-crossline-quote-false-fires`): the
+        /// quote-open span state must carry across a hard-wrapped paragraph's line boundary, not
+        /// reset at each physical line. A double-quoted phrase whose closing delimiter falls on
+        /// the NEXT line must stay exempt for its whole span, including the continuation line's
+        /// content up to the close.
+        disposition_check_ignores_a_double_quoted_span_that_crosses_a_line_wrap => assert_silent(
+            disposition_advisories("## Design\n\n\
+                The plan states: \"we\n\
+                could instead retry\" as the documented phrasing.\n"),
             "a double-quoted span split across a hard-wrapped line must stay exempt for its \
-             whole span, including the continuation line; got: {:?}",
-            disposition_advisories(text)
+                 whole span, including the continuation line; got: ",
         );
     }
 
@@ -1846,20 +1839,16 @@ mod tests {
         );
     }
 
-    /// The balanced companion to the fail-closed test above: with an EVEN delimiter
-    /// count the mask covers first-through-last mark only, so an unquoted smell OUTSIDE
-    /// the marks still fires - recall survives wherever the invariant permits it.
-    #[test]
-    fn disposition_check_still_fires_outside_a_balanced_quote_pair() {
-        let text = "## Design\n\n\
-            The report labels this \"a tolerance issue\" in passing, but the team\n\
-            could instead retry the whole approach if this keeps recurring.\n";
-        let advisories = disposition_advisories(text);
-        assert!(
-            advisories
-                .iter()
-                .any(|a| a.detail.contains("could instead")),
-            "an unquoted smell after a balanced quote pair must still fire; got: {advisories:?}"
+    test_cases! {
+        /// The balanced companion to the fail-closed test above: with an EVEN delimiter
+        /// count the mask covers first-through-last mark only, so an unquoted smell OUTSIDE
+        /// the marks still fires - recall survives wherever the invariant permits it.
+        disposition_check_still_fires_outside_a_balanced_quote_pair => assert_flags_detail(
+            disposition_advisories("## Design\n\n\
+                The report labels this \"a tolerance issue\" in passing, but the team\n\
+                could instead retry the whole approach if this keeps recurring.\n"),
+            "could instead",
+            "an unquoted smell after a balanced quote pair must still fire; got: ",
         );
     }
 
@@ -1944,117 +1933,102 @@ mod tests {
         );
     }
 
-    #[test]
-    fn disposition_check_a_stray_unmatched_quote_does_not_unmask_a_later_real_quoted_phrase() {
-        let text = "## Design\n\n\
-            The gap measured 6\" today, well within tolerance for the current\n\
-            build, and the plan states \"we could instead retry\" as the\n\
-            documented phrasing, unrelated to the rest of this paragraph.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        disposition_check_a_stray_unmatched_quote_does_not_unmask_a_later_real_quoted_phrase => assert_silent(
+            disposition_advisories("## Design\n\n\
+                The gap measured 6\" today, well within tolerance for the current\n\
+                build, and the plan states \"we could instead retry\" as the\n\
+                documented phrasing, unrelated to the rest of this paragraph.\n"),
             "a real double-quoted disposition phrase must stay exempt even after an earlier \
-             stray unmatched quote mark in the same paragraph - only the stray mark is \
-             spurious, the later span is genuinely quoted; got: {:?}",
-            disposition_advisories(text)
+                 stray unmatched quote mark in the same paragraph - only the stray mark is \
+                 spurious, the later span is genuinely quoted; got: ",
         );
     }
 
-    /// Round-13 REJECT remedy (`adj-u66c3-r13-role-based-digit-adjacency`,
-    /// `sdet-u66c3-r12-closing-quote-digit-adjacency-false-positive`,
-    /// `adv-u66c3-r12-confirmed-closing-quote-digit-adjacency-live-repro`): the mirror
-    /// defect the round-12 opener-only fix left open on the CLOSER side. Candidacy must
-    /// depend on scan ROLE, not merely the character preceding it: once a genuine
-    /// (non-digit-adjacent) opener has already been found, ANY later occurrence of the
-    /// same delimiter is eligible to close it, including one that happens to sit
-    /// immediately after a digit - the algorithm already knows a real span is open at
-    /// that point, so it is no longer guessing whether a lone mark is spurious. Before
-    /// this fix, a genuinely quoted span whose own closing `"` fell right after a digit
-    /// (`"...retry 10"`) could never close - the opener was left unmatched-to-end and,
-    /// per the closed-span-only masking design, left completely unmasked - so F4
-    /// false-fired on content that is genuinely double-quoted in the source, falsifying
-    /// the "quoted or named text can never false-positive" intent (spec.rs:406-407) this
-    /// unit has been REJECTed for at rounds 4, 5, 6, 9, 10, 11, and 12. Same fixture
-    /// shape as the adjudicator's own round-12 reproduction probe. Paired with the
-    /// opener-exclusion test immediately below so both directions of the role-based
-    /// predicate are proven together in this round's diff, per the adjudicator's explicit
-    /// instruction not to fix and ship one side at a time again.
-    #[test]
-    fn disposition_check_a_real_quoted_phrase_whose_closing_quote_follows_a_digit_stays_exempt() {
-        let text = "## Design\n\n\
-            The plan states \"we could instead retry 10\" as documented, unrelated\n\
-            to the rest of this paragraph.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// Round-13 REJECT remedy (`adj-u66c3-r13-role-based-digit-adjacency`,
+        /// `sdet-u66c3-r12-closing-quote-digit-adjacency-false-positive`,
+        /// `adv-u66c3-r12-confirmed-closing-quote-digit-adjacency-live-repro`): the mirror
+        /// defect the round-12 opener-only fix left open on the CLOSER side. Candidacy must
+        /// depend on scan ROLE, not merely the character preceding it: once a genuine
+        /// (non-digit-adjacent) opener has already been found, ANY later occurrence of the
+        /// same delimiter is eligible to close it, including one that happens to sit
+        /// immediately after a digit - the algorithm already knows a real span is open at
+        /// that point, so it is no longer guessing whether a lone mark is spurious. Before
+        /// this fix, a genuinely quoted span whose own closing `"` fell right after a digit
+        /// (`"...retry 10"`) could never close - the opener was left unmatched-to-end and,
+        /// per the closed-span-only masking design, left completely unmasked - so F4
+        /// false-fired on content that is genuinely double-quoted in the source, falsifying
+        /// the "quoted or named text can never false-positive" intent (spec.rs:406-407) this
+        /// unit has been REJECTed for at rounds 4, 5, 6, 9, 10, 11, and 12. Same fixture
+        /// shape as the adjudicator's own round-12 reproduction probe. Paired with the
+        /// opener-exclusion test immediately below so both directions of the role-based
+        /// predicate are proven together in this round's diff, per the adjudicator's explicit
+        /// instruction not to fix and ship one side at a time again.
+        disposition_check_a_real_quoted_phrase_whose_closing_quote_follows_a_digit_stays_exempt => assert_silent(
+            disposition_advisories("## Design\n\n\
+                The plan states \"we could instead retry 10\" as documented, unrelated\n\
+                to the rest of this paragraph.\n"),
             "a real double-quoted disposition phrase must stay exempt even when its own \
-             closing quote sits immediately after a digit with no separating whitespace - \
-             the digit-adjacency exclusion is opener-only, a closer must keep pairing \
-             regardless of what precedes it; got: {:?}",
-            disposition_advisories(text)
+                 closing quote sits immediately after a digit with no separating whitespace - \
+                 the digit-adjacency exclusion is opener-only, a closer must keep pairing \
+                 regardless of what precedes it; got: ",
         );
     }
 
-    /// Round-13 remedy (`adj-u66c3-r13-role-based-digit-adjacency`): the OPENER
-    /// direction, paired with the closer-direction test immediately above. A `"`
-    /// immediately after a digit must stay excluded from OPENER candidacy - unchanged
-    /// from round-12 - so a stray inches-mark quote can never itself start a span and
-    /// thereby steal a later real span's own opening delimiter. Distinct fixture from the
-    /// round-10/round-11 tests above (a single stray mark with no other quote earlier to
-    /// confuse the read), scanned together with the closer-direction test above so this
-    /// round's diff proves the new role-based predicate holds in both directions at once,
-    /// not just the direction this round happened to fix.
-    #[test]
-    fn disposition_check_digit_adjacent_quote_still_excluded_as_opener() {
-        let text = "## Design\n\n\
-            The gap measured 6\" today, and the plan states \"we could instead\n\
-            retry\" as documented, unrelated to the rest of this paragraph.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// Round-13 remedy (`adj-u66c3-r13-role-based-digit-adjacency`): the OPENER
+        /// direction, paired with the closer-direction test immediately above. A `"`
+        /// immediately after a digit must stay excluded from OPENER candidacy - unchanged
+        /// from round-12 - so a stray inches-mark quote can never itself start a span and
+        /// thereby steal a later real span's own opening delimiter. Distinct fixture from the
+        /// round-10/round-11 tests above (a single stray mark with no other quote earlier to
+        /// confuse the read), scanned together with the closer-direction test above so this
+        /// round's diff proves the new role-based predicate holds in both directions at once,
+        /// not just the direction this round happened to fix.
+        disposition_check_digit_adjacent_quote_still_excluded_as_opener => assert_silent(
+            disposition_advisories("## Design\n\n\
+                The gap measured 6\" today, and the plan states \"we could instead\n\
+                retry\" as documented, unrelated to the rest of this paragraph.\n"),
             "a stray digit-adjacent quote must stay excluded as an opener - if it wrongly \
-             opened, it would forward-pair with the real span's own opening quote as its \
-             \"close\", leaving the real quoted hedge phrase unmasked; got: {:?}",
-            disposition_advisories(text)
+                 opened, it would forward-pair with the real span's own opening quote as its \
+                 \"close\", leaving the real quoted hedge phrase unmasked; got: ",
         );
     }
 
-    /// Mutation-efficacy gap (round-13 accounting, `mutants.out/outcomes.json`): a mutant
-    /// replacing the `i > 0` bounds guard in `is_opener_candidate` with `i >= 0` survived
-    /// the suite above unnoticed - `i >= 0` is always true for a `usize`, so the mutant
-    /// only diverges from the real guard when `i == 0` AND `chars[0] == '"'`, a case none
-    /// of this file's fixtures exercise (every quote in every fixture above is preceded by
-    /// at least one other character). At `i == 0` the real code's short-circuit never
-    /// evaluates `chars[i - 1]`; the mutant's vacuous `i >= 0` lets evaluation reach
-    /// `chars[i - 1]` anyway, which underflows (`0usize - 1`) and panics. This fixture's
-    /// very first character, of the whole joined paragraph, is a genuine opening `"` (no
-    /// digit, nothing at all, precedes it) - proving both that the real guard correctly
-    /// treats a leading quote as a valid opener (this assertion) and, independently
-    /// verified by temporarily applying the `i >= 0` mutant and rerunning this exact test,
-    /// that the mutant panics here instead.
-    #[test]
-    fn disposition_check_a_quote_at_the_very_start_of_a_paragraph_is_a_valid_opener() {
-        let text = "## Design\n\n\
-            \"we could instead retry\" is the documented approach, unrelated to \
-            anything else.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// Mutation-efficacy gap (round-13 accounting, `mutants.out/outcomes.json`): a mutant
+        /// replacing the `i > 0` bounds guard in `is_opener_candidate` with `i >= 0` survived
+        /// the suite above unnoticed - `i >= 0` is always true for a `usize`, so the mutant
+        /// only diverges from the real guard when `i == 0` AND `chars[0] == '"'`, a case none
+        /// of this file's fixtures exercise (every quote in every fixture above is preceded by
+        /// at least one other character). At `i == 0` the real code's short-circuit never
+        /// evaluates `chars[i - 1]`; the mutant's vacuous `i >= 0` lets evaluation reach
+        /// `chars[i - 1]` anyway, which underflows (`0usize - 1`) and panics. This fixture's
+        /// very first character, of the whole joined paragraph, is a genuine opening `"` (no
+        /// digit, nothing at all, precedes it) - proving both that the real guard correctly
+        /// treats a leading quote as a valid opener (this assertion) and, independently
+        /// verified by temporarily applying the `i >= 0` mutant and rerunning this exact test,
+        /// that the mutant panics here instead.
+        disposition_check_a_quote_at_the_very_start_of_a_paragraph_is_a_valid_opener => assert_silent(
+            disposition_advisories("## Design\n\n\
+                \"we could instead retry\" is the documented approach, unrelated to \
+                anything else.\n"),
             "a paragraph that opens with a genuine double quote as its very first \
-             character must treat that quote as a valid opener, not panic on an \
-             out-of-bounds look-back; got: {:?}",
-            disposition_advisories(text)
+                 character must treat that quote as a valid opener, not panic on an \
+                 out-of-bounds look-back; got: ",
         );
     }
 
-    /// F4 open dispositions: a smell phrase inside the `## Notes` section is an explicit,
-    /// intentional deferral - it must NOT be flagged.
-    #[test]
-    fn disposition_check_is_silent_inside_notes() {
-        let text = "## Design\n\nsettled prose, nothing open.\n\n\
-            ## Notes (non-criteria)\n\n\
-            - worth considering for a later revision, deliberately deferred here.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
+    test_cases! {
+        /// F4 open dispositions: a smell phrase inside the `## Notes` section is an explicit,
+        /// intentional deferral - it must NOT be flagged.
+        disposition_check_is_silent_inside_notes => assert_silent(
+            disposition_advisories("## Design\n\nsettled prose, nothing open.\n\n\
+                ## Notes (non-criteria)\n\n\
+                - worth considering for a later revision, deliberately deferred here.\n"),
             "a smell phrase inside Notes is an explicit deferral, not an open disposition; \
-             got: {:?}",
-            disposition_advisories(text)
+                 got: ",
         );
     }
 
@@ -2072,33 +2046,28 @@ mod tests {
         );
     }
 
-    /// F4 open dispositions: a smell phrase quoted inside a fenced code block or an inline
-    /// code span must never false-positive.
-    #[test]
-    fn disposition_check_ignores_fenced_and_inline_code() {
-        let text = "## Design\n\n\
-            ```\nworth considering as literal example text\n```\n\n\
-            The config carries `either this or that` as a literal token, unrelated prose.\n";
-        assert!(
-            disposition_advisories(text).is_empty(),
-            "quoted code must never false-positive; got: {:?}",
-            disposition_advisories(text)
+    test_cases! {
+        /// F4 open dispositions: a smell phrase quoted inside a fenced code block or an inline
+        /// code span must never false-positive.
+        disposition_check_ignores_fenced_and_inline_code => assert_silent(
+            disposition_advisories("## Design\n\n\
+                ```\nworth considering as literal example text\n```\n\n\
+                The config carries `either this or that` as a literal token, unrelated prose.\n"),
+            "quoted code must never false-positive; got: ",
         );
     }
 
-    /// F4 open dispositions: a smell phrase inside a Done-when checkbox is attributed to
-    /// that criterion.
-    #[test]
-    fn disposition_check_attributes_a_hit_inside_a_criterion() {
-        let text = "## Done when\n\n\
-            - [ ] the store passes the contract suite\n\
-            - [ ] either the recovery path retries or it escalates immediately\n";
-        let advisories = disposition_advisories(text);
-        let hit = advisories
-            .iter()
-            .find(|a| a.class == "F4 disposition")
-            .expect("the either...or checkbox must be flagged");
-        assert_eq!(hit.criterion, Some(2));
+    test_cases! {
+        /// F4 open dispositions: a smell phrase inside a Done-when checkbox is attributed to
+        /// that criterion.
+        disposition_check_attributes_a_hit_inside_a_criterion => assert_attributed(
+            disposition_advisories("## Done when\n\n\
+                - [ ] the store passes the contract suite\n\
+                - [ ] either the recovery path retries or it escalates immediately\n"),
+            "F4 disposition",
+            "the either...or checkbox must be flagged",
+            Some(2),
+        );
     }
 
     /// `starts_new_element` recognizes EACH of its five prefix kinds independently
@@ -2126,32 +2095,28 @@ mod tests {
         );
     }
 
-    /// Hygiene: a U+2014 em dash is flagged anywhere in the document - Design prose here,
-    /// with NO criterion attribution since it sits outside any checkbox.
-    #[test]
-    fn hygiene_check_flags_an_em_dash_in_prose() {
-        let text = "## Design\n\nthe daemon starts \u{2014} then it writes a pidfile.\n";
-        let advisories = hygiene_advisories(text);
-        let hit = advisories
-            .iter()
-            .find(|a| a.class == "hygiene")
-            .expect("a U+2014 em dash in prose must be flagged");
-        assert_eq!(hit.criterion, None);
+    test_cases! {
+        /// Hygiene: a U+2014 em dash is flagged anywhere in the document - Design prose here,
+        /// with NO criterion attribution since it sits outside any checkbox.
+        hygiene_check_flags_an_em_dash_in_prose => assert_attributed(
+            hygiene_advisories("## Design\n\nthe daemon starts \u{2014} then it writes a pidfile.\n"),
+            "hygiene",
+            "a U+2014 em dash in prose must be flagged",
+            None,
+        );
     }
 
-    /// Hygiene: an em dash INSIDE a Done-when checkbox is attributed to that criterion -
-    /// no exemption for criteria, Notes, or code, unlike the disposition check.
-    #[test]
-    fn hygiene_check_attributes_a_hit_inside_a_criterion() {
-        let text = "## Done when\n\n\
-            - [ ] the store passes the contract suite\n\
-            - [ ] the report renders a summary line \u{2014} appended at the end\n";
-        let advisories = hygiene_advisories(text);
-        let hit = advisories
-            .iter()
-            .find(|a| a.class == "hygiene")
-            .expect("the em dash inside criterion 2 must be flagged");
-        assert_eq!(hit.criterion, Some(2));
+    test_cases! {
+        /// Hygiene: an em dash INSIDE a Done-when checkbox is attributed to that criterion -
+        /// no exemption for criteria, Notes, or code, unlike the disposition check.
+        hygiene_check_attributes_a_hit_inside_a_criterion => assert_attributed(
+            hygiene_advisories("## Done when\n\n\
+                - [ ] the store passes the contract suite\n\
+                - [ ] the report renders a summary line \u{2014} appended at the end\n"),
+            "hygiene",
+            "the em dash inside criterion 2 must be flagged",
+            Some(2),
+        );
     }
 
     /// `line_criterion` attributes a continuation line to its checkbox regardless of
@@ -2243,21 +2208,18 @@ mod tests {
         }
     }
 
-    /// spec_lint_advisories reports a clean fixture (three-plus criteria, each carrying an
-    /// OWNS sentence, single-behavior, no smells, no em dash) as fully clean.
-    #[test]
-    fn spec_lint_advisories_is_silent_on_a_clean_fixture() {
-        let text = "# Widget\n\n## Done when\n\n\
-            - [ ] the store passes the contract suite. This criterion OWNS the contract \
-            coverage.\n\
-            - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
-            supersede path.\n\
-            - [ ] the conductor integrates an approved unit. This criterion OWNS the \
-            integration step.\n";
-        assert!(
-            spec_lint_advisories(text).is_empty(),
-            "a fully clean fixture must draw no advisory; got: {:?}",
-            spec_lint_advisories(text)
+    test_cases! {
+        /// spec_lint_advisories reports a clean fixture (three-plus criteria, each carrying an
+        /// OWNS sentence, single-behavior, no smells, no em dash) as fully clean.
+        spec_lint_advisories_is_silent_on_a_clean_fixture => assert_silent(
+            spec_lint_advisories("# Widget\n\n## Done when\n\n\
+                - [ ] the store passes the contract suite. This criterion OWNS the contract \
+                coverage.\n\
+                - [ ] the graph projector supersedes an older decision. This criterion OWNS the \
+                supersede path.\n\
+                - [ ] the conductor integrates an approved unit. This criterion OWNS the \
+                integration step.\n"),
+            "a fully clean fixture must draw no advisory; got: ",
         );
     }
 
