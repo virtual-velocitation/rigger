@@ -1209,13 +1209,13 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 504,
-        "end_line": 504
+        "start_line": 481,
+        "end_line": 481
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 591,
-        "end_line": 591
+        "start_line": 568,
+        "end_line": 568
       },
       {
         "file": "src/ingest.rs",
@@ -3819,8 +3819,8 @@
     "sites": [
       {
         "file": "src/config.rs",
-        "start_line": 1582,
-        "end_line": 1584
+        "start_line": 1591,
+        "end_line": 1593
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -4760,6 +4760,21 @@
     ]
   },
   {
+    "id": "dup-6faa030a03b7",
+    "sites": [
+      {
+        "file": "src/dash.rs",
+        "start_line": 8945,
+        "end_line": 8947
+      },
+      {
+        "file": "src/grounder/workflowdef.rs",
+        "start_line": 128,
+        "end_line": 133
+      }
+    ]
+  },
+  {
     "id": "dup-4d77d0fdce5a",
     "sites": [
       {
@@ -5164,8 +5179,8 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 247,
-        "end_line": 254
+        "start_line": 224,
+        "end_line": 231
       }
     ]
   },
@@ -5214,8 +5229,8 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 196,
-        "end_line": 226
+        "start_line": 173,
+        "end_line": 203
       }
     ]
   },
@@ -5314,8 +5329,8 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 576,
-        "end_line": 580
+        "start_line": 553,
+        "end_line": 557
       }
     ]
   },
@@ -5324,8 +5339,8 @@
     "sites": [
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 234,
-        "end_line": 240
+        "start_line": 211,
+        "end_line": 217
       },
       {
         "file": "tests/common/mod.rs",

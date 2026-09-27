@@ -1,5 +1,10 @@
 [
   {
+    "id": "dup-6faa030a03b7",
+    "disposition": "not-a-duplicate",
+    "reason": "`ids` lists a neighborhood view's node ids for a dash test while `light_reviewers_of` reads a review panel's light-tier roster; they share only the collect-into-a-Vec shape."
+  },
+  {
     "id": "dup-4841cf90306e",
     "disposition": "not-a-duplicate",
     "reason": "`usage` prints the CLI usage text to stderr while `print_scaffold_pointer` prints the post-setup starter-fleet pointer to stdout: one print call each, with different text and a different stream."

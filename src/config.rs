@@ -388,16 +388,19 @@ impl ReviewPanel {
     /// other unresolved reference (spec 03: the light panel's agent ids are validated
     /// too). Terminates: the light panel's own `tiers` is `None` in every real config.
     pub fn agent_ids(&self) -> Vec<String> {
-        let mut ids = self.lenses.clone();
-        if !self.adversary.is_empty() {
-            ids.push(self.adversary.clone());
-        }
-        if !self.adjudicator.is_empty() {
-            ids.push(self.adjudicator.clone());
-        }
+        let mut ids = self.full_roster();
         if let Some(depth) = self.depth() {
             ids.extend(depth.light.agent_ids());
         }
+        ids
+    }
+
+    /// The agent ids on this panel's own top-level roster - the lenses, the adversary and the
+    /// adjudicator - WITHOUT the opt-in light-tier roster [`Self::agent_ids`] adds: the roster a
+    /// unit that stays on the full panel reviews itself with.
+    pub fn full_roster(&self) -> Vec<String> {
+        let mut ids = self.lenses.clone();
+        push_reviewers(&mut ids, &self.adversary, &self.adjudicator);
         ids
     }
 
@@ -762,15 +765,21 @@ impl Stage {
             ids.push(self.agent.clone());
         }
         ids.extend(self.agents.iter().cloned());
-        if !self.adversary.is_empty() {
-            ids.push(self.adversary.clone());
-        }
-        if !self.adjudicator.is_empty() {
-            ids.push(self.adjudicator.clone());
-        }
+        push_reviewers(&mut ids, &self.adversary, &self.adjudicator);
         ids.extend(self.review.agent_ids());
         ids
     }
+}
+
+/// Append a reviewer pair to `ids` - the `adversary` then the `adjudicator`, each only when set
+/// (an unset `adversary:`/`adjudicator:` field defaults to `""`, never an agent id).
+pub fn push_reviewers(ids: &mut Vec<String>, adversary: &str, adjudicator: &str) {
+    ids.extend(
+        [adversary, adjudicator]
+            .into_iter()
+            .filter(|id| !id.is_empty())
+            .map(str::to_string),
+    );
 }
 
 /// The event-store SELECTION a project's committed config pins (§48 rung 4, the project-config

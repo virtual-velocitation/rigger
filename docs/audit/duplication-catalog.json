@@ -4976,6 +4976,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-6faa030a03b7",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "src/dash.rs",
+        "name": "ids",
+        "content_hash": "d2c40ab3cd5448bf"
+      },
+      {
+        "file": "src/grounder/workflowdef.rs",
+        "name": "light_reviewers_of",
+        "content_hash": "5e0f351f1b53fd1f"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: src/dash.rs, src/grounder/workflowdef.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-4d77d0fdce5a",
     "classification": "near",
     "sites": [

@@ -1803,7 +1803,7 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1741 func
 
 ## 2. Duplication Catalog
 
-182 clusters (1269 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+183 clusters (1271 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1813,7 +1813,7 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1741 func
 - **.rigger-path string literals**: 538 site(s) - `dup-b855a30b879f`
 - **error-shaping helper functions**: 10 site(s) - `dup-ff68607e5532`
 
-### Clusters (33 exact, 125 near, 24 semantic)
+### Clusters (33 exact, 126 near, 24 semantic)
 
 #### `dup-7dfa0dd1a6a8` (near, 2 sites)
 
@@ -2254,8 +2254,8 @@ mandatory sweep: .rigger-path string literals - 538 site(s), collected mechanica
              walk of the whole tree.\n"`
 - `src/gate.rs:502-502` `".rigger-cache-probe-{}"`
 - `src/grounder/mod.rs:458-458` `".rigger"`
-- `src/grounder/workflowdef.rs:504-504` `".rigger"`
-- `src/grounder/workflowdef.rs:591-591` `"this project's own .rigger/workflow.yml must extract at least one event"`
+- `src/grounder/workflowdef.rs:481-481` `".rigger"`
+- `src/grounder/workflowdef.rs:568-568` `"this project's own .rigger/workflow.yml must extract at least one event"`
 - `src/ingest.rs:820-820` `".rigger"`
 - `src/ingest.rs:822-822` `".rigger"`
 - `src/ingest.rs:831-831` `"gw/.rigger/workflow.yml@"`
@@ -3346,7 +3346,7 @@ Proposed home: `a new shared module (sites span 3 files: src/config.rs, tests/no
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/config.rs:1582-1584` `is_word_byte`
+- `src/config.rs:1591-1593` `is_word_byte`
 - `tests/no_os_kill_audit.rs:59-61` `is_word_char`
 - `tests/simplification_audit.rs:200-202` `is_ident_char`
 
@@ -3814,6 +3814,15 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/dash.rs:8942-8944` `layer_of`
 - `tests/common/fixtures/graph.rs:186-188` `call_layer`
 
+#### `dup-6faa030a03b7` (near, 2 sites)
+
+Proposed home: `a new shared module (sites span 2 files: src/dash.rs, src/grounder/workflowdef.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `src/dash.rs:8945-8947` `ids`
+- `src/grounder/workflowdef.rs:128-133` `light_reviewers_of`
+
 #### `dup-4d77d0fdce5a` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/dash.rs, tests/metadata_card_periphery.rs)`
@@ -4032,7 +4041,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 
 - `src/grounder/design/events.rs:99-123` `project_batches`
 - `src/grounder/symbols/events.rs:56-58` `project_batches`
-- `src/grounder/workflowdef.rs:247-254` `project_batches`
+- `src/grounder/workflowdef.rs:224-231` `project_batches`
 
 #### `dup-d6fb24114b41` (near, 3 sites)
 
@@ -4060,7 +4069,7 @@ Proposed home: `one shared `extract_events` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/grounder/symbols/events.rs:171-267` `extract_events`
-- `src/grounder/workflowdef.rs:196-226` `extract_events`
+- `src/grounder/workflowdef.rs:173-203` `extract_events`
 
 #### `dup-6c4197f4d7b0` (semantic, 3 sites)
 
@@ -4116,7 +4125,7 @@ Proposed home: `a new shared module (sites span 2 files: src/grounder/symbols/st
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/grounder/symbols/store.rs:253-257` `load_is_none_on_a_cold_start`
-- `src/grounder/workflowdef.rs:576-580` `project_events_on_a_missing_workflow_yields_nothing_never_a_crash`
+- `src/grounder/workflowdef.rs:553-557` `project_events_on_a_missing_workflow_yields_nothing_never_a_crash`
 
 #### `dup-2c59700de5eb` (semantic, 2 sites)
 
@@ -4124,7 +4133,7 @@ Proposed home: `one shared `project_events` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `src/grounder/workflowdef.rs:234-240` `project_events`
+- `src/grounder/workflowdef.rs:211-217` `project_events`
 - `tests/common/mod.rs:444-449` `project_events`
 
 #### `dup-6ee3275d996e` (semantic, 2 sites)
@@ -5083,38 +5092,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6794 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6795 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/conductor.rs:14001-14003` `snapshot` - no duplicate found by reading
-- `src/conductor.rs:16973-16979` `proposal_event` - no duplicate found by reading
-- `src/conductor.rs:27355-27394` `a_stages_own_max_retries_overrides_the_run_default_for_its_units` - no duplicate found by reading
-- `src/contextgraph/mod.rs:779-784` `apply_batch` - no duplicate found by reading
-- `src/contextgraph/sqlite.rs:7504-7509` `tier_default_matches_the_extracted_const` - no duplicate found by reading
-- `src/dash.rs:8755-8793` `should_reap_singleton_reaps_only_when_no_registered_instance_is_live` - no duplicate found by reading
-- `src/eventstore/mod.rs:320-329` `new` - no duplicate found by reading
-- `src/eventstore/namespace.rs:108-116` `read_stream` - no duplicate found by reading
-- `src/failure.rs:43-49` `as_str` - caught: `dup-bf3c46e0b3c8`
-- `src/grounder/workflowdef.rs:146-151` `light_reviewers_of` - no duplicate found by reading
-- `src/ledger.rs:331-341` `pr_head_branch` - no duplicate found by reading
-- `src/main.rs:6780-6794` `dash_status_line` - no duplicate found by reading
-- `src/main.rs:7396-7412` `dash_read_liveness` - no duplicate found by reading
-- `src/main.rs:17380-17387` `assert_behind_the_tree_silent` - no duplicate found by reading
-- `src/main.rs:21763-21799` `setup_skill_install_applies_the_project_overlay` - no duplicate found by reading
-- `src/main.rs:23116-23208` `the_driver_relays_each_attention_entry_as_a_narrator_log_line` - no duplicate found by reading
-- `src/main.rs:23261-23297` `merge_hung_attention_lands_in_canonical_position_alongside_other_signals` - no duplicate found by reading
-- `src/spec.rs:16-35` `extract_criteria` - no duplicate found by reading
-- `src/spec.rs:887-889` `assert_extracts` - no duplicate found by reading
-- `src/watch.rs:1220-1232` `order_signatures_is_empty_on_a_cleanly_ordered_log` - no duplicate found by reading
-- `tests/cli.rs:10638-10732` `a_step_driven_run_yields_nonempty_gate_and_review_sections_in_stats` - no duplicate found by reading
-- `tests/code_entity_test_exclusion_periphery.rs:396-416` `a_pre_round9_persisted_index_with_no_enclosing_inline_module_path_key_loads_defaulting_to_none` - no duplicate found by reading
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:600-609` `propose_unit_via_rigger_emit` - no duplicate found by reading
-- `tests/product_binary_location.rs:102-139` `no_suite_bakes_the_product_path_at_compile_time_except_the_one_authority` - no duplicate found by reading
-- `tests/published_content_key_split_periphery.rs:51-57` `replay_key` - no duplicate found by reading
-- `tests/replan_episode_identity.rs:620-696` `assert_the_refine_and_its_sibling_both_integrate` - no duplicate found by reading
-- `tests/simplification_audit.rs:8337-8351` `two_renamed_identical_functions_form_one_exact_cluster` - no duplicate found by reading
-- `tests/simplification_audit.rs:8568-8579` `build_sweep_clusters_always_returns_exactly_five_named_clusters` - no duplicate found by reading
-- `tests/spec_lint.rs:1482-1490` `spec_lint_self_clean_on_spec_66_itself` - no duplicate found by reading
-- `tests/stop_failure_hook_periphery.rs:182-199` `hook_refuses_naming` - no duplicate found by reading
+- `src/canary.rs:171-173` `bool_field` - no duplicate found by reading
+- `src/canary_store.rs:86-105` `load_corpus` - no duplicate found by reading
+- `src/canary_store.rs:412-514` `score_item` - no duplicate found by reading
+- `src/conductor.rs:9551-9558` `integrate_plan_commits` - no duplicate found by reading
+- `src/conductor.rs:23244-23333` `a_reviewer_that_only_ever_returns_degenerate_output_halts_the_run_loudly_naming_it` - no duplicate found by reading
+- `src/conductor.rs:24813-24848` `speculation_parks_all_candidates_together_in_one_step` - no duplicate found by reading
+- `src/console/map.rs:96-108` `module_of` - no duplicate found by reading
+- `src/console/map.rs:539-562` `capped_neighbors` - no duplicate found by reading
+- `src/dash.rs:2871-2873` `console_page` - no duplicate found by reading
+- `src/dash.rs:8515-8528` `assert_names_this_process_as_holder` - no duplicate found by reading
+- `src/gate.rs:92-98` `as_str` - caught: `dup-bf3c46e0b3c8`
+- `src/grounder/symbols/grounder.rs:910-941` `blast_radius_empty_and_no_match_are_the_empty_failsafe_and_k0_keeps_safe_uncapped` - no duplicate found by reading
+- `src/main.rs:10063-10096` `build_environment_report` - no duplicate found by reading
+- `src/main.rs:15279-15303` `ensure_run_dashboard_at_never_claims_a_phantom_holder_for_an_unheld_port` - no duplicate found by reading
+- `src/main.rs:22709-22717` `strip_line_comments` - no duplicate found by reading
+- `src/mcpserver.rs:2026-2056` `lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method` - no duplicate found by reading
+- `src/metrics.rs:1736-1741` `empty_log_has_zeroed_metrics_and_no_nan` - no duplicate found by reading
+- `src/metrics.rs:2443-2453` `lens_overlap_counts_files_flagged_by_two_or_more_actors` - no duplicate found by reading
+- `src/registry.rs:494-520` `state_home_prefers_xdg_over_home` - no duplicate found by reading
+- `src/spawn.rs:912-963` `adjudication_parses_the_verdict_line_only_for_an_adjudicator_result` - no duplicate found by reading
+- `tests/adoption_keys_on_criterion_periphery.rs:1071-1133` `a_plain_remediation_failure_after_integration_never_reopens_adoption_even_though_a_same_named_branch_exists` - caught: `dup-5f516fce9f0b`
+- `tests/change_path_revert_periphery.rs:100-104` `live_suppression_set` - no duplicate found by reading
+- `tests/cli.rs:1387-1407` `result_refuses_to_fabricate_a_store_from_a_worktree_shaped_cwd` - no duplicate found by reading
+- `tests/common/repo.rs:71-86` `table_lines` - no duplicate found by reading
+- `tests/dash_run_tree_spine.rs:481-528` `a_re_parked_liveness_fault_reads_running_and_a_superseding_ok_reads_done` - no duplicate found by reading
+- `tests/handbook_grounder_accuracy.rs:53-67` `handbook_docs` - no duplicate found by reading
+- `tests/no_os_kill_audit.rs:354-358` `single_finding` - no duplicate found by reading
+- `tests/plan_stage_commit_landing_periphery.rs:1629-1774` `plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_any_new_git_mutation` - no duplicate found by reading
+- `tests/proof_lands_on_the_card_periphery.rs:687-715` `a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline` - no duplicate found by reading
+- `tests/reset_derived_live_writer_guard_periphery.rs:506-522` `force_live_with_runs_alone_is_inert` - no duplicate found by reading
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:617-619` `process_state` next to `src/reap.rs:224-229` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph); that exclusion still applies unchanged.
 
@@ -5127,7 +5136,7 @@ FOUND, two violations:
 
 Violation 1 (`AgentDriver`): `src/conductor.rs:8583-8590` (`reclaim_terminal_unit_mutation_scratch`, real production code - above the `#[cfg(test)] mod tests` boundary at `src/conductor.rs:13960`) calls `crate::driver::replay::cache_home_from` and `crate::driver::replay::reclaim_unit_mutation_scratch` directly by concrete module path. The port `conductor.rs` actually depends on for driving agents is `trait AgentDriver` (`src/conductor.rs:1499`) - one method, `spawn`. Neither called function is about driving an agent or replaying a recorded run (the concern `driver::replay` otherwise owns); both are pure, driver-instance-free scratch-lifecycle utilities that happen to live inside that one concrete adapter's module. The port that should have been used: none exists for this concern yet, which is itself the defect - `conductor.rs` (a use-case/orchestration file) should not need to know which concrete `AgentDriver` implementation happens to define its own mutation-scratch cache-home resolution. Fix direction for a follow-up spec: relocate `cache_home_from` and `reclaim_unit_mutation_scratch` out of `driver::replay` into a neutral, adapter-independent module (a `scratch` or `mutation` support module conductor.rs and every driver adapter can depend on alike), so no use-case file reaches into one specific adapter's internals for a concern that adapter does not conceptually own.
 
-Violation 2 (`Grounder`): `src/ingest.rs:155-191` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `src/conductor.rs:10676`, itself called from `src/conductor.rs:10667` above the `13960` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 165 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 171 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-f8130edd50f7`: `src/grounder/design/events.rs:99-123`, `src/grounder/symbols/events.rs:56-58`, and `src/grounder/workflowdef.rs:247-254` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`src/grounder/mod.rs:160`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (165) and the concrete `design` module (171) directly. Same missing-port defect class as violation 1. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
+Violation 2 (`Grounder`): `src/ingest.rs:155-191` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `src/conductor.rs:10676`, itself called from `src/conductor.rs:10667` above the `13960` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 165 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 171 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-f8130edd50f7`: `src/grounder/design/events.rs:99-123`, `src/grounder/symbols/events.rs:56-58`, and `src/grounder/workflowdef.rs:224-231` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`src/grounder/mod.rs:160`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (165) and the concrete `design` module (171) directly. Same missing-port defect class as violation 1. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
 
 Also reaching `grounder::symbols::store::content_hash` from `src/ingest.rs:356` and `src/canary_store.rs:153`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`src/canary_store.rs:131`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `src/community.rs:67`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
 
@@ -5247,7 +5256,7 @@ Largest risk-reduction first is read as six tiers, ranked by the KIND of risk ea
 3. Tier 3 - god-file production splits: section 1's own proposed module tree applied to the (now much smaller) remaining production surface of each god file. Higher execution risk than tier 2 because it touches live orchestration and CLI logic, so it is sequenced after tier 2 shrinks the target first.
 4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path literals, sqlite `Connection::open`, error-shaping helpers), each already a single committed cluster with its own proposed home.
 5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only duplication. No production-correctness exposure at all (worst case a test regresses, never the product), so it is ordered ahead only of tier 6 despite touching the largest raw line count anywhere in this plan.
-6. Tier 6 - remaining catalog sweep: the 121 src-touching clusters section 2 found but tiers 1 and 4 did not individually name. Unlike every other tier, none of these 121 have been read and risk-assessed one at a time the way tiers 1-4's named clusters have - they are consumed straight from the catalog - so this tier carries production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the follow-up spec must triage each cluster's own production-or-test status before merging it, not assume tier 5's blanket test-only treatment applies here too.
+6. Tier 6 - remaining catalog sweep: the 122 src-touching clusters section 2 found but tiers 1 and 4 did not individually name. Unlike every other tier, none of these 122 have been read and risk-assessed one at a time the way tiers 1-4's named clusters have - they are consumed straight from the catalog - so this tier carries production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the follow-up spec must triage each cluster's own production-or-test status before merging it, not assume tier 5's blanket test-only treatment applies here too.
 
 Within a tier, entries are ordered largest-first by the site or line count each retires - the same rule the tiers themselves follow, applied one level down.
 
@@ -5426,13 +5435,13 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 
 Unlike tier 5, this entry's own clusters are NOT known to be test-only - each one needs its own read before merging (see `### 6.1`'s tier 6 rationale above).
 
-#### 19. Sweep the remaining 121 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
+#### 19. Sweep the remaining 122 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 182 clusters, 54 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-3ec3c3ef6145`, `dup-b855a30b879f`, `dup-b99d84bff6a4`, `dup-7e2622206b71`, `dup-34547f1c1293`, `dup-f8130edd50f7`, `dup-ff68607e5532`); the remaining 121 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-7dfa0dd1a6a8`, `dup-3ec3c3ef6145`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 183 clusters, 54 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-3ec3c3ef6145`, `dup-b855a30b879f`, `dup-b99d84bff6a4`, `dup-7e2622206b71`, `dup-34547f1c1293`, `dup-f8130edd50f7`, `dup-ff68607e5532`); the remaining 122 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-7dfa0dd1a6a8`, `dup-3ec3c3ef6145`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
-- Unblocks: the last of the catalog's 182 clusters; after items 1-3 and 10-19 all land, a future spec can state and check that the duplication catalog's own drift guard finds zero live clusters left unaddressed.
+- Unblocks: the last of the catalog's 183 clusters; after items 1-3 and 10-19 all land, a future spec can state and check that the duplication catalog's own drift guard finds zero live clusters left unaddressed.
 
 ### 6.8 Dead and vestigial code beyond item 0: no further follow-up
 
