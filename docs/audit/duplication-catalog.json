@@ -2013,29 +2013,6 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-7bec74512ff3",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "a_dirty_tree_whose_named_spawn_was_never_requested_gets_no_wip_recovery_commit",
-        "content_hash": "f01bc9d99559d468"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live",
-        "content_hash": "dc215dcdabd7bf15"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_prior_runs_leftover_spawn_request_for_a_same_named_unit_never_halts_a_new_run",
-        "content_hash": "40f01f977a91b17c"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-bbde86d7c01f",
     "classification": "near",
     "sites": [
@@ -6034,93 +6011,6 @@
     "note": "mandatory sweep: .rigger-path string literals - 757 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-94c827d0142b",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "resume_reuses_a_units_branch_instead_of_reimplementing",
-        "content_hash": "629cc0905f032fd1"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "resume_integrates_an_already_approved_unit_without_re_reviewing",
-        "content_hash": "56e58e0abe4a9543"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_failed_unit_is_not_terminal_and_resumes",
-        "content_hash": "d1abc6820dbff07e"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_resumed_reviewed_unit_restores_a_worktree_the_exhaustive_gate_deleted",
-        "content_hash": "d5fec7896bb2b0b8"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 4 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-7dabcad7a88c",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume",
-        "content_hash": "4a0524aba15fd547"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "branch_gc_falls_back_to_the_derived_branch_when_unitstarted_recorded_no_branch",
-        "content_hash": "90d8f9872834734c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "branch_gc_reclaims_every_integrated_unit_in_one_resume_not_just_the_first",
-        "content_hash": "add4c623d26d1068"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-b376c9ae8c95",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_straggler_spawn",
-        "content_hash": "58138dc9ffec9e24"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "gc_integrated_branches_logged_stays_silent_for_an_already_gone_worktree_but_still_reclaims_an_orphaned_branch",
-        "content_hash": "8123dc12e9a3e97d"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-b5858074e94f",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision",
-        "content_hash": "0e2321deb387f374"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "gc_integrated_branches_logged_does_not_repeat_removing_evidence_once_the_real_removal_already_happened",
-        "content_hash": "cc0e7d817f68dfa4"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-8c331b2ae5bd",
     "classification": "near",
     "sites": [
@@ -6154,85 +6044,21 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-e8498f99e4c0",
+    "id": "dup-5bd15f79c86e",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
-        "name": "a_gating_spawn_that_returns_a_reject_verdict_line_is_a_normal_reject_even_if_it_emitted_approve",
-        "content_hash": "ccc8b97427ad231c"
+        "name": "approving_stub",
+        "content_hash": "b0fb4cdb213ad8c7"
       },
       {
-        "file": "src/conductor.rs",
-        "name": "a_gating_spawn_with_no_verdict_line_and_no_emitted_approve_is_an_ordinary_reject",
-        "content_hash": "bd4377e7aac4ae90"
+        "file": "tests/plan_stage_commit_landing_periphery.rs",
+        "name": "plan_stage",
+        "content_hash": "c69fe3b1a69ad2cb"
       }
     ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-25b7d8b87840",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "scope_creep_refuses_a_criterionless_proposed_unit",
-        "content_hash": "f2ee58888e5b6af5"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "planner_covering_every_criterion_passes",
-        "content_hash": "95880377ec1f8705"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-fc42f02547cf",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "adversary_runs_between_the_lenses_and_the_adjudicator",
-        "content_hash": "3ec31ef1adaa4f2a"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "unit_reviews_itself_within_its_own_lifecycle",
-        "content_hash": "9866e8e16498bef0"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-abd8e8e23b7d",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "a_low_risk_unit_skips_the_adversary_and_extra_lens",
-        "content_hash": "bc958a74c15e52f3"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_high_risk_unit_runs_the_full_panel_and_logs_the_routing",
-        "content_hash": "ac434bed16708059"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_zero_grounding_unit_fails_safe_to_the_full_panel_and_logs_it",
-        "content_hash": "62804bf9a759f84d"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_stage_level_tiers_policy_routes_the_unit_by_risk",
-        "content_hash": "57a96452c16a224d"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 4 sites into one function in this file)",
+    "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, tests/plan_stage_commit_landing_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -12428,43 +12254,13 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 11 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-f17856d9afa5",
+    "id": "dup-15fdd0bd41dc",
     "classification": "near",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
-        "name": "a_legacy_causeless_unit_failed_event_survives_a_real_store_round_trip_and_renders_unknown",
-        "content_hash": "28f1e49822f0cd08"
-      },
-      {
-        "file": "tests/cause_wire_periphery.rs",
         "name": "the_reject_recurrence_line_names_the_latest_of_several_recorded_causes_through_the_real_binary",
         "content_hash": "a6396ba5de1e01e3"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "stats_reports_the_latest_run_by_default_and_all_for_the_aggregate",
-        "content_hash": "58dcf306d7cd5afb"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "release_ready_handoff_surfaces_on_status_for_a_done_run",
-        "content_hash": "5917a88066a9e01c"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "release_ready_is_silent_on_status_for_an_unfinished_run",
-        "content_hash": "6de3679b2848a3bf"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "release_ready_pluralizes_the_unit_count_on_status_for_a_multi_unit_run",
-        "content_hash": "24fdfa39036d0e11"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "release_ready_is_silent_on_status_for_a_spec_defective_run",
-        "content_hash": "65745f4640c60774"
       },
       {
         "file": "tests/escalation_resume_periphery.rs",
@@ -12473,31 +12269,11 @@
       },
       {
         "file": "tests/escalation_resume_periphery.rs",
-        "name": "a_legacy_shaped_unit_resumed_event_missing_both_optional_fields_survives_a_real_store_round_trip",
-        "content_hash": "b2027658f6d47be5"
-      },
-      {
-        "file": "tests/escalation_resume_periphery.rs",
         "name": "the_resumed_banner_survives_a_genuinely_in_flight_re_parked_attempt_not_yet_resolved",
         "content_hash": "375deb173c8ad9d1"
-      },
-      {
-        "file": "tests/escalation_resume_periphery.rs",
-        "name": "resume_unit_rejects_an_unknown_unit_absent_from_the_run",
-        "content_hash": "85af6671e913acdb"
-      },
-      {
-        "file": "tests/escalation_resume_periphery.rs",
-        "name": "resume_unit_refuses_when_the_recorded_branch_was_never_created",
-        "content_hash": "357945be46db9d25"
-      },
-      {
-        "file": "tests/escalation_resume_periphery.rs",
-        "name": "resume_unit_refuses_an_already_integrated_unit",
-        "content_hash": "806a0e02e42c7e0b"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 2 files: tests/cause_wire_periphery.rs, tests/escalation_resume_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

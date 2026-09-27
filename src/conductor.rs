@@ -14240,9 +14240,10 @@ mod tests {
     /// A minimal `UnitStarted` event carrying `criterion_id` - the exact additive shape
     /// `start_and_run_stage` now stamps (spec 88, ADOPTION KEYS ON THE CRITERION).
     fn started_with_criterion(id: &str, criterion_id: &str) -> Event {
-        Event::new(
+        unit_event(
             ledger::TYPE_UNIT_STARTED,
-            serde_json::to_vec(&json!({"id": id, "criterion_id": criterion_id})).unwrap(),
+            id,
+            ("criterion_id", criterion_id),
         )
     }
 
@@ -15016,6 +15017,70 @@ mod tests {
         );
     }
 
+    /// Leave unit `unit`'s worktree in `repo` DIRTY with `file` = `content`, as an abandoned
+    /// edit would; returns the run's scratch root.
+    fn dirty_unit_worktree(repo: &str, unit: &str, file: &str, content: &str) -> String {
+        let scratch = crate::worktree::scratch_root_from_env(repo, "");
+        let dir = unit_worktree_dir(&scratch, unit);
+        let wt = Worktree::create(repo, &dir, &unit_branch(unit), &scratch).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join(file), content).unwrap();
+        assert!(
+            crate::worktree::path_is_dirty(&wt.dir).unwrap(),
+            "the setup must leave it dirty"
+        );
+        scratch
+    }
+
+    /// Running the one gated, never-merging stage `unit` in `repo` over `store` verifies it, and
+    /// its branch carries NO "tree of halted spawn" recovery commit for its attempt-0
+    /// implementer (`why`).
+    fn assert_no_wip_recovery_commit(store: &Store, repo: &str, unit: &str, why: &str) {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            unit.into(),
+            Stage {
+                name: unit.into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub::new();
+        // Empty criteria, like every other test in this module: a seeded prior run with
+        // non-empty criteria is never adopted, so `run()` mints a FRESH RunStarted, and the
+        // (unrelated) coverage-gap check is bypassed.
+        let deps = Deps {
+            repo: repo.to_string(),
+            ..stub_deps(store, &driver, Vec::new())
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units[unit].status, ledger::Status::Verified);
+
+        let log = run_git(repo, &["log", "--pretty=%s", &unit_branch(unit)]);
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        let unwanted_subject = format!(
+            "wip({unit}): tree of halted spawn {}",
+            spawn_id(unit, ROLE_IMPLEMENTER, 0)
+        );
+        assert!(
+            !log.lines().any(|l| l == unwanted_subject),
+            "{why}; got:\n{log}"
+        );
+    }
+
+    /// Park unit `unit`'s implementer spawn at `attempt` in the store's current run.
+    fn park_implementer(store: &Store, unit: &str, attempt: u32) {
+        spawn_store::park_in_run(
+            store,
+            &crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, attempt, "task"),
+            "",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn a_dirty_tree_whose_named_spawn_was_never_requested_gets_no_wip_recovery_commit() {
         // Spec 103, THE HALTED-SPAWN CHECKPOINT: the recovery commit fires only for a
@@ -15026,72 +15091,20 @@ mod tests {
         // fabricates a "tree of halted spawn" recovery for a spawn that never happened.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "u-halt-unrequested".into(),
-            Stage {
-                name: "u-halt-unrequested".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "none".into(),
-                ..Default::default()
-            },
-        );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = unit_worktree_dir(&scratch, "u-halt-unrequested");
-        let wt = Worktree::create(
+        dirty_unit_worktree(
             &repo_path,
-            &dir,
-            &unit_branch("u-halt-unrequested"),
-            &scratch,
-        )
-        .unwrap();
-        std::fs::write(
-            std::path::Path::new(&dir).join("stray.txt"),
+            "u-halt-unrequested",
+            "stray.txt",
             "never a recorded spawn's edit\n",
-        )
-        .unwrap();
-        assert!(
-            crate::worktree::path_is_dirty(&wt.dir).unwrap(),
-            "the setup must leave it dirty"
         );
-
         // No `SpawnRequested` is parked for this unit anywhere in the store - the
         // deliberate contrast with the positive-path test above.
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let runner = ExecRunner;
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(
-            rs.units["u-halt-unrequested"].status,
-            ledger::Status::Verified
-        );
-
-        let log = run_git(
+        assert_no_wip_recovery_commit(
+            &store,
             &repo_path,
-            &["log", "--pretty=%s", &unit_branch("u-halt-unrequested")],
-        );
-        let log = String::from_utf8_lossy(&log.stdout).to_string();
-        let unwanted_subject = format!(
-            "wip(u-halt-unrequested): tree of halted spawn {}",
-            spawn_id("u-halt-unrequested", ROLE_IMPLEMENTER, 0)
-        );
-        assert!(
-            !log.lines().any(|l| l == unwanted_subject),
-            "no spawn was ever requested for this unit, so no wip recovery commit must \
-             appear; got:\n{log}"
+            "u-halt-unrequested",
+            "no spawn was ever requested for this unit, so no wip recovery commit must appear",
         );
     }
 
@@ -15102,69 +15115,22 @@ mod tests {
         // spawn of the SAME unit (a later attempt, a reviewer, ...) is still actively
         // touching its own liveness marker - the dirty tree is that spawn's live work, not
         // an abandoned edit.
+        let unit = "u-halt-live-sibling";
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "u-halt-live-sibling".into(),
-            Stage {
-                name: "u-halt-live-sibling".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "none".into(),
-                ..Default::default()
-            },
-        );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = unit_worktree_dir(&scratch, "u-halt-live-sibling");
-        let wt = Worktree::create(
-            &repo_path,
-            &dir,
-            &unit_branch("u-halt-live-sibling"),
-            &scratch,
-        )
-        .unwrap();
-        std::fs::write(
-            std::path::Path::new(&dir).join("halted-work.txt"),
-            "abandoned mid-edit\n",
-        )
-        .unwrap();
-        assert!(
-            crate::worktree::path_is_dirty(&wt.dir).unwrap(),
-            "the setup must leave it dirty"
-        );
+        let scratch =
+            dirty_unit_worktree(&repo_path, unit, "halted-work.txt", "abandoned mid-edit\n");
 
         let store = Store::open(":memory:").unwrap();
         // Learn the run id `run()` will adopt (same store, same empty criteria) so the
         // sibling's marker is planted under the exact path production derives.
         let run_id = crate::run_store::ensure_started(&store, &[]).unwrap();
-
         // The named spawn (attempt 0) was requested and carries no result of its own -
         // by itself, a genuine halt.
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request(
-                "u-halt-live-sibling",
-                "u-halt-live-sibling",
-                ROLE_IMPLEMENTER,
-                0,
-                "task",
-            ),
-            "",
-        )
-        .unwrap();
+        park_implementer(&store, unit, 0);
         // A SIBLING spawn of the same unit (attempt 1), bounded, whose marker is touched
         // RIGHT NOW - still well inside its wall-clock bound.
-        let mut live = crate::spawn::test_request(
-            "u-halt-live-sibling",
-            "u-halt-live-sibling",
-            ROLE_IMPLEMENTER,
-            1,
-            "task",
-        );
+        let mut live = crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, 1, "task");
         live.max_wall_clock = Some(3600);
         spawn_store::park_in_run(&store, &live, "").unwrap();
         let marker = liveness::marker_path(&scratch, &run_id, &live.id)
@@ -15172,36 +15138,11 @@ mod tests {
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(&marker, b"heartbeat").unwrap();
 
-        let driver = Stub::new();
-        let runner = ExecRunner;
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(
-            rs.units["u-halt-live-sibling"].status,
-            ledger::Status::Verified
-        );
-
-        let log = run_git(
+        assert_no_wip_recovery_commit(
+            &store,
             &repo_path,
-            &["log", "--pretty=%s", &unit_branch("u-halt-live-sibling")],
-        );
-        let log = String::from_utf8_lossy(&log.stdout).to_string();
-        let unwanted_subject = format!(
-            "wip(u-halt-live-sibling): tree of halted spawn {}",
-            spawn_id("u-halt-live-sibling", ROLE_IMPLEMENTER, 0)
-        );
-        assert!(
-            !log.lines().any(|l| l == unwanted_subject),
-            "a live sibling spawn of the same unit must suppress the wip recovery \
-             commit; got:\n{log}"
+            unit,
+            "a live sibling spawn of the same unit must suppress the wip recovery commit",
         );
     }
 
@@ -15214,88 +15155,31 @@ mod tests {
         // "the named spawn has a SpawnRequested" for a unit THIS run has never touched -
         // the same Gap 11 zombie class every other liveness reader in this file already
         // guards against by scoping to `current_run`.
+        let unit = "u-halt-prior-run";
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "u-halt-prior-run".into(),
-            Stage {
-                name: "u-halt-prior-run".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "none".into(),
-                ..Default::default()
-            },
-        );
 
         let store = Store::open(":memory:").unwrap();
         // A PRIOR, unrelated run: its own RunStarted, then a real SpawnRequested (no
         // result) for a unit of the SAME name this test's own run will also use.
         crate::run_store::ensure_started(&store, &["old criteria".to_string()]).unwrap();
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request(
-                "u-halt-prior-run",
-                "u-halt-prior-run",
-                ROLE_IMPLEMENTER,
-                0,
-                "task",
-            ),
-            "",
-        )
-        .unwrap();
+        park_implementer(&store, unit, 0);
 
         // THIS run's own dirty worktree for the same-named unit - nothing has been
         // requested for it in THIS run yet.
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = unit_worktree_dir(&scratch, "u-halt-prior-run");
-        let wt =
-            Worktree::create(&repo_path, &dir, &unit_branch("u-halt-prior-run"), &scratch).unwrap();
-        std::fs::write(
-            std::path::Path::new(&dir).join("stray.txt"),
-            "never requested in THIS run\n",
-        )
-        .unwrap();
-        assert!(
-            crate::worktree::path_is_dirty(&wt.dir).unwrap(),
-            "the setup must leave it dirty"
-        );
-
-        let driver = Stub::new();
-        let runner = ExecRunner;
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            // Empty, like every other test in this module - differs from the seeded prior
-            // run's non-empty criteria, so `run()` mints a FRESH RunStarted rather than
-            // adopting the old one, and bypasses the (unrelated) coverage-gap check.
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(
-            rs.units["u-halt-prior-run"].status,
-            ledger::Status::Verified
-        );
-
-        let log = run_git(
+        dirty_unit_worktree(
             &repo_path,
-            &["log", "--pretty=%s", &unit_branch("u-halt-prior-run")],
+            unit,
+            "stray.txt",
+            "never requested in THIS run\n",
         );
-        let log = String::from_utf8_lossy(&log.stdout).to_string();
-        let unwanted_subject = format!(
-            "wip(u-halt-prior-run): tree of halted spawn {}",
-            spawn_id("u-halt-prior-run", ROLE_IMPLEMENTER, 0)
-        );
-        assert!(
-            !log.lines().any(|l| l == unwanted_subject),
+
+        assert_no_wip_recovery_commit(
+            &store,
+            &repo_path,
+            unit,
             "a PRIOR run's leftover SpawnRequested for a same-named unit must never satisfy \
-             THIS run's own halted-spawn checkpoint; got:\n{log}"
+             THIS run's own halted-spawn checkpoint",
         );
     }
 
@@ -21696,47 +21580,34 @@ mod tests {
         commit_on_named_branch(repo, &unit_branch(unit_id), file, content);
     }
 
-    #[test]
-    fn resume_reuses_a_units_branch_instead_of_reimplementing() {
-        // Resume-continuity: a unit recorded at `verified` in a prior window, with its
-        // deterministic branch carrying committed work, must NOT re-run the
-        // implementer on resume. It picks the lifecycle up at gates + the three-tier
-        // review on the committed code and integrates - building on the prior window's
-        // work rather than throwing it away under a per-run-uuid branch.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
+    /// A `type_` ledger event for unit `id` carrying one `(key, value)` field.
+    fn unit_event(type_: &str, id: &str, (key, value): (&str, &str)) -> Event {
+        Event::new(
+            type_,
+            serde_json::to_vec(&json!({"id": id, key: value})).unwrap(),
+        )
+    }
 
-        // The prior window implemented unit `s` and committed it on the deterministic
-        // branch, reaching `verified` (gates passed) but not yet approved+merged.
-        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+    /// A prior window implemented unit `s` and committed `feature.rs` on its deterministic
+    /// branch in `repo`, then recorded `after` once it started - seeded into `st` as the run's
+    /// prior-window state.
+    fn seed_prior_window_s(repo: &str, st: &Store, after: Vec<Event>) {
+        commit_on_unit_branch(repo, "s", "feature.rs", "fn feature() {}\n");
+        let mut events = vec![started_on_branch("s")];
+        events.extend(after);
+        seed_events_in_run(st, &[], &events);
+    }
 
-        let st = Store::open(":memory:").unwrap();
-        seed_events_in_run(
-            &st,
-            &[],
-            &[
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STATUS,
-                    serde_json::to_vec(&json!({"id": "s", "status": "green"})).unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STATUS,
-                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
-                ),
-            ],
-        );
-
+    /// A config whose one stage `s` is implemented by `worker`, gated by `ok`, merged on pass
+    /// and reviewed by a `lens` + `judge` panel - plus an `adversary` when `with_adversary`.
+    fn reviewed_merge_cfg(with_adversary: bool) -> Config {
         let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
+        let adversary = if with_adversary { "adversary" } else { "" };
+        for a in ["worker", "lens", adversary, "judge"] {
+            if !a.is_empty() {
+                cfg.agents.insert(a.into(), agent(a));
+            }
+        }
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
         cfg.workflow.stages.insert(
             "s".into(),
@@ -21747,29 +21618,77 @@ mod tests {
                 on_pass: "merge".into(),
                 review: crate::config::ReviewPanel {
                     lenses: vec!["lens".into()],
+                    adversary: adversary.into(),
                     adjudicator: "judge".into(),
-                    ..Default::default()
+                    tiers: None,
                 },
                 ..Default::default()
             },
         );
+        cfg
+    }
 
-        // The adjudicator approves; the unit must integrate via review, not implement.
-        // The lens returns a substantive (non-degenerate) review so it does not trip the
-        // Gap-18 respawn loop.
-        let driver = Stub {
+    /// A driver whose `judge` approves and whose `lens` returns a substantive (non-degenerate)
+    /// review, so it does not trip the Gap-18 respawn loop.
+    fn approving_panel_stub() -> Stub {
+        Stub {
             output_by_agent: HashMap::from([
                 ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
                 ("lens".to_string(), "reviewed: no blocker".to_string()),
             ]),
             ..Stub::new()
-        };
-        let deps = Deps {
-            repo: repo_path,
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
+        }
+    }
 
+    /// Resume a prior window's unit `s` (see [`seed_prior_window_s`]; `after` is its recorded
+    /// tail) under `driver` and `gates` with the [`reviewed_merge_cfg`] panel: the unit must
+    /// integrate (`why`) and the prior window's committed file land in the base.
+    fn assert_resume_integrates_s(
+        after: Vec<Event>,
+        with_adversary: bool,
+        driver: &Stub,
+        gates: &dyn gate::Runner,
+        why: &str,
+    ) {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let st = Store::open(":memory:").unwrap();
+        seed_prior_window_s(&repo_path, &st, after);
+        let deps = Deps {
+            gates,
+            repo: repo_path,
+            ..stub_deps(&st, driver, Vec::new())
+        };
+        let rs = run(&reviewed_merge_cfg(with_adversary), &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert!(
+            repo.path().join("feature.rs").exists(),
+            "the prior window's committed work must land in the base"
+        );
+    }
+
+    #[test]
+    fn resume_reuses_a_units_branch_instead_of_reimplementing() {
+        // Resume-continuity: a unit recorded at `verified` in a prior window, with its
+        // deterministic branch carrying committed work, must NOT re-run the
+        // implementer on resume. It picks the lifecycle up at gates + the three-tier
+        // review on the committed code and integrates - building on the prior window's
+        // work rather than throwing it away under a per-run-uuid branch.
+        //
+        // The prior window implemented unit `s` and committed it on the deterministic
+        // branch, reaching `verified` (gates passed) but not yet approved+merged. The
+        // adjudicator approves; the unit must integrate via review, not implement.
+        let driver = approving_panel_stub();
+        assert_resume_integrates_s(
+            vec![
+                unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "green")),
+                unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "verified")),
+            ],
+            false,
+            &driver,
+            &ExecRunner,
+            "the resumed unit must integrate, building on the reused branch",
+        );
         assert!(
             !driver.spawned("worker"),
             "the implementer must NOT be re-spawned on resume - the prior window's branch is reused"
@@ -21778,15 +21697,45 @@ mod tests {
             driver.spawned("judge"),
             "the resumed unit must still proceed through the three-tier review"
         );
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "the resumed unit must integrate, building on the reused branch"
-        );
-        assert!(
-            repo.path().join("feature.rs").exists(),
-            "the prior window's committed file must land in the base on resume-integrate"
-        );
+    }
+
+    /// Seed prior-window units - `integrated` ones that reached integrated, `escalated` ones that
+    /// escalated at the retry bound, each with a durable branch carrying committed work - and
+    /// resume once in a fresh repo: the projection agrees on the terminal states the sweep keys
+    /// off, every integrated unit's per-unit branch is reclaimed, and every escalated unit's is
+    /// RETAINED as the human's evidence. Returns the repo, its path and the store.
+    fn assert_branch_gc_resume(
+        integrated_ids: &[&str],
+        escalated_ids: &[&str],
+    ) -> (tempfile::TempDir, String, Store) {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        seed_unit_branches(&repo_path, &[integrated_ids, escalated_ids].concat());
+        let st = Store::open(":memory:").unwrap();
+        let mut events = Vec::new();
+        for id in integrated_ids {
+            events.extend([started_on_branch(id), integrated(id)]);
+        }
+        for id in escalated_ids {
+            events.extend([started_on_branch(id), escalated(id)]);
+        }
+        seed_events_in_run(&st, &[], &events);
+        let rs = resume_in(&st, &repo_path);
+        for id in integrated_ids {
+            assert_eq!(rs.units[*id].status, ledger::Status::Integrated);
+            assert!(
+                !branch_present(&repo_path, &unit_branch(id)),
+                "integrated unit {id}'s per-unit branch must be reclaimed on resume"
+            );
+        }
+        for id in escalated_ids {
+            assert_eq!(rs.units[*id].status, ledger::Status::Escalated);
+            assert!(
+                branch_present(&repo_path, &unit_branch(id)),
+                "escalated unit {id}'s branch must be RETAINED as the human's evidence"
+            );
+        }
+        (repo, repo_path, st)
     }
 
     #[test]
@@ -21800,76 +21749,11 @@ mod tests {
         // spec corrects). An ESCALATED unit is NOT integrated: the human needs its
         // branch as evidence, so it is RETAINED. Re-folding the same integration on a
         // second resume, with the branch already gone, is a no-op (idempotent).
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        // Two prior-window units, each with a durable branch carrying committed work:
-        // `landed` reached integrated; `stuck` escalated at the retry bound.
-        commit_on_unit_branch(&repo_path, "landed", "landed.rs", "fn landed() {}\n");
-        commit_on_unit_branch(&repo_path, "stuck", "stuck.rs", "fn stuck() {}\n");
-        assert!(
-            branch_present(&repo_path, &unit_branch("landed")),
-            "precondition: the integrated unit's branch exists before the run"
-        );
-        assert!(
-            branch_present(&repo_path, &unit_branch("stuck")),
-            "precondition: the escalated unit's branch exists before the run"
-        );
-
-        let st = Store::open(":memory:").unwrap();
-        seed_events_in_run(
-            &st,
-            &[],
-            &[
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "landed", "agent": "worker", "branch": unit_branch("landed")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_INTEGRATED,
-                    serde_json::to_vec(&json!({"id": "landed", "commit": "abc123"})).unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "stuck", "agent": "worker", "branch": unit_branch("stuck")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_ESCALATED,
-                    serde_json::to_vec(&json!({"id": "stuck"})).unwrap(),
-                ),
-            ],
-        );
-
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        // The projection agrees on the terminal states the sweep keys off.
-        assert_eq!(rs.units["landed"].status, ledger::Status::Integrated);
-        assert_eq!(rs.units["stuck"].status, ledger::Status::Escalated);
-
-        assert!(
-            !branch_present(&repo_path, &unit_branch("landed")),
-            "the integrated unit's per-unit branch must be reclaimed on resume"
-        );
-        assert!(
-            branch_present(&repo_path, &unit_branch("stuck")),
-            "the escalated unit's branch must be RETAINED as the human's evidence"
-        );
+        let (_repo, repo_path, st) = assert_branch_gc_resume(&["landed"], &["stuck"]);
 
         // Idempotent on a further resume-by-replay: re-folding the same integration
         // whose branch is already gone is a no-op, never an error.
-        let rs2 = run(&cfg, &deps).unwrap();
+        let rs2 = resume_in(&st, &repo_path);
         assert_eq!(rs2.units["landed"].status, ledger::Status::Integrated);
         assert!(
             !branch_present(&repo_path, &unit_branch("landed")),
@@ -21881,12 +21765,14 @@ mod tests {
         );
     }
 
-    /// Commit throwaway work on an ARBITRARY branch name (periphery seed helper): a one-file
-    /// worktree, committed and immediately removed, leaving the branch carrying real work.
-    /// `commit_on_unit_branch` stages the CANONICAL `unit_branch(id)` through it; called
-    /// directly it stages a unit whose RECORDED branch differs from that derivation, for the
-    /// recorded-branch-preference boundary below.
-    fn commit_on_named_branch(repo: &str, branch: &str, file: &str, content: &str) {
+    /// A registered one-file worktree on `branch` holding `file` = `content` committed as prior
+    /// window work - the worktree left in place.
+    fn seed_branch_worktree(
+        repo: &str,
+        branch: &str,
+        file: &str,
+        content: &str,
+    ) -> crate::worktree::Worktree {
         let dir = std::env::temp_dir().join(format!(
             "rigger-seed-{}-{}",
             sanitize_for_path(branch),
@@ -21897,11 +21783,100 @@ mod tests {
         std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
         let committed = wt.commit("rigger: prior window work").unwrap();
         assert!(!committed.is_empty(), "the prior window must commit work");
-        wt.remove().unwrap();
+        wt
+    }
+
+    /// Commit throwaway work on an ARBITRARY branch name (periphery seed helper): a one-file
+    /// worktree, committed and immediately removed, leaving the branch carrying real work.
+    /// `commit_on_unit_branch` stages the CANONICAL `unit_branch(id)` through it; called
+    /// directly it stages a unit whose RECORDED branch differs from that derivation, for the
+    /// recorded-branch-preference boundary below.
+    fn commit_on_named_branch(repo: &str, branch: &str, file: &str, content: &str) {
+        seed_branch_worktree(repo, branch, file, content)
+            .remove()
+            .unwrap();
         assert!(
             crate::worktree::Worktree::branch_has_work(repo, branch),
             "the seeded branch must carry committed work"
         );
+    }
+
+    /// Seed each of `ids` as a prior-window unit whose canonical branch carries committed work
+    /// (`{id}.rs`), its worktree already removed.
+    fn seed_unit_branches(repo: &str, ids: &[&str]) {
+        for id in ids {
+            commit_on_unit_branch(repo, id, &format!("{id}.rs"), &format!("fn {id}() {{}}\n"));
+            assert!(
+                branch_present(repo, &unit_branch(id)),
+                "precondition: {id}'s branch exists before the run"
+            );
+        }
+    }
+
+    /// A `UnitStarted` for `id` recording its canonical branch.
+    fn started_on_branch(id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_STARTED,
+            serde_json::to_vec(&json!({"id": id, "agent": "worker", "branch": unit_branch(id)}))
+                .unwrap(),
+        )
+    }
+
+    /// A `UnitEscalated` for `id`.
+    fn escalated(id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_ESCALATED,
+            serde_json::to_vec(&json!({"id": id})).unwrap(),
+        )
+    }
+
+    /// Unit `id` started on its canonical branch and integrated, with a straggler adversary
+    /// spawn dispatched after it - still in flight, or `answered` with an approve.
+    fn integrated_with_straggler(id: &str, answered: bool) -> Vec<Event> {
+        let mut events = vec![
+            started_on_branch(id),
+            integrated(id),
+            crate::spawn::test_request(id, id, "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+        ];
+        if answered {
+            events.push(
+                spawn::SpawnResult::ok(format!("{id}/adversary#0"), "approve")
+                    .to_event()
+                    .unwrap(),
+            );
+        }
+        events
+    }
+
+    /// One resume of an empty workflow in `repo` over the log in `st`.
+    fn resume_in(st: &Store, repo: &str) -> RunState {
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo.to_string(),
+            ..stub_deps(st, &driver, Vec::new())
+        };
+        run(&Config::default(), &deps).unwrap()
+    }
+
+    /// Drive `gc_integrated_branches_logged` directly (the DI seam) in `repo` over `events`'
+    /// projection, returning the evidence lines it printed.
+    fn gc_logged(repo: &str, events: &[Event]) -> Vec<String> {
+        let rs = ledger::project(events).unwrap();
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo.to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut lines: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &BTreeMap::new(), events, &mut |l| {
+            lines.push(l.to_string())
+        });
+        lines
     }
 
     // Periphery layer (SDET), spec 38 criterion 1: the inside-out test
@@ -21928,12 +21903,7 @@ mod tests {
 
         // The prior window committed `orphan` on its canonical branch; the seeded
         // `UnitStarted` omits `branch`, so only the DERIVED name can reclaim it.
-        commit_on_unit_branch(&repo_path, "orphan", "orphan.rs", "fn orphan() {}\n");
-        assert!(
-            branch_present(&repo_path, &unit_branch("orphan")),
-            "precondition: the integrated unit's derived branch exists before the run"
-        );
-
+        seed_unit_branches(&repo_path, &["orphan"]);
         let st = Store::open(":memory:").unwrap();
         seed_events_in_run(
             &st,
@@ -21944,20 +21914,10 @@ mod tests {
                     ledger::TYPE_UNIT_STARTED,
                     serde_json::to_vec(&json!({"id": "orphan", "agent": "worker"})).unwrap(),
                 ),
-                Event::new(
-                    ledger::TYPE_UNIT_INTEGRATED,
-                    serde_json::to_vec(&json!({"id": "orphan", "commit": "def456"})).unwrap(),
-                ),
+                integrated("orphan"),
             ],
         );
-
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = resume_in(&st, &repo_path);
 
         assert_eq!(rs.units["orphan"].status, ledger::Status::Integrated);
         assert!(
@@ -22184,84 +22144,7 @@ mod tests {
         // `run()` resume seam with TWO integrated units plus one escalated, and pins that
         // BOTH integrated branches are reclaimed in a single pass while the escalated one is
         // retained as the human's evidence.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        commit_on_unit_branch(&repo_path, "alpha", "alpha.rs", "fn alpha() {}\n");
-        commit_on_unit_branch(&repo_path, "beta", "beta.rs", "fn beta() {}\n");
-        commit_on_unit_branch(&repo_path, "stuck", "stuck.rs", "fn stuck() {}\n");
-        for u in ["alpha", "beta", "stuck"] {
-            assert!(
-                branch_present(&repo_path, &unit_branch(u)),
-                "precondition: {u}'s branch exists before the run"
-            );
-        }
-
-        let st = Store::open(":memory:").unwrap();
-        seed_events_in_run(
-            &st,
-            &[],
-            &[
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "alpha", "agent": "worker", "branch": unit_branch("alpha")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_INTEGRATED,
-                    serde_json::to_vec(&json!({"id": "alpha", "commit": "a11"})).unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "beta", "agent": "worker", "branch": unit_branch("beta")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_INTEGRATED,
-                    serde_json::to_vec(&json!({"id": "beta", "commit": "b22"})).unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "stuck", "agent": "worker", "branch": unit_branch("stuck")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_ESCALATED,
-                    serde_json::to_vec(&json!({"id": "stuck"})).unwrap(),
-                ),
-            ],
-        );
-
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        assert_eq!(rs.units["alpha"].status, ledger::Status::Integrated);
-        assert_eq!(rs.units["beta"].status, ledger::Status::Integrated);
-        assert_eq!(rs.units["stuck"].status, ledger::Status::Escalated);
-
-        assert!(
-            !branch_present(&repo_path, &unit_branch("alpha")),
-            "the first integrated unit's branch must be reclaimed"
-        );
-        assert!(
-            !branch_present(&repo_path, &unit_branch("beta")),
-            "the SECOND integrated unit's branch must ALSO be reclaimed in the same resume"
-        );
-        assert!(
-            branch_present(&repo_path, &unit_branch("stuck")),
-            "the escalated unit's branch must be retained as the human's evidence"
-        );
+        assert_branch_gc_resume(&["alpha", "beta"], &["stuck"]);
     }
 
     #[test]
@@ -22280,42 +22163,11 @@ mod tests {
         // driving the identical shape directly through the public `run()` resume seam.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-
-        commit_on_unit_branch(&repo_path, "fenced", "fenced.rs", "fn fenced() {}\n");
-        assert!(
-            branch_present(&repo_path, &unit_branch("fenced")),
-            "precondition: the integrated unit's branch exists before the run"
-        );
-
+        seed_unit_branches(&repo_path, &["fenced"]);
         let st = Store::open(":memory:").unwrap();
-        seed_events_in_run(
-            &st,
-            &[],
-            &[
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "fenced", "agent": "worker", "branch": unit_branch("fenced")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_INTEGRATED,
-                    serde_json::to_vec(&json!({"id": "fenced", "commit": "f00"})).unwrap(),
-                ),
-                crate::spawn::test_request("fenced", "fenced", "adversary", 0, "verify")
-                    .to_event()
-                    .unwrap(),
-            ],
-        );
+        seed_events_in_run(&st, &[], &integrated_with_straggler("fenced", false));
 
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = resume_in(&st, &repo_path);
         assert_eq!(rs.units["fenced"].status, ledger::Status::Integrated);
         assert!(
             branch_present(&repo_path, &unit_branch("fenced")),
@@ -22333,7 +22185,7 @@ mod tests {
         )
         .unwrap();
 
-        let rs2 = run(&cfg, &deps).unwrap();
+        let rs2 = resume_in(&st, &repo_path);
         assert_eq!(rs2.units["fenced"].status, ledger::Status::Integrated);
         assert!(
             !branch_present(&repo_path, &unit_branch("fenced")),
@@ -22363,39 +22215,7 @@ mod tests {
         let repo_path = repo.path().to_str().unwrap().to_string();
         commit_on_unit_branch(&repo_path, "fenced", "fenced.rs", "fn fenced() {}\n");
 
-        let events = vec![
-            Event::new(
-                ledger::TYPE_UNIT_STARTED,
-                serde_json::to_vec(
-                    &json!({"id": "fenced", "agent": "worker", "branch": unit_branch("fenced")}),
-                )
-                .unwrap(),
-            ),
-            Event::new(
-                ledger::TYPE_UNIT_INTEGRATED,
-                serde_json::to_vec(&json!({"id": "fenced", "commit": "f00"})).unwrap(),
-            ),
-            crate::spawn::test_request("fenced", "fenced", "adversary", 0, "verify")
-                .to_event()
-                .unwrap(),
-        ];
-        let rs = ledger::project(&events).unwrap();
-        let stages: BTreeMap<String, Stage> = BTreeMap::new();
-
-        let st = Store::open(":memory:").unwrap();
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        let mut lines: Vec<String> = Vec::new();
-        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
-            lines.push(l.to_string())
-        });
-
+        let lines = gc_logged(&repo_path, &integrated_with_straggler("fenced", false));
         assert!(
             branch_present(&repo_path, &unit_branch("fenced")),
             "an in-flight latest spawn must fence the branch off this reclaim authority too"
@@ -22432,62 +22252,14 @@ mod tests {
         // as the sole authority that ever touches this unit's branch/worktree.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let seed_dir = std::env::temp_dir().join(format!(
-            "rigger-seed-{}-{}",
-            sanitize_for_path("answered"),
-            &uuid::Uuid::new_v4().to_string()[..8]
-        ));
-        let seed_wt = crate::worktree::Worktree::create(
+        let seed_wt = seed_branch_worktree(
             &repo_path,
-            seed_dir.to_str().unwrap(),
             &unit_branch("answered"),
-            "",
-        )
-        .unwrap();
-        std::fs::write(
-            Path::new(&seed_wt.dir).join("answered.rs"),
+            "answered.rs",
             "fn answered() {}\n",
-        )
-        .unwrap();
-        let committed = seed_wt.commit("rigger: prior window work").unwrap();
-        assert!(!committed.is_empty(), "the prior window must commit work");
+        );
 
-        let events = vec![
-            Event::new(
-                ledger::TYPE_UNIT_STARTED,
-                serde_json::to_vec(
-                    &json!({"id": "answered", "agent": "worker", "branch": unit_branch("answered")}),
-                )
-                .unwrap(),
-            ),
-            Event::new(
-                ledger::TYPE_UNIT_INTEGRATED,
-                serde_json::to_vec(&json!({"id": "answered", "commit": "a11"})).unwrap(),
-            ),
-            crate::spawn::test_request("answered", "answered", "adversary", 0, "verify")
-                .to_event()
-                .unwrap(),
-            spawn::SpawnResult::ok("answered/adversary#0", "approve")
-                .to_event()
-                .unwrap(),
-        ];
-        let rs = ledger::project(&events).unwrap();
-        let stages: BTreeMap<String, Stage> = BTreeMap::new();
-
-        let st = Store::open(":memory:").unwrap();
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        let mut lines: Vec<String> = Vec::new();
-        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
-            lines.push(l.to_string())
-        });
-
+        let lines = gc_logged(&repo_path, &integrated_with_straggler("answered", true));
         assert!(
             !branch_present(&repo_path, &unit_branch("answered")),
             "a terminal (answered) latest spawn must not block this reclaim authority"
@@ -22528,48 +22300,9 @@ mod tests {
         // the required fix's own explicit carve-out for the reclaim calls themselves).
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        commit_on_unit_branch(&repo_path, "settled", "settled.rs", "fn settled() {}\n");
-        assert!(
-            branch_present(&repo_path, &unit_branch("settled")),
-            "precondition: the branch survives its own worktree's removal"
-        );
+        seed_unit_branches(&repo_path, &["settled"]);
 
-        let events = vec![
-            Event::new(
-                ledger::TYPE_UNIT_STARTED,
-                serde_json::to_vec(
-                    &json!({"id": "settled", "agent": "worker", "branch": unit_branch("settled")}),
-                )
-                .unwrap(),
-            ),
-            Event::new(
-                ledger::TYPE_UNIT_INTEGRATED,
-                serde_json::to_vec(&json!({"id": "settled", "commit": "5e77"})).unwrap(),
-            ),
-            crate::spawn::test_request("settled", "settled", "adversary", 0, "verify")
-                .to_event()
-                .unwrap(),
-            spawn::SpawnResult::ok("settled/adversary#0", "approve")
-                .to_event()
-                .unwrap(),
-        ];
-        let rs = ledger::project(&events).unwrap();
-        let stages: BTreeMap<String, Stage> = BTreeMap::new();
-
-        let st = Store::open(":memory:").unwrap();
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        let mut lines: Vec<String> = Vec::new();
-        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
-            lines.push(l.to_string())
-        });
-
+        let lines = gc_logged(&repo_path, &integrated_with_straggler("settled", true));
         assert!(
             !branch_present(&repo_path, &unit_branch("settled")),
             "the orphaned branch must still be silently reclaimed - only the log emission \
@@ -22597,68 +22330,22 @@ mod tests {
         // every step after it - and, pre-fix, `gc_integrated_branches_logged` re-printed a
         // false "removing branch" claim on every one of those future steps, forever, long
         // after the real removal already happened on step N. This drives the SAME call
-        // TWICE over the IDENTICAL `rs`/`events` - exactly what a later `rigger step`
-        // resolves for such a unit - and pins that only the FIRST call (the one that
-        // genuinely finds the worktree still registered and reclaims it) logs "removing";
-        // the second call, over the same never-shrinking `Integrated` set, must stay
-        // silent because the branch and worktree are already gone.
+        // TWICE over the IDENTICAL `events` - exactly what a later `rigger step` resolves
+        // for such a unit - and pins that only the FIRST call (the one that genuinely finds
+        // the worktree still registered and reclaims it) logs "removing"; the second call,
+        // over the same never-shrinking `Integrated` set, must stay silent because the
+        // branch and worktree are already gone.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let seed_dir = std::env::temp_dir().join(format!(
-            "rigger-seed-{}-{}",
-            sanitize_for_path("repeat"),
-            &uuid::Uuid::new_v4().to_string()[..8]
-        ));
-        let seed_wt = crate::worktree::Worktree::create(
+        seed_branch_worktree(
             &repo_path,
-            seed_dir.to_str().unwrap(),
             &unit_branch("repeat"),
-            "",
-        )
-        .unwrap();
-        std::fs::write(
-            Path::new(&seed_wt.dir).join("repeat.rs"),
+            "repeat.rs",
             "fn repeat() {}\n",
-        )
-        .unwrap();
-        let committed = seed_wt.commit("rigger: prior window work").unwrap();
-        assert!(!committed.is_empty(), "the prior window must commit work");
+        );
+        let events = integrated_with_straggler("repeat", true);
 
-        let events = vec![
-            Event::new(
-                ledger::TYPE_UNIT_STARTED,
-                serde_json::to_vec(
-                    &json!({"id": "repeat", "agent": "worker", "branch": unit_branch("repeat")}),
-                )
-                .unwrap(),
-            ),
-            Event::new(
-                ledger::TYPE_UNIT_INTEGRATED,
-                serde_json::to_vec(&json!({"id": "repeat", "commit": "2e97"})).unwrap(),
-            ),
-            crate::spawn::test_request("repeat", "repeat", "adversary", 0, "verify")
-                .to_event()
-                .unwrap(),
-            spawn::SpawnResult::ok("repeat/adversary#0", "approve")
-                .to_event()
-                .unwrap(),
-        ];
-        let rs = ledger::project(&events).unwrap();
-        let stages: BTreeMap<String, Stage> = BTreeMap::new();
-
-        let st = Store::open(":memory:").unwrap();
-        let cfg = Config::default();
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        let mut first: Vec<String> = Vec::new();
-        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
-            first.push(l.to_string())
-        });
+        let first = gc_logged(&repo_path, &events);
         assert!(
             !branch_present(&repo_path, &unit_branch("repeat")),
             "the first call must genuinely reclaim the branch"
@@ -22670,13 +22357,10 @@ mod tests {
             "the first, REAL removal must be attributable from the log: {first:?}"
         );
 
-        // Second call: SAME `rs` (same ledger-projected `RunState`) and SAME `events` -
-        // exactly what a later `rigger step` resolves for this unit, since `rs.units` never
-        // shrinks. The branch and worktree are already fully gone from the first call.
-        let mut second: Vec<String> = Vec::new();
-        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
-            second.push(l.to_string())
-        });
+        // Second call: SAME `events` - exactly what a later `rigger step` resolves for this
+        // unit, since `rs.units` never shrinks. The branch and worktree are already fully gone
+        // from the first call.
+        let second = gc_logged(&repo_path, &events);
         assert!(
             !second
                 .iter()
@@ -23407,15 +23091,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_gating_spawn_that_returns_a_reject_verdict_line_is_a_normal_reject_even_if_it_emitted_approve(
-    ) {
-        // The mismatch backstop fires ONLY when the result channel carries NO verdict at
-        // all. A gating spawn that DID put a `{"verdict":"reject"}` line on its result
-        // DECIDED on the result channel; an approve-shaped event emitted alongside it is
-        // ignored (the result channel still decides), so this is an ordinary reject that
-        // remediates, never the hard-error halt. This pins that `has_verdict_line` gates
-        // the backstop, so a legitimate reject is never misread as a mismatch.
+    /// A gating adjudicator whose result is `judge_output` and who emitted `judge_emits` folds as
+    /// an ordinary reject: with one remediation attempt the unit escalates and `run` still
+    /// returns Ok (the run completed), never the verdict-channel-mismatch hard error (`why`).
+    fn assert_ordinary_reject(judge_output: &str, judge_emits: Vec<(String, Value)>, why: &str) {
         let store = Store::open(":memory:").unwrap();
         let mut cfg = degenerate_reviewer_cfg();
         // One remediation attempt then escalate, so the reject loop terminates cheaply.
@@ -23423,67 +23102,51 @@ mod tests {
         let driver = Stub {
             output_by_agent: HashMap::from([
                 ("sdet".to_string(), "lens: no blocker".to_string()),
-                ("judge".to_string(), r#"{"verdict":"reject"}"#.to_string()),
+                ("judge".to_string(), judge_output.to_string()),
             ]),
-            emits_by_agent: HashMap::from([(
-                "judge".to_string(),
+            emits_by_agent: HashMap::from([("judge".to_string(), judge_emits)]),
+            ..Stub::new()
+        };
+        let deps = stub_deps(&store, &driver, Vec::new());
+        run(&cfg, &deps).expect(why);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "{why}: it remediates and escalates"
+        );
+    }
+
+    crate::test_cases! {
+        /// The mismatch backstop fires ONLY when the result channel carries NO verdict at all. A
+        /// gating spawn that DID put a `{"verdict":"reject"}` line on its result DECIDED on the
+        /// result channel; an approve-shaped event emitted alongside it is ignored (the result
+        /// channel still decides), so this is an ordinary reject that remediates, never the
+        /// hard-error halt. This pins that `has_verdict_line` gates the backstop, so a legitimate
+        /// reject is never misread as a mismatch.
+        a_gating_spawn_that_returns_a_reject_verdict_line_is_a_normal_reject_even_if_it_emitted_approve:
+            assert_ordinary_reject(
+                r#"{"verdict":"reject"}"#,
                 vec![(
                     contextgraph::TYPE_DECISION_MADE.to_string(),
                     json!({"id": "verdict", "verdict": "approve"}),
                 )],
-            )]),
-            ..Stub::new()
-        };
-        let deps = stub_deps(&store, &driver, Vec::new());
-        // A reject that exhausts remediation escalates; `run` still returns Ok (the run
-        // completed, the unit escalated), never the mismatch hard error.
-        run(&cfg, &deps).expect("a result-channel reject is a normal reject, not a mismatch halt");
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
-            "a result-channel reject remediates and escalates - it is not the mismatch halt"
-        );
-    }
-
-    #[test]
-    fn a_gating_spawn_with_no_verdict_line_and_no_emitted_approve_is_an_ordinary_reject() {
-        // The backstop fires on the CONJUNCTION (no verdict line AND an emitted approve).
-        // This pins the emitted_approve leg in ISOLATION (carry-forward
-        // sdet-u18-3-emitted-approve-conjunct-untested): a non-degenerate result carrying
-        // NO verdict line AND emitting NO approve is an ordinary empty verdict - the gate
-        // reads no approval, so it folds as a reject and remediates, NEVER the hard-error
-        // halt. Guards the store-sourced backstop from widening to fire on ANY missing
-        // verdict line (which would misread a genuine empty-verdict reject as a mismatch).
-        let store = Store::open(":memory:").unwrap();
-        let mut cfg = degenerate_reviewer_cfg();
-        // One remediation attempt then escalate, so the reject loop terminates cheaply.
-        cfg.workflow.defaults.max_retries = 1;
-        let driver = Stub {
-            output_by_agent: HashMap::from([
-                ("sdet".to_string(), "lens: no blocker".to_string()),
-                // A non-degenerate result with NO parseable verdict line...
-                (
-                    "judge".to_string(),
-                    "I have reviewed the unit and it looks good to me.".to_string(),
-                ),
-            ]),
-            // ...and the adjudicator emitted NOTHING - no approve-shaped event - so the
-            // mismatch conjunction is false: this is a plain empty-verdict reject.
-            ..Stub::new()
-        };
-        let deps = stub_deps(&store, &driver, Vec::new());
-        // No hard error: an empty verdict with no emitted approve remediates and escalates.
-        run(&cfg, &deps)
-            .expect("an empty verdict with no emitted approve is a normal reject, not a halt");
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
-            "no emitted approve means an ordinary reject that remediates and escalates, not a halt"
-        );
+                "a result-channel reject is a normal reject, not a mismatch halt",
+            );
+        /// The backstop fires on the CONJUNCTION (no verdict line AND an emitted approve). This
+        /// pins the emitted_approve leg in ISOLATION (carry-forward
+        /// sdet-u18-3-emitted-approve-conjunct-untested): a non-degenerate result carrying NO
+        /// verdict line AND emitting NO approve is an ordinary empty verdict - the gate reads no
+        /// approval, so it folds as a reject and remediates, NEVER the hard-error halt. Guards the
+        /// store-sourced backstop from widening to fire on ANY missing verdict line (which would
+        /// misread a genuine empty-verdict reject as a mismatch).
+        a_gating_spawn_with_no_verdict_line_and_no_emitted_approve_is_an_ordinary_reject:
+            assert_ordinary_reject(
+                "I have reviewed the unit and it looks good to me.",
+                Vec::new(),
+                "an empty verdict with no emitted approve is a normal reject, not a halt",
+            );
     }
 
     #[test]
@@ -23782,70 +23445,29 @@ mod tests {
         assert_eq!(occurrences(&driver.call_order, "worker"), 1);
     }
 
+    /// The recorded tail of a prior window whose unit `s` was APPROVED (`reviewed`) but whose
+    /// merge was interrupted before UnitIntegrated.
+    fn approved_but_unmerged_s() -> Vec<Event> {
+        vec![
+            unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "verified")),
+            unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "reviewed")),
+        ]
+    }
+
     #[test]
     fn resume_integrates_an_already_approved_unit_without_re_reviewing() {
         // Resume-continuity: a unit whose log shows review APPROVED (`reviewed`) but no
         // UnitIntegrated - the merge was interrupted - must integrate on resume with NO
         // lens/adversary/adjudicator spawns. The verdict was already settled; re-review
         // would re-litigate it and re-spend the budget.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
-
-        let st = Store::open(":memory:").unwrap();
-        seed_events_in_run(
-            &st,
-            &[],
-            &[
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STATUS,
-                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STATUS,
-                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
-                ),
-            ],
-        );
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("adversary".into(), agent("adversary"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lens".into()],
-                    adversary: "adversary".into(),
-                    adjudicator: "judge".into(),
-                    tiers: None,
-                },
-                ..Default::default()
-            },
-        );
-
         let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path,
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
+        assert_resume_integrates_s(
+            approved_but_unmerged_s(),
+            true,
+            &driver,
+            &ExecRunner,
+            "the approved-but-uninterrupted-merge unit must integrate on resume",
+        );
         assert!(
             !driver.spawned("worker"),
             "an approved unit must not re-implement on resume"
@@ -23853,15 +23475,6 @@ mod tests {
         assert!(
             !driver.spawned("lens") && !driver.spawned("adversary") && !driver.spawned("judge"),
             "an already-approved unit must integrate with NO review spawns on resume"
-        );
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "the approved-but-uninterrupted-merge unit must integrate on resume"
-        );
-        assert!(
-            repo.path().join("feature.rs").exists(),
-            "the approved work must land in the base"
         );
     }
 
@@ -23879,25 +23492,14 @@ mod tests {
         // The prior window implemented unit `s`, committed it on the deterministic
         // branch, but its review/gate FAILED once (UnitFailed attempts:1) - it is
         // mid-remediation, not escalated.
-        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
-
         let st = Store::open(":memory:").unwrap();
-        seed_events_in_run(
+        seed_prior_window_s(
+            &repo_path,
             &st,
-            &[],
-            &[
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_FAILED,
-                    serde_json::to_vec(&json!({"id": "s", "attempts": 1})).unwrap(),
-                ),
-            ],
+            vec![Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({"id": "s", "attempts": 1})).unwrap(),
+            )],
         );
 
         // The folded prior state proves the unit is NOT terminal (the regression this
@@ -23914,42 +23516,16 @@ mod tests {
             "a Failed-but-not-escalated unit must not be terminal - else resume skips it forever"
         );
 
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lens".into()],
-                    adjudicator: "judge".into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-
         // The resumed attempt's review is approved, so the unit integrates this window.
-        // The lens returns a substantive review so it does not trip the Gap-18 respawn loop.
         let driver = Stub {
             write_file: Some("feature.rs".into()),
-            output_by_agent: HashMap::from([
-                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
-                ("lens".to_string(), "reviewed: no blocker".to_string()),
-            ]),
-            ..Stub::new()
+            ..approving_panel_stub()
         };
         let deps = Deps {
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run(&reviewed_merge_cfg(false), &deps).unwrap();
 
         // The unit RAN on resume - it was not skipped as terminal. A Failed unit's
         // recorded status falls to the Fresh resume-phase, so it re-implements (the
@@ -24275,26 +23851,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn scope_creep_refuses_a_criterionless_proposed_unit() {
+    /// Run a `produces` planner stage (`plan`, coverage `stage_coverage`, plus a `worker` agent
+    /// when `with_worker`) over the one criterion `crit`, its planner proposing `proposal`;
+    /// returns the run state and the log.
+    fn planner_run(
+        stage_coverage: &str,
+        with_worker: bool,
+        proposal: Value,
+    ) -> (RunState, Vec<Event>) {
         let mut cfg = Config::default();
         cfg.agents.insert("planner".into(), agent("planner"));
+        if with_worker {
+            cfg.agents.insert("worker".into(), agent("worker"));
+        }
         cfg.workflow.stages.insert(
             "plan".into(),
             Stage {
                 name: "plan".into(),
                 agent: "planner".into(),
                 produces: "dag".into(),
-                coverage: "crit".into(),
+                coverage: stage_coverage.into(),
                 ..Default::default()
             },
         );
         let st = Store::open(":memory:").unwrap();
         let driver = Stub {
-            emits: vec![(
-                TYPE_UNIT_PROPOSED.to_string(),
-                json!({"id": "impl", "agent": "worker"}), // no coverage
-            )],
+            emits: vec![(TYPE_UNIT_PROPOSED.to_string(), proposal)],
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, vec!["crit".into()]);
@@ -24302,6 +23884,16 @@ mod tests {
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
+        (rs, events)
+    }
+
+    #[test]
+    fn scope_creep_refuses_a_criterionless_proposed_unit() {
+        let (rs, events) = planner_run(
+            "crit",
+            false,
+            json!({"id": "impl", "agent": "worker"}), // no coverage
+        );
         assert!(
             events.iter().any(|e| e.type_ == TYPE_SCOPE_CREEP),
             "a criterion-less proposed unit must be refused as scope creep"
@@ -24340,52 +23932,40 @@ mod tests {
         );
     }
 
-    #[test]
-    fn adversary_runs_between_the_lenses_and_the_adjudicator() {
-        // Three-tier review order (§3.2): a stage with `agents` + `adversary` +
-        // `adjudicator` must spawn the lenses FIRST (in parallel), THEN the adversary
-        // (which reviews the lenses' findings), THEN the adjudicator (the neutral
-        // judge). The Stub records every spawn's agent id in order; we assert the
-        // adversary lands after every lens and before the adjudicator.
-        let mut cfg = Config::default();
-        cfg.agents.insert("lensA".into(), agent("lensA"));
-        cfg.agents.insert("lensB".into(), agent("lensB"));
-        cfg.agents.insert("adversary".into(), agent("adversary"));
-        cfg.agents
-            .insert("adjudicator".into(), agent("adjudicator"));
-        cfg.workflow.stages.insert(
-            "review".into(),
-            Stage {
-                name: "review".into(),
-                agents: vec!["lensA".into(), "lensB".into()],
-                adversary: "adversary".into(),
-                adjudicator: "adjudicator".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        // The adjudicator is now fail-closed (item 2): approval requires an explicit
-        // {"verdict":"approve"}. The shared Stub returns it for every spawn; only the
-        // adjudicator's output is run through verdict_approves.
-        let driver = Stub {
+    /// A driver whose every spawn outputs an explicit `{"verdict":"approve"}` - the fail-closed
+    /// adjudicator (item 2) approves only on one; only the adjudicator's output is run through
+    /// verdict_approves.
+    fn approving_stub() -> Stub {
+        Stub {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
+        }
+    }
+
+    /// Run `cfg` under [`approving_stub`], grounded by `grounder`; returns the run state, the
+    /// driver and the store.
+    fn approving_run(cfg: &Config, grounder: Option<&dyn Grounder>) -> (RunState, Stub, Store) {
+        let st = Store::open(":memory:").unwrap();
+        let driver = approving_stub();
+        let deps = Deps {
+            grounder,
+            ..stub_deps(&st, &driver, Vec::new())
         };
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(
-            rs.units["review"].status,
-            ledger::Status::Integrated,
-            "an approving three-tier review must integrate"
-        );
-        let order = driver.call_order.lock().unwrap().clone();
+        let rs = run(cfg, &deps).unwrap();
+        drop(deps);
+        (rs, driver, st)
+    }
+
+    /// In the spawn `order`, the adversary runs AFTER every lens (`lensA`/`lensB`; it reviews
+    /// their findings) and BEFORE `adjudicator` (who judges last); returns the last lens's index.
+    fn assert_three_tier_order(order: &[String], adjudicator: &str) -> usize {
         let adv = order
             .iter()
             .position(|a| a == "adversary")
             .expect("the adversary must be spawned");
         let adj = order
             .iter()
-            .position(|a| a == "adjudicator")
+            .position(|a| a == adjudicator)
             .expect("the adjudicator must be spawned");
         let last_lens = order
             .iter()
@@ -24399,6 +23979,38 @@ mod tests {
             adv < adj,
             "the adversary must run BEFORE the adjudicator (the adjudicator judges last); order was {order:?}"
         );
+        last_lens
+    }
+
+    #[test]
+    fn adversary_runs_between_the_lenses_and_the_adjudicator() {
+        // Three-tier review order (§3.2): a stage with `agents` + `adversary` +
+        // `adjudicator` must spawn the lenses FIRST (in parallel), THEN the adversary
+        // (which reviews the lenses' findings), THEN the adjudicator (the neutral
+        // judge). The Stub records every spawn's agent id in order; we assert the
+        // adversary lands after every lens and before the adjudicator.
+        let mut cfg = Config::default();
+        for id in ["lensA", "lensB", "adversary", "adjudicator"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lensA".into(), "lensB".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adjudicator".into(),
+                ..Default::default()
+            },
+        );
+        let (rs, driver, _st) = approving_run(&cfg, None);
+        assert_eq!(
+            rs.units["review"].status,
+            ledger::Status::Integrated,
+            "an approving three-tier review must integrate"
+        );
+        let order = driver.call_order.lock().unwrap().clone();
+        assert_three_tier_order(&order, "adjudicator");
     }
 
     #[test]
@@ -24454,11 +24066,9 @@ mod tests {
         // unit must reach Integrated, and the implementer, both lenses, the adversary,
         // and the adjudicator must all have run on it - in that order.
         let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lensA".into(), agent("lensA"));
-        cfg.agents.insert("lensB".into(), agent("lensB"));
-        cfg.agents.insert("adversary".into(), agent("adversary"));
-        cfg.agents.insert("adj".into(), agent("adj"));
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
         // The review panel is declared once on defaults and applied to the unit.
         cfg.workflow.defaults.review = config::ReviewPanel {
@@ -24477,14 +24087,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
-        // Fail-closed adjudicator (item 2): approval needs an explicit verdict.
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, driver, st) = approving_run(&cfg, None);
         assert_eq!(
             rs.units["implement"].status,
             ledger::Status::Integrated,
@@ -24493,33 +24096,14 @@ mod tests {
         // The implementer ran, then both lenses, then the adversary, then the
         // adjudicator - all on this one unit, inside its own lifecycle.
         let order = driver.call_order.lock().unwrap().clone();
+        let last_lens = assert_three_tier_order(&order, "adj");
         let worker = order
             .iter()
             .position(|a| a == "worker")
             .expect("the implementer must run");
-        let last_lens = order
-            .iter()
-            .rposition(|a| a == "lensA" || a == "lensB")
-            .expect("the lenses must run on the unit");
-        let adv = order
-            .iter()
-            .position(|a| a == "adversary")
-            .expect("the adversary must run on the unit");
-        let adj = order
-            .iter()
-            .position(|a| a == "adj")
-            .expect("the adjudicator must run on the unit");
         assert!(
             worker < last_lens,
             "the implementer runs before its own review; order was {order:?}"
-        );
-        assert!(
-            last_lens < adv,
-            "the adversary runs AFTER every lens; order was {order:?}"
-        );
-        assert!(
-            adv < adj,
-            "the adjudicator runs LAST (its verdict gates); order was {order:?}"
         );
         // The unit was marked `reviewed` after the adjudicator approved.
         let events = st
@@ -24814,54 +24398,60 @@ mod tests {
         assert_eq!(ev.get("flapped").map(String::as_str), Some("false"));
     }
 
-    #[test]
-    fn a_low_risk_unit_skips_the_adversary_and_extra_lens() {
-        // Assert on WHICH agents ran: the light route spawns only lensA + adj, never lensB
-        // or the adversary.
+    /// Run an approving `implement` unit covering `coverage`, grounded by a grep over a project
+    /// holding only `file` (`fn widget() {}`), under a full panel (both lenses + adversary +
+    /// `adj`) tiered to a light roster (`lensA` + the mandatory `adj`) at size `threshold`, with
+    /// `src/conductor.rs` high-risk - the policy declared on the stage's OWN review block when
+    /// `on_stage` (defaults.review then stays EMPTY), on defaults.review otherwise. The unit
+    /// integrates; returns the run state, the driver and the store.
+    fn tiered_review_run(
+        file: &str,
+        coverage: &str,
+        threshold: usize,
+        on_stage: bool,
+    ) -> (RunState, Stub, Store) {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let path = dir.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "fn widget() {}\n").unwrap();
         let light = config::ReviewPanel {
             lenses: vec!["lensA".into()],
             adjudicator: "adj".into(),
             ..Default::default()
         };
+        let review = full_panel_with_tiers(depth_tiers(light, threshold, &["src/conductor.rs"]));
         let mut cfg = Config::default();
         for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
             cfg.agents.insert(id.into(), agent(id));
         }
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.review =
-            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                coverage: "widget".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
+        let mut stage = Stage {
+            name: "implement".into(),
+            agent: "worker".into(),
+            coverage: coverage.into(),
+            gates: vec!["ok".into()],
+            on_pass: "merge".into(),
+            ..Default::default()
         };
+        if on_stage {
+            stage.review = review;
+        } else {
+            cfg.workflow.defaults.review = review;
+        }
+        cfg.workflow.stages.insert("implement".into(), stage);
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, driver, st) = approving_run(&cfg, Some(&grep));
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        (rs, driver, st)
+    }
+
+    #[test]
+    fn a_low_risk_unit_skips_the_adversary_and_extra_lens() {
+        // Assert on WHICH agents ran: the light route spawns only lensA + adj, never lensB
+        // or the adversary.
+        let (_rs, driver, _st) = tiered_review_run("leaf.rs", "widget", 3, false);
         assert!(driver.spawned("lensA"), "the light lens runs");
         assert!(
             driver.spawned("adj"),
@@ -24882,51 +24472,7 @@ mod tests {
         // spec 03 / spec 13 unit 4, the FULL route: a unit whose blast radius touches a
         // high-risk path runs the FULL panel (both lenses + adversary + adjudicator), and
         // the routing decision is logged as `full` with the matched path.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/conductor.rs"), "fn widget() {}\n").unwrap();
-        let light = config::ReviewPanel {
-            lenses: vec!["lensA".into()],
-            adjudicator: "adj".into(),
-            ..Default::default()
-        };
-        let mut cfg = Config::default();
-        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
-            cfg.agents.insert(id.into(), agent(id));
-        }
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.review =
-            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                coverage: "widget".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
-        let grep = crate::grounder::Grep {
-            root: dir.path().to_string_lossy().into_owned(),
-        };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let (rs, driver, st) = tiered_review_run("src/conductor.rs", "widget", 3, false);
         assert!(
             driver.spawned("lensA") && driver.spawned("lensB"),
             "both lenses run"
@@ -24977,53 +24523,11 @@ mod tests {
         // and the routing log must record the empty-radius fail-safe. Before the fix this
         // routed LIGHT (0 > threshold is false, no file matches a high-risk path), silently
         // downgrading review.
-        let light = config::ReviewPanel {
-            lenses: vec!["lensA".into()],
-            adjudicator: "adj".into(),
-            ..Default::default()
-        };
+        //
         // threshold 0 + a high-risk-paths list: the config the docs say keeps the full panel
-        // for every unit. Only the empty radius decides here.
-        let review = full_panel_with_tiers(depth_tiers(light, 0, &["src/conductor.rs"]));
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
-        let mut cfg = Config::default();
-        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
-            cfg.agents.insert(id.into(), agent(id));
-        }
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.review = review;
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                // A coverage query that appears in NO file's contents grounds to zero files.
-                coverage: "this_token_is_in_no_file".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
-        let grep = crate::grounder::Grep {
-            root: dir.path().to_string_lossy().into_owned(),
-        };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        // for every unit. Only the empty radius decides here: a coverage query that appears in
+        // NO file's contents grounds to zero files.
+        let (rs, driver, st) = tiered_review_run("leaf.rs", "this_token_is_in_no_file", 0, false);
         assert!(
             logged_review_tier(&st, "full"),
             "an empty-radius unit must route (and log) FULL, not light"
@@ -25169,51 +24673,7 @@ mod tests {
         // panel and `route_review_tier` runs over it, so a low-risk unit routes LIGHT. This
         // pins d13-u4-tiers-on-reviewpanel's claim that BOTH defaults and stage.review
         // inherit tiering through the one panel abstraction; only defaults was covered.
-        let light = config::ReviewPanel {
-            lenses: vec!["lensA".into()],
-            adjudicator: "adj".into(),
-            ..Default::default()
-        };
-        let stage_review = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
-        let mut cfg = Config::default();
-        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
-            cfg.agents.insert(id.into(), agent(id));
-        }
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        // defaults.review stays EMPTY: the tiering must come from the STAGE override alone.
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                coverage: "widget".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: stage_review,
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
-        let grep = crate::grounder::Grep {
-            root: dir.path().to_string_lossy().into_owned(),
-        };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let (_rs, driver, st) = tiered_review_run("leaf.rs", "widget", 3, true);
         assert!(
             logged_review_tier(&st, "light"),
             "a low-risk unit under a STAGE-level tiers policy routes light"
@@ -29667,32 +29127,12 @@ mod tests {
     fn planner_covering_every_criterion_passes() {
         // A `produces` planner defers coverage: it proposes a unit whose `coverage`
         // closes the only criterion, so coverage holds after planning (§3.2).
-        let mut cfg = Config::default();
-        cfg.agents.insert("planner".into(), agent("planner"));
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.stages.insert(
-            "plan".into(),
-            Stage {
-                name: "plan".into(),
-                agent: "planner".into(),
-                produces: "dag".into(),
-                ..Default::default()
-            },
+        let (rs, events) = planner_run(
+            "",
+            true,
+            json!({"id": "impl", "agent": "worker", "coverage": "crit"}),
         );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            emits: vec![(
-                TYPE_UNIT_PROPOSED.to_string(),
-                json!({"id": "impl", "agent": "worker", "coverage": "crit"}),
-            )],
-            ..Stub::new()
-        };
-        let deps = stub_deps(&st, &driver, vec!["crit".into()]);
-        let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["impl"].status, ledger::Status::Integrated);
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
         assert!(
             !events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT),
             "a planner that covers every criterion must not flag a defect"
@@ -32354,74 +31794,21 @@ mod tests {
         // assert. A gate that deletes the worktree as its own side effect during that
         // exhaustive run must self-heal via `integrate_and_emit`'s own re-assert, not
         // collapse the wave into a hard error.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
+        //
         // The prior window implemented and got unit "s" APPROVED (`reviewed`), but the
         // merge itself was interrupted before landing - resume must integrate directly
         // (ResumePhase::Reviewed), re-running the exhaustive gate suite at the integrate
         // door with no lens/adversary/adjudicator re-spawn.
-        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
-
-        let st = Store::open(":memory:").unwrap();
-        seed_events_in_run(
-            &st,
-            &[],
-            &[
-                Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(
-                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
-                    )
-                    .unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STATUS,
-                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
-                ),
-                Event::new(
-                    ledger::TYPE_UNIT_STATUS,
-                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
-                ),
-            ],
-        );
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("adversary".into(), agent("adversary"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                review: crate::config::ReviewPanel {
-                    lenses: vec!["lens".into()],
-                    adversary: "adversary".into(),
-                    adjudicator: "judge".into(),
-                    tiers: None,
-                },
-                ..Default::default()
-            },
-        );
-
         let driver = Stub::new();
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
+        assert_resume_integrates_s(
+            approved_but_unmerged_s(),
+            true,
+            &driver,
+            &runner,
+            "the resumed-reviewed unit must self-heal the gate-deleted worktree inside \
+             integrate_and_emit and integrate, not collapse the wave to a hard error",
+        );
         assert!(
             !driver.spawned("worker")
                 && !driver.spawned("lens")
@@ -32436,16 +31823,6 @@ mod tests {
             "the exhaustive gate must really have run (and deleted the worktree as its side \
              effect), or this test proves nothing: {:?}",
             runner.calls()
-        );
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "the resumed-reviewed unit must self-heal the gate-deleted worktree inside \
-             integrate_and_emit and integrate, not collapse the wave to a hard error"
-        );
-        assert!(
-            repo.path().join("feature.rs").exists(),
-            "the approved work must land in the base"
         );
     }
 
