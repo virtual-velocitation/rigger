@@ -92,7 +92,7 @@ fn write_one_stage_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        "name: workflowdrivertest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+        "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
     )
     .unwrap();
 }

@@ -166,8 +166,7 @@ fn write_attention_progression_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: attentiontest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 5
@@ -422,8 +421,7 @@ fn write_attention_ordering_workflow(root: &Path) {
     .unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
-        r#"name: attentionordertest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 5

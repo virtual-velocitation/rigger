@@ -183,8 +183,7 @@ fn checkin_becomes_ready_only_once_both_real_fanout_baseline_units_have_integrat
     write_worker_agent(root, GIT_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        r#"name: fanouttemplateneedstest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -304,8 +303,7 @@ fn checkin_never_becomes_ready_when_its_only_fanout_member_escalates_instead_of_
     write_worker_agent(root, REPOLESS_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        r#"name: fanouttemplateescalationtest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 1
@@ -646,8 +644,7 @@ fn write_split_fanout_workflow(root: &Path) {
     write_worker_agent(root, GIT_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        r#"name: fanoutrealsplittest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 1
@@ -1186,8 +1183,7 @@ fn a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_d
     write_worker_agent(root, REPOLESS_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        r#"name: stagemaxretrieslowertest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 5
@@ -1244,8 +1240,7 @@ fn a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_de
     write_worker_agent(root, REPOLESS_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        r#"name: stagemaxretriesraisetest
-defaults:
+        r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 1

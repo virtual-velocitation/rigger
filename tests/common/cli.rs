@@ -222,9 +222,9 @@ pub fn seed_derived_duplicates(root: &Path) {
         .unwrap();
 }
 
-/// Write a one-stage `workflow.yml` named `name` (plus its `worker` agent) under `root`, with
-/// `block` appended verbatim after the stage.
-pub fn write_workflow(root: &Path, name: &str, block: &str) {
+/// Write a one-stage `workflow.yml` (plus its `worker` agent) under `root`, with `block`
+/// appended verbatim after the stage.
+pub fn write_workflow(root: &Path, block: &str) {
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
     std::fs::write(
@@ -233,8 +233,7 @@ pub fn write_workflow(root: &Path, name: &str, block: &str) {
     )
     .expect("write worker.md");
     let workflow = format!(
-        "name: {name}\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
+        "defaults:\n  grounder: nop\n  budget: 60\n\
          stages:\n  a:\n    agent: worker\n    on_pass: none\n\
          {block}"
     );

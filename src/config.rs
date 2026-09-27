@@ -873,8 +873,6 @@ fn default_max_concurrent() -> u32 {
 #[serde(deny_unknown_fields)]
 pub struct Workflow {
     #[serde(default)]
-    pub name: String,
-    #[serde(default)]
     pub defaults: Defaults,
     /// The event-store selection this project's committed config pins (§48 rung 4). Absent (the
     /// common case) is "no opinion" - the resolver falls through to its default. Credentials never

@@ -1370,10 +1370,9 @@ mod tests {
 
     #[test]
     fn defaults_max_wall_clock_parses_and_is_zero_when_absent() {
-        let present: Workflow =
-            serde_yaml::from_str("name: w\ndefaults:\n  max_wall_clock: 600\n").unwrap();
+        let present: Workflow = serde_yaml::from_str("defaults:\n  max_wall_clock: 600\n").unwrap();
         assert_eq!(present.defaults.max_wall_clock, 600);
-        let absent: Workflow = serde_yaml::from_str("name: w\n").unwrap();
+        let absent: Workflow = serde_yaml::from_str("{}").unwrap();
         assert_eq!(
             absent.defaults.max_wall_clock, 0,
             "an absent default is 0 (unbounded - liveness timeouts are opt-in)"
@@ -1457,7 +1456,7 @@ mod tests {
         /// in `tests/config_unknown_key_dotted_path_periphery.rs` - both read through this same
         /// function, so their text is identical by construction, not by convention.
         load_workflow_rejects_an_unknown_key_under_defaults_naming_its_dotted_path: assert_load_workflow_names_the_unknown_key(
-            "name: w\ndefaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n",
+            "defaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n",
             "defaults.max_parallel_unitz",
             "must name the dotted path of the unrecognized key",
         );
@@ -1465,7 +1464,7 @@ mod tests {
         /// the dotted path composes correctly past a `BTreeMap` level too, not just a plain
         /// struct-in-struct nesting.
         load_workflow_rejects_an_unknown_key_under_a_named_stage_naming_its_dotted_path: assert_load_workflow_names_the_unknown_key(
-            "name: w\nstages:\n  implement:\n    agent: rust-engineer\n    gatez: [build]\n",
+            "stages:\n  implement:\n    agent: rust-engineer\n    gatez: [build]\n",
             "stages.implement.gatez",
             "must name the dotted path through the stage's own map key",
         );
@@ -1669,8 +1668,7 @@ mod tests {
     fn default_review_panel_parses_and_validates() {
         // A workflow declaring `defaults.review` parses the three-tier panel and
         // validates it referentially: known lenses + adversary + adjudicator load.
-        let yaml = "name: w\n\
-defaults:\n  \
+        let yaml = "defaults:\n  \
 review:\n    \
 lenses: [archlens, techlens]\n    \
 adversary: adv\n    \
@@ -1710,8 +1708,7 @@ agent: worker\n";
         // spec 03 / spec 13 unit 4: `defaults.review` carries an OPT-IN `tiers` depth
         // policy - a light panel, a blast-radius threshold, and a high-risk path list -
         // that parse from the workflow YAML alongside the full panel.
-        let yaml = "name: w\n\
-defaults:\n  \
+        let yaml = "defaults:\n  \
 review:\n    \
 lenses: [archlens, techlens]\n    \
 adversary: adv\n    \
@@ -1890,14 +1887,13 @@ agent: worker\n";
         // The remediation-depth knob parses from `defaults.max_retries` and is 0 when
         // omitted - the sentinel the conductor reads as "fall back to the historical
         // default of 3", so an un-set workflow is exactly back-compatible.
-        let present: Workflow =
-            serde_yaml::from_str("name: w\ndefaults:\n  max_retries: 6\n").unwrap();
+        let present: Workflow = serde_yaml::from_str("defaults:\n  max_retries: 6\n").unwrap();
         assert_eq!(
             present.defaults.max_retries, 6,
             "an explicit defaults.max_retries must parse through"
         );
 
-        let absent: Workflow = serde_yaml::from_str("name: w\ndefaults:\n  budget: 60\n").unwrap();
+        let absent: Workflow = serde_yaml::from_str("defaults:\n  budget: 60\n").unwrap();
         assert_eq!(
             absent.defaults.max_retries, 0,
             "an absent defaults.max_retries must default to 0 (the fall-back-to-3 sentinel)"
@@ -1916,7 +1912,7 @@ agent: worker\n";
         std::fs::create_dir_all(&rigger_dir).expect("create .rigger dir");
         std::fs::write(
             rigger_dir.join("workflow.yml"),
-            "name: w\ndefaults:\n  workdir: \"/configured/scratch\"\n  max_retries: 5\n",
+            "defaults:\n  workdir: \"/configured/scratch\"\n  max_retries: 5\n",
         )
         .expect("write workflow.yml");
         // No `.rigger/agents/` dir at all - fixture guard confirming this test genuinely
@@ -1971,7 +1967,7 @@ agent: worker\n";
         std::fs::create_dir_all(&rigger_dir).expect("create .rigger dir");
         std::fs::write(
             rigger_dir.join("workflow.yml"),
-            "name: w\ndefaults:\n  workdir: \"/some/other/scratch\"\n",
+            "defaults:\n  workdir: \"/some/other/scratch\"\n",
         )
         .expect("write workflow.yml");
 
@@ -2026,8 +2022,7 @@ agent: worker\n";
         // An authored `defaults.failure_rules` block parses into a first-match-wins
         // taxonomy: the matcher fields, the class, the per-rule limit, and the backoff
         // all convert to the runtime form (spec 10, unit 2).
-        let yaml = "name: w\n\
-defaults:\n  \
+        let yaml = "defaults:\n  \
 failure_rules:\n    \
 - match: {output_regex: \"segfault|SIGSEGV\"}\n      \
 class: flaky\n      \
@@ -2072,7 +2067,7 @@ class: product\n";
         // The common case: a workflow authors no failure_rules, so the taxonomy is the
         // shipped default (infra faults reran, everything else product) - preserving
         // spec-07 semantics and every existing gate test.
-        let wf: Workflow = serde_yaml::from_str("name: w\ndefaults:\n  budget: 10\n").unwrap();
+        let wf: Workflow = serde_yaml::from_str("defaults:\n  budget: 10\n").unwrap();
         assert!(wf.defaults.failure_rules.is_empty());
         let tax = wf.failure_taxonomy().unwrap();
         assert!(!tax.is_empty(), "the default taxonomy ships rules");
@@ -2089,8 +2084,7 @@ class: product\n";
     fn validate_rejects_an_unknown_failure_class_and_a_bad_regex() {
         let base = |rules: &str| -> Config {
             let wf: Workflow =
-                serde_yaml::from_str(&format!("name: w\ndefaults:\n  failure_rules:\n{rules}"))
-                    .unwrap();
+                serde_yaml::from_str(&format!("defaults:\n  failure_rules:\n{rules}")).unwrap();
             Config {
                 workflow: wf,
                 ..Default::default()
@@ -2122,7 +2116,7 @@ class: product\n";
     #[test]
     fn dash_enabled_is_on_by_default_and_off_only_on_an_explicit_opt_out() {
         // An omitted `dash` key keeps the always-on dash (a workflow that says nothing gets one).
-        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
         assert!(
             wf.dash_enabled(),
             "an omitted `dash` key leaves the always-on dash ON"
@@ -2152,7 +2146,7 @@ class: product\n";
     /// `wrapper: off`.
     #[test]
     fn build_config_parses_wrapper_and_cache_dir_and_defaults_when_omitted() {
-        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
         assert_eq!(
             wf.build.wrapper, "",
             "an omitted build: section defaults empty"
@@ -2174,7 +2168,7 @@ class: product\n";
     /// explicit positive value parses through untouched.
     #[test]
     fn build_config_parses_jobs_and_defaults_to_zero_when_omitted() {
-        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
         assert_eq!(
             wf.build.jobs, 0,
             "an omitted build: section defaults jobs to 0 (unset)"
@@ -2198,7 +2192,7 @@ class: product\n";
     /// key.
     #[test]
     fn build_config_parses_max_concurrent_defaulting_to_four_when_omitted() {
-        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
         assert_eq!(
             wf.build.max_concurrent, 4,
             "an omitted build: section defaults max_concurrent to 4"
@@ -2261,7 +2255,7 @@ class: product\n";
     /// pre-existing project that never touched this key.
     #[test]
     fn build_config_parses_mutation_and_defaults_to_empty_when_omitted() {
-        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
         assert_eq!(
             wf.build.mutation, "",
             "an omitted build: section defaults mutation empty"

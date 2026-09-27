@@ -501,8 +501,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rigger_dir = dir.path().join(".rigger");
         std::fs::create_dir_all(&rigger_dir).unwrap();
-        let yaml = "name: w\n\
-defaults:\n  \
+        let yaml = "defaults:\n  \
 review:\n    \
 lenses: [archlens]\n    \
 adversary: adv\n    \

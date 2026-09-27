@@ -354,7 +354,6 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     let configured = tempfile::tempdir().expect("create temp project");
     write_workflow(
         configured.path(),
-        "regeneratetest",
         "regenerate:\n\
          - paths: [\"docs/audit/*\", \"docs/other/*\"]\n\
          \u{20}\u{20}run: \"echo one\"\n\
@@ -386,7 +385,7 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     // otherwise, per Workflow::regenerate's own doc comment), never an error and never a
     // silently-defaulted rule.
     let legacy = tempfile::tempdir().expect("create temp project");
-    write_workflow(legacy.path(), "regeneratetest", "");
+    write_workflow(legacy.path(), "");
     let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no regenerate: section must still load");
     assert!(

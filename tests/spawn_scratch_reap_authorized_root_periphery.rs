@@ -272,7 +272,7 @@ fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_w
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         format!(
-            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            "defaults:\n  workdir: \"{}\"\n",
             relocated.path().to_string_lossy()
         ),
     )

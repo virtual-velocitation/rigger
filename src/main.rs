@@ -14465,7 +14465,6 @@ const SCAFFOLD_WORKFLOW: &str =
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
 # adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\n\
 # Replace the gate commands with your own.\n\
-name: example\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
@@ -20649,7 +20648,7 @@ mod tests {
         };
 
         let base = tempfile::tempdir().unwrap();
-        write_def(base.path(), "name: w\n", "Do the unit.");
+        write_def(base.path(), "dash: on\n", "Do the unit.");
         let dir = base.path().to_str().unwrap();
         let h0 = definition_hash(dir).unwrap();
         // Deterministic: recomputing over the same on-disk definition is byte-identical.
@@ -20659,14 +20658,14 @@ mod tests {
             "same definition, same hash"
         );
         // Canonicalization: trailing whitespace and CRLF do NOT change the hash.
-        write_def(base.path(), "name: w\r\n", "Do the unit.   ");
+        write_def(base.path(), "dash: on\r\n", "Do the unit.   ");
         assert_eq!(
             h0,
             definition_hash(dir).unwrap(),
             "trailing-ws / CRLF noise is canonicalized away"
         );
         // A PROMPT edit changes the hash - the mid-campaign edit spec 13 must catch.
-        write_def(base.path(), "name: w\n", "Do the unit differently.");
+        write_def(base.path(), "dash: on\n", "Do the unit differently.");
         assert_ne!(
             h0,
             definition_hash(dir).unwrap(),
@@ -20674,7 +20673,7 @@ mod tests {
         );
         // A workflow.yml edit changes the hash too.
         let with_wf = definition_hash(dir).unwrap();
-        write_def(base.path(), "name: changed\n", "Do the unit differently.");
+        write_def(base.path(), "dash: off\n", "Do the unit differently.");
         assert_ne!(
             with_wf,
             definition_hash(dir).unwrap(),
@@ -20928,7 +20927,7 @@ mod tests {
             "no source configured resolves the sqlite default"
         );
         // A workflow.yml with no `store:` key is also "no opinion" -> the default.
-        write_config(Some("name: demo\n"));
+        write_config(Some("{}"));
         assert_eq!(
             sel(None, None, None).unwrap(),
             StoreSelection::Sqlite,
@@ -22469,7 +22468,7 @@ mod tests {
         // `init_project` keeps it (write_if_absent) and scaffolds against ITS references.
         std::fs::write(
             rigger.join("workflow.yml"),
-            "name: t\nstages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n",
+            "stages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n",
         )
         .unwrap();
 
@@ -22520,7 +22519,7 @@ mod tests {
         // workflow.yml has since picked up a typo'd key.
         std::fs::write(
             rigger.join("workflow.yml"),
-            "name: t\nstages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n  \
+            "stages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n  \
              bad:\n    agent: planner\n    gatez: [build]\n",
         )
         .unwrap();
@@ -22610,7 +22609,7 @@ mod tests {
         std::fs::create_dir_all(&rigger).unwrap();
         std::fs::write(
             rigger.join("workflow.yml"),
-            "name: t\ndefaults:\n  max_parallel_unitz: 2\n",
+            "defaults:\n  max_parallel_unitz: 2\n",
         )
         .unwrap();
 
@@ -25215,13 +25214,13 @@ mod tests {
         let rigger_dir = dir.path().join(RIGGER_DIR);
         std::fs::create_dir_all(&rigger_dir).unwrap();
         let workflow_path = rigger_dir.join("workflow.yml");
-        std::fs::write(&workflow_path, "name: custom\nbuild:\n  wrapper: off\n").unwrap();
+        std::fs::write(&workflow_path, "build:\n  wrapper: off\n").unwrap();
 
         init_project(dir.path()).expect("a rerun over an existing project must succeed");
 
         let after = std::fs::read_to_string(&workflow_path).unwrap();
         assert_eq!(
-            after, "name: custom\nbuild:\n  wrapper: off\n",
+            after, "build:\n  wrapper: off\n",
             "an existing workflow.yml's build: section must be left byte-for-byte untouched"
         );
     }
@@ -26308,7 +26307,7 @@ mod tests {
         std::fs::create_dir_all(&rigger_dir).unwrap();
         std::fs::write(
             rigger_dir.join("workflow.yml"),
-            "name: w\ndefaults:\n  workdir: \"/configured/scratch\"\n  max_retries: 5\n",
+            "defaults:\n  workdir: \"/configured/scratch\"\n  max_retries: 5\n",
         )
         .unwrap();
         // Fixture guard: no `.rigger/agents/` dir exists at all, so `config::load` (the

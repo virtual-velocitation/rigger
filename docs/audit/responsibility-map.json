@@ -9957,7 +9957,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "884272ed49e87b0a"
+    "content_hash": "68eec7d68d18683b"
   },
   {
     "file": "src/main.rs",
@@ -9981,7 +9981,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7ab95a90fe800346"
+    "content_hash": "e98f96638e78c08a"
   },
   {
     "file": "src/main.rs",
@@ -10229,7 +10229,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6f3b7cf42356e984"
+    "content_hash": "1f4052d7448b3251"
   },
   {
     "file": "src/main.rs",
@@ -10237,7 +10237,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "da1041e68aa281c2"
+    "content_hash": "cc2ea9d97075c537"
   },
   {
     "file": "src/main.rs",
@@ -10253,7 +10253,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4c6181c51a88af54"
+    "content_hash": "e7136f3c758a1f51"
   },
   {
     "file": "src/main.rs",
@@ -10877,7 +10877,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "46811b37beacbe06"
+    "content_hash": "7410396388e06bf2"
   },
   {
     "file": "src/main.rs",
@@ -11181,7 +11181,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e55368acfa3290e3"
+    "content_hash": "162ff382162a3e05"
   },
   {
     "file": "src/main.rs",
