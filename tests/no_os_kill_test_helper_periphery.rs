@@ -171,17 +171,14 @@ fn is_alive_is_false_for_a_pid_that_was_never_a_real_process() {
     assert!(!common::is_alive(u32::MAX));
 }
 
-#[test]
-#[should_panic(expected = "not a real process")]
-fn terminate_pid_refuses_pid_zero() {
+test_cases! {
     // Pid 0 can never coincide with this (or any) process's own pid, so this message is
     // deterministic regardless of whether the namespace runner is in effect.
-    common::terminate_pid(0);
+    #[should_panic(expected = "not a real process")]
+    terminate_pid_refuses_pid_zero => common::terminate_pid(0);
 }
 
-#[test]
-#[should_panic]
-fn terminate_pid_refuses_pid_one() {
+test_cases! {
     // Always panics, but WHICH message fires is environment-dependent: under
     // `.cargo/pidns-runner.sh` (spec 78, THE NAMESPACE RUNNER) this test binary itself runs
     // as pid 1 of its own namespace, so pid 1 IS this process's own pid there (the "own pid"
@@ -190,13 +187,13 @@ fn terminate_pid_refuses_pid_one() {
     // message deterministically via `std::process::id()`, and
     // `terminate_pid_refuses_pid_zero` above pins "not a real process" deterministically via
     // a pid that can never be anyone's own - between the two, both messages are proven.
-    common::terminate_pid(1);
+    #[should_panic]
+    terminate_pid_refuses_pid_one => common::terminate_pid(1);
 }
 
-#[test]
-#[should_panic(expected = "own pid")]
-fn terminate_pid_refuses_its_callers_own_pid() {
-    common::terminate_pid(std::process::id());
+test_cases! {
+    #[should_panic(expected = "own pid")]
+    terminate_pid_refuses_its_callers_own_pid => common::terminate_pid(std::process::id());
 }
 
 // --- stop_pid: same guard contract as terminate_pid, plus its own false-return-on-delivery-
@@ -208,30 +205,27 @@ fn terminate_pid_refuses_its_callers_own_pid() {
 // identically, plus one stop_pid-specific test for its bool return contract that terminate_pid
 // (a void, best-effort ESRCH-ignoring function) has no analog of.
 
-#[test]
-#[should_panic(expected = "not a real process")]
-fn stop_pid_refuses_pid_zero() {
+test_cases! {
     // Pid 0 can never coincide with this (or any) process's own pid, so this message is
     // deterministic regardless of whether the namespace runner is in effect - mirrors
     // terminate_pid_refuses_pid_zero exactly.
-    common::stop_pid(0);
+    #[should_panic(expected = "not a real process")]
+    stop_pid_refuses_pid_zero => common::stop_pid(0);
 }
 
-#[test]
-#[should_panic]
-fn stop_pid_refuses_pid_one() {
+test_cases! {
     // Always panics, but WHICH message fires is environment-dependent (see
     // terminate_pid_refuses_pid_one's own comment for why); stop_pid_refuses_its_callers_own_pid
     // below pins the "own pid" message deterministically, and stop_pid_refuses_pid_zero above
     // pins "not a real process" deterministically - between the two, both messages are proven
     // for stop_pid the same way they already are for terminate_pid.
-    common::stop_pid(1);
+    #[should_panic]
+    stop_pid_refuses_pid_one => common::stop_pid(1);
 }
 
-#[test]
-#[should_panic(expected = "own pid")]
-fn stop_pid_refuses_its_callers_own_pid() {
-    common::stop_pid(std::process::id());
+test_cases! {
+    #[should_panic(expected = "own pid")]
+    stop_pid_refuses_its_callers_own_pid => common::stop_pid(std::process::id());
 }
 
 #[test]
