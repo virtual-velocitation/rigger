@@ -48,9 +48,11 @@ mod common;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::fixtures::mk_stage;
+use common::fixtures::review_or_adjudicate;
 use common::git::git_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
-use rigger::config::{self, AgentDef, Config, Stage};
+use rigger::config::{AgentDef, Config};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{
@@ -100,48 +102,11 @@ fn git_commit_all(dir: &str, msg: &str) {
     }
 }
 
-fn review_panel() -> config::ReviewPanel {
-    config::ReviewPanel {
-        lenses: vec!["lens".into()],
-        adjudicator: "judge".into(),
-        ..Default::default()
-    }
-}
-
-fn mk_stage(name: &str, gate: &str) -> Stage {
-    Stage {
-        name: name.into(),
-        agent: "worker".into(),
-        gates: vec![gate.into()],
-        on_pass: "merge".into(),
-        needs: vec![],
-        review: review_panel(),
-        ..Default::default()
-    }
-}
-
 /// `rigger::conductor::unit_branch`'s exact convention (`rigger/u/<unit-id>`, the crate's own
 /// public authority) reproduced by name rather than imported, so this file states plainly which
 /// branch it seeds without depending on the crate leaking its own worktree-dir layout too.
 fn unit_branch(unit_id: &str) -> String {
     format!("rigger/u/{unit_id}")
-}
-
-/// The shared review-tier response every fake `AgentDriver` in this file returns for a
-/// non-implementer spawn: the adjudicator approves outright; any other reviewer role's own
-/// output is unread (only its APPROVE verdict matters). Mirrors
-/// `tests/integrate_conflict_merge_periphery.rs::review_or_adjudicate`.
-fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
-    if opts.id.contains("/adjudicator#") {
-        return AgentResult {
-            output: r#"{"verdict":"approve"}"#.into(),
-            resolved_model: String::new(),
-        };
-    }
-    AgentResult {
-        output: "reviewed the diff".into(),
-        resolved_model: String::new(),
-    }
 }
 
 /// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else. Mirrors

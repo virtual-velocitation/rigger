@@ -41,6 +41,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::fixtures::plain;
+use common::fixtures::spoke_id;
 use common::served::served_json;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, REL_IN_COMMUNITY, REL_REFERENCES,
@@ -80,12 +81,6 @@ fn membership(id: &str, community: &str) -> Edge {
     }
 }
 
-/// A zero-padded spoke id under the [`BIG`] community (padding makes ASCII order match numeric
-/// order, which the drill cap's smallest-id tie-break relies on).
-fn spoke(i: usize) -> String {
-    format!("src/big/mod.rs::s{i:05}")
-}
-
 /// The exploration fixture. It folds into TWO communities that exercise every overview + drill field.
 /// [`BIG`] is a hub wired to `CLUSTER_RENDER_BUDGET + 1` spokes (`CLUSTER_RENDER_BUDGET + 2`
 /// members, ONE over the render budget), so a drill on it CAPS and reports `truncated`, and the
@@ -103,9 +98,9 @@ fn exploration_graph() -> Graph {
     // BIG: hub -> every spoke (all intra-community). One over budget so the drill caps.
     let spokes = CLUSTER_RENDER_BUDGET + 1;
     for i in 0..spokes {
-        nodes.push(plain(&spoke(i), KIND_CODE_ENTITY));
-        edges.push(membership(&spoke(i), BIG));
-        edges.push(refs(hub, &spoke(i)));
+        nodes.push(plain(&spoke_id("src/big/mod.rs", i), KIND_CODE_ENTITY));
+        edges.push(membership(&spoke_id("src/big/mod.rs", i), BIG));
+        edges.push(refs(hub, &spoke_id("src/big/mod.rs", i)));
     }
 
     // SMALL: three members.
@@ -122,7 +117,7 @@ fn exploration_graph() -> Graph {
     // the BIG drill (their SMALL endpoint is not a BIG member) and so must be dropped from the drill
     // body, never dangled.
     edges.push(refs(hub, "src/small/mod.rs::a"));
-    edges.push(refs(&spoke(0), "src/small/mod.rs::b"));
+    edges.push(refs(&spoke_id("src/big/mod.rs", 0), "src/small/mod.rs::b"));
 
     Graph { nodes, edges }
 }
@@ -310,7 +305,7 @@ fn the_served_drill_route_carries_every_field_the_c5_drill_viz_reads() {
 
     let spoke0 = nodes
         .iter()
-        .find(|n| n["id"].as_str() == Some(spoke(0).as_str()))
+        .find(|n| n["id"].as_str() == Some(spoke_id("src/big/mod.rs", 0).as_str()))
         .unwrap_or_else(|| panic!("the smallest-id spoke survives the cap: {nb}"));
     assert_eq!(
         spoke0["degree"].as_u64(),

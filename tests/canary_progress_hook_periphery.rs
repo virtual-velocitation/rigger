@@ -38,6 +38,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use common::fixtures::anchor_of;
 use common::fixtures::cfg_for;
 use common::fixtures::panel_with_lenses;
 use rigger::canary::{CanaryOutcome, TIER_LENS};
@@ -63,18 +64,6 @@ fn item(id: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
         expected_tier: tier.into(),
         review: format!("fn {id}() {{}}"),
     }
-}
-
-/// Extract the anchor a reviewer prompt names - the file between the FIRST pair of
-/// backticks `review_header` wraps it in. Re-derived here rather than shared, since this
-/// file cannot see canary.rs's private helper either (the same re-derivation every sibling
-/// periphery file in this directory already performs independently).
-fn anchor_of(prompt: &str) -> String {
-    prompt
-        .split_once('`')
-        .and_then(|(_, rest)| rest.split_once('`'))
-        .map(|(anchor, _)| anchor.to_string())
-        .unwrap_or_default()
 }
 
 /// A scripted driver written fresh for this file: `lens-a` raises a critical finding about

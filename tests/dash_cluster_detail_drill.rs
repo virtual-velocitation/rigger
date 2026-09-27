@@ -37,8 +37,11 @@
 //! wire contract. `dash` and `contextgraph` compile on BOTH the default and the
 //! `--no-default-features` lane (neither is feature-gated), so this guards the drill in both lanes.
 
+mod common;
+
 use std::collections::BTreeMap;
 
+use common::fixtures::spoke_id;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, REL_IN_COMMUNITY, REL_REFERENCES,
     TIER_EXTRACTED, TIER_INFERRED,
@@ -100,12 +103,6 @@ fn edge(from: &str, to: &str) -> Edge {
         source: 0,
         tier: TIER_EXTRACTED.to_string(),
     }
-}
-
-/// A spoke id, zero-padded so its ASCII order matches its numeric order (the drill emits members in
-/// ascending-id order, and the cap's id tie-break keeps the smallest ids).
-fn spoke_id(i: usize) -> String {
-    format!("cl/f.rs::s{i:05}")
 }
 
 /// EXPORT REACHABILITY: `cluster_detail` and `CLUSTER_RENDER_BUDGET` are genuinely `pub` and usable by
@@ -208,8 +205,8 @@ fn cluster_detail_is_a_pure_stable_drill_that_never_dangles_an_edge() {
     let spokes = CLUSTER_RENDER_BUDGET + 2;
     for i in 0..spokes {
         nodes.push(member(&format!("s{i:05}")));
-        edges.push(membership(&spoke_id(i)));
-        edges.push(edge("cl/f.rs::hub", &spoke_id(i)));
+        edges.push(membership(&spoke_id("cl/f.rs", i)));
+        edges.push(edge("cl/f.rs::hub", &spoke_id("cl/f.rs", i)));
     }
     let total = nodes.len() - 1; // hub + (budget + 2) spokes = budget + 3 members (excl. community node)
     let g = Graph { nodes, edges };

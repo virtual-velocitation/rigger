@@ -269,9 +269,11 @@ mod common;
 use common::cli::write_workflow;
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::fixtures::mk_stage;
+use common::fixtures::review_or_adjudicate;
 use common::git::git_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
-use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
+use rigger::config::{AgentDef, Config, RegenerateRule};
 use rigger::config_store;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Appended, Direction, Error as EsError, EventStore, ExpectedRevision};
@@ -336,43 +338,6 @@ fn git_commit_paths(dir: &str, paths: &[&str], msg: &str) {
              {}",
             String::from_utf8_lossy(&out.stderr)
         );
-    }
-}
-
-fn review_panel() -> config::ReviewPanel {
-    config::ReviewPanel {
-        lenses: vec!["lens".into()],
-        adjudicator: "judge".into(),
-        ..Default::default()
-    }
-}
-
-/// The shared review-tier response every fake `AgentDriver` in this file returns for a
-/// non-implementer spawn: the adjudicator approves outright, any other reviewer role's own
-/// output is unread by the tests below (only its APPROVE verdict matters). One function, not a
-/// third copy of the same two-armed match hand-duplicated across driver structs.
-fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
-    if opts.id.contains("/adjudicator#") {
-        return AgentResult {
-            output: r#"{"verdict":"approve"}"#.into(),
-            resolved_model: String::new(),
-        };
-    }
-    AgentResult {
-        output: "reviewed the diff".into(),
-        resolved_model: String::new(),
-    }
-}
-
-fn mk_stage(name: &str, gate: &str) -> Stage {
-    Stage {
-        name: name.into(),
-        agent: "worker".into(),
-        gates: vec![gate.into()],
-        on_pass: "merge".into(),
-        needs: vec![],
-        review: review_panel(),
-        ..Default::default()
     }
 }
 

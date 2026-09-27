@@ -14,3 +14,12 @@ pub fn item(id: &str, defect_class: &str, planted: bool, verdict: &str, tier: &s
         review: format!("fn {id}() {{}}"),
     }
 }
+
+/// The anchor a canary review prompt names: the text between its first pair of backticks.
+pub fn anchor_of(prompt: &str) -> String {
+    prompt
+        .split_once('`')
+        .and_then(|(_, rest)| rest.split_once('`'))
+        .map(|(anchor, _)| anchor.to_string())
+        .unwrap_or_default()
+}

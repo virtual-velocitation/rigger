@@ -35,9 +35,10 @@ mod common;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::fixtures::mk_stage;
 use common::git::install_refusing_hook;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{self, AgentDef, Config, Stage};
+use rigger::config::{AgentDef, Config};
 use rigger::eventstore::sqlite::Store;
 use rigger::ledger;
 use serde_json::Value;
@@ -65,26 +66,6 @@ fn init_repo() -> tempfile::TempDir {
             .unwrap();
     }
     dir
-}
-
-fn review_panel() -> config::ReviewPanel {
-    config::ReviewPanel {
-        lenses: vec!["lens".into()],
-        adjudicator: "judge".into(),
-        ..Default::default()
-    }
-}
-
-fn mk_stage(name: &str, gate: &str) -> Stage {
-    Stage {
-        name: name.into(),
-        agent: "worker".into(),
-        gates: vec![gate.into()],
-        on_pass: "merge".into(),
-        needs: vec![],
-        review: review_panel(),
-        ..Default::default()
-    }
 }
 
 /// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else. The

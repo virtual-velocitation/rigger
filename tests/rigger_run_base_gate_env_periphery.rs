@@ -55,11 +55,14 @@
 //! `run::start_fresh`/`current_run_base_tip` are all compiled and exercised in both feature
 //! lanes.
 
+mod common;
+
 use std::path::Path;
 use std::sync::Mutex;
 
 use serde_json::Value;
 
+use common::env_test_lock;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::TYPE_GATE_VERDICT;
@@ -67,21 +70,14 @@ use rigger::driver::cli;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 
-/// Serializes every test in this file that touches the real ambient `RIGGER_RUN_BASE` process
-/// env (only the "unset" test below removes it) against a concurrent thread that might
-/// otherwise race it - the same `ENV_TEST_LOCK` discipline
-/// `tests/build_env_authority_periphery.rs` uses for the vars its own tests touch. Every OTHER
-/// test in this file never reads or writes ambient env at all: it sets `RIGGER_RUN_BASE`
-/// explicitly on the child `Command` (via the production `BuildEnv`/`apply` path), which always
-/// wins over whatever the parent process's own environment holds, so only the one test that
-/// relies on ambient absence needs the lock.
-static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+// `env_test_lock()` serializes every test in this file that touches the real ambient `RIGGER_RUN_BASE` process
+// env (only the "unset" test below removes it) against a concurrent thread that might
+// otherwise race it - the same `env_test_lock` discipline
+// `tests/build_env_authority_periphery.rs` uses for the vars its own tests touch. Every OTHER
+// test in this file never reads or writes ambient env at all: it sets `RIGGER_RUN_BASE`
+// explicitly on the child `Command` (via the production `BuildEnv`/`apply` path), which always
+// wins over whatever the parent process's own environment holds, so only the one test that
+// relies on ambient absence needs the lock.
 
 const UNIT: &str = "a";
 const GATE: &str = "envgate";
@@ -266,7 +262,7 @@ fn no_persisted_base_tip_leaves_rigger_run_base_unset_in_the_real_gate_subproces
     // A fresh store, no seeding: `run`'s own `ensure_started` mints a RunStarted with an empty
     // base_tip (the legacy/no-repo case). Guards against ambient pollution in THIS test
     // process the same way build_env_authority_periphery.rs's own tests guard RUSTC_WRAPPER
-    // etc. - see ENV_TEST_LOCK's own doc comment.
+    // etc. - see `env_test_lock`'s own doc comment.
     let _guard = env_test_lock();
     std::env::remove_var("RIGGER_RUN_BASE");
 

@@ -30,6 +30,7 @@ mod common;
 
 use common::fixtures::edge;
 use common::fixtures::plain;
+use common::lens::lens;
 use common::served::served_json;
 use rigger::contextgraph::{
     Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
@@ -131,7 +132,7 @@ fn reproj_graph() -> Graph {
 /// the whole graph.
 #[test]
 fn concept_recodegrains_its_members_by_coupling_community() {
-    let re = reproject(&reproj_graph(), CONCEPT, &code_lens());
+    let re = reproject(&reproj_graph(), CONCEPT, &lens("code"));
 
     assert_eq!(re.subject, CONCEPT, "the re-projection echoes its subject");
     assert_eq!(
@@ -296,11 +297,6 @@ fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
 }
 
 // --- helpers ------------------------------------------------------------------------------------
-
-/// The default code lens (`resolution = 1`).
-fn code_lens() -> Lens {
-    Lens::from_query(Some("code"), Some("1"))
-}
 
 /// A single-definition file bucket (one code-entity member, dominant kind code-entity, no label).
 fn file_bucket(file: &str) -> Cluster {

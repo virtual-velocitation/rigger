@@ -125,3 +125,29 @@ impl rigger::contextgraph::Projection for MinimalProjection {
     }
     projection_reads_nothing!();
 }
+
+/// A `kind` node carrying its display `label`, when it has one.
+pub fn labelled_node(id: &str, kind: &str, label: Option<&str>) -> Node {
+    let mut n = plain(id, kind);
+    if let Some(l) = label {
+        n.attrs.insert("label".to_string(), l.to_string());
+    }
+    n
+}
+
+/// The id of spoke `i` of a many-spoke graph fixture: a code entity in `file`, zero-padded so the
+/// ids sort in spoke order.
+pub fn spoke_id(file: &str, i: usize) -> String {
+    format!("{file}::s{i:05}")
+}
+
+/// Every `GOVERNS` edge in `graph_edges` as a sorted `(from, to, source, valid_from)` list.
+pub fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
+    let mut out: Vec<_> = graph_edges
+        .iter()
+        .filter(|e| e.rel == rigger::contextgraph::REL_GOVERNS)
+        .map(|e| (e.from.clone(), e.to.clone(), e.source, e.valid_from))
+        .collect();
+    out.sort();
+    out
+}

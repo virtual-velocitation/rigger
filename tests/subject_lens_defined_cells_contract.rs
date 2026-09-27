@@ -21,6 +21,8 @@
 
 mod common;
 
+use common::fixtures::labelled_node as node;
+use common::lens::{lens, shared_member_graph, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
@@ -45,19 +47,6 @@ fn def(id: &str, name: &str) -> Node {
     n
 }
 
-/// A plain node of a given kind (a `community` / `concept` super-node carrying its display `label`).
-fn node(id: &str, kind: &str, label: Option<&str>) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    };
-    if let Some(l) = label {
-        n.attrs.insert("label".to_string(), l.to_string());
-    }
-    n
-}
-
 /// A currently-valid edge (`valid_to = None`) of `rel`.
 fn edge(from: &str, to: &str, rel: &str) -> Edge {
     Edge {
@@ -69,14 +58,6 @@ fn edge(from: &str, to: &str, rel: &str) -> Edge {
         source: 0,
         tier: "extracted".to_string(),
     }
-}
-
-fn code_lens() -> Lens {
-    Lens::from_query(Some("code"), Some("1"))
-}
-
-fn concepts_lens() -> Lens {
-    Lens::from_query(Some("concepts"), Some("1"))
 }
 
 /// The bucket keys a re-projection rendered, in order.
@@ -208,34 +189,6 @@ fn an_over_budget_cap_keeps_the_largest_bucket_by_count_not_the_lowest_key() {
 
 // --- THE SERVED SEAM: shared + truncated ride the route -----------------------------------------
 
-const SUB_C: &str = "concept/1/0";
-const OTHER_D: &str = "concept/1/1";
-const SHARED_MEMBER: &str = "src/a.rs::m";
-const SOLO_MEMBER: &str = "src/b.rs::n";
-
-/// Concept `C` has members `{m, n}`; `m` ALSO realizes `D`, and `D` (three realizers) is the larger
-/// concept, so it is `m`'s PRIMARY. A concepts re-grain of `C` folds `m` under `D` once and flags it
-/// `shared`.
-fn shared_member_graph() -> Graph {
-    Graph {
-        nodes: vec![
-            node(SUB_C, KIND_CONCEPT, Some("cc")),
-            node(OTHER_D, KIND_CONCEPT, Some("dd")),
-            def(SHARED_MEMBER, "m"),
-            def(SOLO_MEMBER, "n"),
-            def("src/c.rs::p", "p"),
-            def("src/d.rs::q", "q"),
-        ],
-        edges: vec![
-            edge(SHARED_MEMBER, SUB_C, REL_REALIZES),
-            edge(SOLO_MEMBER, SUB_C, REL_REALIZES),
-            edge(SHARED_MEMBER, OTHER_D, REL_REALIZES),
-            edge("src/c.rs::p", OTHER_D, REL_REALIZES),
-            edge("src/d.rs::q", OTHER_D, REL_REALIZES),
-        ],
-    }
-}
-
 /// The served `/api/graph?seed=&lens=concepts` route carries the `shared` flag end-to-end, so the
 /// panel marks the multi-concept member without a second request. The mechanics served test only
 /// drives the empty-cell message; the shared flag has no served coverage without this.
@@ -322,7 +275,7 @@ fn full_in_budget_graph() -> Graph {
 fn a_full_in_budget_re_grain_omits_every_defaulted_criterion_2_field() {
     let graph = full_in_budget_graph();
 
-    for lens in [Lens::Files, code_lens()] {
+    for lens in [Lens::Files, lens("code")] {
         let re = reproject(&graph, PLAIN_CONCEPT, &lens);
         // Sanity: this really is a full, in-budget, non-shared cell (not accidentally empty).
         assert_eq!(
@@ -376,8 +329,8 @@ fn a_re_projection_serializes_byte_identically_across_calls() {
 
     // And a concepts re-grain with a shared flag is equally stable.
     let cg = shared_member_graph();
-    let a = serde_json::to_vec(&reproject(&cg, SUB_C, &concepts_lens())).unwrap();
-    let b = serde_json::to_vec(&reproject(&cg, SUB_C, &concepts_lens())).unwrap();
+    let a = serde_json::to_vec(&reproject(&cg, SUB_C, &lens("concepts"))).unwrap();
+    let b = serde_json::to_vec(&reproject(&cg, SUB_C, &lens("concepts"))).unwrap();
     assert_eq!(a, b, "a concepts re-grain is byte-identical across polls");
 }
 
@@ -397,7 +350,7 @@ fn the_empty_cell_message_constants_hold_their_documented_values() {
         edges: vec![edge("src/z.rs::only", "concept/9/0", REL_REALIZES)],
     };
     assert_eq!(
-        reproject(&graph, "concept/9/0", &code_lens())
+        reproject(&graph, "concept/9/0", &lens("code"))
             .empty_state
             .as_deref(),
         Some(REPROJECT_NO_COMMUNITY),

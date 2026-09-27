@@ -1,6 +1,6 @@
 //! Workflow-configuration fixtures: agents, review panels and gates.
 
-use rigger::config::{AgentDef, Config, Gate, ReviewPanel};
+use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
 
 /// An agent definition carrying only its `id`.
 pub fn agent(id: &str) -> AgentDef {
@@ -40,5 +40,37 @@ pub fn gate_def_inputs(run: &str, inputs: &[&str]) -> Gate {
         run: run.to_string(),
         kind: "core".to_string(),
         inputs: inputs.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// A review panel of the single lens `lens`, no adversary, and adjudicator `adj`.
+pub fn lens_only_panel() -> ReviewPanel {
+    ReviewPanel {
+        lenses: vec!["lens".to_string()],
+        adversary: String::new(),
+        adjudicator: "adj".to_string(),
+        tiers: None,
+    }
+}
+
+/// A review panel of the single lens `lens` adjudicated by `judge`.
+pub fn review_panel() -> ReviewPanel {
+    ReviewPanel {
+        lenses: vec!["lens".into()],
+        adjudicator: "judge".into(),
+        ..Default::default()
+    }
+}
+
+/// A `worker` stage `name` gated by `gate`, reviewed by [`review_panel`], merging on pass.
+pub fn mk_stage(name: &str, gate: &str) -> Stage {
+    Stage {
+        name: name.into(),
+        agent: "worker".into(),
+        gates: vec![gate.into()],
+        on_pass: "merge".into(),
+        needs: vec![],
+        review: review_panel(),
+        ..Default::default()
     }
 }

@@ -24,10 +24,11 @@
 mod common;
 
 use common::fixtures::cfg_for;
+use common::fixtures::lens_only_panel;
 use rigger::canary::TIER_LENS;
 use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use serde_json::{json, Value};
@@ -92,15 +93,6 @@ impl AgentDriver for AttributionDriver {
 /// The agents every panel in this file names.
 const PANEL_AGENTS: &[&str] = &["lens", "adv", "adj"];
 
-fn panel() -> ReviewPanel {
-    ReviewPanel {
-        lenses: vec!["lens".into()],
-        adversary: String::new(),
-        adjudicator: "adj".into(),
-        tiers: None,
-    }
-}
-
 fn item(id: &str, anchor: &str) -> CanaryItem {
     CanaryItem {
         id: id.into(),
@@ -127,7 +119,7 @@ fn a_tolerant_match_in_a_later_about_entry_still_scores_the_catch() {
         &store,
         &AttributionDriver,
         &cfg_for(PANEL_AGENTS),
-        &panel(),
+        &lens_only_panel(),
         &corpus,
         default_jobs(),
         &|_, _| {},
@@ -163,7 +155,7 @@ fn an_empty_about_entry_never_scores_a_catch_even_against_a_trailing_slash_ancho
         &store,
         &AttributionDriver,
         &cfg_for(PANEL_AGENTS),
-        &panel(),
+        &lens_only_panel(),
         &corpus,
         default_jobs(),
         &|_, _| {},

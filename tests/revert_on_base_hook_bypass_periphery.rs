@@ -46,9 +46,10 @@ mod common;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::fixtures::review_panel;
 use common::git::install_refusing_hook;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{self, AgentDef, Config, Stage};
+use rigger::config::{AgentDef, Config, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::ledger;
 use serde_json::Value;
@@ -75,14 +76,6 @@ fn init_repo() -> tempfile::TempDir {
             .unwrap();
     }
     dir
-}
-
-fn review_panel() -> config::ReviewPanel {
-    config::ReviewPanel {
-        lenses: vec!["lens".into()],
-        adjudicator: "judge".into(),
-        ..Default::default()
-    }
 }
 
 fn mk_stage(name: &str, needs: Vec<String>) -> Stage {

@@ -30,10 +30,11 @@
 mod common;
 
 use common::fixtures::cfg_for;
+use common::fixtures::lens_only_panel;
 use rigger::canary::{CanaryOutcome, STREAM};
 use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
@@ -124,15 +125,6 @@ impl AgentDriver for FalsePositiveDriver {
     }
 }
 
-fn panel() -> ReviewPanel {
-    ReviewPanel {
-        lenses: vec!["lens".to_string()],
-        adversary: String::new(),
-        adjudicator: "adj".to_string(),
-        tiers: None,
-    }
-}
-
 fn item(id: &str, anchor: &str, planted: bool, verdict: &str, marker: &str) -> CanaryItem {
     CanaryItem {
         id: id.into(),
@@ -158,7 +150,7 @@ fn item(id: &str, anchor: &str, planted: bool, verdict: &str, marker: &str) -> C
 #[test]
 fn run_canary_scores_false_positive_controls_and_project_canary_counts_them() {
     let cfg = cfg_for(&["lens", "adj"]);
-    let panel = panel();
+    let panel = lens_only_panel();
 
     let corpus = vec![
         // A genuine planted defect, correctly rejected - not a control at all, so it must
