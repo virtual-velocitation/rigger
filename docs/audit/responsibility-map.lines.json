@@ -1465,2961 +1465,3063 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "stage_map",
+    "start_line": 14005,
+    "end_line": 14009
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "stage_shape",
-    "start_line": 14006,
-    "end_line": 14020
+    "start_line": 14013,
+    "end_line": 14027
   },
   {
     "file": "src/conductor.rs",
     "name": "apply",
-    "start_line": 14033,
-    "end_line": 14036
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "apply_batch",
-    "start_line": 14037,
-    "end_line": 14040
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subgraph",
-    "start_line": 14041,
+    "start_line": 14040,
     "end_line": 14043
   },
   {
     "file": "src/conductor.rs",
-    "name": "resolve",
+    "name": "apply_batch",
     "start_line": 14044,
-    "end_line": 14046
+    "end_line": 14047
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "subgraph",
+    "start_line": 14048,
+    "end_line": 14050
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "resolve",
+    "start_line": 14051,
+    "end_line": 14053
   },
   {
     "file": "src/conductor.rs",
     "name": "agent_failure_as_str_round_trips_through_from_category_for_every_category",
-    "start_line": 14055,
-    "end_line": 14059
+    "start_line": 14062,
+    "end_line": 14066
   },
   {
     "file": "src/conductor.rs",
     "name": "agent_failure_from_category_degrades_an_unrecognized_string_to_unknown",
-    "start_line": 14062,
-    "end_line": 14067
+    "start_line": 14069,
+    "end_line": 14074
   },
   {
     "file": "src/conductor.rs",
     "name": "agent_failure_default_is_unknown",
-    "start_line": 14070,
-    "end_line": 14072
+    "start_line": 14077,
+    "end_line": 14079
   },
   {
     "file": "src/conductor.rs",
     "name": "classify_failure_prefers_the_stopfailure_record_over_api_retry",
-    "start_line": 14075,
-    "end_line": 14080
+    "start_line": 14082,
+    "end_line": 14087
   },
   {
     "file": "src/conductor.rs",
     "name": "classify_failure_falls_back_to_the_last_api_retry_category",
-    "start_line": 14083,
-    "end_line": 14088
+    "start_line": 14090,
+    "end_line": 14095
   },
   {
     "file": "src/conductor.rs",
     "name": "classify_failure_falls_back_to_unknown_when_neither_source_has_anything",
-    "start_line": 14091,
-    "end_line": 14093
+    "start_line": 14098,
+    "end_line": 14100
   },
   {
     "file": "src/conductor.rs",
     "name": "strip_failure_marker_drops_the_class_prefix_leaving_only_the_message",
-    "start_line": 14096,
-    "end_line": 14110
+    "start_line": 14103,
+    "end_line": 14117
   },
   {
     "file": "src/conductor.rs",
     "name": "strip_failure_marker_passes_through_an_unmarked_error_unchanged",
-    "start_line": 14113,
-    "end_line": 14116
+    "start_line": 14120,
+    "end_line": 14123
   },
   {
     "file": "src/conductor.rs",
     "name": "unit_worktree_dir_derives_deterministically_from_scratch_root_and_unit_id",
-    "start_line": 14119,
-    "end_line": 14138
+    "start_line": 14126,
+    "end_line": 14145
   },
   {
     "file": "src/conductor.rs",
     "name": "verdict",
-    "start_line": 14144,
-    "end_line": 14156
+    "start_line": 14151,
+    "end_line": 14163
   },
   {
     "file": "src/conductor.rs",
     "name": "recorded_gate_outcome_reads_the_latest_gate_run_verdict_per_unit",
-    "start_line": 14141,
-    "end_line": 14231
+    "start_line": 14148,
+    "end_line": 14238
   },
   {
     "file": "src/conductor.rs",
     "name": "started_with_criterion",
-    "start_line": 14235,
-    "end_line": 14240
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "integrated",
     "start_line": 14242,
     "end_line": 14247
   },
   {
     "file": "src/conductor.rs",
+    "name": "integrated",
+    "start_line": 14249,
+    "end_line": 14254
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "prior_criterion_unit_finds_a_prior_un_integrated_units_id",
-    "start_line": 14250,
-    "end_line": 14258
+    "start_line": 14257,
+    "end_line": 14265
   },
   {
     "file": "src/conductor.rs",
     "name": "prior_criterion_unit_never_returns_an_integrated_units_id_and_never_falls_back_to_an_older_sibling",
-    "start_line": 14261,
-    "end_line": 14287
+    "start_line": 14268,
+    "end_line": 14294
   },
   {
     "file": "src/conductor.rs",
     "name": "prior_criterion_unit_integration_of_one_criterion_never_masks_an_abandoned_sibling_criterion_sharing_the_same_id",
-    "start_line": 14290,
-    "end_line": 14314
+    "start_line": 14297,
+    "end_line": 14321
   },
   {
     "file": "src/conductor.rs",
     "name": "prior_criterion_unit_tie_break_prefers_the_most_recent_of_two_non_integrated_priors",
-    "start_line": 14317,
-    "end_line": 14330
+    "start_line": 14324,
+    "end_line": 14337
   },
   {
     "file": "src/conductor.rs",
     "name": "prior_criterion_unit_excludes_this_unit_itself",
-    "start_line": 14333,
-    "end_line": 14338
+    "start_line": 14340,
+    "end_line": 14345
   },
   {
     "file": "src/conductor.rs",
     "name": "prior_criterion_unit_ignores_a_different_criterion_and_an_empty_one",
-    "start_line": 14341,
-    "end_line": 14353
+    "start_line": 14348,
+    "end_line": 14360
   },
   {
     "file": "src/conductor.rs",
     "name": "run_started_with_spec",
-    "start_line": 14360,
-    "end_line": 14365
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "compensated",
-    "start_line": 14370,
+    "start_line": 14367,
     "end_line": 14372
   },
   {
     "file": "src/conductor.rs",
-    "name": "plain_failure",
+    "name": "compensated",
     "start_line": 14377,
-    "end_line": 14383
+    "end_line": 14379
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "plain_failure",
+    "start_line": 14384,
+    "end_line": 14390
   },
   {
     "file": "src/conductor.rs",
     "name": "assert_prior_criterion_unit",
-    "start_line": 14387,
-    "end_line": 14399
+    "start_line": 14394,
+    "end_line": 14406
   },
   {
     "file": "src/conductor.rs",
     "name": "adoption_status",
-    "start_line": 14479,
-    "end_line": 14497
+    "start_line": 14486,
+    "end_line": 14504
   },
   {
     "file": "src/conductor.rs",
     "name": "recorded_adoption_ignores_a_same_identity_event_carrying_the_wrong_status",
-    "start_line": 14500,
-    "end_line": 14525
+    "start_line": 14507,
+    "end_line": 14532
   },
   {
     "file": "src/conductor.rs",
     "name": "recorded_adoption_never_answers_for_a_mismatched_criterion_or_a_mismatched_spec_alone",
-    "start_line": 14528,
-    "end_line": 14561
+    "start_line": 14535,
+    "end_line": 14568
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_owner_returns_none_for_an_id_that_never_started",
-    "start_line": 14564,
-    "end_line": 14569
+    "start_line": 14571,
+    "end_line": 14576
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_owner_reads_the_most_recent_started_criterion_and_spec_for_this_bare_id",
-    "start_line": 14572,
-    "end_line": 14588
+    "start_line": 14579,
+    "end_line": 14595
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_owner_ignores_a_non_unit_started_event_even_when_it_shares_the_id_field",
-    "start_line": 14591,
-    "end_line": 14606
+    "start_line": 14598,
+    "end_line": 14613
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_is_foreign_is_false_when_nothing_is_recorded_or_everything_matches",
-    "start_line": 14609,
-    "end_line": 14622
+    "start_line": 14616,
+    "end_line": 14629
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_is_foreign_is_false_when_the_recorded_owner_has_no_criterion_id",
-    "start_line": 14625,
-    "end_line": 14647
+    "start_line": 14632,
+    "end_line": 14654
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_is_foreign_when_only_one_axis_differs",
-    "start_line": 14650,
-    "end_line": 14672
+    "start_line": 14657,
+    "end_line": 14679
   },
   {
     "file": "src/conductor.rs",
     "name": "find_unit_started",
-    "start_line": 14677,
-    "end_line": 14689
+    "start_line": 14684,
+    "end_line": 14696
   },
   {
     "file": "src/conductor.rs",
     "name": "a_fresh_units_own_branch_adopts_a_prior_runs_un_integrated_unit_sharing_the_criterion",
-    "start_line": 14692,
-    "end_line": 14778
+    "start_line": 14699,
+    "end_line": 14785
   },
   {
     "file": "src/conductor.rs",
     "name": "a_fresh_unit_never_adopts_a_criterion_whose_prior_attempt_already_integrated",
-    "start_line": 14781,
-    "end_line": 14846
+    "start_line": 14788,
+    "end_line": 14853
   },
   {
     "file": "src/conductor.rs",
     "name": "run_git_test",
-    "start_line": 14851,
-    "end_line": 14863
+    "start_line": 14858,
+    "end_line": 14870
   },
   {
     "file": "src/conductor.rs",
     "name": "a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_prompt",
-    "start_line": 14866,
-    "end_line": 15010
+    "start_line": 14873,
+    "end_line": 15017
   },
   {
     "file": "src/conductor.rs",
     "name": "a_dirty_tree_whose_named_spawn_was_never_requested_gets_no_wip_recovery_commit",
-    "start_line": 15013,
-    "end_line": 15089
+    "start_line": 15020,
+    "end_line": 15096
   },
   {
     "file": "src/conductor.rs",
     "name": "a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live",
-    "start_line": 15092,
-    "end_line": 15199
+    "start_line": 15099,
+    "end_line": 15206
   },
   {
     "file": "src/conductor.rs",
     "name": "a_prior_runs_leftover_spawn_request_for_a_same_named_unit_never_halts_a_new_run",
-    "start_line": 15202,
-    "end_line": 15293
+    "start_line": 15209,
+    "end_line": 15300
   },
   {
     "file": "src/conductor.rs",
     "name": "prior_failure_summary_names_only_the_halted_commit_when_it_is_the_sole_failure",
-    "start_line": 15305,
-    "end_line": 15320
+    "start_line": 15312,
+    "end_line": 15327
   },
   {
     "file": "src/conductor.rs",
     "name": "prior_failure_block_names_only_the_halted_commit_when_it_is_the_sole_failure",
-    "start_line": 15323,
-    "end_line": 15346
+    "start_line": 15330,
+    "end_line": 15353
   },
   {
     "file": "src/conductor.rs",
     "name": "prior_failure_block_adds_the_generic_preamble_for_review_reject_or_contradiction_alone",
-    "start_line": 15349,
-    "end_line": 15383
+    "start_line": 15356,
+    "end_line": 15390
   },
   {
     "file": "src/conductor.rs",
     "name": "review_worktree_dir_and_branch_derive_from_stage_and_attempt",
-    "start_line": 15386,
-    "end_line": 15417
+    "start_line": 15393,
+    "end_line": 15424
   },
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 15529,
-    "end_line": 15557
+    "start_line": 15536,
+    "end_line": 15564
   },
   {
     "file": "src/conductor.rs",
     "name": "prompts_for",
-    "start_line": 15560,
-    "end_line": 15567
+    "start_line": 15567,
+    "end_line": 15574
   },
   {
     "file": "src/conductor.rs",
     "name": "dirs_for",
-    "start_line": 15570,
-    "end_line": 15577
+    "start_line": 15577,
+    "end_line": 15584
   },
   {
     "file": "src/conductor.rs",
     "name": "system_prompt_for",
-    "start_line": 15581,
-    "end_line": 15587
+    "start_line": 15588,
+    "end_line": 15594
   },
   {
     "file": "src/conductor.rs",
     "name": "title_for",
-    "start_line": 15591,
-    "end_line": 15593
+    "start_line": 15598,
+    "end_line": 15600
   },
   {
     "file": "src/conductor.rs",
     "name": "reviews_for",
-    "start_line": 15597,
-    "end_line": 15599
+    "start_line": 15604,
+    "end_line": 15606
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn_ids",
-    "start_line": 15603,
-    "end_line": 15605
+    "start_line": 15610,
+    "end_line": 15612
   },
   {
     "file": "src/conductor.rs",
     "name": "spawned",
-    "start_line": 15609,
-    "end_line": 15615
+    "start_line": 15616,
+    "end_line": 15622
   },
   {
     "file": "src/conductor.rs",
     "name": "dir_existed_when_spawned",
-    "start_line": 15621,
-    "end_line": 15628
+    "start_line": 15628,
+    "end_line": 15635
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 15631,
-    "end_line": 15771
+    "start_line": 15638,
+    "end_line": 15778
   },
   {
     "file": "src/conductor.rs",
     "name": "agent_with_prompt",
-    "start_line": 15777,
-    "end_line": 15783
+    "start_line": 15784,
+    "end_line": 15790
   },
   {
     "file": "src/conductor.rs",
     "name": "integrates_a_passing_stage",
-    "start_line": 15786,
-    "end_line": 15804
+    "start_line": 15793,
+    "end_line": 15811
   },
   {
     "file": "src/conductor.rs",
     "name": "one_stage_cfg",
-    "start_line": 15807,
-    "end_line": 15814
+    "start_line": 15814,
+    "end_line": 15821
   },
   {
     "file": "src/conductor.rs",
     "name": "uncovered_run_log",
-    "start_line": 15818,
-    "end_line": 15829
+    "start_line": 15825,
+    "end_line": 15836
   },
   {
     "file": "src/conductor.rs",
     "name": "covers_criterion_one",
-    "start_line": 15832,
-    "end_line": 15842
+    "start_line": 15839,
+    "end_line": 15849
   },
   {
     "file": "src/conductor.rs",
     "name": "planner_extends_the_dag",
-    "start_line": 15907,
-    "end_line": 15931
+    "start_line": 15914,
+    "end_line": 15938
   },
   {
     "file": "src/conductor.rs",
     "name": "planner_proposed_unit_with_a_coverage_criterion_runs_and_integrates",
-    "start_line": 15934,
-    "end_line": 16000
+    "start_line": 15941,
+    "end_line": 16007
   },
   {
     "file": "src/conductor.rs",
     "name": "conductor_creates_one_baseline_unit_per_criterion",
-    "start_line": 16003,
-    "end_line": 16087
+    "start_line": 16010,
+    "end_line": 16094
   },
   {
     "file": "src/conductor.rs",
     "name": "a_stage_needing_the_fan_out_template_becomes_ready_once_every_criterion_unit_integrates",
-    "start_line": 16090,
-    "end_line": 16157
+    "start_line": 16097,
+    "end_line": 16164
   },
   {
     "file": "src/conductor.rs",
     "name": "producer_prompt_carries_the_criteria_and_plan_protocol_grounded_on_the_spec",
-    "start_line": 16160,
-    "end_line": 16282
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "baseline_id",
-    "start_line": 16287,
+    "start_line": 16167,
     "end_line": 16289
   },
   {
     "file": "src/conductor.rs",
-    "name": "supersede_cfg",
+    "name": "baseline_id",
     "start_line": 16294,
-    "end_line": 16321
+    "end_line": 16296
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "supersede_cfg",
+    "start_line": 16301,
+    "end_line": 16328
   },
   {
     "file": "src/conductor.rs",
     "name": "append_proposal",
-    "start_line": 16327,
-    "end_line": 16344
+    "start_line": 16334,
+    "end_line": 16337
   },
   {
     "file": "src/conductor.rs",
     "name": "a_prior_runs_proposal_never_resurrects_in_a_new_run",
-    "start_line": 16347,
-    "end_line": 16388
+    "start_line": 16340,
+    "end_line": 16381
   },
   {
     "file": "src/conductor.rs",
     "name": "planner_unit_supersedes_the_matching_baseline",
-    "start_line": 16391,
-    "end_line": 16465
+    "start_line": 16384,
+    "end_line": 16458
   },
   {
     "file": "src/conductor.rs",
     "name": "a_planner_supersede_of_a_fan_out_member_still_satisfies_its_downstream_needs_edge",
-    "start_line": 16468,
-    "end_line": 16544
+    "start_line": 16461,
+    "end_line": 16537
   },
   {
     "file": "src/conductor.rs",
     "name": "a_criterion_with_no_planner_unit_keeps_its_baseline",
-    "start_line": 16547,
-    "end_line": 16575
+    "start_line": 16540,
+    "end_line": 16568
   },
   {
     "file": "src/conductor.rs",
     "name": "planner_refinement_split_is_still_harvested",
-    "start_line": 16578,
-    "end_line": 16643
+    "start_line": 16571,
+    "end_line": 16636
   },
   {
     "file": "src/conductor.rs",
     "name": "a_same_id_re_emit_updates_the_proposed_unit_in_place",
-    "start_line": 16646,
-    "end_line": 16771
+    "start_line": 16639,
+    "end_line": 16764
   },
   {
     "file": "src/conductor.rs",
     "name": "seed_refine_dag",
-    "start_line": 16778,
-    "end_line": 16808
+    "start_line": 16771,
+    "end_line": 16801
   },
   {
     "file": "src/conductor.rs",
     "name": "append_proposals",
-    "start_line": 16812,
-    "end_line": 16832
+    "start_line": 16805,
+    "end_line": 16825
   },
   {
     "file": "src/conductor.rs",
     "name": "a_coverage_retarget_re_emit_preserves_one_unit_per_criterion",
-    "start_line": 16835,
-    "end_line": 16900
+    "start_line": 16828,
+    "end_line": 16893
   },
   {
     "file": "src/conductor.rs",
     "name": "a_re_emit_naming_a_reserved_stage_never_mutates_it",
-    "start_line": 16903,
-    "end_line": 16955
+    "start_line": 16896,
+    "end_line": 16948
   },
   {
     "file": "src/conductor.rs",
     "name": "re_folding_a_same_id_re_emit_is_idempotent",
-    "start_line": 16958,
-    "end_line": 17015
+    "start_line": 16951,
+    "end_line": 17008
   },
   {
     "file": "src/conductor.rs",
     "name": "a_real_split_two_distinct_ids_both_survive_the_fold",
-    "start_line": 17018,
-    "end_line": 17117
+    "start_line": 17011,
+    "end_line": 17110
   },
   {
     "file": "src/conductor.rs",
-    "name": "a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit",
-    "start_line": 17120,
-    "end_line": 17208
+    "name": "proposal_data",
+    "start_line": 17114,
+    "end_line": 17122
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "proposal_event",
+    "start_line": 17126,
+    "end_line": 17132
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "harvest_seeded",
+    "start_line": 17137,
+    "end_line": 17155
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "assert_later_episode_supersedes",
+    "start_line": 17160,
+    "end_line": 17203
   },
   {
     "file": "src/conductor.rs",
     "name": "a_same_episode_re_seen_on_a_later_fold_still_never_self_supersedes",
-    "start_line": 17211,
-    "end_line": 17260
+    "start_line": 17271,
+    "end_line": 17320
   },
   {
     "file": "src/conductor.rs",
-    "name": "a_planner_proposal_with_no_data_episode_field_still_supersedes_via_meta_spawn",
-    "start_line": 17263,
-    "end_line": 17334
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "a_same_id_refine_restamps_its_episode_so_its_own_episodes_sibling_does_not_reap_it",
-    "start_line": 17337,
-    "end_line": 17456
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "a_same_id_refine_survives_its_own_episodes_sibling_add_walked_first",
-    "start_line": 17459,
-    "end_line": 17573
+    "name": "assert_refine_survives_its_own_episodes_sibling",
+    "start_line": 17329,
+    "end_line": 17378
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resume_catch_up_over_two_episode_supersession_and_a_split_matches_a_live_incremental_fold",
-    "start_line": 17576,
-    "end_line": 17681
+    "start_line": 17413,
+    "end_line": 17518
   },
   {
     "file": "src/conductor.rs",
     "name": "a_legacy_history_resume_catch_up_matches_a_live_incremental_fold_mutual_siblings_then_superseded",
-    "start_line": 17684,
-    "end_line": 17783
+    "start_line": 17521,
+    "end_line": 17620
   },
   {
     "file": "src/conductor.rs",
     "name": "a_legacy_proposal_never_supersedes_an_identified_episodes_owner_even_when_logged_later",
-    "start_line": 17786,
-    "end_line": 17872
+    "start_line": 17623,
+    "end_line": 17666
   },
   {
     "file": "src/conductor.rs",
     "name": "a_late_re_emit_never_mutates_a_started_or_terminal_unit",
-    "start_line": 17875,
-    "end_line": 17966
+    "start_line": 17669,
+    "end_line": 17760
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "append_gated_proposal",
+    "start_line": 17764,
+    "end_line": 17783
   },
   {
     "file": "src/conductor.rs",
     "name": "harvest_proposed_gates_every_case_with_the_templates_list_unioned",
-    "start_line": 17969,
-    "end_line": 18078
+    "start_line": 17786,
+    "end_line": 17865
   },
   {
     "file": "src/conductor.rs",
     "name": "harvest_proposed_gate_inheritance_survives_a_resumed_window",
-    "start_line": 18081,
-    "end_line": 18153
+    "start_line": 17868,
+    "end_line": 17906
   },
   {
     "file": "src/conductor.rs",
     "name": "plan_protocol_tells_the_planner_gates_come_from_the_template",
-    "start_line": 18156,
-    "end_line": 18173
+    "start_line": 17909,
+    "end_line": 17926
   },
   {
     "file": "src/conductor.rs",
     "name": "has_unmatched_signal",
-    "start_line": 18179,
-    "end_line": 18188
+    "start_line": 17932,
+    "end_line": 17941
   },
   {
     "file": "src/conductor.rs",
     "name": "assert_supersedes_criterion_a_once",
-    "start_line": 18201,
-    "end_line": 18255
+    "start_line": 17954,
+    "end_line": 18008
   },
   {
     "file": "src/conductor.rs",
     "name": "a_genuinely_new_proposal_runs_and_records_an_unmatched_signal",
-    "start_line": 18327,
-    "end_line": 18377
+    "start_line": 18080,
+    "end_line": 18130
   },
   {
     "file": "src/conductor.rs",
     "name": "a_genuinely_new_proposal_with_no_gates_still_spawns_gated_via_template_inheritance",
-    "start_line": 18380,
-    "end_line": 18437
+    "start_line": 18133,
+    "end_line": 18190
   },
   {
     "file": "src/conductor.rs",
     "name": "resume_dedups_baselines_before_running_them",
-    "start_line": 18440,
-    "end_line": 18563
+    "start_line": 18193,
+    "end_line": 18316
   },
   {
     "file": "src/conductor.rs",
     "name": "decomposes_the_real_spec_01_into_per_criterion_units",
-    "start_line": 18566,
-    "end_line": 18639
+    "start_line": 18319,
+    "end_line": 18392
   },
   {
     "file": "src/conductor.rs",
     "name": "ratchet_promotes_a_reliable_gate",
-    "start_line": 18642,
-    "end_line": 18672
+    "start_line": 18395,
+    "end_line": 18425
   },
   {
     "file": "src/conductor.rs",
     "name": "elevated_gate_is_never_promoted_to_silent",
-    "start_line": 18675,
-    "end_line": 18728
+    "start_line": 18428,
+    "end_line": 18481
   },
   {
     "file": "src/conductor.rs",
     "name": "learns_from_escalation",
-    "start_line": 18731,
-    "end_line": 18768
+    "start_line": 18484,
+    "end_line": 18521
   },
   {
     "file": "src/conductor.rs",
     "name": "feeds_graph_decisions_into_the_prompt",
-    "start_line": 18771,
-    "end_line": 18821
+    "start_line": 18524,
+    "end_line": 18574
   },
   {
     "file": "src/conductor.rs",
     "name": "lookup_pointer_names_all_three_verbs_on_every_slice",
-    "start_line": 18824,
-    "end_line": 18903
+    "start_line": 18577,
+    "end_line": 18656
   },
   {
     "file": "src/conductor.rs",
     "name": "decisions_prompt_injection_is_capped_under_budget_with_elision_note",
-    "start_line": 18906,
-    "end_line": 19001
+    "start_line": 18659,
+    "end_line": 18754
   },
   {
     "file": "src/conductor.rs",
     "name": "render_capped_decisions",
-    "start_line": 19006,
-    "end_line": 19027
+    "start_line": 18759,
+    "end_line": 18780
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "fold_subgraph",
+    "start_line": 18784,
+    "end_line": 18792
   },
   {
     "file": "src/conductor.rs",
     "name": "render_capped",
-    "start_line": 19032,
-    "end_line": 19048
+    "start_line": 18795,
+    "end_line": 18805
   },
   {
     "file": "src/conductor.rs",
     "name": "a_superseded_decision_never_outranks_a_current_one",
-    "start_line": 19051,
-    "end_line": 19081
+    "start_line": 18808,
+    "end_line": 18838
   },
   {
     "file": "src/conductor.rs",
     "name": "grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical",
-    "start_line": 19084,
-    "end_line": 19137
+    "start_line": 18841,
+    "end_line": 18894
   },
   {
     "file": "src/conductor.rs",
     "name": "the_verbatim_count_cap_binds_on_many_small_decisions",
-    "start_line": 19140,
-    "end_line": 19167
+    "start_line": 18897,
+    "end_line": 18924
   },
   {
     "file": "src/conductor.rs",
     "name": "the_byte_budget_cap_binds_before_the_count_on_chunky_decisions",
-    "start_line": 19170,
-    "end_line": 19202
+    "start_line": 18927,
+    "end_line": 18959
   },
   {
     "file": "src/conductor.rs",
     "name": "a_kept_decision_restores_the_dropped_dependency_it_supersedes",
-    "start_line": 19205,
-    "end_line": 19272
+    "start_line": 18962,
+    "end_line": 19029
   },
   {
     "file": "src/conductor.rs",
     "name": "render_capped_findings",
-    "start_line": 19278,
-    "end_line": 19288
+    "start_line": 19035,
+    "end_line": 19045
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "assert_capped_with_elision",
+    "start_line": 19052,
+    "end_line": 19086
   },
   {
     "file": "src/conductor.rs",
     "name": "findings_prompt_injection_is_capped_under_budget_with_elision_note",
-    "start_line": 19291,
-    "end_line": 19358
+    "start_line": 19089,
+    "end_line": 19132
   },
   {
     "file": "src/conductor.rs",
     "name": "the_verbatim_count_cap_binds_on_many_small_findings",
-    "start_line": 19361,
-    "end_line": 19396
+    "start_line": 19135,
+    "end_line": 19170
   },
   {
     "file": "src/conductor.rs",
     "name": "grounding_omits_a_resolved_finding_and_keeps_the_open_one",
-    "start_line": 19399,
-    "end_line": 19504
+    "start_line": 19173,
+    "end_line": 19278
   },
   {
     "file": "src/conductor.rs",
     "name": "render_capped_lessons",
-    "start_line": 19510,
-    "end_line": 19522
+    "start_line": 19284,
+    "end_line": 19296
   },
   {
     "file": "src/conductor.rs",
     "name": "the_injected_slice_is_deduplicated_by_normalized_text",
-    "start_line": 19525,
-    "end_line": 19582
+    "start_line": 19299,
+    "end_line": 19356
   },
   {
     "file": "src/conductor.rs",
     "name": "dedup_and_restore_are_render_only_no_event_no_projection_mutation",
-    "start_line": 19585,
-    "end_line": 19727
+    "start_line": 19359,
+    "end_line": 19501
   },
   {
     "file": "src/conductor.rs",
     "name": "structural_grounding_is_one_seeded_traversal_over_the_unified_graph",
-    "start_line": 19745,
-    "end_line": 19881
+    "start_line": 19519,
+    "end_line": 19655
   },
   {
     "file": "src/conductor.rs",
     "name": "the_grounding_path_populates_the_unified_graph_from_the_live_project",
-    "start_line": 19898,
-    "end_line": 20013
+    "start_line": 19672,
+    "end_line": 19787
   },
   {
     "file": "src/conductor.rs",
     "name": "re_ingesting_re_extracts_a_changed_file_and_skips_unchanged_ones",
-    "start_line": 20028,
-    "end_line": 20117
+    "start_line": 19802,
+    "end_line": 19891
   },
   {
     "file": "src/conductor.rs",
     "name": "ingest_files_into_graph_is_bounded_to_the_named_files_and_reflects_their_live_content",
-    "start_line": 20128,
-    "end_line": 20211
+    "start_line": 19902,
+    "end_line": 19985
   },
   {
     "file": "src/conductor.rs",
     "name": "re_excluding_the_same_file_twice_in_one_process_retires_its_middle_generation",
-    "start_line": 20232,
-    "end_line": 20312
+    "start_line": 20006,
+    "end_line": 20086
   },
   {
     "file": "src/conductor.rs",
     "name": "a_second_run_over_an_unchanged_tree_appends_no_derived_index_event",
-    "start_line": 20325,
-    "end_line": 20444
+    "start_line": 20099,
+    "end_line": 20218
   },
   {
     "file": "src/conductor.rs",
     "name": "spec60_cold_rebuild",
-    "start_line": 20462,
-    "end_line": 20480
+    "start_line": 20236,
+    "end_line": 20254
   },
   {
     "file": "src/conductor.rs",
     "name": "spec60_reachable",
-    "start_line": 20492,
-    "end_line": 20523
+    "start_line": 20266,
+    "end_line": 20297
   },
   {
     "file": "src/conductor.rs",
     "name": "spec60_reached_entities",
-    "start_line": 20529,
-    "end_line": 20538
+    "start_line": 20303,
+    "end_line": 20312
   },
   {
     "file": "src/conductor.rs",
     "name": "editing_one_file_between_runs_re_emits_only_that_files_batch_and_supersedes_its_edges",
-    "start_line": 20553,
-    "end_line": 20732
+    "start_line": 20327,
+    "end_line": 20506
   },
   {
     "file": "src/conductor.rs",
     "name": "a_file_reverted_to_an_earlier_recorded_generation_re_ingests_and_matches_a_cold_rebuild",
-    "start_line": 20745,
-    "end_line": 20901
+    "start_line": 20519,
+    "end_line": 20675
   },
   {
     "file": "src/conductor.rs",
     "name": "a_prior_runs_non_ingest_replay_key_never_suppresses_this_runs_keyed_emit",
-    "start_line": 20925,
-    "end_line": 21050
+    "start_line": 20699,
+    "end_line": 20824
   },
   {
     "file": "src/conductor.rs",
     "name": "append",
-    "start_line": 21072,
-    "end_line": 21080
+    "start_line": 20846,
+    "end_line": 20854
   },
   {
     "file": "src/conductor.rs",
     "name": "the_ingest_sink_appends_and_folds_once_per_file_batch_never_once_per_event",
-    "start_line": 21062,
-    "end_line": 21151
+    "start_line": 20836,
+    "end_line": 20925
   },
   {
     "file": "src/conductor.rs",
     "name": "design_intent_grounding_renders_the_governing_rule_and_specifying_ra_by_traversal",
-    "start_line": 21174,
-    "end_line": 21333
+    "start_line": 20948,
+    "end_line": 21107
   },
   {
     "file": "src/conductor.rs",
     "name": "a_governing_decision_never_leaks_into_the_design_intent_section",
-    "start_line": 21336,
-    "end_line": 21406
+    "start_line": 21110,
+    "end_line": 21180
   },
   {
     "file": "src/conductor.rs",
     "name": "the_design_intent_section_renders_the_newest_binding_and_elides_the_oldest",
-    "start_line": 21409,
-    "end_line": 21465
+    "start_line": 21183,
+    "end_line": 21239
   },
   {
     "file": "src/conductor.rs",
-    "name": "a_subgraph_with_no_design_intent_renders_no_design_intent_header",
-    "start_line": 21468,
-    "end_line": 21508
+    "name": "assert_renders_no_section",
+    "start_line": 21244,
+    "end_line": 21264
   },
   {
     "file": "src/conductor.rs",
     "name": "render_code_neighborhood",
-    "start_line": 21515,
-    "end_line": 21541
+    "start_line": 21320,
+    "end_line": 21346
   },
   {
     "file": "src/conductor.rs",
     "name": "the_code_neighborhood_elision_note_names_graph_around_recovery_not_peers",
-    "start_line": 21544,
-    "end_line": 21580
+    "start_line": 21349,
+    "end_line": 21385
   },
   {
     "file": "src/conductor.rs",
     "name": "the_code_neighborhood_byte_cap_elides_before_the_count_cap_is_reached",
-    "start_line": 21583,
-    "end_line": 21628
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header",
-    "start_line": 21631,
-    "end_line": 21661
+    "start_line": 21388,
+    "end_line": 21433
   },
   {
     "file": "src/conductor.rs",
     "name": "lessons_prompt_injection_is_capped_under_budget_with_elision_note",
-    "start_line": 21664,
-    "end_line": 21730
+    "start_line": 21436,
+    "end_line": 21478
   },
   {
     "file": "src/conductor.rs",
     "name": "the_verbatim_count_cap_binds_on_many_small_lessons",
-    "start_line": 21733,
-    "end_line": 21770
+    "start_line": 21481,
+    "end_line": 21518
   },
   {
     "file": "src/conductor.rs",
     "name": "render_capped_lessons_scoped",
-    "start_line": 21776,
-    "end_line": 21789
+    "start_line": 21524,
+    "end_line": 21537
   },
   {
     "file": "src/conductor.rs",
     "name": "lessons_rank_by_blast_radius_relevance_over_pure_recency",
-    "start_line": 21792,
-    "end_line": 21829
+    "start_line": 21540,
+    "end_line": 21577
   },
   {
     "file": "src/conductor.rs",
     "name": "resume_skips_already_integrated_units",
-    "start_line": 21832,
-    "end_line": 21864
+    "start_line": 21580,
+    "end_line": 21612
   },
   {
     "file": "src/conductor.rs",
     "name": "seed_events_in_run",
-    "start_line": 21868,
-    "end_line": 21885
+    "start_line": 21616,
+    "end_line": 21633
   },
   {
     "file": "src/conductor.rs",
     "name": "replay_trajectory_keeps_only_the_world_inputs_and_restrips_the_run_id",
-    "start_line": 21888,
-    "end_line": 21942
+    "start_line": 21636,
+    "end_line": 21690
   },
   {
     "file": "src/conductor.rs",
     "name": "commit_on_unit_branch",
-    "start_line": 21947,
-    "end_line": 21949
+    "start_line": 21695,
+    "end_line": 21697
   },
   {
     "file": "src/conductor.rs",
     "name": "resume_reuses_a_units_branch_instead_of_reimplementing",
-    "start_line": 21952,
-    "end_line": 22042
+    "start_line": 21700,
+    "end_line": 21790
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume",
-    "start_line": 22045,
-    "end_line": 22134
+    "start_line": 21793,
+    "end_line": 21882
   },
   {
     "file": "src/conductor.rs",
     "name": "commit_on_named_branch",
-    "start_line": 22141,
-    "end_line": 22157
+    "start_line": 21889,
+    "end_line": 21905
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_gc_falls_back_to_the_derived_branch_when_unitstarted_recorded_no_branch",
-    "start_line": 22172,
-    "end_line": 22223
+    "start_line": 21920,
+    "end_line": 21971
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_gc_reclaims_the_recorded_branch_not_the_derived_name_when_they_differ",
-    "start_line": 22226,
-    "end_line": 22286
+    "start_line": 21974,
+    "end_line": 22034
   },
   {
     "file": "src/conductor.rs",
     "name": "seed_lingering_worktree_on_unit_branch",
-    "start_line": 22297,
-    "end_line": 22321
+    "start_line": 22045,
+    "end_line": 22069
   },
   {
     "file": "src/conductor.rs",
     "name": "worktree_registered_on",
-    "start_line": 22327,
-    "end_line": 22332
+    "start_line": 22075,
+    "end_line": 22080
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_gc_removes_a_lingering_worktree_before_reclaiming_the_branch_on_resume",
-    "start_line": 22335,
-    "end_line": 22427
+    "start_line": 22083,
+    "end_line": 22175
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_gc_reclaims_every_integrated_unit_in_one_resume_not_just_the_first",
-    "start_line": 22430,
-    "end_line": 22517
+    "start_line": 22178,
+    "end_line": 22265
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_gc_fences_reclaim_behind_an_in_flight_straggler_spawn_and_reclaims_once_it_answers",
-    "start_line": 22520,
-    "end_line": 22596
+    "start_line": 22268,
+    "end_line": 22344
   },
   {
     "file": "src/conductor.rs",
     "name": "gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_straggler_spawn",
-    "start_line": 22599,
-    "end_line": 22661
+    "start_line": 22347,
+    "end_line": 22409
   },
   {
     "file": "src/conductor.rs",
     "name": "gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision",
-    "start_line": 22664,
-    "end_line": 22758
+    "start_line": 22412,
+    "end_line": 22506
   },
   {
     "file": "src/conductor.rs",
     "name": "gc_integrated_branches_logged_stays_silent_for_an_already_gone_worktree_but_still_reclaims_an_orphaned_branch",
-    "start_line": 22761,
-    "end_line": 22839
+    "start_line": 22509,
+    "end_line": 22587
   },
   {
     "file": "src/conductor.rs",
     "name": "gc_integrated_branches_logged_does_not_repeat_removing_evidence_once_the_real_removal_already_happened",
-    "start_line": 22842,
-    "end_line": 22940
+    "start_line": 22590,
+    "end_line": 22688
   },
   {
     "file": "src/conductor.rs",
     "name": "sha_stamp_cfg",
-    "start_line": 22944,
-    "end_line": 22966
+    "start_line": 22692,
+    "end_line": 22714
   },
   {
     "file": "src/conductor.rs",
     "name": "review_boundary_events_carry_the_worktree_sha",
-    "start_line": 22969,
-    "end_line": 23015
+    "start_line": 22717,
+    "end_line": 22763
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_reject_unitfailed_carries_the_worktree_sha",
-    "start_line": 23018,
-    "end_line": 23062
+    "start_line": 22766,
+    "end_line": 22810
   },
   {
     "file": "src/conductor.rs",
     "name": "an_exhaustive_gate_failure_on_an_approved_unit_records_a_gate_cause",
-    "start_line": 23065,
-    "end_line": 23104
+    "start_line": 22813,
+    "end_line": 22852
   },
   {
     "file": "src/conductor.rs",
     "name": "stamps_the_model_alias_and_resolved_id_on_live_lifecycle_events",
-    "start_line": 23107,
-    "end_line": 23224
+    "start_line": 22855,
+    "end_line": 22972
   },
   {
     "file": "src/conductor.rs",
     "name": "degenerate_reviewer_cfg",
-    "start_line": 23230,
-    "end_line": 23250
+    "start_line": 22978,
+    "end_line": 22998
   },
   {
     "file": "src/conductor.rs",
     "name": "has_status",
-    "start_line": 23252,
-    "end_line": 23257
+    "start_line": 23000,
+    "end_line": 23005
   },
   {
     "file": "src/conductor.rs",
     "name": "a_degenerate_adjudicator_result_respawns_and_a_substantive_retry_folds_normally",
-    "start_line": 23260,
-    "end_line": 23321
+    "start_line": 23008,
+    "end_line": 23069
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_stage_error_result_re_parks_a_fresh_attempt_no_charge_then_a_real_verdict_folds",
-    "start_line": 23324,
-    "end_line": 23435
+    "start_line": 23072,
+    "end_line": 23183
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_spawn_that_errors_on_every_re_parked_attempt_escalates_through_the_bound",
-    "start_line": 23438,
-    "end_line": 23572
+    "start_line": 23186,
+    "end_line": 23320
   },
   {
     "file": "src/conductor.rs",
     "name": "a_gating_spawn_that_emits_an_approve_verdict_but_returns_no_verdict_line_hard_errors_with_the_result_channel_fix",
-    "start_line": 23575,
-    "end_line": 23660
+    "start_line": 23323,
+    "end_line": 23408
   },
   {
     "file": "src/conductor.rs",
     "name": "a_gating_spawn_that_returns_a_reject_verdict_line_is_a_normal_reject_even_if_it_emitted_approve",
-    "start_line": 23663,
-    "end_line": 23700
+    "start_line": 23411,
+    "end_line": 23448
   },
   {
     "file": "src/conductor.rs",
     "name": "a_gating_spawn_with_no_verdict_line_and_no_emitted_approve_is_an_ordinary_reject",
-    "start_line": 23703,
-    "end_line": 23739
+    "start_line": 23451,
+    "end_line": 23487
   },
   {
     "file": "src/conductor.rs",
     "name": "the_workflow_live_path_correlates_the_approve_by_stamp_not_a_bare_stream_position",
-    "start_line": 23742,
-    "end_line": 23840
+    "start_line": 23490,
+    "end_line": 23588
   },
   {
     "file": "src/conductor.rs",
     "name": "a_degenerate_lens_result_respawns_the_lens_before_the_review_proceeds",
-    "start_line": 23843,
-    "end_line": 23888
+    "start_line": 23591,
+    "end_line": 23636
   },
   {
     "file": "src/conductor.rs",
     "name": "a_lens_that_emitted_a_finding_but_reports_empty_stdout_is_not_degenerate",
-    "start_line": 23891,
-    "end_line": 23943
+    "start_line": 23639,
+    "end_line": 23691
   },
   {
     "file": "src/conductor.rs",
     "name": "a_reviewer_that_only_ever_returns_degenerate_output_halts_the_run_loudly_naming_it",
-    "start_line": 23946,
-    "end_line": 24035
+    "start_line": 23694,
+    "end_line": 23783
   },
   {
     "file": "src/conductor.rs",
     "name": "resume_integrates_an_already_approved_unit_without_re_reviewing",
-    "start_line": 24038,
-    "end_line": 24118
+    "start_line": 23786,
+    "end_line": 23866
   },
   {
     "file": "src/conductor.rs",
     "name": "a_failed_unit_is_not_terminal_and_resumes",
-    "start_line": 24121,
-    "end_line": 24227
+    "start_line": 23869,
+    "end_line": 23975
   },
   {
     "file": "src/conductor.rs",
     "name": "remediation_attempts_accumulate_across_resume_and_escalate_at_the_bound",
-    "start_line": 24230,
-    "end_line": 24337
+    "start_line": 23978,
+    "end_line": 24085
   },
   {
     "file": "src/conductor.rs",
     "name": "an_escalated_unit_stays_terminal_on_resume",
-    "start_line": 24340,
-    "end_line": 24417
+    "start_line": 24088,
+    "end_line": 24165
   },
   {
     "file": "src/conductor.rs",
     "name": "a_fresh_unit_with_no_branch_runs_the_full_lifecycle",
-    "start_line": 24420,
-    "end_line": 24470
+    "start_line": 24168,
+    "end_line": 24218
   },
   {
     "file": "src/conductor.rs",
     "name": "agent_decision_folds_content_but_no_agent_attribution",
-    "start_line": 24473,
-    "end_line": 24528
+    "start_line": 24221,
+    "end_line": 24276
   },
   {
     "file": "src/conductor.rs",
     "name": "scope_creep_refuses_a_criterionless_proposed_unit",
-    "start_line": 24531,
-    "end_line": 24565
+    "start_line": 24279,
+    "end_line": 24313
   },
   {
     "file": "src/conductor.rs",
     "name": "adjudicator_reject_blocks_the_stage",
-    "start_line": 24568,
-    "end_line": 24593
+    "start_line": 24316,
+    "end_line": 24341
   },
   {
     "file": "src/conductor.rs",
     "name": "adversary_runs_between_the_lenses_and_the_adjudicator",
-    "start_line": 24596,
-    "end_line": 24654
+    "start_line": 24344,
+    "end_line": 24402
   },
   {
     "file": "src/conductor.rs",
     "name": "adjudicator_reject_gates_even_with_an_adversary_present",
-    "start_line": 24657,
-    "end_line": 24699
+    "start_line": 24405,
+    "end_line": 24447
   },
   {
     "file": "src/conductor.rs",
     "name": "unit_reviews_itself_within_its_own_lifecycle",
-    "start_line": 24702,
-    "end_line": 24787
+    "start_line": 24450,
+    "end_line": 24535
   },
   {
     "file": "src/conductor.rs",
     "name": "depth_tiers",
-    "start_line": 24790,
-    "end_line": 24800
+    "start_line": 24538,
+    "end_line": 24548
   },
   {
     "file": "src/conductor.rs",
     "name": "full_panel_with_tiers",
-    "start_line": 24804,
-    "end_line": 24811
+    "start_line": 24552,
+    "end_line": 24559
   },
   {
     "file": "src/conductor.rs",
     "name": "strs",
-    "start_line": 24813,
-    "end_line": 24815
+    "start_line": 24561,
+    "end_line": 24563
   },
   {
     "file": "src/conductor.rs",
     "name": "path_is_high_risk_matches_by_prefix_and_by_glob",
-    "start_line": 24818,
-    "end_line": 24844
+    "start_line": 24566,
+    "end_line": 24592
   },
   {
     "file": "src/conductor.rs",
     "name": "route_review_tier_with_no_policy_is_the_full_panel_unchanged",
-    "start_line": 24847,
-    "end_line": 24856
+    "start_line": 24595,
+    "end_line": 24604
   },
   {
     "file": "src/conductor.rs",
     "name": "route_review_tier_routes_a_low_risk_unit_to_the_light_panel",
-    "start_line": 24859,
-    "end_line": 24878
+    "start_line": 24607,
+    "end_line": 24626
   },
   {
     "file": "src/conductor.rs",
     "name": "route_review_tier_forces_full_on_a_high_risk_path_hit",
-    "start_line": 24881,
-    "end_line": 24896
+    "start_line": 24629,
+    "end_line": 24644
   },
   {
     "file": "src/conductor.rs",
     "name": "route_review_tier_forces_full_over_the_size_threshold",
-    "start_line": 24899,
-    "end_line": 24912
+    "start_line": 24647,
+    "end_line": 24660
   },
   {
     "file": "src/conductor.rs",
     "name": "route_review_tier_forces_full_when_the_gates_flapped",
-    "start_line": 24915,
-    "end_line": 24928
+    "start_line": 24663,
+    "end_line": 24676
   },
   {
     "file": "src/conductor.rs",
     "name": "route_review_tier_fails_safe_to_full_on_an_empty_blast_radius",
-    "start_line": 24931,
-    "end_line": 24965
+    "start_line": 24679,
+    "end_line": 24713
   },
   {
     "file": "src/conductor.rs",
     "name": "run_tiered_unit",
-    "start_line": 24971,
-    "end_line": 25023
+    "start_line": 24719,
+    "end_line": 24771
   },
   {
     "file": "src/conductor.rs",
     "name": "logged_review_tier",
-    "start_line": 25027,
-    "end_line": 25038
+    "start_line": 24775,
+    "end_line": 24786
   },
   {
     "file": "src/conductor.rs",
     "name": "a_low_risk_unit_runs_the_light_panel_and_logs_the_routing",
-    "start_line": 25041,
-    "end_line": 25067
+    "start_line": 24789,
+    "end_line": 24815
   },
   {
     "file": "src/conductor.rs",
     "name": "a_low_risk_unit_skips_the_adversary_and_extra_lens",
-    "start_line": 25070,
-    "end_line": 25130
+    "start_line": 24818,
+    "end_line": 24878
   },
   {
     "file": "src/conductor.rs",
     "name": "a_high_risk_unit_runs_the_full_panel_and_logs_the_routing",
-    "start_line": 25133,
-    "end_line": 25203
+    "start_line": 24881,
+    "end_line": 24951
   },
   {
     "file": "src/conductor.rs",
     "name": "without_a_depth_policy_a_grounded_unit_runs_the_full_panel_and_logs_no_routing",
-    "start_line": 25206,
-    "end_line": 25221
+    "start_line": 24954,
+    "end_line": 24969
   },
   {
     "file": "src/conductor.rs",
     "name": "a_zero_grounding_unit_fails_safe_to_the_full_panel_and_logs_it",
-    "start_line": 25224,
-    "end_line": 25302
+    "start_line": 24972,
+    "end_line": 25050
   },
   {
     "file": "src/conductor.rs",
     "name": "a_flapped_unit_escalates_from_light_at_attempt_0_to_full_on_remediation",
-    "start_line": 25305,
-    "end_line": 25414
+    "start_line": 25053,
+    "end_line": 25162
   },
   {
     "file": "src/conductor.rs",
     "name": "a_stage_level_tiers_policy_routes_the_unit_by_risk",
-    "start_line": 25417,
-    "end_line": 25481
+    "start_line": 25165,
+    "end_line": 25229
   },
   {
     "file": "src/conductor.rs",
     "name": "every_spawn_runs_in_a_worktree_never_the_main_repo_checkout",
-    "start_line": 25484,
-    "end_line": 25561
+    "start_line": 25232,
+    "end_line": 25309
   },
   {
     "file": "src/conductor.rs",
     "name": "spec_cfg",
-    "start_line": 25565,
-    "end_line": 25588
+    "start_line": 25313,
+    "end_line": 25336
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_width_2_runs_two_candidates_first_green_wins_rest_cancelled",
-    "start_line": 25591,
-    "end_line": 25678
+    "start_line": 25339,
+    "end_line": 25426
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_budget_accounts_for_every_candidate_spawn",
-    "start_line": 25681,
-    "end_line": 25712
+    "start_line": 25429,
+    "end_line": 25460
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_defaults_off_runs_a_single_candidate",
-    "start_line": 25715,
-    "end_line": 25751
+    "start_line": 25463,
+    "end_line": 25499
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_parks_all_candidates_together_in_one_step",
-    "start_line": 25754,
-    "end_line": 25789
+    "start_line": 25502,
+    "end_line": 25537
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_defers_green_until_the_winner_and_integrates_across_replay_steps",
-    "start_line": 25792,
-    "end_line": 25914
+    "start_line": 25540,
+    "end_line": 25662
   },
   {
     "file": "src/conductor.rs",
     "name": "unit_has_status",
-    "start_line": 25920,
-    "end_line": 25930
+    "start_line": 25668,
+    "end_line": 25678
   },
   {
     "file": "src/conductor.rs",
     "name": "branch_present",
-    "start_line": 25934,
-    "end_line": 25936
+    "start_line": 25682,
+    "end_line": 25684
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_later_candidate_wins_when_an_earlier_lane_is_review_rejected",
-    "start_line": 25939,
-    "end_line": 26008
+    "start_line": 25687,
+    "end_line": 25756
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_low_risk_later_lane_winner_routes_light_not_falsely_flapped",
-    "start_line": 26011,
-    "end_line": 26129
+    "start_line": 25759,
+    "end_line": 25877
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_rejected_loser_is_visible_to_the_review_quality_fold",
-    "start_line": 26132,
-    "end_line": 26183
+    "start_line": 25880,
+    "end_line": 25931
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_escalates_when_every_candidate_is_rejected",
-    "start_line": 26186,
-    "end_line": 26248
+    "start_line": 25934,
+    "end_line": 25996
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_crashed_lane_is_absent_and_a_sibling_still_wins",
-    "start_line": 26251,
-    "end_line": 26311
+    "start_line": 25999,
+    "end_line": 26059
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_exhaustive_integrate_door_red_blocks_a_candidate",
-    "start_line": 26314,
-    "end_line": 26376
+    "start_line": 26062,
+    "end_line": 26124
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_stays_fresh_across_parking_until_a_winner_integrates",
-    "start_line": 26379,
-    "end_line": 26486
+    "start_line": 26127,
+    "end_line": 26234
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 26501,
-    "end_line": 26568
+    "start_line": 26249,
+    "end_line": 26316
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_blocked_winner_captures_evidence_and_a_later_lane_wins",
-    "start_line": 26572,
-    "end_line": 26728
+    "start_line": 26320,
+    "end_line": 26476
   },
   {
     "file": "src/conductor.rs",
     "name": "assert_isolated_cwd_refuses_empty_or_repo_root_with_a_repo",
-    "start_line": 26731,
-    "end_line": 26772
+    "start_line": 26479,
+    "end_line": 26520
   },
   {
     "file": "src/conductor.rs",
     "name": "the_conductor_threads_each_agents_persona_to_the_driver",
-    "start_line": 26775,
-    "end_line": 26858
+    "start_line": 26523,
+    "end_line": 26606
   },
   {
     "file": "src/conductor.rs",
     "name": "the_system_prompt_carries_the_rigger_communication_discipline",
-    "start_line": 26861,
-    "end_line": 26907
+    "start_line": 26609,
+    "end_line": 26655
   },
   {
     "file": "src/conductor.rs",
     "name": "an_agent_with_no_persona_threads_an_empty_system_prompt",
-    "start_line": 26910,
-    "end_line": 26946
+    "start_line": 26658,
+    "end_line": 26694
   },
   {
     "file": "src/conductor.rs",
     "name": "operator_instructions_reach_every_spawned_agent_between_persona_and_discipline",
-    "start_line": 26949,
-    "end_line": 27018
+    "start_line": 26697,
+    "end_line": 26766
   },
   {
     "file": "src/conductor.rs",
     "name": "planner_proposed_unit_inherits_the_default_review_panel",
-    "start_line": 27021,
-    "end_line": 27075
+    "start_line": 26769,
+    "end_line": 26823
   },
   {
     "file": "src/conductor.rs",
     "name": "a_producer_stage_skips_the_three_tier_review_and_unblocks_its_dependents",
-    "start_line": 27078,
-    "end_line": 27165
+    "start_line": 26826,
+    "end_line": 26913
   },
   {
     "file": "src/conductor.rs",
     "name": "plan_stage_commit_under_specs_reaches_the_run_branch_before_the_next_worktree",
-    "start_line": 27168,
-    "end_line": 27245
+    "start_line": 26916,
+    "end_line": 26993
   },
   {
     "file": "src/conductor.rs",
     "name": "plan_stage_commit_outside_specs_fails_the_stage_naming_the_path",
-    "start_line": 27248,
-    "end_line": 27318
+    "start_line": 26996,
+    "end_line": 27066
   },
   {
     "file": "src/conductor.rs",
     "name": "plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage",
-    "start_line": 27321,
-    "end_line": 27400
+    "start_line": 27069,
+    "end_line": 27148
   },
   {
     "file": "src/conductor.rs",
     "name": "plan_stage_commit_conflicting_with_a_concurrent_specs_change_escalates",
-    "start_line": 27403,
-    "end_line": 27469
+    "start_line": 27151,
+    "end_line": 27217
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_plan_commits_is_idempotent_on_a_resumed_already_landed_worktree",
-    "start_line": 27472,
-    "end_line": 27592
+    "start_line": 27220,
+    "end_line": 27340
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_plan_commits_tolerates_a_pre_existing_intent_record_with_no_git_mutation_yet",
-    "start_line": 27595,
-    "end_line": 27651
+    "start_line": 27343,
+    "end_line": 27399
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_plan_commits_keeps_the_earlier_commits_identity_when_the_worktree_grows_between_calls",
-    "start_line": 27654,
-    "end_line": 27727
+    "start_line": 27402,
+    "end_line": 27475
   },
   {
     "file": "src/conductor.rs",
     "name": "append",
-    "start_line": 27740,
-    "end_line": 27756
+    "start_line": 27488,
+    "end_line": 27504
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-    "start_line": 27761,
-    "end_line": 27819
+    "start_line": 27509,
+    "end_line": 27567
   },
   {
     "file": "src/conductor.rs",
     "name": "a_plan_landing_infra_fault_halts_the_run_loudly_with_no_per_unit_lesson_or_attempt",
-    "start_line": 27822,
-    "end_line": 27899
+    "start_line": 27570,
+    "end_line": 27647
   },
   {
     "file": "src/conductor.rs",
     "name": "per_unit_adjudicator_reject_blocks_integration_and_escalates",
-    "start_line": 27902,
-    "end_line": 27966
+    "start_line": 27650,
+    "end_line": 27714
   },
   {
     "file": "src/conductor.rs",
     "name": "an_always_rejecting_adjudicator_escalates_after_exactly_max_retries_cycles",
-    "start_line": 27969,
-    "end_line": 28054
+    "start_line": 27717,
+    "end_line": 27802
   },
   {
     "file": "src/conductor.rs",
     "name": "escalation_run",
-    "start_line": 28071,
-    "end_line": 28109
+    "start_line": 27819,
+    "end_line": 27857
   },
   {
     "file": "src/conductor.rs",
     "name": "a_higher_max_retries_gives_more_attempts_before_escalation",
-    "start_line": 28057,
-    "end_line": 28146
+    "start_line": 27805,
+    "end_line": 27894
   },
   {
     "file": "src/conductor.rs",
     "name": "an_absent_max_retries_preserves_the_default_bound_of_three",
-    "start_line": 28149,
-    "end_line": 28205
+    "start_line": 27897,
+    "end_line": 27953
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_unit_gets_exactly_its_granted_extra_attempts_before_re_escalating",
-    "start_line": 28208,
-    "end_line": 28304
+    "start_line": 27956,
+    "end_line": 28052
   },
   {
     "file": "src/conductor.rs",
     "name": "max_retries_for_widens_only_the_resumed_unit_never_a_sibling",
-    "start_line": 28307,
-    "end_line": 28340
+    "start_line": 28055,
+    "end_line": 28088
   },
   {
     "file": "src/conductor.rs",
     "name": "a_stages_own_max_retries_overrides_the_run_default_for_its_units",
-    "start_line": 28343,
-    "end_line": 28382
+    "start_line": 28091,
+    "end_line": 28130
   },
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 28400,
-    "end_line": 28406
+    "start_line": 28148,
+    "end_line": 28154
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 28409,
-    "end_line": 28442
+    "start_line": 28157,
+    "end_line": 28190
   },
   {
     "file": "src/conductor.rs",
     "name": "approval_on_the_final_permitted_attempt_integrates_a_per_unit_stage",
-    "start_line": 28446,
-    "end_line": 28511
+    "start_line": 28194,
+    "end_line": 28259
   },
   {
     "file": "src/conductor.rs",
     "name": "a_model_ladder_implementer_escalates_one_rung_per_remediation_attempt",
-    "start_line": 28514,
-    "end_line": 28596
+    "start_line": 28262,
+    "end_line": 28344
   },
   {
     "file": "src/conductor.rs",
     "name": "approval_on_the_final_permitted_attempt_integrates_a_standalone_review_stage",
-    "start_line": 28599,
-    "end_line": 28657
+    "start_line": 28347,
+    "end_line": 28405
   },
   {
     "file": "src/conductor.rs",
     "name": "mid_spawn_crash_escalates_without_aborting_the_run",
-    "start_line": 28660,
-    "end_line": 28686
+    "start_line": 28408,
+    "end_line": 28434
   },
   {
     "file": "src/conductor.rs",
     "name": "a_newly_escalated_unit_stamps_an_attention_entry",
-    "start_line": 28689,
-    "end_line": 28732
+    "start_line": 28437,
+    "end_line": 28480
   },
   {
     "file": "src/conductor.rs",
     "name": "a_budget_halt_stamps_an_attention_entry",
-    "start_line": 28735,
-    "end_line": 28777
+    "start_line": 28483,
+    "end_line": 28525
   },
   {
     "file": "src/conductor.rs",
     "name": "a_budget_halt_does_not_restamp_on_a_later_poll_with_nothing_new",
-    "start_line": 28780,
-    "end_line": 28861
+    "start_line": 28528,
+    "end_line": 28609
   },
   {
     "file": "src/conductor.rs",
     "name": "a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps",
-    "start_line": 28864,
-    "end_line": 28960
+    "start_line": 28612,
+    "end_line": 28708
   },
   {
     "file": "src/conductor.rs",
     "name": "compute_attention_leaves_the_hung_liveness_halt_to_the_caller",
-    "start_line": 28963,
-    "end_line": 29026
+    "start_line": 28711,
+    "end_line": 28774
   },
   {
     "file": "src/conductor.rs",
     "name": "an_escalation_does_not_restamp_attention_on_a_resumed_process",
-    "start_line": 29029,
-    "end_line": 29102
+    "start_line": 28777,
+    "end_line": 28850
   },
   {
     "file": "src/conductor.rs",
     "name": "a_clean_step_stamps_no_attention",
-    "start_line": 29105,
-    "end_line": 29130
+    "start_line": 28853,
+    "end_line": 28878
   },
   {
     "file": "src/conductor.rs",
     "name": "a_second_failure_recurs_and_a_third_also_stalls_the_frontier",
-    "start_line": 29133,
-    "end_line": 29249
+    "start_line": 28881,
+    "end_line": 28997
   },
   {
     "file": "src/conductor.rs",
     "name": "nine_of_ten_budget_crosses_the_final_tenth",
-    "start_line": 29252,
-    "end_line": 29291
+    "start_line": 29000,
+    "end_line": 29039
   },
   {
     "file": "src/conductor.rs",
     "name": "a_re_step_already_past_the_budget_threshold_does_not_re_stamp",
-    "start_line": 29294,
-    "end_line": 29373
+    "start_line": 29042,
+    "end_line": 29121
   },
   {
     "file": "src/conductor.rs",
     "name": "budget_breaker_stops_the_run_after_the_first_wave",
-    "start_line": 29376,
-    "end_line": 29419
+    "start_line": 29124,
+    "end_line": 29167
   },
   {
     "file": "src/conductor.rs",
     "name": "budget_exhaustion_aborts_the_task",
-    "start_line": 29422,
-    "end_line": 29457
+    "start_line": 29170,
+    "end_line": 29205
   },
   {
     "file": "src/conductor.rs",
     "name": "a_budget_halt_surfaces_its_reason_on_the_run_state",
-    "start_line": 29460,
-    "end_line": 29490
+    "start_line": 29208,
+    "end_line": 29238
   },
   {
     "file": "src/conductor.rs",
     "name": "a_run_within_budget_surfaces_no_halt_reason",
-    "start_line": 29493,
-    "end_line": 29517
+    "start_line": 29241,
+    "end_line": 29265
   },
   {
     "file": "src/conductor.rs",
     "name": "the_spawn_budget_folds_from_recorded_spawn_requests_across_steps",
-    "start_line": 29520,
-    "end_line": 29582
+    "start_line": 29268,
+    "end_line": 29330
   },
   {
     "file": "src/conductor.rs",
     "name": "the_pre_wave_breaker_trips_only_on_a_new_over_budget_spawn",
-    "start_line": 29585,
-    "end_line": 29619
+    "start_line": 29333,
+    "end_line": 29367
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_tier_budget_refusal_aborts_with_budgetexhausted_not_a_raw_error",
-    "start_line": 29622,
-    "end_line": 29684
+    "start_line": 29370,
+    "end_line": 29432
   },
   {
     "file": "src/conductor.rs",
     "name": "run_ungated_fanout_guard",
-    "start_line": 29699,
-    "end_line": 29708
+    "start_line": 29447,
+    "end_line": 29456
   },
   {
     "file": "src/conductor.rs",
     "name": "ungated_fanout_unit_under_a_gated_template_fails_the_step",
-    "start_line": 29711,
-    "end_line": 29739
+    "start_line": 29459,
+    "end_line": 29487
   },
   {
     "file": "src/conductor.rs",
     "name": "ungated_fanout_unit_under_an_ungated_template_is_not_flagged",
-    "start_line": 29742,
-    "end_line": 29765
+    "start_line": 29490,
+    "end_line": 29513
   },
   {
     "file": "src/conductor.rs",
     "name": "gated_fanout_unit_passes",
-    "start_line": 29768,
-    "end_line": 29789
+    "start_line": 29516,
+    "end_line": 29537
   },
   {
     "file": "src/conductor.rs",
     "name": "non_fanout_stage_with_no_gates_is_never_flagged",
-    "start_line": 29792,
-    "end_line": 29816
+    "start_line": 29540,
+    "end_line": 29564
   },
   {
     "file": "src/conductor.rs",
     "name": "unmatched_fanout_proposal_under_a_gated_template_fails_the_step",
-    "start_line": 29819,
-    "end_line": 29854
+    "start_line": 29567,
+    "end_line": 29602
   },
   {
     "file": "src/conductor.rs",
     "name": "unmatched_fanout_proposal_under_an_ungated_template_is_not_flagged",
-    "start_line": 29857,
-    "end_line": 29881
+    "start_line": 29605,
+    "end_line": 29629
   },
   {
     "file": "src/conductor.rs",
     "name": "ungated_fan_out_templates_names_a_gateless_template",
-    "start_line": 29884,
-    "end_line": 29901
+    "start_line": 29632,
+    "end_line": 29649
   },
   {
     "file": "src/conductor.rs",
     "name": "ungated_fan_out_templates_is_silent_on_a_gated_template",
-    "start_line": 29904,
-    "end_line": 29920
+    "start_line": 29652,
+    "end_line": 29664
   },
   {
     "file": "src/conductor.rs",
     "name": "planner_covering_every_criterion_passes",
-    "start_line": 29923,
-    "end_line": 29956
+    "start_line": 29667,
+    "end_line": 29700
   },
   {
     "file": "src/conductor.rs",
     "name": "manual_stage_pauses_while_an_auto_stage_integrates",
-    "start_line": 29959,
-    "end_line": 30010
+    "start_line": 29703,
+    "end_line": 29754
   },
   {
     "file": "src/conductor.rs",
     "name": "isolation_none_agent_gets_no_worktree_even_with_a_repo",
-    "start_line": 30013,
-    "end_line": 30051
+    "start_line": 29757,
+    "end_line": 29795
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn_opts_isolation_is_set_for_a_worktree_agent",
-    "start_line": 30054,
-    "end_line": 30082
+    "start_line": 29798,
+    "end_line": 29826
   },
   {
     "file": "src/conductor.rs",
     "name": "a_spawned_implementers_title_is_the_unit_criterion",
-    "start_line": 30085,
-    "end_line": 30119
+    "start_line": 29829,
+    "end_line": 29863
   },
   {
     "file": "src/conductor.rs",
     "name": "the_adversarys_spawn_is_stamped_with_the_units_lens_roster",
-    "start_line": 30126,
-    "end_line": 30166
+    "start_line": 29870,
+    "end_line": 29910
   },
   {
     "file": "src/conductor.rs",
     "name": "the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary",
-    "start_line": 30172,
-    "end_line": 30213
+    "start_line": 29916,
+    "end_line": 29957
   },
   {
     "file": "src/conductor.rs",
     "name": "a_panel_with_no_adversary_never_fabricates_one_in_the_adjudicators_roster",
-    "start_line": 30218,
-    "end_line": 30257
+    "start_line": 29962,
+    "end_line": 30001
   },
   {
     "file": "src/conductor.rs",
     "name": "the_roster_reflects_the_actually_routed_light_panel_not_the_full_one",
-    "start_line": 30266,
-    "end_line": 30329
+    "start_line": 30010,
+    "end_line": 30073
   },
   {
     "file": "src/conductor.rs",
     "name": "the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster",
-    "start_line": 30343,
-    "end_line": 30392
+    "start_line": 30087,
+    "end_line": 30136
   },
   {
     "file": "src/conductor.rs",
     "name": "stage_autonomy_override_seeds_the_gate",
-    "start_line": 30395,
-    "end_line": 30458
+    "start_line": 30139,
+    "end_line": 30202
   },
   {
     "file": "src/conductor.rs",
     "name": "on_pass_none_runs_gates_but_does_not_integrate",
-    "start_line": 30461,
-    "end_line": 30503
+    "start_line": 30205,
+    "end_line": 30247
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 30514,
-    "end_line": 30529
+    "start_line": 30258,
+    "end_line": 30273
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "two_unit_gate_runs",
+    "start_line": 30282,
+    "end_line": 30311
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "assert_one_isolated_dir_per_unit",
+    "start_line": 30316,
+    "end_line": 30345
   },
   {
     "file": "src/conductor.rs",
     "name": "two_units_gate_environments_never_share_a_target_dir",
-    "start_line": 30533,
-    "end_line": 30620
+    "start_line": 30348,
+    "end_line": 30376
   },
   {
     "file": "src/conductor.rs",
     "name": "two_units_gate_environments_never_share_a_mutants_root",
-    "start_line": 30623,
-    "end_line": 30692
+    "start_line": 30379,
+    "end_line": 30391
   },
   {
     "file": "src/conductor.rs",
     "name": "an_implement_stage_gate_round_creates_no_mutants_directory",
-    "start_line": 30695,
-    "end_line": 30741
+    "start_line": 30394,
+    "end_line": 30440
   },
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 30750,
-    "end_line": 30754
+    "start_line": 30449,
+    "end_line": 30453
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 30757,
-    "end_line": 30766
+    "start_line": 30456,
+    "end_line": 30465
   },
   {
     "file": "src/conductor.rs",
     "name": "run_once",
-    "start_line": 30789,
-    "end_line": 30826
+    "start_line": 30488,
+    "end_line": 30525
   },
   {
     "file": "src/conductor.rs",
     "name": "one_build_environment_authority_reaches_both_a_gate_build_and_an_agent_spawn",
-    "start_line": 30774,
-    "end_line": 30901
+    "start_line": 30473,
+    "end_line": 30600
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn_env_adds_the_per_unit_cargo_target_dir_only_for_a_real_unit_worktree",
-    "start_line": 30904,
-    "end_line": 30948
+    "start_line": 30603,
+    "end_line": 30647
   },
   {
     "file": "src/conductor.rs",
     "name": "a_units_per_unit_cache_is_reclaimed_when_its_worktree_is_removed",
-    "start_line": 30951,
-    "end_line": 31014
+    "start_line": 30650,
+    "end_line": 30713
   },
   {
     "file": "src/conductor.rs",
     "name": "a_units_worktree_cache_and_branch_are_all_reclaimed_on_a_successful_integrate",
-    "start_line": 31017,
-    "end_line": 31089
+    "start_line": 30716,
+    "end_line": 30788
   },
   {
     "file": "src/conductor.rs",
     "name": "a_units_worktree_is_reclaimed_but_its_branch_survives_a_terminal_escalation",
-    "start_line": 31092,
-    "end_line": 31152
+    "start_line": 30791,
+    "end_line": 30851
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_review_spawn_keeps_the_unit_worktree_registered_and_its_cache",
-    "start_line": 31155,
-    "end_line": 31256
+    "start_line": 30854,
+    "end_line": 30955
   },
   {
     "file": "src/conductor.rs",
     "name": "review_unit_restores_a_worktree_a_gate_deleted_out_of_band",
-    "start_line": 31259,
-    "end_line": 31346
+    "start_line": 30958,
+    "end_line": 31045
   },
   {
     "file": "src/conductor.rs",
     "name": "a_second_step_restores_a_still_parked_units_worktree_deleted_out_of_band",
-    "start_line": 31349,
-    "end_line": 31446
+    "start_line": 31048,
+    "end_line": 31145
   },
   {
     "file": "src/conductor.rs",
     "name": "verified_worktree_sha_is_stamped_after_a_gate_side_deletion_is_restored",
-    "start_line": 31449,
-    "end_line": 31547
+    "start_line": 31148,
+    "end_line": 31246
   },
   {
     "file": "src/conductor.rs",
     "name": "review_tier_boundary_restores_a_worktree_a_prior_tier_deleted",
-    "start_line": 31550,
-    "end_line": 31623
+    "start_line": 31249,
+    "end_line": 31322
   },
   {
     "file": "src/conductor.rs",
     "name": "reviewed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored",
-    "start_line": 31626,
-    "end_line": 31730
+    "start_line": 31325,
+    "end_line": 31429
   },
   {
     "file": "src/conductor.rs",
     "name": "failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored",
-    "start_line": 31733,
-    "end_line": 31795
+    "start_line": 31432,
+    "end_line": 31494
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_rounds_dirty_residue_is_restored_named_and_never_merged",
-    "start_line": 31798,
-    "end_line": 31907
+    "start_line": 31497,
+    "end_line": 31606
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_rounds_moved_tip_is_restored_to_the_reviewed_sha_before_merging",
-    "start_line": 31910,
-    "end_line": 31986
+    "start_line": 31609,
+    "end_line": 31685
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_rounds_lens_residue_survives_a_later_tiers_genuine_crash_and_is_restored",
-    "start_line": 31989,
-    "end_line": 32119
+    "start_line": 31688,
+    "end_line": 31818
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park",
-    "start_line": 32122,
-    "end_line": 32305
+    "start_line": 31821,
+    "end_line": 32004
   },
   {
     "file": "src/conductor.rs",
     "name": "a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume",
-    "start_line": 32308,
-    "end_line": 32481
+    "start_line": 32007,
+    "end_line": 32180
   },
   {
     "file": "src/conductor.rs",
     "name": "a_speculation_lanes_log_derived_start_sha_survives_a_cross_call_resume_after_a_park",
-    "start_line": 32484,
-    "end_line": 32645
+    "start_line": 32183,
+    "end_line": 32344
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_reviewed_unit_restores_a_worktree_the_exhaustive_gate_deleted",
-    "start_line": 32648,
-    "end_line": 32751
+    "start_line": 32347,
+    "end_line": 32450
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_reviewed_unit_whose_exhaustive_gate_fails_records_a_gate_cause",
-    "start_line": 32754,
-    "end_line": 32834
+    "start_line": 32453,
+    "end_line": 32533
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_reviewed_units_merge_break_records_an_integrate_conflict_cause",
-    "start_line": 32837,
-    "end_line": 32960
+    "start_line": 32536,
+    "end_line": 32659
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_landed_but_ungated_unit_regates_the_landed_tree",
-    "start_line": 32963,
-    "end_line": 33093
+    "start_line": 32662,
+    "end_line": 32792
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_reviewed_units_genuine_unresolved_conflict_reaches_the_idempotent_merge_path",
-    "start_line": 33096,
-    "end_line": 33267
+    "start_line": 32795,
+    "end_line": 32966
   },
   {
     "file": "src/conductor.rs",
     "name": "regenerate_conflicted_paths_returns_the_real_regeneration_commit_sha",
-    "start_line": 33284,
-    "end_line": 33325
+    "start_line": 32983,
+    "end_line": 33024
   },
   {
     "file": "src/conductor.rs",
     "name": "a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted",
-    "start_line": 33328,
-    "end_line": 33402
+    "start_line": 33027,
+    "end_line": 33101
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_lenses_restore_a_gate_deleted_worktree_without_racing_and_stamp_the_winner_sha",
-    "start_line": 33405,
-    "end_line": 33522
+    "start_line": 33104,
+    "end_line": 33221
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored",
-    "start_line": 33525,
-    "end_line": 33591
+    "start_line": 33224,
+    "end_line": 33290
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_review_regen_commit_and_integrate",
-    "start_line": 33594,
-    "end_line": 33767
+    "start_line": 33293,
+    "end_line": 33466
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_lens_keeps_the_unit_worktree_beside_a_genuine_sibling_crash",
-    "start_line": 33770,
-    "end_line": 33880
+    "start_line": 33469,
+    "end_line": 33579
   },
   {
     "file": "src/conductor.rs",
     "name": "a_worktree_less_stage_gate_inherits_the_shared_target",
-    "start_line": 33883,
-    "end_line": 33928
+    "start_line": 33582,
+    "end_line": 33627
   },
   {
     "file": "src/conductor.rs",
     "name": "bounded_pool_completes_every_stage_under_the_cap",
-    "start_line": 33931,
-    "end_line": 33960
+    "start_line": 33630,
+    "end_line": 33659
   },
   {
     "file": "src/conductor.rs",
     "name": "run_wave_admits_at_most_max_parallel_units_leaving_the_rest_neither_failed_nor_terminal",
-    "start_line": 33963,
-    "end_line": 34064
+    "start_line": 33662,
+    "end_line": 33763
   },
   {
     "file": "src/conductor.rs",
     "name": "occupancy_survives_a_crash_resume_so_a_still_parked_unit_keeps_its_slot_over_a_fresh_one",
-    "start_line": 34067,
-    "end_line": 34140
+    "start_line": 33766,
+    "end_line": 33839
   },
   {
     "file": "src/conductor.rs",
     "name": "live_run_folds_no_gate_machinery",
-    "start_line": 34143,
-    "end_line": 34189
+    "start_line": 33842,
+    "end_line": 33888
   },
   {
     "file": "src/conductor.rs",
     "name": "agent_stage_runs_the_per_unit_lifecycle_not_the_fan_out_path",
-    "start_line": 34192,
-    "end_line": 34227
+    "start_line": 33891,
+    "end_line": 33926
   },
   {
     "file": "src/conductor.rs",
     "name": "standalone_review_stage_still_takes_the_fan_out_path",
-    "start_line": 34230,
-    "end_line": 34263
+    "start_line": 33929,
+    "end_line": 33962
   },
   {
     "file": "src/conductor.rs",
     "name": "run_gates_derives_and_injects_the_review_worktrees_store_fence",
-    "start_line": 34266,
-    "end_line": 34378
+    "start_line": 33965,
+    "end_line": 34077
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_lens_keeps_the_standalone_review_stages_worktree",
-    "start_line": 34381,
-    "end_line": 34428
+    "start_line": 34080,
+    "end_line": 34127
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_lens_keeps_the_review_worktree_even_beside_a_lower_indexed_sibling_crash",
-    "start_line": 34431,
-    "end_line": 34521
+    "start_line": 34130,
+    "end_line": 34220
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_lens_keeps_the_review_worktree_beside_a_sibling_degenerate_halt",
-    "start_line": 34524,
-    "end_line": 34611
+    "start_line": 34223,
+    "end_line": 34310
   },
   {
     "file": "src/conductor.rs",
     "name": "the_swap_to_front_prioritizes_a_genuine_error_at_a_non_zero_chunk_index",
-    "start_line": 34614,
-    "end_line": 34693
+    "start_line": 34313,
+    "end_line": 34392
   },
   {
     "file": "src/conductor.rs",
     "name": "a_budget_refused_lens_beside_a_genuinely_crashing_sibling_in_one_chunk",
-    "start_line": 34696,
-    "end_line": 34777
+    "start_line": 34395,
+    "end_line": 34476
   },
   {
     "file": "src/conductor.rs",
     "name": "a_budget_refused_standalone_review_spawn_keeps_its_worktree",
-    "start_line": 34780,
-    "end_line": 34841
+    "start_line": 34479,
+    "end_line": 34540
   },
   {
     "file": "src/conductor.rs",
     "name": "partition_separates_overlapping_blast_radii",
-    "start_line": 34844,
-    "end_line": 34871
+    "start_line": 34543,
+    "end_line": 34570
   },
   {
     "file": "src/conductor.rs",
     "name": "blast_radius_conflicts_flags_units_that_split_one_file_set",
-    "start_line": 34874,
-    "end_line": 34896
+    "start_line": 34573,
+    "end_line": 34595
   },
   {
     "file": "src/conductor.rs",
     "name": "blast_radius_conflicts_is_empty_for_a_disjoint_partition",
-    "start_line": 34899,
-    "end_line": 34912
+    "start_line": 34598,
+    "end_line": 34611
   },
   {
     "file": "src/conductor.rs",
     "name": "partitioned_wave_still_integrates_every_stage",
-    "start_line": 34915,
-    "end_line": 34963
+    "start_line": 34614,
+    "end_line": 34662
   },
   {
     "file": "src/conductor.rs",
     "name": "run",
-    "start_line": 34975,
-    "end_line": 34999
+    "start_line": 34674,
+    "end_line": 34698
   },
   {
     "file": "src/conductor.rs",
     "name": "lens_finding_reaches_later_tiers_through_the_graph",
-    "start_line": 35003,
-    "end_line": 35112
+    "start_line": 34702,
+    "end_line": 34811
   },
   {
     "file": "src/conductor.rs",
     "name": "review_agents_emit_findings_via_the_review_protocol",
-    "start_line": 35115,
-    "end_line": 35168
+    "start_line": 34814,
+    "end_line": 34867
   },
   {
     "file": "src/conductor.rs",
     "name": "unparseable_adjudicator_output_blocks_integration",
-    "start_line": 35171,
-    "end_line": 35208
+    "start_line": 34870,
+    "end_line": 34907
   },
   {
     "file": "src/conductor.rs",
     "name": "failing_gate_evidence_threaded_into_retry_prompt",
-    "start_line": 35211,
-    "end_line": 35272
+    "start_line": 34910,
+    "end_line": 34971
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "silent_gate_run",
+    "start_line": 34976,
+    "end_line": 35004
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "any_verdict",
+    "start_line": 35007,
+    "end_line": 35014
   },
   {
     "file": "src/conductor.rs",
     "name": "a_flaky_gate_rerun_is_a_pass_with_warning_that_never_demotes",
-    "start_line": 35275,
-    "end_line": 35358
+    "start_line": 35017,
+    "end_line": 35072
   },
   {
     "file": "src/conductor.rs",
     "name": "a_product_gate_failure_is_not_rerun_and_demotes_as_before",
-    "start_line": 35361,
-    "end_line": 35431
+    "start_line": 35075,
+    "end_line": 35115
   },
   {
     "file": "src/conductor.rs",
     "name": "an_authored_infra_rule_with_limit_zero_at_an_inline_gate_holds_the_ratchet",
-    "start_line": 35434,
-    "end_line": 35512
+    "start_line": 35118,
+    "end_line": 35196
   },
   {
     "file": "src/conductor.rs",
     "name": "an_inline_gate_red_across_every_rerun_holds_for_infra_and_demotes_for_flaky",
-    "start_line": 35515,
-    "end_line": 35610
+    "start_line": 35199,
+    "end_line": 35294
   },
   {
     "file": "src/conductor.rs",
     "name": "unit_evidence_is_populated_after_a_run",
-    "start_line": 35613,
-    "end_line": 35644
+    "start_line": 35297,
+    "end_line": 35328
   },
   {
     "file": "src/conductor.rs",
     "name": "adjudicator_rejection_reasoning_threaded_into_retry_prompt",
-    "start_line": 35647,
-    "end_line": 35714
+    "start_line": 35331,
+    "end_line": 35398
   },
   {
     "file": "src/conductor.rs",
     "name": "fan_out_lens_does_not_integrate",
-    "start_line": 35717,
-    "end_line": 35779
+    "start_line": 35401,
+    "end_line": 35463
   },
   {
     "file": "src/conductor.rs",
     "name": "review_only_stage_records_no_artifact_truthfully",
-    "start_line": 35782,
-    "end_line": 35826
+    "start_line": 35466,
+    "end_line": 35510
   },
   {
     "file": "src/conductor.rs",
     "name": "two_erroring_stages_both_leave_a_record",
-    "start_line": 35829,
-    "end_line": 35879
+    "start_line": 35513,
+    "end_line": 35563
   },
   {
     "file": "src/conductor.rs",
     "name": "single_wide_wave_overruns_budget_and_is_stopped",
-    "start_line": 35882,
-    "end_line": 35938
+    "start_line": 35566,
+    "end_line": 35622
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "needing",
+    "start_line": 35625,
+    "end_line": 35631
   },
   {
     "file": "src/conductor.rs",
     "name": "validate_acyclic_detects_a_cycle",
-    "start_line": 35941,
-    "end_line": 35987
+    "start_line": 35634,
+    "end_line": 35648
   },
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 36049,
-    "end_line": 36062
+    "start_line": 35710,
+    "end_line": 35723
   },
   {
     "file": "src/conductor.rs",
     "name": "with_side_effect",
-    "start_line": 36064,
-    "end_line": 36070
+    "start_line": 35725,
+    "end_line": 35731
   },
   {
     "file": "src/conductor.rs",
     "name": "calls",
-    "start_line": 36071,
-    "end_line": 36073
+    "start_line": 35732,
+    "end_line": 35734
   },
   {
     "file": "src/conductor.rs",
     "name": "targets",
-    "start_line": 36074,
-    "end_line": 36076
+    "start_line": 35735,
+    "end_line": 35737
   },
   {
     "file": "src/conductor.rs",
     "name": "mutants_dirs",
-    "start_line": 36077,
-    "end_line": 36079
+    "start_line": 35738,
+    "end_line": 35740
   },
   {
     "file": "src/conductor.rs",
     "name": "store_fences",
-    "start_line": 36080,
-    "end_line": 36082
+    "start_line": 35741,
+    "end_line": 35743
   },
   {
     "file": "src/conductor.rs",
     "name": "build_cache_guards",
-    "start_line": 36083,
-    "end_line": 36085
+    "start_line": 35744,
+    "end_line": 35746
   },
   {
     "file": "src/conductor.rs",
     "name": "build_cache_dirs",
-    "start_line": 36086,
-    "end_line": 36088
+    "start_line": 35747,
+    "end_line": 35749
   },
   {
     "file": "src/conductor.rs",
     "name": "run",
-    "start_line": 36091,
-    "end_line": 36141
+    "start_line": 35752,
+    "end_line": 35802
   },
   {
     "file": "src/conductor.rs",
     "name": "content_cache_cfg",
-    "start_line": 36146,
-    "end_line": 36168
+    "start_line": 35807,
+    "end_line": 35829
   },
   {
     "file": "src/conductor.rs",
     "name": "attempt_of",
-    "start_line": 36172,
-    "end_line": 36178
+    "start_line": 35833,
+    "end_line": 35839
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 36190,
-    "end_line": 36227
+    "start_line": 35851,
+    "end_line": 35888
   },
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 36238,
-    "end_line": 36243
+    "start_line": 35899,
+    "end_line": 35904
   },
   {
     "file": "src/conductor.rs",
     "name": "calls",
-    "start_line": 36244,
-    "end_line": 36246
+    "start_line": 35905,
+    "end_line": 35907
   },
   {
     "file": "src/conductor.rs",
     "name": "run",
-    "start_line": 36249,
-    "end_line": 36269
+    "start_line": 35910,
+    "end_line": 35930
   },
   {
     "file": "src/conductor.rs",
     "name": "gate_verdict_event",
-    "start_line": 36273,
-    "end_line": 36282
+    "start_line": 35934,
+    "end_line": 35943
   },
   {
     "file": "src/conductor.rs",
     "name": "verdict_passed",
-    "start_line": 36284,
-    "end_line": 36288
+    "start_line": 35945,
+    "end_line": 35949
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "identical_tree_attempts",
+    "start_line": 35955,
+    "end_line": 35985
   },
   {
     "file": "src/conductor.rs",
     "name": "a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green",
-    "start_line": 36291,
-    "end_line": 36357
+    "start_line": 35988,
+    "end_line": 36018
   },
   {
     "file": "src/conductor.rs",
     "name": "a_content_change_misses_the_cache_and_re_runs_the_gate",
-    "start_line": 36360,
-    "end_line": 36402
+    "start_line": 36021,
+    "end_line": 36063
   },
   {
     "file": "src/conductor.rs",
     "name": "a_red_verdict_is_never_cache_answered_and_the_gate_re_runs",
-    "start_line": 36405,
-    "end_line": 36461
+    "start_line": 36066,
+    "end_line": 36087
   },
   {
     "file": "src/conductor.rs",
     "name": "ground",
-    "start_line": 36470,
-    "end_line": 36482
+    "start_line": 36096,
+    "end_line": 36108
   },
   {
     "file": "src/conductor.rs",
     "name": "ground",
-    "start_line": 36494,
-    "end_line": 36509
+    "start_line": 36120,
+    "end_line": 36135
   },
   {
     "file": "src/conductor.rs",
     "name": "blast_radius",
-    "start_line": 36510,
-    "end_line": 36512
+    "start_line": 36136,
+    "end_line": 36138
   },
   {
     "file": "src/conductor.rs",
     "name": "index_stamp",
-    "start_line": 36513,
-    "end_line": 36515
+    "start_line": 36139,
+    "end_line": 36141
   },
   {
     "file": "src/conductor.rs",
     "name": "blast_radius_audits",
-    "start_line": 36519,
-    "end_line": 36538
+    "start_line": 36145,
+    "end_line": 36164
   },
   {
     "file": "src/conductor.rs",
     "name": "review_tier_evidence",
-    "start_line": 36541,
-    "end_line": 36550
+    "start_line": 36167,
+    "end_line": 36176
   },
   {
     "file": "src/conductor.rs",
     "name": "tiered_stage",
-    "start_line": 36555,
-    "end_line": 36578
+    "start_line": 36181,
+    "end_line": 36204
   },
   {
     "file": "src/conductor.rs",
     "name": "tiered_cfg",
-    "start_line": 36580,
-    "end_line": 36587
+    "start_line": 36206,
+    "end_line": 36213
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "assert_beyond_cap_high_risk_routes_full",
+    "start_line": 36223,
+    "end_line": 36276
   },
   {
     "file": "src/conductor.rs",
     "name": "a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file",
-    "start_line": 36597,
-    "end_line": 36670
+    "start_line": 36286,
+    "end_line": 36303
   },
   {
     "file": "src/conductor.rs",
     "name": "the_empty_radius_fail_safe_still_records_the_audit_and_routes_full",
-    "start_line": 36677,
-    "end_line": 36717
+    "start_line": 36310,
+    "end_line": 36350
   },
   {
     "file": "src/conductor.rs",
     "name": "a_non_structural_grounder_records_no_blast_radius_audit",
-    "start_line": 36725,
-    "end_line": 36759
+    "start_line": 36358,
+    "end_line": 36392
   },
   {
     "file": "src/conductor.rs",
     "name": "confidence_tier_fixture",
-    "start_line": 36771,
-    "end_line": 36836
+    "start_line": 36404,
+    "end_line": 36469
   },
   {
     "file": "src/conductor.rs",
     "name": "confidence_tier_radius_splits_the_one_edge_set_into_extracted_precise_and_all_tier_safe",
-    "start_line": 36847,
-    "end_line": 36898
+    "start_line": 36480,
+    "end_line": 36531
   },
   {
     "file": "src/conductor.rs",
     "name": "grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grep_superset",
-    "start_line": 36908,
-    "end_line": 36985
+    "start_line": 36541,
+    "end_line": 36618
   },
   {
     "file": "src/conductor.rs",
     "name": "under_symbols_the_audit_emits_and_records_the_prompt_seed_as_precise",
-    "start_line": 37008,
-    "end_line": 37101
+    "start_line": 36641,
+    "end_line": 36734
   },
   {
     "file": "src/conductor.rs",
     "name": "partition_wave_own_batches_an_empty_radius_never_co_scheduling_it",
-    "start_line": 37113,
-    "end_line": 37187
+    "start_line": 36746,
+    "end_line": 36820
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_over_a_structural_grounder_records_the_audit_and_routes_full",
-    "start_line": 37196,
-    "end_line": 37260
+    "start_line": 36829,
+    "end_line": 36840
   },
   {
     "file": "src/conductor.rs",
     "name": "staleness_flags_only_downstream_units_whose_radius_intersects_the_touched_files",
-    "start_line": 37263,
-    "end_line": 37314
+    "start_line": 36843,
+    "end_line": 36894
   },
   {
     "file": "src/conductor.rs",
     "name": "staleness_grounds_on_the_safe_superset_so_a_grep_only_reference_still_stales_a_downstream_unit",
-    "start_line": 37317,
-    "end_line": 37369
+    "start_line": 36897,
+    "end_line": 36949
   },
   {
     "file": "src/conductor.rs",
     "name": "rule6_conflict_detection_grounds_on_the_safe_superset_so_a_grep_only_shared_reference_conflicts",
-    "start_line": 37372,
-    "end_line": 37470
+    "start_line": 36952,
+    "end_line": 37050
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resume_reseeds_the_stale_set_from_the_prior_unitintegrated_marks",
-    "start_line": 37473,
-    "end_line": 37503
+    "start_line": 37053,
+    "end_line": 37083
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 37512,
-    "end_line": 37553
+    "start_line": 37092,
+    "end_line": 37133
   },
   {
     "file": "src/conductor.rs",
     "name": "integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest",
-    "start_line": 37557,
-    "end_line": 37677
+    "start_line": 37137,
+    "end_line": 37257
   },
   {
     "file": "src/conductor.rs",
     "name": "glob_matches_supports_star_doublestar_and_literals",
-    "start_line": 37680,
-    "end_line": 37706
+    "start_line": 37260,
+    "end_line": 37286
   },
   {
     "file": "src/conductor.rs",
     "name": "gate_intersects_radius_runs_unscoped_and_intersecting_gates_only",
-    "start_line": 37709,
-    "end_line": 37733
+    "start_line": 37289,
+    "end_line": 37313
   },
   {
     "file": "src/conductor.rs",
     "name": "blast_radius_narrows_the_inner_loop_and_the_integrate_step_runs_the_full_library",
-    "start_line": 37736,
-    "end_line": 37885
+    "start_line": 37316,
+    "end_line": 37465
   },
   {
     "file": "src/conductor.rs",
     "name": "a_gate_skipped_inline_but_red_at_the_exhaustive_integrate_door_blocks_the_merge",
-    "start_line": 37888,
-    "end_line": 38016
+    "start_line": 37468,
+    "end_line": 37596
   },
   {
     "file": "src/conductor.rs",
     "name": "verdict_compensates_names_a_prior_unit_independent_of_approval",
-    "start_line": 38019,
-    "end_line": 38048
+    "start_line": 37599,
+    "end_line": 37628
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 38061,
-    "end_line": 38103
+    "start_line": 37641,
+    "end_line": 37683
   },
   {
     "file": "src/conductor.rs",
     "name": "a_contradiction_compensates_reverts_and_re_enters_the_integrated_unit",
-    "start_line": 38107,
-    "end_line": 38277
+    "start_line": 37687,
+    "end_line": 37857
   },
   {
     "file": "src/conductor.rs",
     "name": "commits_to_compensate_reverts_every_sha_a_multi_commit_landing_recorded",
-    "start_line": 38280,
-    "end_line": 38323
+    "start_line": 37860,
+    "end_line": 37903
   },
   {
     "file": "src/conductor.rs",
     "name": "commits_to_compensate_dedupes_a_repeated_sha_and_skips_an_already_compensated_one",
-    "start_line": 38326,
-    "end_line": 38377
+    "start_line": 37906,
+    "end_line": 37957
   },
   {
     "file": "src/conductor.rs",
     "name": "commits_to_compensate_excludes_the_review_only_marker_even_alongside_a_real_sha",
-    "start_line": 38380,
-    "end_line": 38423
+    "start_line": 37960,
+    "end_line": 38003
   },
   {
     "file": "src/conductor.rs",
     "name": "pending_compensations_from_log_re_derives_only_undrained_marks",
-    "start_line": 38426,
-    "end_line": 38486
+    "start_line": 38006,
+    "end_line": 38066
   },
   {
     "file": "src/conductor.rs",
     "name": "a_durable_compensation_queued_mark_is_fold_neutral_on_the_target",
-    "start_line": 38489,
-    "end_line": 38520
+    "start_line": 38069,
+    "end_line": 38100
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 38528,
-    "end_line": 38565
+    "start_line": 38108,
+    "end_line": 38145
   },
   {
     "file": "src/conductor.rs",
     "name": "assert_compensated_unit_re_gates",
-    "start_line": 38573,
-    "end_line": 38644
+    "start_line": 38153,
+    "end_line": 38224
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 38673,
-    "end_line": 38718
+    "start_line": 38253,
+    "end_line": 38298
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 38758,
-    "end_line": 38782
+    "start_line": 38338,
+    "end_line": 38362
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resume_re_drives_a_durably_queued_but_undrained_compensation",
-    "start_line": 38786,
-    "end_line": 38906
+    "start_line": 38366,
+    "end_line": 38486
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 38926,
-    "end_line": 38974
+    "start_line": 38506,
+    "end_line": 38554
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit",
-    "start_line": 38978,
-    "end_line": 39150
+    "start_line": 38558,
+    "end_line": 38730
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 39173,
-    "end_line": 39240
+    "start_line": 38753,
+    "end_line": 38820
   },
   {
     "file": "src/conductor.rs",
     "name": "the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo",
-    "start_line": 39244,
-    "end_line": 39404
+    "start_line": 38824,
+    "end_line": 38984
   },
   {
     "file": "src/conductor.rs",
     "name": "append",
-    "start_line": 39421,
-    "end_line": 39437
+    "start_line": 39001,
+    "end_line": 39017
   },
   {
     "file": "src/conductor.rs",
     "name": "postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch",
-    "start_line": 39442,
-    "end_line": 39507
+    "start_line": 39022,
+    "end_line": 39087
   },
   {
     "file": "src/conductor.rs",
     "name": "postmerge_worktree_create_err_still_reaps_the_just_created_branch",
-    "start_line": 39510,
-    "end_line": 39578
+    "start_line": 39090,
+    "end_line": 39158
   },
   {
     "file": "src/conductor.rs",
     "name": "conflict_regenerate_pending_from_log_re_derives_the_union_keyed_by_unit_and_attempt",
-    "start_line": 39581,
-    "end_line": 39701
+    "start_line": 39161,
+    "end_line": 39281
   },
   {
     "file": "src/conductor.rs",
     "name": "conflict_fixture",
-    "start_line": 39709,
-    "end_line": 39730
+    "start_line": 39289,
+    "end_line": 39310
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_conflict_re_parks_the_implementer_with_no_attempt_charged_and_both_units_land",
-    "start_line": 39733,
-    "end_line": 39814
+    "start_line": 39313,
+    "end_line": 39394
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_conflict_confined_to_a_regenerable_path_resolves_with_no_spawn",
-    "start_line": 39817,
-    "end_line": 39892
+    "start_line": 39397,
+    "end_line": 39472
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_conflict_exhausted_after_the_bound_charges_a_real_attempt_with_the_unresolved_evidence",
-    "start_line": 39895,
-    "end_line": 39994
+    "start_line": 39475,
+    "end_line": 39574
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 40032,
-    "end_line": 40075
+    "start_line": 39612,
+    "end_line": 39655
   },
   {
     "file": "src/conductor.rs",
     "name": "integrate_conflict_records_regenerate_pending_before_the_accept_incoming_mutation_that_can_fail",
-    "start_line": 39997,
-    "end_line": 40145
+    "start_line": 39577,
+    "end_line": 39725
   },
   {
     "file": "src/conductor.rs",
     "name": "a_deferred_gate_runs_once_at_the_phase_boundary_not_inline",
-    "start_line": 40148,
-    "end_line": 40222
+    "start_line": 39728,
+    "end_line": 39802
   },
   {
     "file": "src/conductor.rs",
     "name": "a_failing_deferred_gate_is_surfaced_and_the_run_is_not_done",
-    "start_line": 40225,
-    "end_line": 40289
+    "start_line": 39805,
+    "end_line": 39869
   },
   {
     "file": "src/conductor.rs",
     "name": "run",
-    "start_line": 40300,
-    "end_line": 40323
+    "start_line": 39880,
+    "end_line": 39903
   },
   {
     "file": "src/conductor.rs",
     "name": "a_default_infra_fault_at_a_deferred_gate_does_not_demote",
-    "start_line": 40327,
-    "end_line": 40398
+    "start_line": 39907,
+    "end_line": 39978
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "verify_only_cfg",
+    "start_line": 39984,
+    "end_line": 40002
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "replayed_twice",
+    "start_line": 40010,
+    "end_line": 40030
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "count_carrying",
+    "start_line": 40033,
+    "end_line": 40038
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "runs_of",
+    "start_line": 40041,
+    "end_line": 40043
   },
   {
     "file": "src/conductor.rs",
     "name": "a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events",
-    "start_line": 40401,
-    "end_line": 40505
+    "start_line": 40046,
+    "end_line": 40085
   },
   {
     "file": "src/conductor.rs",
     "name": "a_re_step_replays_a_recorded_deferred_gate_without_re_running_it",
-    "start_line": 40508,
-    "end_line": 40593
+    "start_line": 40088,
+    "end_line": 40130
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_step_never_records_a_partial_tree_deferred_verdict",
-    "start_line": 40596,
-    "end_line": 40740
+    "start_line": 40133,
+    "end_line": 40277
   },
   {
     "file": "src/conductor.rs",
     "name": "a_manual_review_paused_unit_defers_the_whole_tree_gate",
-    "start_line": 40743,
-    "end_line": 40827
+    "start_line": 40280,
+    "end_line": 40364
   },
   {
     "file": "src/conductor.rs",
     "name": "an_escalated_dep_still_runs_the_whole_tree_deferred_gate",
-    "start_line": 40830,
-    "end_line": 40963
+    "start_line": 40367,
+    "end_line": 40500
   },
   {
     "file": "src/conductor.rs",
     "name": "a_recorded_failing_deferred_verdict_re_surfaces_its_failure_on_replay",
-    "start_line": 40966,
-    "end_line": 41080
+    "start_line": 40503,
+    "end_line": 40617
   },
   {
     "file": "src/conductor.rs",
     "name": "a_replayed_fan_out_review_reject_appends_no_duplicate_unitfailed",
-    "start_line": 41083,
-    "end_line": 41169
+    "start_line": 40620,
+    "end_line": 40706
   },
   {
     "file": "src/conductor.rs",
     "name": "a_fan_out_review_stage_whose_gates_fail_after_approval_records_a_gate_cause",
-    "start_line": 41172,
-    "end_line": 41215
+    "start_line": 40709,
+    "end_line": 40752
   },
   {
     "file": "src/conductor.rs",
     "name": "git_head",
-    "start_line": 41219,
-    "end_line": 41221
+    "start_line": 40756,
+    "end_line": 40758
   },
   {
     "file": "src/conductor.rs",
     "name": "init_repo",
-    "start_line": 41223,
-    "end_line": 41240
+    "start_line": 40760,
+    "end_line": 40777
   },
   {
     "file": "src/conductor.rs",
     "name": "run",
-    "start_line": 41251,
-    "end_line": 41277
+    "start_line": 40788,
+    "end_line": 40814
   },
   {
     "file": "src/conductor.rs",
     "name": "gate_measures_the_committed_artifact_not_the_dirty_worktree",
-    "start_line": 41281,
-    "end_line": 41340
+    "start_line": 40818,
+    "end_line": 40877
   },
   {
     "file": "src/conductor.rs",
     "name": "conductor_spawns_the_sdet_author_at_the_build_seam_so_its_tests_land_in_the_committed_tree",
-    "start_line": 41343,
-    "end_line": 41462
+    "start_line": 40880,
+    "end_line": 40999
   },
   {
     "file": "src/conductor.rs",
     "name": "the_sdet_author_spawn_respects_the_budget_breaker_at_its_own_spawn_site",
-    "start_line": 41465,
-    "end_line": 41550
+    "start_line": 41002,
+    "end_line": 41087
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_sdet_author_spawn_holds_the_unit_instead_of_integrating_without_its_periphery_tests",
-    "start_line": 41553,
-    "end_line": 41650
+    "start_line": 41090,
+    "end_line": 41187
   },
   {
     "file": "src/conductor.rs",
     "name": "speculation_sdet_author_periphery_lands_in_the_committed_tree_the_gates_judge",
-    "start_line": 41653,
-    "end_line": 41758
+    "start_line": 41190,
+    "end_line": 41295
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_sdet_author_in_a_speculation_candidate_holds_the_unit",
-    "start_line": 41761,
-    "end_line": 41853
+    "start_line": 41298,
+    "end_line": 41390
   },
   {
     "file": "src/conductor.rs",
     "name": "an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate",
-    "start_line": 41856,
-    "end_line": 41926
+    "start_line": 41393,
+    "end_line": 41463
   },
   {
     "file": "src/conductor.rs",
     "name": "an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates",
-    "start_line": 41929,
-    "end_line": 41988
+    "start_line": 41466,
+    "end_line": 41525
   },
   {
     "file": "src/conductor.rs",
     "name": "a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds",
-    "start_line": 41991,
-    "end_line": 42061
+    "start_line": 41528,
+    "end_line": 41598
   },
   {
     "file": "src/conductor.rs",
     "name": "an_escalated_unit_does_not_integrate_its_code",
-    "start_line": 42064,
-    "end_line": 42159
+    "start_line": 41601,
+    "end_line": 41696
   },
   {
     "file": "src/conductor.rs",
     "name": "critique_cfg",
-    "start_line": 42167,
-    "end_line": 42206
+    "start_line": 41704,
+    "end_line": 41743
   },
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 42235,
-    "end_line": 42246
+    "start_line": 41772,
+    "end_line": 41783
   },
   {
     "file": "src/conductor.rs",
     "name": "rejecting",
-    "start_line": 42252,
-    "end_line": 42258
+    "start_line": 41789,
+    "end_line": 41795
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 42261,
-    "end_line": 42311
+    "start_line": 41798,
+    "end_line": 41848
   },
   {
     "file": "src/conductor.rs",
     "name": "a_blast_radius_overlap_alone_does_not_reject",
-    "start_line": 42315,
-    "end_line": 42384
+    "start_line": 41852,
+    "end_line": 41921
   },
   {
     "file": "src/conductor.rs",
     "name": "the_plan_critique_gates_adversary_and_adjudicator_spawns_are_stamped_correctly",
-    "start_line": 42397,
-    "end_line": 42433
+    "start_line": 41934,
+    "end_line": 41970
   },
   {
     "file": "src/conductor.rs",
     "name": "a_rule_7_or_8_defect_rejects_then_releases_on_the_revision",
-    "start_line": 42436,
-    "end_line": 42473
+    "start_line": 41973,
+    "end_line": 42010
   },
   {
     "file": "src/conductor.rs",
     "name": "a_clean_decomposition_approves_and_releases_the_fan_out",
-    "start_line": 42476,
-    "end_line": 42527
+    "start_line": 42013,
+    "end_line": 42064
   },
   {
     "file": "src/conductor.rs",
     "name": "the_gate_critiques_only_not_yet_run_units_and_approves",
-    "start_line": 42530,
-    "end_line": 42605
+    "start_line": 42067,
+    "end_line": 42142
   },
   {
     "file": "src/conductor.rs",
     "name": "the_plan_critique_prompt_names_the_cross_unit_rules",
-    "start_line": 42608,
-    "end_line": 42645
+    "start_line": 42145,
+    "end_line": 42182
   },
   {
     "file": "src/conductor.rs",
     "name": "the_critique_gate_never_enters_a_wave_even_when_ready",
-    "start_line": 42648,
-    "end_line": 42673
+    "start_line": 42185,
+    "end_line": 42210
   },
   {
     "file": "src/conductor.rs",
     "name": "fan_out_needs_template_fixture",
-    "start_line": 42682,
-    "end_line": 42716
+    "start_line": 42219,
+    "end_line": 42253
   },
   {
     "file": "src/conductor.rs",
     "name": "a_downstream_stage_needing_the_fan_out_template_stays_unready_until_every_member_integrates",
-    "start_line": 42719,
-    "end_line": 42801
+    "start_line": 42256,
+    "end_line": 42338
   },
   {
     "file": "src/conductor.rs",
     "name": "a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling",
-    "start_line": 42804,
-    "end_line": 42908
+    "start_line": 42341,
+    "end_line": 42445
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resolved_plan_critique_gate_does_not_re_run_on_resume",
-    "start_line": 42911,
-    "end_line": 42985
+    "start_line": 42448,
+    "end_line": 42522
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "widget_split",
+    "start_line": 42529,
+    "end_line": 42539
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "critique_step",
+    "start_line": 42544,
+    "end_line": 42559
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated",
-    "start_line": 42988,
-    "end_line": 43086
+    "start_line": 42562,
+    "end_line": 42617
   },
   {
     "file": "src/conductor.rs",
     "name": "an_approved_gate_releases_planner_proposed_units_not_only_baselines",
-    "start_line": 43089,
-    "end_line": 43145
+    "start_line": 42620,
+    "end_line": 42676
   },
   {
     "file": "src/conductor.rs",
     "name": "the_re_plan_directive_instructs_reusing_the_existing_unit_id",
-    "start_line": 43148,
-    "end_line": 43218
+    "start_line": 42679,
+    "end_line": 42749
   },
   {
     "file": "src/conductor.rs",
     "name": "new",
-    "start_line": 43231,
-    "end_line": 43236
+    "start_line": 42762,
+    "end_line": 42767
   },
   {
     "file": "src/conductor.rs",
     "name": "spawn",
-    "start_line": 43239,
-    "end_line": 43259
+    "start_line": 42770,
+    "end_line": 42790
   },
   {
     "file": "src/conductor.rs",
     "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review",
-    "start_line": 43263,
-    "end_line": 43334
+    "start_line": 42794,
+    "end_line": 42824
   },
   {
     "file": "src/conductor.rs",
     "name": "a_parked_plan_critique_gate_keeps_its_review_worktree",
-    "start_line": 43337,
-    "end_line": 43390
+    "start_line": 42827,
+    "end_line": 42880
   },
   {
     "file": "src/conductor.rs",
     "name": "a_budget_refused_plan_critique_gate_keeps_its_review_worktree",
-    "start_line": 43393,
-    "end_line": 43437
+    "start_line": 42883,
+    "end_line": 42927
   },
   {
     "file": "src/conductor.rs",
     "name": "the_conductors_one_event_authority_reports_a_write_the_store_lost",
-    "start_line": 43450,
-    "end_line": 43469
+    "start_line": 42940,
+    "end_line": 42959
   },
   {
     "file": "src/main.rs",

@@ -14001,6 +14001,13 @@ mod tests {
             }
         }
 
+        /// A stage map keyed by each stage's own name.
+        pub(super) fn stage_map(
+            stages: impl IntoIterator<Item = Stage>,
+        ) -> BTreeMap<String, Stage> {
+            stages.into_iter().map(|s| (s.name.clone(), s)).collect()
+        }
+
         /// A stage map's observable shape - `(id, needs, coverage, criterion_id)` per stage -
         /// for comparing two DAGs (`Stage` has no `PartialEq`).
         pub(super) fn stage_shape(
@@ -16325,21 +16332,7 @@ mod tests {
     /// in the pre-spec-72 legacy shape: no `META_SPAWN` meta and no `episode` key in the JSON
     /// `data`, exactly what every historical `UnitProposed` has.
     fn append_proposal(st: &Store, id: &str, criterion: &str, cid: &str, spawn: Option<&str>) {
-        let e = Event::new(
-            TYPE_UNIT_PROPOSED,
-            serde_json::to_vec(&json!({
-                "id": id,
-                "agent": "worker",
-                "criterion": criterion,
-                "criterion_id": cid,
-                "gates": ["ok"],
-            }))
-            .unwrap(),
-        );
-        let e = match spawn {
-            Some(spawn) => e.with_meta(META_SPAWN, spawn),
-            None => e,
-        };
+        let e = proposal_event(proposal_data(id, criterion, cid), spawn);
         st.append(STREAM, ExpectedRevision::Any, &[e]).unwrap();
     }
 
@@ -17116,83 +17109,84 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit() {
-        // spec 72 criterion 1 (cross-episode supersede is grounded in the log, not the
-        // call). This is the DEFECT that spec 72's Problem statement describes and this
-        // unit fixes: `episode1` proposes `u-ep1` for `criterion`, then `episode2` (a
-        // LATER planning pass - a replan after a plan-critique reject, so its event is
-        // later in the log) proposes a DIFFERENT unit `u-ep2` for the SAME criterion.
-        // These are DISTINCT ids under DISTINCT episodes - never a same-id refine (crit
-        // 1's OTHER fold path, spec 31) and never a same-episode split (criterion 2's
-        // job, NOT this one's) - so exactly one live owner must remain: the LATER
-        // episode's unit, and it alone, stamped with the criterion's own stable id.
-        //
-        // Before this unit, `harvest_proposed`'s ADD path never stamped `criterion_id`
-        // on the stage it inserted (only a conductor-synthesized baseline carried one),
-        // so `u-ep2`'s prior_owners scan could find u-ep1's baseline (already gone) but
-        // never u-ep1's OWN stage - both would survive, the exact rule-7 duplicate
-        // ownership spec 72 exists to close. RED against that: `u-ep1` would still be
-        // in `stages` and `serving.len()` would be 2, not 1.
-        let criterion = "the widget module is implemented";
-        let cfg = supersede_cfg();
-        let st = Store::open(":memory:").unwrap();
+    /// The `data` of a planner `UnitProposed` for unit `id` (agent `worker`, gate `ok`) against
+    /// `criterion` and its stable id `cid`.
+    fn proposal_data(id: &str, criterion: &str, cid: &str) -> Value {
+        json!({
+            "id": id,
+            "agent": "worker",
+            "criterion": criterion,
+            "criterion_id": cid,
+            "gates": ["ok"],
+        })
+    }
 
+    /// A planner `UnitProposed` carrying `data`, tagged with its proposing `spawn` - or, with
+    /// `None`, untagged (the pre-spec-72 legacy shape).
+    fn proposal_event(data: Value, spawn: Option<&str>) -> Event {
+        let e = Event::new(TYPE_UNIT_PROPOSED, serde_json::to_vec(&data).unwrap());
+        match spawn {
+            Some(spawn) => e.with_meta(META_SPAWN, spawn),
+            None => e,
+        }
+    }
+
+    /// Seed the DAG over `criteria` and fold every proposal the log in `st` holds under
+    /// [`supersede_cfg`] in ONE `harvest_proposed` call - exactly like a live run's every harvest,
+    /// which always re-reads the whole stream from position 0 - returning the folded stages.
+    fn harvest_seeded(st: &Store, criteria: &[&str]) -> BTreeMap<String, Stage> {
+        let cfg = supersede_cfg();
+        let driver = Stub::new();
+        let deps = stub_deps(
+            st,
+            &driver,
+            criteria.iter().map(|c| c.to_string()).collect(),
+        );
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        ctx.harvest_proposed(
+            &mut stages,
+            &mut HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .unwrap();
+        stages
+    }
+
+    /// Two planner proposals for `criterion` - `u-ep1` from an earlier episode, then `u-ep2` from
+    /// a later one, each `(data.episode, meta.spawn)` in `episodes` telling the episodes apart
+    /// (`how`) - fold to exactly one live owner: the LATER episode's unit. Returns the stages.
+    fn assert_later_episode_supersedes(
+        criterion: &str,
+        episodes: [(Option<&str>, Option<&str>); 2],
+        how: &str,
+    ) -> BTreeMap<String, Stage> {
+        let st = Store::open(":memory:").unwrap();
         let cid = criterion_stable_id(1, criterion);
-        for (id, episode) in [("u-ep1", "episode1"), ("u-ep2", "episode2")] {
+        for (id, (episode, spawn)) in ["u-ep1", "u-ep2"].into_iter().zip(episodes) {
+            let mut data = proposal_data(id, criterion, &cid);
+            if let Some(episode) = episode {
+                data["episode"] = json!(episode);
+            }
             st.append(
                 STREAM,
                 ExpectedRevision::Any,
-                &[Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": id,
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "episode": episode,
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )],
+                &[proposal_event(data, spawn)],
             )
             .unwrap();
         }
-
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        let mut stages = seed_refine_dag(&deps.criteria);
-        let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
-            .unwrap();
-
-        assert!(
-            !stages.contains_key(&baseline_id(1, criterion)),
-            "the baseline must be superseded by episode1's proposal"
-        );
+        let stages = harvest_seeded(&st, &[criterion]);
         assert!(
             !stages.contains_key("u-ep1"),
-            "the EARLIER episode's unit must be superseded by the later episode's \
-             proposal for the same criterion, not survive alongside it; stages: {:?}",
+            "the EARLIER episode's unit must be superseded by the later episode's proposal for \
+             the same criterion ({how}), not survive alongside it; stages: {:?}",
             stages.keys().collect::<Vec<_>>()
         );
         assert!(
             stages.contains_key("u-ep2"),
             "the LATER episode's unit must survive; stages: {:?}",
             stages.keys().collect::<Vec<_>>()
-        );
-        assert_eq!(stages["u-ep2"].coverage, criterion);
-        // THE STAMP: the surviving planner-added stage carries the criterion's stable
-        // id, not the default empty string - proving a planner-added stage (not only a
-        // baseline) is now a valid supersede target for a future proposal.
-        assert_eq!(
-            stages["u-ep2"].criterion_id, cid,
-            "the ADD path must stamp criterion_id on a planner-added stage, exactly as \
-             it already does for a conductor-synthesized baseline"
         );
         let serving: Vec<&str> = stages
             .values()
@@ -17202,9 +17196,75 @@ mod tests {
         assert_eq!(
             serving,
             vec!["u-ep2"],
-            "exactly one live owner must serve the criterion after both episodes fold; \
-             got {serving:?}"
+            "exactly one live owner must serve the criterion after both episodes fold; got \
+             {serving:?}"
         );
+        stages
+    }
+
+    crate::test_cases! {
+        /// spec 72 criterion 1 (cross-episode supersede is grounded in the log, not the call).
+        /// This is the DEFECT that spec 72's Problem statement describes and this unit fixes:
+        /// `episode1` proposes `u-ep1` for `criterion`, then `episode2` (a LATER planning pass - a
+        /// replan after a plan-critique reject, so its event is later in the log) proposes a
+        /// DIFFERENT unit `u-ep2` for the SAME criterion. These are DISTINCT ids under DISTINCT
+        /// episodes - never a same-id refine (crit 1's OTHER fold path, spec 31) and never a
+        /// same-episode split (criterion 2's job, NOT this one's) - so exactly one live owner must
+        /// remain: the LATER episode's unit, and it alone, stamped with the criterion's own stable
+        /// id.
+        ///
+        /// Before this unit, `harvest_proposed`'s ADD path never stamped `criterion_id` on the
+        /// stage it inserted (only a conductor-synthesized baseline carried one), so `u-ep2`'s
+        /// prior_owners scan could find u-ep1's baseline (already gone) but never u-ep1's OWN
+        /// stage - both would survive, the exact rule-7 duplicate ownership spec 72 exists to
+        /// close. RED against that: `u-ep1` would still be in `stages` and `serving.len()` would
+        /// be 2, not 1.
+        a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit: {
+            let criterion = "the widget module is implemented";
+            let stages = assert_later_episode_supersedes(
+                criterion,
+                [(Some("episode1"), None), (Some("episode2"), None)],
+                "data.episode",
+            );
+            assert!(
+                !stages.contains_key(&baseline_id(1, criterion)),
+                "the baseline must be superseded by episode1's proposal"
+            );
+            assert_eq!(stages["u-ep2"].coverage, criterion);
+            // THE STAMP: the surviving planner-added stage carries the criterion's stable id,
+            // not the default empty string - proving a planner-added stage (not only a baseline)
+            // is now a valid supersede target for a future proposal.
+            assert_eq!(
+                stages["u-ep2"].criterion_id,
+                criterion_stable_id(1, criterion),
+                "the ADD path must stamp criterion_id on a planner-added stage, exactly as it \
+                 already does for a conductor-synthesized baseline"
+            );
+        };
+        /// spec 72 criterion 1, round-2 REJECT fix (f-c1-episode-writeside-unwired /
+        /// sdet-c1-episode-writeside-unwired-test-blindspot / adv-u72c1-writeside-unwired-
+        /// independently-confirmed): PLAN_PROTOCOL's JSON template
+        /// (`{"id","agent","criterion","criterion_id","needs"}`) never asks the planner to echo an
+        /// `episode` value, so every REAL proposal's `data.episode` deserializes to the
+        /// serde-default empty string. Unlike
+        /// `a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit` above (which
+        /// hand-supplies `data.episode` and so cannot catch this), these two events carry NO
+        /// `episode` key in their JSON `data` at all - exactly the PLAN_PROTOCOL shape - and are
+        /// distinguished ONLY by `meta.spawn`, exactly what `Server::stamp_current_spawn`
+        /// (mcpserver.rs) and the cli courier's `rigger emit --spawn` both stamp authoritatively on
+        /// the real write path. RED before the fix: both proposals fold to episode `""` (shared
+        /// rank 0), so the later one's supersede scan never removes the earlier one and both
+        /// survive.
+        a_planner_proposal_with_no_data_episode_field_still_supersedes_via_meta_spawn: {
+            assert_later_episode_supersedes(
+                "the sprocket module is implemented",
+                [
+                    (None, Some("plan/implementer#0")),
+                    (None, Some("plan/replan#1")),
+                ],
+                "meta.spawn-derived episode identity alone, with no data.episode field at all",
+            );
+        };
     }
 
     #[test]
@@ -17259,305 +17319,50 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_planner_proposal_with_no_data_episode_field_still_supersedes_via_meta_spawn() {
-        // spec 72 criterion 1, round-2 REJECT fix (f-c1-episode-writeside-unwired /
-        // sdet-c1-episode-writeside-unwired-test-blindspot / adv-u72c1-writeside-unwired-
-        // independently-confirmed): PLAN_PROTOCOL's JSON template
-        // (`{"id","agent","criterion","criterion_id","needs"}`) never asks the planner to
-        // echo an `episode` value, so every REAL proposal's `data.episode` deserializes to
-        // the serde-default empty string. Unlike
-        // `a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit` above
-        // (which hand-supplies `data.episode` and so cannot catch this), these two events
-        // carry NO `episode` key in their JSON `data` at all - exactly the PLAN_PROTOCOL
-        // shape - and are distinguished ONLY by `meta.spawn`, exactly what
-        // `Server::stamp_current_spawn` (mcpserver.rs) and the cli courier's
-        // `rigger emit --spawn` both stamp authoritatively on the real write path. RED
-        // before the fix: both proposals fold to episode `""` (shared rank 0), so the later
-        // one's supersede scan never removes the earlier one and both survive.
-        let criterion = "the sprocket module is implemented";
-        let cfg = supersede_cfg();
+    /// Episode 1 proposes `u-orig` for `criterion`; episode 2 (a later planning pass) re-emits
+    /// `u-orig` under its EXACT id (a refine - only `needs` changes; `criterion`/`criterion_id`
+    /// are the fold-needs-only path's and stay unresolved, matching what a real refine re-emit
+    /// carries) AND proposes a genuinely-new sibling `u-new` for the IDENTICAL criterion - the
+    /// sibling's ADD walked FIRST when `sibling_first`, the refine first otherwise. All events
+    /// fold in ONE `harvest_proposed` call, in log order. Both episode-2 siblings must survive in
+    /// either order, and the refine must still fold its needs.
+    fn assert_refine_survives_its_own_episodes_sibling(criterion: &str, sibling_first: bool) {
         let st = Store::open(":memory:").unwrap();
         let cid = criterion_stable_id(1, criterion);
-        for (id, spawn) in [("u-ep1", "plan/implementer#0"), ("u-ep2", "plan/replan#1")] {
-            st.append(
-                STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": id,
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )
-                .with_meta(META_SPAWN, spawn)],
-            )
-            .unwrap();
-        }
-
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        let mut stages = seed_refine_dag(&deps.criteria);
-        let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
-            .unwrap();
-
-        assert!(
-            !stages.contains_key("u-ep1"),
-            "the earlier spawn's unit must be superseded via meta.spawn-derived episode \
-             identity alone, with no data.episode field at all; stages: {:?}",
-            stages.keys().collect::<Vec<_>>()
+        append_proposal(&st, "u-orig", criterion, &cid, Some("plan/implementer#0"));
+        let refine = proposal_event(
+            json!({"id": "u-orig", "agent": "worker", "needs": ["plan"]}),
+            Some("plan/replan#1"),
         );
-        assert!(
-            stages.contains_key("u-ep2"),
-            "the later spawn's unit must survive; stages: {:?}",
-            stages.keys().collect::<Vec<_>>()
+        let sibling = proposal_event(
+            proposal_data("u-new", criterion, &cid),
+            Some("plan/replan#1"),
         );
-        let serving: Vec<&str> = stages
-            .values()
-            .filter(|s| s.coverage == criterion)
-            .map(|s| s.name.as_str())
-            .collect();
-        assert_eq!(
-            serving,
-            vec!["u-ep2"],
-            "exactly one live owner must serve the criterion; got {serving:?}"
-        );
-    }
+        let episode2 = if sibling_first {
+            [sibling, refine]
+        } else {
+            [refine, sibling]
+        };
+        st.append(STREAM, ExpectedRevision::Any, &episode2).unwrap();
 
-    #[test]
-    fn a_same_id_refine_restamps_its_episode_so_its_own_episodes_sibling_does_not_reap_it() {
-        // spec 72 criterion 1, round-2 REJECT fix (sdet-c1-refine-branch-never-restamps-
-        // episode / adv-u72c1-refine-staleness-order-independent-confirmed): the same-id
-        // fold branch (a REFINE, spec 31 crit 1) used to fold `needs` only, leaving
-        // `existing.episode` at whatever episode FIRST proposed that id - forever. So a
-        // unit refined in a LATER episode than the one that first added it still read as
-        // "from an earlier episode" to that SAME later episode's own supersede scan, and
-        // was wrongly reaped by its own episode's genuinely-new sibling for the same
-        // criterion - violating THE SUPERSEDE RULE's own unconditional text ("never a
-        // stage from its OWN episode, in any event order").
-        //
-        // Shape: episode1 proposes u-orig for `criterion`. episode2 (a later planning
-        // pass) re-emits u-orig under its EXACT id (a refine - tweaked needs) AND, in that
-        // SAME episode2, proposes a genuinely-new sibling u-new for the IDENTICAL
-        // criterion (a real split introduced mid-replan, spec 31's guarantee). All three
-        // events fold in ONE `harvest_proposed` call, in log order. RED before the fix:
-        // u-orig is wrongly removed by u-new's supersede scan (existing.episode stayed
-        // "episode1", rank 0, which reads as strictly earlier than episode2's rank 1) even
-        // though both are episode2 siblings by the time the fold completes.
-        let criterion = "the flywheel module is implemented";
-        let cfg = supersede_cfg();
-        let st = Store::open(":memory:").unwrap();
-        let cid = criterion_stable_id(1, criterion);
-
-        // episode1: the initial proposal for u-orig.
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                TYPE_UNIT_PROPOSED,
-                serde_json::to_vec(&json!({
-                    "id": "u-orig",
-                    "agent": "worker",
-                    "criterion": criterion,
-                    "criterion_id": cid,
-                    "gates": ["ok"],
-                }))
-                .unwrap(),
-            )
-            .with_meta(META_SPAWN, "plan/implementer#0")],
-        )
-        .unwrap();
-        // episode2: re-emits u-orig under its EXACT id (a refine - only `needs` changes;
-        // `criterion`/`criterion_id` are the fold-needs-only path's and stay unresolved
-        // here, matching what a real refine re-emit carries) AND proposes a genuinely-new
-        // sibling u-new for the SAME criterion.
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[
-                Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": "u-orig",
-                        "agent": "worker",
-                        "needs": ["plan"],
-                    }))
-                    .unwrap(),
-                )
-                .with_meta(META_SPAWN, "plan/replan#1"),
-                Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": "u-new",
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )
-                .with_meta(META_SPAWN, "plan/replan#1"),
-            ],
-        )
-        .unwrap();
-
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        // All three events fold in ONE call, exactly like a live run's every harvest
-        // (which always re-reads the whole stream from position 0): episode1's ADD first
-        // creates u-orig (superseding the baseline) and marks it PROPOSED, so episode2's
-        // same-id re-emit - later in this SAME pass - takes the fold branch naturally.
-        let mut stages = seed_refine_dag(&deps.criteria);
-        let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
-            .unwrap();
-
+        let stages = harvest_seeded(&st, &[criterion]);
         assert!(
             stages.contains_key("u-orig"),
-            "the refined unit must survive its own episode's genuinely-new sibling, not \
-             be reaped as a stale prior owner; stages: {:?}",
-            stages.keys().collect::<Vec<_>>()
-        );
-        assert!(
-            stages.contains_key("u-new"),
-            "the genuinely-new same-episode sibling must also survive (spec 31's real- \
-             split guarantee); stages: {:?}",
-            stages.keys().collect::<Vec<_>>()
-        );
-        assert_eq!(
-            stages["u-orig"].needs,
-            vec!["plan".to_string(), "plan-critique".to_string()],
-            "the refine must still fold needs (with the gate-hold re-applied), unchanged \
-             behavior"
-        );
-        let serving: Vec<&str> = stages
-            .values()
-            .filter(|s| s.criterion_id == cid)
-            .map(|s| s.name.as_str())
-            .collect();
-        assert_eq!(
-            serving.len(),
-            2,
-            "both episode2 siblings must serve the criterion after the fold; got {serving:?}"
-        );
-    }
-
-    #[test]
-    fn a_same_id_refine_survives_its_own_episodes_sibling_add_walked_first() {
-        // spec 72 criterion 1, round-3 REJECT fix (adv-u72c1r2-restamp-order-dependent-
-        // refine-still-dropped): the round-2 restamp
-        // (`a_same_id_refine_restamps_its_episode_so_its_own_episodes_sibling_does_not_
-        // reap_it` above) only covers ONE of the two within-call event orders - refine
-        // walked BEFORE its same-episode sibling's ADD. This test is that test with the
-        // event order REVERSED: the genuinely-new sibling u-new's ADD is walked FIRST,
-        // then u-orig's same-id refine. Before this fix, u-new's prior_owners scan read
-        // `existing.episode` (mutated ONLY by the fold branch, which had not run yet) -
-        // still u-orig's ORIGINAL, stale episode1 - so it wrongly reaped u-orig as an
-        // earlier-episode owner. The later refine event then found
-        // `stages.contains_key("u-orig")` false (never re-inserts) while
-        // `proposed.contains("u-orig")` true (never cleared by the removal), so it just
-        // `continue`d - u-orig was PERMANENTLY DROPPED, worse than the duplication defect
-        // spec 72 exists to fix. THE SUPERSEDE RULE is unconditional on event order
-        // ("never a stage from its OWN episode, in any event order"), so both orderings
-        // must hold.
-        let criterion = "the gearbox module is implemented";
-        let cfg = supersede_cfg();
-        let st = Store::open(":memory:").unwrap();
-        let cid = criterion_stable_id(1, criterion);
-
-        // episode1: the initial proposal for u-orig.
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                TYPE_UNIT_PROPOSED,
-                serde_json::to_vec(&json!({
-                    "id": "u-orig",
-                    "agent": "worker",
-                    "criterion": criterion,
-                    "criterion_id": cid,
-                    "gates": ["ok"],
-                }))
-                .unwrap(),
-            )
-            .with_meta(META_SPAWN, "plan/implementer#0")],
-        )
-        .unwrap();
-        // episode2: the genuinely-new sibling u-new's ADD walked FIRST, THEN u-orig's
-        // same-id refine (only `needs` changes) - the reverse of the shipped seam test's
-        // order.
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[
-                Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": "u-new",
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )
-                .with_meta(META_SPAWN, "plan/replan#1"),
-                Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": "u-orig",
-                        "agent": "worker",
-                        "needs": ["plan"],
-                    }))
-                    .unwrap(),
-                )
-                .with_meta(META_SPAWN, "plan/replan#1"),
-            ],
-        )
-        .unwrap();
-
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        let mut stages = seed_refine_dag(&deps.criteria);
-        let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
-            .unwrap();
-
-        assert!(
-            stages.contains_key("u-orig"),
-            "the refined unit must survive its own episode's genuinely-new sibling even \
-             when the sibling's ADD is walked BEFORE the refine, not be permanently \
+            "the refined unit must survive its own episode's genuinely-new sibling (sibling \
+             walked first: {sibling_first}), not be reaped as a stale prior owner or permanently \
              dropped; stages: {:?}",
             stages.keys().collect::<Vec<_>>()
         );
         assert!(
             stages.contains_key("u-new"),
-            "the genuinely-new same-episode sibling must also survive (spec 31's real- \
-             split guarantee); stages: {:?}",
+            "the genuinely-new same-episode sibling must also survive (spec 31's real- split \
+             guarantee); stages: {:?}",
             stages.keys().collect::<Vec<_>>()
         );
         assert_eq!(
             stages["u-orig"].needs,
             vec!["plan".to_string(), "plan-critique".to_string()],
-            "the refine must still fold needs (with the gate-hold re-applied), unchanged \
-             behavior"
+            "the refine must still fold needs (with the gate-hold re-applied), unchanged behavior"
         );
         let serving: Vec<&str> = stages
             .values()
@@ -17567,9 +17372,41 @@ mod tests {
         assert_eq!(
             serving.len(),
             2,
-            "both episode2 siblings must serve the criterion after the fold, regardless \
-             of event order; got {serving:?}"
+            "both episode2 siblings must serve the criterion after the fold, regardless of event \
+             order; got {serving:?}"
         );
+    }
+
+    crate::test_cases! {
+        /// spec 72 criterion 1, round-2 REJECT fix (sdet-c1-refine-branch-never-restamps-episode /
+        /// adv-u72c1-refine-staleness-order-independent-confirmed): the same-id fold branch (a
+        /// REFINE, spec 31 crit 1) used to fold `needs` only, leaving `existing.episode` at
+        /// whatever episode FIRST proposed that id - forever. So a unit refined in a LATER episode
+        /// than the one that first added it still read as "from an earlier episode" to that SAME
+        /// later episode's own supersede scan, and was wrongly reaped by its own episode's
+        /// genuinely-new sibling for the same criterion - violating THE SUPERSEDE RULE's own
+        /// unconditional text ("never a stage from its OWN episode, in any event order").
+        ///
+        /// Here the refine is walked BEFORE the sibling's ADD. RED before the fix: u-orig is
+        /// wrongly removed by u-new's supersede scan (existing.episode stayed "episode1", rank 0,
+        /// which reads as strictly earlier than episode2's rank 1) even though both are episode2
+        /// siblings by the time the fold completes.
+        a_same_id_refine_restamps_its_episode_so_its_own_episodes_sibling_does_not_reap_it:
+            assert_refine_survives_its_own_episodes_sibling("the flywheel module is implemented", false);
+        /// spec 72 criterion 1, round-3 REJECT fix (adv-u72c1r2-restamp-order-dependent-refine-
+        /// still-dropped): the round-2 restamp above only covers ONE of the two within-call event
+        /// orders - refine walked BEFORE its same-episode sibling's ADD. This is that case with
+        /// the event order REVERSED: the genuinely-new sibling u-new's ADD is walked FIRST, then
+        /// u-orig's same-id refine. Before this fix, u-new's prior_owners scan read
+        /// `existing.episode` (mutated ONLY by the fold branch, which had not run yet) - still
+        /// u-orig's ORIGINAL, stale episode1 - so it wrongly reaped u-orig as an earlier-episode
+        /// owner. The later refine event then found `stages.contains_key("u-orig")` false (never
+        /// re-inserts) while `proposed.contains("u-orig")` true (never cleared by the removal), so
+        /// it just `continue`d - u-orig was PERMANENTLY DROPPED, worse than the duplication defect
+        /// spec 72 exists to fix. THE SUPERSEDE RULE is unconditional on event order ("never a
+        /// stage from its OWN episode, in any event order"), so both orderings must hold.
+        a_same_id_refine_survives_its_own_episodes_sibling_add_walked_first:
+            assert_refine_survives_its_own_episodes_sibling("the gearbox module is implemented", true);
     }
 
     #[test]
@@ -17804,58 +17641,15 @@ mod tests {
         // EARLIER owner to remove), never replacing it. RED before the fix: a
         // first-occurrence-only rank comparison removes `u-early`.
         let criterion = "the legacy-vs-identified module is implemented";
-        let cfg = supersede_cfg();
         let st = Store::open(":memory:").unwrap();
         let cid = criterion_stable_id(1, criterion);
-
         // episodeA (identified), FIRST in log order.
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                TYPE_UNIT_PROPOSED,
-                serde_json::to_vec(&json!({
-                    "id": "u-early",
-                    "agent": "worker",
-                    "criterion": criterion,
-                    "criterion_id": cid,
-                    "gates": ["ok"],
-                }))
-                .unwrap(),
-            )
-            .with_meta(META_SPAWN, "plan/implementer#0")],
-        )
-        .unwrap();
+        append_proposal(&st, "u-early", criterion, &cid, Some("plan/implementer#0"));
         // A LEGACY proposal (no episode field, no meta.spawn) for the SAME
         // criterion, logged SECOND.
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                TYPE_UNIT_PROPOSED,
-                serde_json::to_vec(&json!({
-                    "id": "u-legacy-late",
-                    "agent": "worker",
-                    "criterion": criterion,
-                    "criterion_id": cid,
-                    "gates": ["ok"],
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
+        append_proposal(&st, "u-legacy-late", criterion, &cid, None);
 
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-        let ctx = RunCtx::for_test(&cfg, &deps);
-
-        let mut stages = seed_refine_dag(&deps.criteria);
-        let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
-            .unwrap();
-
+        let stages = harvest_seeded(&st, &[criterion]);
         assert!(
             stages.contains_key("u-early"),
             "the identified episode's unit must survive a LATER-LOGGED legacy \
@@ -17965,6 +17759,29 @@ mod tests {
         }
     }
 
+    /// Append a planner `UnitProposed` for unit `id` against `criterion` - matched to its stable
+    /// id `criterion_id`, or unmatched with `None` - naming its own `gate` and no needs.
+    fn append_gated_proposal(
+        st: &Store,
+        id: &str,
+        criterion: &str,
+        criterion_id: Option<String>,
+        gate: &str,
+    ) {
+        let mut data = json!({
+            "id": id,
+            "agent": "worker",
+            "criterion": criterion,
+            "gates": [gate],
+            "needs": [],
+        });
+        if let Some(cid) = criterion_id {
+            data["criterion_id"] = json!(cid);
+        }
+        st.append(STREAM, ExpectedRevision::Any, &[proposal_event(data, None)])
+            .unwrap();
+    }
+
     #[test]
     fn harvest_proposed_gates_every_case_with_the_templates_list_unioned() {
         // spec 103 criterion 1 (GATE INHERITANCE). The fan-out template's gates - not a
@@ -17979,24 +17796,13 @@ mod tests {
         let crit_a = "criterion A: the alpha module is implemented";
         let cfg = supersede_cfg(); // template "implement" carries gates: ["ok"]
         let st = Store::open(":memory:").unwrap();
-
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                TYPE_UNIT_PROPOSED,
-                serde_json::to_vec(&json!({
-                    "id": "u-a",
-                    "agent": "worker",
-                    "criterion": crit_a,
-                    "criterion_id": criterion_stable_id(1, crit_a),
-                    "gates": ["extra"],
-                    "needs": [],
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
+        append_gated_proposal(
+            &st,
+            "u-a",
+            crit_a,
+            Some(criterion_stable_id(1, crit_a)),
+            "extra",
+        );
 
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
@@ -18021,23 +17827,13 @@ mod tests {
 
         // (b) Same-id refine: re-emit u-a naming a THIRD gate. The template's gate and
         // the first proposal's own gate must both SURVIVE - a refine only ever ADDS.
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                TYPE_UNIT_PROPOSED,
-                serde_json::to_vec(&json!({
-                    "id": "u-a",
-                    "agent": "worker",
-                    "criterion": crit_a,
-                    "criterion_id": criterion_stable_id(1, crit_a),
-                    "gates": ["extra2"],
-                    "needs": [],
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
+        append_gated_proposal(
+            &st,
+            "u-a",
+            crit_a,
+            Some(criterion_stable_id(1, crit_a)),
+            "extra2",
+        );
         ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
             .unwrap();
         assert_eq!(
@@ -18050,22 +17846,13 @@ mod tests {
 
         // (c) A genuinely-new unmatched sub-unit (maps to no criterion) STILL gets the
         // template's gates, unioned with its own.
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                TYPE_UNIT_PROPOSED,
-                serde_json::to_vec(&json!({
-                    "id": "u-new",
-                    "agent": "worker",
-                    "criterion": "an entirely separate concern the spec never lists",
-                    "gates": ["extra3"],
-                    "needs": [],
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
+        append_gated_proposal(
+            &st,
+            "u-new",
+            "an entirely separate concern the spec never lists",
+            None,
+            "extra3",
+        );
         ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
             .unwrap();
         assert_eq!(
@@ -18087,55 +17874,21 @@ mod tests {
         // from) derives the identical gate list a live window already recorded, from
         // the same proposals already in the log.
         let crit_a = "criterion A: the alpha module is implemented";
-        let cfg = supersede_cfg();
         let st = Store::open(":memory:").unwrap();
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                TYPE_UNIT_PROPOSED,
-                serde_json::to_vec(&json!({
-                    "id": "u-a",
-                    "agent": "worker",
-                    "criterion": crit_a,
-                    "criterion_id": criterion_stable_id(1, crit_a),
-                    "gates": ["extra"],
-                    "needs": [],
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
+        append_gated_proposal(
+            &st,
+            "u-a",
+            crit_a,
+            Some(criterion_stable_id(1, crit_a)),
+            "extra",
+        );
 
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
-
-        // Window 1 (the live window): harvest over a freshly-seeded DAG.
-        let ctx1 = RunCtx::for_test(&cfg, &deps);
-        let mut stages1 = seed_refine_dag(&deps.criteria);
-        let mut proposed1: HashSet<String> = HashSet::new();
-        ctx1.harvest_proposed(
-            &mut stages1,
-            &mut proposed1,
-            &HashSet::new(),
-            &HashSet::new(),
-        )
-        .unwrap();
-
-        // Window 2 (a RESUMED window): a brand new `RunCtx` and a brand new,
-        // freshly-seeded `stages` map - exactly the state a fresh `rigger step`
-        // process starts from - over the SAME store, which already holds the same
-        // `UnitProposed` the live window read.
-        let ctx2 = RunCtx::for_test(&cfg, &deps);
-        let mut stages2 = seed_refine_dag(&deps.criteria);
-        let mut proposed2: HashSet<String> = HashSet::new();
-        ctx2.harvest_proposed(
-            &mut stages2,
-            &mut proposed2,
-            &HashSet::new(),
-            &HashSet::new(),
-        )
-        .unwrap();
+        // Window 1 (the live window) harvests over a freshly-seeded DAG; window 2 (a RESUMED
+        // window) is a brand new `RunCtx` over a brand new, freshly-seeded `stages` map -
+        // exactly the state a fresh `rigger step` process starts from - over the SAME store,
+        // which already holds the same `UnitProposed` the live window read.
+        let stages1 = harvest_seeded(&st, &[crit_a]);
+        let stages2 = harvest_seeded(&st, &[crit_a]);
 
         assert_eq!(
             stages1["u-a"].gates, stages2["u-a"].gates,
@@ -19027,21 +18780,25 @@ mod tests {
     }
 
     /// Fold `payloads` as `type_` events into a fresh graph, in order so each event's position
-    /// increases (older first), then return the capped section `write` renders for `seed`'s
-    /// depth-2 subgraph.
-    fn render_capped(
-        type_: &str,
-        payloads: Vec<Value>,
-        seed: &[String],
-        write: fn(&mut String, &Graph, &[String]),
-    ) -> String {
+    /// increases (older first), and return `seed`'s depth-2 subgraph.
+    fn fold_subgraph(type_: &str, payloads: Vec<Value>, seed: &[String]) -> Graph {
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         for (i, payload) in payloads.iter().enumerate() {
             let mut e = Event::new(type_, serde_json::to_vec(payload).unwrap());
             e.position = (i as u64) + 1;
             graph.apply(&e).unwrap();
         }
-        let g = graph.subgraph(seed, 2).unwrap();
+        graph.subgraph(seed, 2).unwrap()
+    }
+
+    /// The capped section `write` renders for the [`fold_subgraph`] of `payloads`.
+    fn render_capped(
+        type_: &str,
+        payloads: Vec<Value>,
+        seed: &[String],
+        write: fn(&mut String, &Graph, &[String]),
+    ) -> String {
+        let g = fold_subgraph(type_, payloads, seed);
         let mut b = String::new();
         write(&mut b, &g, seed);
         b
@@ -19287,6 +19044,47 @@ mod tests {
         )
     }
 
+    /// A capped `noun` section `out`, rendered from `k` chunky entries whose i-th (oldest first)
+    /// carries `{marker}_{i} `, stays under `budget` (plus slack for the header and the elision
+    /// note line), keeps the newest verbatim, elides the oldest (it stays in the store), and
+    /// makes the trim VISIBLE: one elision note naming the elided count and the
+    /// `rigger peers <file>` recovery command (`peers_why`).
+    fn assert_capped_with_elision(
+        out: &str,
+        marker: &str,
+        k: usize,
+        budget: usize,
+        noun: &str,
+        peers_why: &str,
+    ) {
+        assert!(
+            out.len() < budget + 2 * 1024,
+            "capped {noun}s section must stay under its byte budget; len={}",
+            out.len()
+        );
+        assert!(
+            out.contains(&format!("{marker}_{} ", k - 1)),
+            "the newest {noun} must be kept verbatim"
+        );
+        assert!(
+            !out.contains(&format!("{marker}_0 ")),
+            "the oldest {noun} must be elided from the prompt (it stays in the store)"
+        );
+        let verbatim = (0..k)
+            .filter(|i| out.contains(&format!("{marker}_{i} ")))
+            .count();
+        assert!(
+            verbatim >= 1,
+            "at least one {noun} must still render verbatim; got {verbatim}"
+        );
+        let elided = k - verbatim;
+        assert!(
+            out.contains(&format!("+{elided} older {noun}")),
+            "the elision note must name the elided {noun} count ({elided})"
+        );
+        assert!(out.contains("rigger peers conductor.rs"), "{peers_why}");
+    }
+
     #[test]
     fn findings_prompt_injection_is_capped_under_budget_with_elision_note() {
         // Gap 17 / spec 07 line 36: findings run 4-8x larger than decisions, so an
@@ -19314,39 +19112,15 @@ mod tests {
             .collect();
         let out = render_capped_findings(&borrowed, &seed);
 
-        // Uncapped, the findings section alone would be ~700KB; the cap holds it under
-        // its per-section budget (plus slack for the header and the elision note line).
-        assert!(
-            out.len() < FINDINGS_BUDGET_BYTES + 2 * 1024,
-            "capped findings section must stay under its byte budget; len={}",
-            out.len()
-        );
-        // Newest survives verbatim; oldest is elided (it stays in the store).
-        assert!(
-            out.contains("FINDING_MARKER_299 "),
-            "the newest finding must be kept verbatim"
-        );
-        assert!(
-            !out.contains("FINDING_MARKER_0 "),
-            "the oldest finding must be elided from the prompt (it stays in the store)"
-        );
-        // The trim is VISIBLE: one elision note naming the elided count and the
-        // `rigger peers <file>` recovery command, exactly like the decisions section.
-        let verbatim = (0..K)
-            .filter(|i| out.contains(&format!("FINDING_MARKER_{i} ")))
-            .count();
-        assert!(
-            verbatim >= 1,
-            "at least one finding must still render verbatim; got {verbatim}"
-        );
-        let elided = K - verbatim;
-        assert!(
-            out.contains(&format!("+{elided} older finding")),
-            "the elision note must name the elided finding count ({elided})"
-        );
-        assert!(
-            out.contains("rigger peers conductor.rs"),
-            "the elision note must name the `rigger peers <file>` recovery command"
+        // Uncapped, the findings section alone would be ~700KB; the cap holds it under its
+        // per-section budget, exactly like the decisions section.
+        assert_capped_with_elision(
+            &out,
+            "FINDING_MARKER",
+            K,
+            FINDINGS_BUDGET_BYTES,
+            "finding",
+            "the elision note must name the `rigger peers <file>` recovery command",
         );
         // The finding line still names the raising reviewer (`by`) and the id, preserving
         // the prior write_findings format that a later reviewer reads.
@@ -21464,47 +21238,78 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_subgraph_with_no_design_intent_renders_no_design_intent_header() {
-        // adv-u29c-3-empty-section-untested: a file whose subgraph carries a code neighborhood but
-        // NO design-intent node must render NOTHING for this section - never a bare
-        // DESIGN_INTENT_HEADER over an empty body. Fold only a code definition of the file; the
-        // design-intent section stays silent while the traversal has demonstrably reached the file.
-        // Non-vacuous: removing the empty-candidate early return renders a bare header, flipping both
-        // assertions.
+    /// A subgraph around `core.rs` that holds only one `type_` fact (`payload`) renders NOTHING
+    /// for the section `write` renders - never a bare `header` over an empty body (`what` names
+    /// the missing content). Returns the subgraph.
+    fn assert_renders_no_section(
+        type_: &str,
+        payload: Value,
+        write: fn(&mut String, &Graph, &[String]),
+        header: &str,
+        what: &str,
+    ) -> Graph {
         let seed = vec!["core.rs".to_string()];
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let mut e = Event::new(
-            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-            serde_json::to_vec(&json!({
-                "file": "core.rs",
-                "name": "run_unit",
-                "kind": "function",
-                "line": 42,
-                "lang": "rust",
-                "fresh": true,
-            }))
-            .unwrap(),
-        );
-        e.position = 1;
-        graph.apply(&e).unwrap();
-        let g = graph.subgraph(&seed, 2).unwrap();
-        // The traversal reached the file: its code entity is in the subgraph.
-        assert!(
-            g.nodes.iter().any(|n| n.id == "core.rs::run_unit"),
-            "the fixture must place the file's code entity in the subgraph so the empty design-intent \
-             section is a real suppression, not an empty traversal"
-        );
+        let g = fold_subgraph(type_, vec![payload], &seed);
         let mut b = String::new();
-        write_design_intent(&mut b, &g, &seed);
+        write(&mut b, &g, &seed);
         assert!(
             b.is_empty(),
-            "a subgraph with no design intent must render an empty section; got:\n{b}"
+            "a subgraph with no {what} must render an empty section; got:\n{b}"
         );
         assert!(
-            !b.contains(DESIGN_INTENT_HEADER),
-            "no design intent must render no design-intent header; got:\n{b}"
+            !b.contains(header),
+            "no {what} must render no section header; got:\n{b}"
         );
+        g
+    }
+
+    crate::test_cases! {
+        /// adv-u29c-3-empty-section-untested: a file whose subgraph carries a code neighborhood
+        /// but NO design-intent node must render NOTHING for this section - never a bare
+        /// DESIGN_INTENT_HEADER over an empty body. Fold only a code definition of the file; the
+        /// design-intent section stays silent while the traversal has demonstrably reached the
+        /// file. Non-vacuous: removing the empty-candidate early return renders a bare header,
+        /// flipping both assertions.
+        a_subgraph_with_no_design_intent_renders_no_design_intent_header: {
+            let g = assert_renders_no_section(
+                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                json!({
+                    "file": "core.rs",
+                    "name": "run_unit",
+                    "kind": "function",
+                    "line": 42,
+                    "lang": "rust",
+                    "fresh": true,
+                }),
+                write_design_intent,
+                DESIGN_INTENT_HEADER,
+                "design intent",
+            );
+            // The traversal reached the file: its code entity is in the subgraph.
+            assert!(
+                g.nodes.iter().any(|n| n.id == "core.rs::run_unit"),
+                "the fixture must place the file's code entity in the subgraph so the empty \
+                 design-intent section is a real suppression, not an empty traversal"
+            );
+        };
+        /// sdet-u29c-1-empty-defs-header-absence-unasserted: a file with NO extracted definitions
+        /// (a design-only doc, or the empty pre-c5 production graph) must render NOTHING - never a
+        /// bare header with an empty body. Fold only a decision about the file; the code section
+        /// stays silent. Non-vacuous: removing the empty guard renders a bare header, flipping both
+        /// assertions.
+        a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header: {
+            assert_renders_no_section(
+                contextgraph::TYPE_DECISION_MADE,
+                json!({
+                    "id": "d_core",
+                    "summary": "a decision about the file, but no code was extracted",
+                    "governs": ["core.rs"],
+                }),
+                write_code_neighborhood,
+                CODE_NEIGHBORHOOD_HEADER,
+                "code definitions",
+            );
+        };
     }
 
     /// Fold a list of `(file, name, kind, line)` code definitions into a fresh graph through the
@@ -21628,39 +21433,6 @@ mod tests {
     }
 
     #[test]
-    fn a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header() {
-        // sdet-u29c-1-empty-defs-header-absence-unasserted: a file with NO extracted definitions (a
-        // design-only doc, or the empty pre-c5 production graph) must render NOTHING - never a bare
-        // header with an empty body. Fold only a decision about the file; the code section stays
-        // silent. Non-vacuous: removing the empty guard renders a bare header, flipping both
-        // assertions.
-        let seed = vec!["core.rs".to_string()];
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let mut e = Event::new(
-            contextgraph::TYPE_DECISION_MADE,
-            serde_json::to_vec(&json!({
-                "id": "d_core",
-                "summary": "a decision about the file, but no code was extracted",
-                "governs": seed,
-            }))
-            .unwrap(),
-        );
-        e.position = 1;
-        graph.apply(&e).unwrap();
-        let g = graph.subgraph(&seed, 2).unwrap();
-        let mut b = String::new();
-        write_code_neighborhood(&mut b, &g, &seed);
-        assert!(
-            b.is_empty(),
-            "a subgraph with no code definitions must render an empty section; got:\n{b}"
-        );
-        assert!(
-            !b.contains(CODE_NEIGHBORHOOD_HEADER),
-            "no code definitions must render no code-neighborhood header; got:\n{b}"
-        );
-    }
-
-    #[test]
     fn lessons_prompt_injection_is_capped_under_budget_with_elision_note() {
         // sdet-u1gap17-lessons-cap-render-untested / Gap 17 / spec 07 line 36: the lessons
         // half of this unit's charter had ZERO render coverage, which is exactly why a dead
@@ -21692,40 +21464,16 @@ mod tests {
             "the lessons section must render its header; output was:\n{}",
             &out[..out.len().min(400)]
         );
-        // Uncapped, the lessons section alone would be ~500KB; the cap holds it under its
-        // per-section budget (plus slack for the header and the elision note line).
-        assert!(
-            out.len() < LESSONS_BUDGET_BYTES + 2 * 1024,
-            "capped lessons section must stay under its byte budget; len={}",
-            out.len()
-        );
-        // Freshest-first: the newest survives verbatim, the oldest is elided (kept in store).
-        assert!(
-            out.contains("LESSON_MARKER_199 "),
-            "the newest lesson must be kept verbatim"
-        );
-        assert!(
-            !out.contains("LESSON_MARKER_0 "),
-            "the oldest lesson must be elided from the prompt (it stays in the store)"
-        );
-        // The trim is VISIBLE: one elision note naming the elided count and the honest
-        // `rigger peers <file>` recovery command.
-        let verbatim = (0..K)
-            .filter(|i| out.contains(&format!("LESSON_MARKER_{i} ")))
-            .count();
-        assert!(
-            verbatim >= 1,
-            "at least one lesson must still render verbatim; got {verbatim}"
-        );
-        let elided = K - verbatim;
-        assert!(
-            out.contains(&format!("+{elided} older lesson")),
-            "the elision note must name the elided lesson count ({elided})"
-        );
-        assert!(
-            out.contains("rigger peers conductor.rs"),
+        // Uncapped, the lessons section alone would be ~500KB; freshest-first, the cap holds it
+        // under its per-section budget.
+        assert_capped_with_elision(
+            &out,
+            "LESSON_MARKER",
+            K,
+            LESSONS_BUDGET_BYTES,
+            "lesson",
             "the elision note must name the `rigger peers <file>` recovery command \
-             (backed by sidecar::lessons_for so it is not a dead promise)"
+             (backed by sidecar::lessons_for so it is not a dead promise)",
         );
     }
 
@@ -29902,17 +29650,13 @@ mod tests {
 
     #[test]
     fn ungated_fan_out_templates_is_silent_on_a_gated_template() {
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                strategy: "fan-out".into(),
-                gates: vec!["fmt".into()],
-                ..Default::default()
-            },
-        );
+        let stages = stage_map([Stage {
+            name: "implement".into(),
+            agent: "worker".into(),
+            strategy: "fan-out".into(),
+            gates: vec!["fmt".into()],
+            ..Default::default()
+        }]);
         assert!(
             ungated_fan_out_templates(&stages).is_empty(),
             "a template that declares gates must not be advised on"
@@ -30529,15 +30273,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn two_units_gate_environments_never_share_a_target_dir() {
-        // Gap 19 (criterion 3): a gate that runs INSIDE a unit's worktree must build into
-        // a unit-keyed CARGO_TARGET_DIR, so two concurrent units' divergent trees never
-        // share one incremental cache - a compile error a gate surfaces is then always
-        // that unit's own, never a neighbour poisoning a shared target. Two independent
-        // units each run a gate; the runner captures the target_dir handed to it, and the
-        // two must be DISTINCT, both NON-EMPTY, and each the `cargo-target-<unit-slug>`
-        // sibling of that unit's worktree under the run's scratch root.
+    /// Two independent units, `alpha` and `beta`, each run one gate inside their own worktree
+    /// under a runner that captures every gate's environment. Verify-but-never-merge: the gate
+    /// still runs per unit, but skipping the merge keeps the two independent units off a
+    /// shared-repo conflict; each unit writes its OWN id as content, so their trees (and input
+    /// digests) differ and both gates genuinely run - never one content-hitting the other (spec
+    /// 12, u1). Returns the repo, the runner and the run's scratch root.
+    fn two_unit_gate_runs() -> (tempfile::TempDir, RecordingRunner, String) {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
@@ -30550,45 +30292,72 @@ mod tests {
                     name: name.into(),
                     agent: "a".into(),
                     gates: vec!["ok".into()],
-                    // Verify-but-never-merge: the gate still runs per unit, but skipping
-                    // the merge keeps the two independent units off a shared-repo conflict.
                     on_pass: "none".into(),
                     ..Default::default()
                 },
             );
         }
         let store = Store::open(":memory:").unwrap();
-        // Each unit writes its OWN id as content, so their trees (and input digests) differ
-        // and both gates genuinely run - never one content-hitting the other (spec 12, u1).
         let driver = UnitDistinctWriter;
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run(&cfg, &deps).unwrap();
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        (repo, runner, scratch)
+    }
 
-        let targets = runner.targets();
+    /// The per-gate `dirs` (`what`) the two units of [`two_unit_gate_runs`] got are one per gate
+    /// run, all NON-EMPTY (never the inherit-shared empty one), DISTINCT (never one shared), and
+    /// each unit's the `want(worktree)` sibling of its worktree under the run's `scratch` root.
+    fn assert_one_isolated_dir_per_unit(
+        dirs: &[String],
+        what: &str,
+        scratch: &str,
+        want: impl Fn(&str) -> String,
+    ) {
         assert_eq!(
-            targets.len(),
+            dirs.len(),
             2,
-            "each of the two units ran its one gate exactly once: {targets:?}"
+            "each of the two units ran its one gate exactly once: {dirs:?}"
         );
         assert!(
-            targets.iter().all(|t| !t.is_empty()),
-            "a gate inside a unit worktree must get a per-unit CARGO_TARGET_DIR, never the empty (inherit-shared) one: {targets:?}"
+            dirs.iter().all(|d| !d.is_empty()),
+            "a gate inside a unit worktree must get a per-unit {what}, never the empty \
+             (inherit-shared) one: {dirs:?}"
         );
-        let unique: HashSet<&String> = targets.iter().collect();
+        let unique: HashSet<&String> = dirs.iter().collect();
         assert_eq!(
             unique.len(),
             2,
-            "the two units' gate target dirs must DIFFER - never one shared cache: {targets:?}"
+            "the two units' gate {what}s must DIFFER - never one shared: {dirs:?}"
         );
+        for name in ["alpha", "beta"] {
+            let want = want(&unit_worktree_dir(scratch, name));
+            assert!(
+                dirs.contains(&want),
+                "unit {name} must get {what} {want}, got {dirs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_units_gate_environments_never_share_a_target_dir() {
+        // Gap 19 (criterion 3): a gate that runs INSIDE a unit's worktree must build into
+        // a unit-keyed CARGO_TARGET_DIR, so two concurrent units' divergent trees never
+        // share one incremental cache - a compile error a gate surfaces is then always
+        // that unit's own, never a neighbour poisoning a shared target. Two independent
+        // units each run a gate; the runner captures the target_dir handed to it, and the
+        // two must be DISTINCT, both NON-EMPTY, and each the `cargo-target-<unit-slug>`
+        // sibling of that unit's worktree under the run's scratch root - derived the same
+        // single-source way production does: the sibling of the unit's worktree dir.
+        let (_repo, runner, scratch) = two_unit_gate_runs();
+        assert_one_isolated_dir_per_unit(&runner.targets(), "CARGO_TARGET_DIR", &scratch, |wt| {
+            crate::worktree::unit_cache_sibling(wt).unwrap()
+        });
         // spec 77 criterion 5 (BOUNDED SHARED CACHE): a per-unit build (non-empty target)
         // is never at risk from `rigger reset --build-cache` (which only ever touches the
         // bare shared cache), so it must take no shared-cache guard lock at all, and must
@@ -30604,19 +30373,6 @@ mod tests {
             "a per-unit build must never carry a shared build_cache_dir: {:?}",
             runner.build_cache_dirs()
         );
-
-        // Each target is the `cargo-target-<slug>` sibling of that unit's worktree under
-        // the run's scratch root - the exact isolation the criterion requires. Derived the
-        // same single-source way production does: the sibling of the unit's worktree dir.
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        for name in ["alpha", "beta"] {
-            let want =
-                crate::worktree::unit_cache_sibling(&unit_worktree_dir(&scratch, name)).unwrap();
-            assert!(
-                targets.contains(&want),
-                "unit {name} must build into {want}, got {targets:?}"
-            );
-        }
     }
 
     #[test]
@@ -30628,67 +30384,10 @@ mod tests {
         // the same per-unit isolation: DISTINCT, both NON-EMPTY, and each the
         // `cargo-mutants-<unit-slug>` sibling of that unit's worktree under the run's scratch
         // root.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        for name in ["alpha", "beta"] {
-            cfg.workflow.stages.insert(
-                name.into(),
-                Stage {
-                    name: name.into(),
-                    agent: "a".into(),
-                    gates: vec!["ok".into()],
-                    on_pass: "none".into(),
-                    ..Default::default()
-                },
-            );
-        }
-        let store = Store::open(":memory:").unwrap();
-        let driver = UnitDistinctWriter;
-        let runner = RecordingRunner::new(&[]);
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        run(&cfg, &deps).unwrap();
-
-        let mutants_dirs = runner.mutants_dirs();
-        assert_eq!(
-            mutants_dirs.len(),
-            2,
-            "each of the two units ran its one gate exactly once: {mutants_dirs:?}"
-        );
-        assert!(
-            mutants_dirs.iter().all(|m| !m.is_empty()),
-            "a gate inside a unit worktree must get a per-unit $MUTANTS root, never the empty \
-             (inherit-shared) one: {mutants_dirs:?}"
-        );
-        let unique: HashSet<&String> = mutants_dirs.iter().collect();
-        assert_eq!(
-            unique.len(),
-            2,
-            "the two units' gate mutants roots must DIFFER - never one shared root: {mutants_dirs:?}"
-        );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        for name in ["alpha", "beta"] {
-            let want = crate::worktree::unit_sibling(
-                &unit_worktree_dir(&scratch, name),
-                crate::worktree::UNIT_MUTANTS_PREFIX,
-            )
-            .unwrap();
-            assert!(
-                mutants_dirs.contains(&want),
-                "unit {name} must get mutants root {want}, got {mutants_dirs:?}"
-            );
-        }
+        let (_repo, runner, scratch) = two_unit_gate_runs();
+        assert_one_isolated_dir_per_unit(&runner.mutants_dirs(), "$MUTANTS root", &scratch, |wt| {
+            crate::worktree::unit_sibling(wt, crate::worktree::UNIT_MUTANTS_PREFIX).unwrap()
+        });
     }
 
     #[test]
@@ -35271,6 +34970,49 @@ mod tests {
         );
     }
 
+    /// Run one graduated (silent, so any demotion is visible) stage `s` whose `worker` is gated
+    /// by `gate` under the authored `failure_rules`; returns the run state, the driver and the
+    /// run's log.
+    fn silent_gate_run(
+        failure_rules: Vec<config::FailureRuleDef>,
+        gate: &FlakyGate,
+    ) -> (RunState, Stub, Vec<Event>) {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        cfg.workflow.defaults.failure_rules = failure_rules;
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                autonomy: "silent".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: gate,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        (rs, driver, events)
+    }
+
+    /// Whether `events` hold a GateVerdict whose data satisfies `pred`.
+    fn any_verdict(events: &[Event], pred: impl Fn(&Value) -> bool) -> bool {
+        events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_GATE_VERDICT
+                && serde_json::from_slice::<Value>(&e.data)
+                    .map(|v| pred(&v))
+                    .unwrap_or(false)
+        })
+    }
+
     #[test]
     fn a_flaky_gate_rerun_is_a_pass_with_warning_that_never_demotes() {
         // Spec 10, unit 2 - the PINNED three-way outcome. A gate whose failure matches a
@@ -35278,48 +35020,25 @@ mod tests {
         // a FlakyVerdict pass-with-warning: the unit integrates WITHOUT charging a
         // remediation attempt, the GateVerdict is annotated `flaky: true`, and the
         // autonomy ratchet is NEVER demoted.
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
-        // A zero-backoff flaky rule matching the gate's failure evidence (rerun up to 2x).
-        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
-            match_: config::MatchDef {
-                output_regex: Some("TRANSIENT_RACE".into()),
-                ..Default::default()
-            },
-            class: "flaky".into(),
-            limit: 2,
-            backoff: config::BackoffDef::default(),
-        }];
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["g".into()],
-                // A graduated (silent) gate, so any demotion would be visible.
-                autonomy: "silent".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
         // The gate FAILS its first run then PASSES on the rerun - within one attempt.
         let flaky = FlakyGate {
             fail_first: 1,
             runs: AtomicU32::new(0),
             evidence: "FAIL\nTRANSIENT_RACE flaked once".into(),
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &flaky,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
+        // A zero-backoff flaky rule matching the gate's failure evidence (rerun up to 2x).
+        let (rs, driver, events) = silent_gate_run(
+            vec![config::FailureRuleDef {
+                match_: config::MatchDef {
+                    output_regex: Some("TRANSIENT_RACE".into()),
+                    ..Default::default()
+                },
+                class: "flaky".into(),
+                limit: 2,
+                backoff: config::BackoffDef::default(),
+            }],
+            &flaky,
+        );
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -35339,15 +35058,10 @@ mod tests {
             2,
             "the gate is rerun after its first failure, and the first passing rerun ends it"
         );
-        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         // The inline GateVerdict is recorded as a PASS annotated flaky=true.
         assert!(
-            events.iter().any(|e| {
-                e.type_ == contextgraph::TYPE_GATE_VERDICT
-                    && serde_json::from_slice::<serde_json::Value>(&e.data)
-                        .map(|v| v["pass"] == json!(true) && v["flaky"] == json!(true))
-                        .unwrap_or(false)
-            }),
+            any_verdict(&events, |v| v["pass"] == json!(true)
+                && v["flaky"] == json!(true)),
             "a mixed rerun records a pass annotated as a FlakyVerdict (flaky: true)"
         );
         // The pinned guarantee: a flaky pass-with-warning NEVER demotes the ratchet.
@@ -35363,37 +35077,13 @@ mod tests {
         // shipped DEFAULT taxonomy classifies an ordinary gate failure as `product`: it
         // is run ONCE per attempt (no rerun - today's behavior) and a graduated gate that
         // fails demotes exactly as before this taxonomy.
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["g".into()],
-                autonomy: "silent".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
         // A gate that ALWAYS fails, with evidence matching no default infra pattern.
         let always_fail = FlakyGate {
             fail_first: u32::MAX,
             runs: AtomicU32::new(0),
             evidence: "FAIL\nassertion `left == right` failed: a real product defect".into(),
         };
-        let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &always_fail,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, _driver, events) = silent_gate_run(Vec::new(), &always_fail);
         assert_ne!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -35412,7 +35102,6 @@ mod tests {
             rs.units["s"].cause, "gate:g",
             "an inner-loop gate failure must name the failing gate"
         );
-        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         // The graduated gate demoted on its first failure, exactly as before.
         assert!(
             events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
@@ -35420,12 +35109,7 @@ mod tests {
         );
         // No verdict was ever annotated flaky.
         assert!(
-            !events.iter().any(|e| {
-                e.type_ == contextgraph::TYPE_GATE_VERDICT
-                    && serde_json::from_slice::<serde_json::Value>(&e.data)
-                        .map(|v| v["flaky"] == json!(true))
-                        .unwrap_or(false)
-            }),
+            !any_verdict(&events, |v| v["flaky"] == json!(true)),
             "a product failure is never annotated flaky"
         );
     }
@@ -35937,49 +35621,26 @@ mod tests {
         );
     }
 
+    /// A stage named `name` that needs `needs`.
+    fn needing(name: &str, needs: &[&str]) -> Stage {
+        Stage {
+            name: name.into(),
+            needs: needs.iter().map(|n| n.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn validate_acyclic_detects_a_cycle() {
         // Item 10: the function formerly named `topo_sort` computed an order nobody
         // consumed; it is now `validate_acyclic`, a pure cycle check whose name matches
         // its behavior. It returns Ok for an acyclic DAG and Err for a cycle.
-        let mut acyclic: BTreeMap<String, Stage> = BTreeMap::new();
-        acyclic.insert(
-            "a".into(),
-            Stage {
-                name: "a".into(),
-                ..Default::default()
-            },
-        );
-        acyclic.insert(
-            "b".into(),
-            Stage {
-                name: "b".into(),
-                needs: vec!["a".into()],
-                ..Default::default()
-            },
-        );
+        let acyclic = stage_map([needing("a", &[]), needing("b", &["a"])]);
         assert!(
             validate_acyclic(&acyclic).is_ok(),
             "an acyclic DAG must validate"
         );
-
-        let mut cyclic: BTreeMap<String, Stage> = BTreeMap::new();
-        cyclic.insert(
-            "x".into(),
-            Stage {
-                name: "x".into(),
-                needs: vec!["y".into()],
-                ..Default::default()
-            },
-        );
-        cyclic.insert(
-            "y".into(),
-            Stage {
-                name: "y".into(),
-                needs: vec!["x".into()],
-                ..Default::default()
-            },
-        );
+        let cyclic = stage_map([needing("x", &["y"]), needing("y", &["x"])]);
         assert!(
             validate_acyclic(&cyclic).is_err(),
             "a dependency cycle must be rejected"
@@ -36287,6 +35948,42 @@ mod tests {
             .unwrap()
     }
 
+    /// Run the content-cache stage `s` under `runner`: the implementer writes the IDENTICAL tree
+    /// on both attempts and the review approves only at attempt 1, so the unit must integrate
+    /// (`why`). Returns the log's attempt-0 and attempt-1 GateVerdicts, which must address the
+    /// SAME input digest.
+    fn identical_tree_attempts(runner: &dyn gate::Runner, why: &str) -> (Event, Event) {
+        let repo = init_repo();
+        let cfg = content_cache_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["same\n".into()],
+            approve_at: 1,
+        };
+        let deps = Deps {
+            gates: runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, 0).clone();
+        let v1 = gate_verdict_event(&events, 1).clone();
+        let digest = |v: &Event| {
+            v.meta
+                .get(META_INPUT_DIGEST)
+                .cloned()
+                .expect("every attempt's verdict carries its content address")
+        };
+        assert_eq!(
+            digest(&v0),
+            digest(&v1),
+            "identical trees + command yield the same input digest"
+        );
+        (v0, v1)
+    }
+
     #[test]
     fn a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green() {
         // spec 12, unit 1 (HIT): a gate whose (command, tree-sha) input digest matches a
@@ -36296,50 +35993,14 @@ mod tests {
         // 1's gate has a fresh (unit, attempt) key so the exact-key replay misses, but the
         // content cache holds attempt 0's green for the identical digest - so the gate is a
         // cache-hit, not a second command run.
-        let repo = init_repo();
-        let cfg = content_cache_cfg();
-        let store = Store::open(":memory:").unwrap();
         let runner = RecordingRunner::new(&[]);
-        let driver = CacheDriver {
-            contents: vec!["same\n".into()],
-            approve_at: 1,
-        };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo.path().to_str().unwrap().to_string(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "the unit integrates after the attempt-1 approve"
-        );
+        let (v0, v1) =
+            identical_tree_attempts(&runner, "the unit integrates after the attempt-1 approve");
         assert_eq!(
             runner.calls().iter().filter(|c| c.as_str() == "g").count(),
             1,
             "the gate command ran ONCE (attempt 0); attempt 1 was a content-addressed cache-hit, not a re-run: {:?}",
             runner.calls()
-        );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let v0 = gate_verdict_event(&events, 0);
-        let v1 = gate_verdict_event(&events, 1);
-        let d0 = v0
-            .meta
-            .get(META_INPUT_DIGEST)
-            .expect("attempt 0 carries a digest");
-        let d1 = v1
-            .meta
-            .get(META_INPUT_DIGEST)
-            .expect("attempt 1 carries a digest");
-        assert_eq!(
-            d0, d1,
-            "identical trees + command yield the same input digest"
         );
         assert!(
             !v0.meta.contains_key(META_CACHE_HIT),
@@ -36351,7 +36012,7 @@ mod tests {
             "the attempt-1 cache-hit cites attempt 0's green verdict position (provenance)"
         );
         assert!(
-            verdict_passed(v1),
+            verdict_passed(&v1),
             "a cache-hit is recorded as a passing verdict"
         );
     }
@@ -36407,53 +36068,18 @@ mod tests {
         // so a later gate over the SAME tree must RE-RUN rather than reuse the red. The gate
         // fails on attempt 0 (red); remediation re-runs it on attempt 1 over the IDENTICAL
         // tree, and the red does NOT answer it - the gate runs a second time (and passes).
-        let repo = init_repo();
-        let cfg = content_cache_cfg();
-        let store = Store::open(":memory:").unwrap();
+        // Both attempts address the SAME tree - yet the red does not answer attempt 1.
         let runner = FailFirstRunner::new("g");
-        let driver = CacheDriver {
-            contents: vec!["same\n".into()],
-            approve_at: 1,
-        };
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo.path().to_str().unwrap().to_string(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "attempt 1's re-run passes and the unit integrates"
-        );
+        let (v0, v1) =
+            identical_tree_attempts(&runner, "attempt 1's re-run passes and the unit integrates");
         assert_eq!(
             runner.calls().iter().filter(|c| c.as_str() == "g").count(),
             2,
             "the red at attempt 0 is never cached, so the gate RE-RAN over the identical tree at attempt 1: {:?}",
             runner.calls()
         );
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let v0 = gate_verdict_event(&events, 0);
-        let v1 = gate_verdict_event(&events, 1);
-        assert!(!verdict_passed(v0), "attempt 0 is the red verdict");
-        assert!(verdict_passed(v1), "attempt 1's re-run passes");
-        let d0 = v0
-            .meta
-            .get(META_INPUT_DIGEST)
-            .expect("the red verdict still carries its content address");
-        let d1 = v1
-            .meta
-            .get(META_INPUT_DIGEST)
-            .expect("attempt 1 carries its content address");
-        assert_eq!(
-            d0, d1,
-            "both attempts address the SAME tree - yet the red did not answer attempt 1"
-        );
+        assert!(!verdict_passed(&v0), "attempt 0 is the red verdict");
+        assert!(verdict_passed(&v1), "attempt 1's re-run passes");
         assert!(
             !v1.meta.contains_key(META_CACHE_HIT),
             "attempt 1 was a real re-run, never a cache-hit off the red"
@@ -36586,22 +36212,20 @@ mod tests {
         cfg
     }
 
-    /// spec 16 unit 3, the symbols-ACTIVE pins: with a STRUCTURAL grounder (a non-empty
-    /// `index_stamp`) the conductor (1) records each unit's radius on a `BlastRadiusComputed`
-    /// audit event carrying the SAFE view + `serialize` (so the partition is reconstructable from
-    /// the log), (2) routes the review tier over the UNCAPPED SAFE view - so a high-risk file
-    /// present ONLY in the safe view (BEYOND the precise k-cap) still forces the FULL panel, which
-    /// routing over the capped precise seed would miss - and (3) drives the runtime
-    /// parallelism-retention metric from those events.
-    #[test]
-    fn a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file() {
+    /// Run tiered `stage` (threshold 20, `specs/` high-risk) under a STRUCTURAL grounder whose
+    /// precise (capped) seed is 8 low-risk src files, none high-risk, and whose safe (uncapped)
+    /// view adds a high-risk spec file the cap excludes from precise - so the SIZE signal never
+    /// fires and the ONLY thing that can force full is the beyond-cap high-risk membership over
+    /// the safe view (routing over precise would go light). The unit integrates, its
+    /// blast-radius audit (`audit_why`) records the safe view carrying the beyond-cap file, and
+    /// its review tier routes FULL on that file (`route_why`). Returns the log and the audit's
+    /// `serialize`.
+    fn assert_beyond_cap_high_risk_routes_full(
+        stage: Stage,
+        audit_why: &str,
+        route_why: &str,
+    ) -> (Vec<Event>, bool) {
         let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        // precise (the capped seed): GROUNDED_SEED_K low-risk src files, none high-risk. safe
-        // (uncapped): those PLUS a high-risk spec file the cap excludes from precise. threshold 20
-        // so the SIZE signal never fires - the ONLY thing that can force full is the beyond-cap
-        // high-risk membership over the safe view.
         let precise: Vec<String> = (0..8).map(|i| format!("src/f{i}.rs")).collect();
         let mut safe = precise.clone();
         safe.push("specs/core.md".to_string());
@@ -36616,8 +36240,7 @@ mod tests {
             )]),
             stamp: "idxhash/ts-tags-v1".to_string(),
         };
-
-        let cfg = tiered_cfg(tiered_stage(20, &["specs/"]));
+        let cfg = tiered_cfg(stage);
         let store = Store::open(":memory:").unwrap();
         let driver = CacheDriver {
             contents: vec!["work\n".into()],
@@ -36625,42 +36248,52 @@ mod tests {
         };
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
-            repo: repo_path,
+            repo: repo.path().to_str().unwrap().to_string(),
             grounder: Some(&grounder),
-            graph: None,
-            criteria: Vec::new(),
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-
-        // (1) the audit event is recorded, carrying the safe view + serialize (reconstructable).
         let audits = blast_radius_audits(&events);
-        let (unit, safe_recorded, serialize) = audits
-            .first()
-            .expect("a structural grounder records the blast-radius audit");
+        let (unit, safe_recorded, serialize) = audits.first().expect(audit_why).clone();
         assert_eq!(unit, "s");
-        assert!(!serialize);
         assert!(
             safe_recorded.iter().any(|f| f == "specs/core.md"),
             "the recorded safe view (which reconstructs the partition) carries the beyond-cap \
              high-risk file: {safe_recorded:?}"
         );
-
-        // (2) the review-tier routed FULL because the beyond-cap high-risk file is in the SAFE view
-        // (routing the capped precise seed - which excludes specs/core.md - would have gone light).
         let evidence = review_tier_evidence(&events).expect("a tiers policy logs the routing");
         assert_eq!(
             evidence["review-tier"],
             json!(TIER_FULL),
-            "a beyond-cap high-risk file in the safe view forces the full panel: {evidence}"
+            "{route_why}: {evidence}"
         );
         assert_eq!(evidence["high-risk-path"], json!("specs/core.md"));
+        (events, serialize)
+    }
 
+    /// spec 16 unit 3, the symbols-ACTIVE pins: with a STRUCTURAL grounder (a non-empty
+    /// `index_stamp`) the conductor (1) records each unit's radius on a `BlastRadiusComputed`
+    /// audit event carrying the SAFE view + `serialize` (so the partition is reconstructable from
+    /// the log), (2) routes the review tier over the UNCAPPED SAFE view - so a high-risk file
+    /// present ONLY in the safe view (BEYOND the precise k-cap) still forces the FULL panel, which
+    /// routing over the capped precise seed would miss - and (3) drives the runtime
+    /// parallelism-retention metric from those events.
+    #[test]
+    fn a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file() {
+        // (1) the audit event is recorded, carrying the safe view + serialize (reconstructable);
+        // (2) the review-tier routed FULL because the beyond-cap high-risk file is in the SAFE
+        // view (routing the capped precise seed - which excludes specs/core.md - would have gone
+        // light).
+        let (events, serialize) = assert_beyond_cap_high_risk_routes_full(
+            tiered_stage(20, &["specs/"]),
+            "a structural grounder records the blast-radius audit",
+            "a beyond-cap high-risk file in the safe view forces the full panel",
+        );
+        assert!(!serialize);
         // (3) the audit events DRIVE the runtime retention metric (a lone disjoint unit: 0/1).
         let m = crate::metrics::project(&events);
         assert!(
@@ -37194,69 +36827,16 @@ mod tests {
     /// audit, would go green without this test.
     #[test]
     fn speculation_over_a_structural_grounder_records_the_audit_and_routes_full() {
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        // precise (the capped seed): 8 low-risk src files, none high-risk. safe (uncapped): those
-        // PLUS a high-risk spec file the cap excludes - the ONLY thing that can force full is the
-        // beyond-cap high-risk membership over the safe view, so routing over precise would go light.
-        let precise: Vec<String> = (0..8).map(|i| format!("src/f{i}.rs")).collect();
-        let mut safe = precise.clone();
-        safe.push("specs/core.md".to_string());
-        let grounder = StructuralStubGrounder {
-            by_query: HashMap::from([(
-                "s".to_string(),
-                BlastRadius {
-                    precise,
-                    safe,
-                    serialize: false,
-                },
-            )]),
-            stamp: "idxhash/ts-tags-v1".to_string(),
-        };
-
-        // A tiered stage at speculation width 2 (K>1 routes through `run_speculation`).
+        // A tiered stage at speculation width 2 (K>1 routes through `run_speculation`): the
+        // speculation path recorded the blast-radius audit (record_blast_radius at attempt 0) and
+        // the winner's review tier routed FULL over the SAFE view.
         let mut stage = tiered_stage(20, &["specs/"]);
         stage.speculation_width = 2;
-        let cfg = tiered_cfg(stage);
-        let store = Store::open(":memory:").unwrap();
-        let driver = CacheDriver {
-            contents: vec!["work\n".into()],
-            approve_at: 0,
-        };
-        let runner = RecordingRunner::new(&[]);
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path,
-            grounder: Some(&grounder),
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        // (1) the speculation path recorded the blast-radius audit (record_blast_radius at attempt 0).
-        let audits = blast_radius_audits(&events);
-        let (unit, safe_recorded, _serialize) = audits
-            .first()
-            .expect("the speculation path records the blast-radius audit");
-        assert_eq!(unit, "s");
-        assert!(
-            safe_recorded.iter().any(|f| f == "specs/core.md"),
-            "the recorded safe view carries the beyond-cap high-risk file: {safe_recorded:?}"
+        assert_beyond_cap_high_risk_routes_full(
+            stage,
+            "the speculation path records the blast-radius audit",
+            "speculation routes the review tier over the safe view",
         );
-        // (2) the winner's review tier routed FULL over the SAFE view (routing the capped precise
-        // seed, which excludes specs/core.md, would have gone light).
-        let evidence = review_tier_evidence(&events).expect("a tiers policy logs the routing");
-        assert_eq!(
-            evidence["review-tier"],
-            json!(TIER_FULL),
-            "speculation routes the review tier over the safe view: {evidence}"
-        );
-        assert_eq!(evidence["high-risk-path"], json!("specs/core.md"));
     }
 
     #[test]
@@ -40397,90 +39977,93 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events() {
-        // spec 04, criterion 4: a step re-running the conductor over recorded history
-        // appends no unit event or gate verdict twice, and a recorded GateVerdict is
-        // REPLAYED without re-running its gate command (finding adv-replay-dup-lifecycle).
-        use crate::driver::replay::ReplayDriver;
-
+    /// A config whose one stage `u` is run by `worker` and gated by `gates` in order, with no
+    /// review panel and `on_pass: none`: the unit verifies and STAYS at `verified` (never
+    /// integrates), so every step re-runs it fresh over the recorded implementer result - the
+    /// exact shape a mid-flight unit replays.
+    fn verify_only_cfg(gates: Vec<(&str, config::Gate)>) -> Config {
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("check".into(), gate_def("true"));
+        let names = gates.iter().map(|(n, _)| n.to_string()).collect();
+        for (name, gate) in gates {
+            cfg.workflow.gates.insert(name.into(), gate);
+        }
         cfg.workflow.stages.insert(
             "u".into(),
             Stage {
                 name: "u".into(),
                 agent: "worker".into(),
-                gates: vec!["check".into()],
-                // No review panel and on_pass:none: the unit verifies and STAYS at
-                // `verified` (never integrates), so every step re-runs it fresh over the
-                // recorded implementer result - the exact shape a mid-flight unit replays.
+                gates: names,
                 on_pass: "none".into(),
                 ..Default::default()
             },
         );
+        cfg
+    }
 
+    /// Two consecutive steps of `cfg` replaying the SAME recorded history: the run begins before
+    /// recording, as production does (`run` calls `ensure_started` before any spawn is parked -
+    /// the run-scoped replay lookup answers only results inside the current run's slice), and a
+    /// courier already recorded the implementer's result, so the replay driver ANSWERS the
+    /// implementer spawn (never parks it) and the gates are reached both steps. Returns the gate
+    /// runner, which records every command it runs, and the log.
+    fn replayed_twice(cfg: &Config) -> (RecordingRunner, Vec<Event>) {
+        use crate::driver::replay::ReplayDriver;
         let st = Store::open(":memory:").unwrap();
-        // Begin the run before recording, as production does (`run` calls `ensure_started`
-        // before any spawn is parked): the run-scoped replay lookup answers only results
-        // inside the current run's slice, so the recorded result must follow the boundary.
         crate::run_store::ensure_started(&st, &[]).unwrap();
-        // A courier already recorded the implementer's result, so the replay driver
-        // ANSWERS the implementer spawn (never parks it) and the gate is reached both
-        // steps.
         crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
         )
         .unwrap();
-
-        // Two consecutive steps replay the SAME recorded history. The gate runner
-        // records every command it runs, so a re-run of an already-recorded gate would
-        // show up as a second call.
         let runner = RecordingRunner::new(&[]);
         for _ in 0..2 {
             let driver = ReplayDriver::new(&st);
             let deps = Deps {
-                store: &st,
-                driver: &driver,
                 gates: &runner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
+                ..stub_deps(&st, &driver, Vec::new())
             };
-            run(&cfg, &deps).unwrap();
+            run(cfg, &deps).unwrap();
         }
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        (runner, events)
+    }
 
+    /// How many `type_` events in `events` carry `needle` in their raw data.
+    fn count_carrying(events: &[Event], type_: &str, needle: &str) -> usize {
+        events
+            .iter()
+            .filter(|e| e.type_ == type_ && String::from_utf8_lossy(&e.data).contains(needle))
+            .count()
+    }
+
+    /// How many times `runner` ran gate command `name`.
+    fn runs_of(runner: &RecordingRunner, name: &str) -> usize {
+        runner.calls().iter().filter(|c| c.as_str() == name).count()
+    }
+
+    #[test]
+    fn a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events() {
+        // spec 04, criterion 4: a step re-running the conductor over recorded history
+        // appends no unit event or gate verdict twice, and a recorded GateVerdict is
+        // REPLAYED without re-running its gate command (finding adv-replay-dup-lifecycle).
+        let (runner, events) = replayed_twice(&verify_only_cfg(vec![("check", gate_def("true"))]));
         // The gate command ran EXACTLY ONCE across both steps: the second step replayed
         // the recorded verdict instead of re-running the command.
         assert_eq!(
-            runner
-                .calls()
-                .iter()
-                .filter(|c| c.as_str() == "check")
-                .count(),
+            runs_of(&runner, "check"),
             1,
             "a recorded GateVerdict must be replayed, its command never re-run"
         );
-
-        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let count_status = |status: &str| {
-            events
-                .iter()
-                .filter(|e| {
-                    e.type_ == ledger::TYPE_UNIT_STATUS
-                        && String::from_utf8_lossy(&e.data)
-                            .contains(&format!("\"status\":\"{status}\""))
-                })
-                .count()
+            count_carrying(
+                &events,
+                ledger::TYPE_UNIT_STATUS,
+                &format!("\"status\":\"{status}\""),
+            )
         };
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
-                .count(),
+            count_carrying(&events, ledger::TYPE_UNIT_STARTED, ""),
             1,
             "UnitStarted is appended once, not once per replay step"
         );
@@ -40495,10 +40078,7 @@ mod tests {
             "verified is appended once across steps"
         );
         assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
-                .count(),
+            count_carrying(&events, contextgraph::TYPE_GATE_VERDICT, ""),
             1,
             "the GateVerdict is appended once - the replay re-emits none"
         );
@@ -40508,77 +40088,34 @@ mod tests {
     fn a_re_step_replays_a_recorded_deferred_gate_without_re_running_it() {
         // spec 04, criterion 4: a deferred gate's recorded verdict is replayed on a
         // re-step, never re-running the (whole-tree) command or duplicating the verdict.
-        use crate::driver::replay::ReplayDriver;
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
-        cfg.workflow.gates.insert(
-            "deferred".into(),
-            config::Gate {
-                run: "true".into(),
-                kind: "deferred".into(),
-                inputs: Vec::new(),
-            },
-        );
-        cfg.workflow.stages.insert(
-            "u".into(),
-            Stage {
-                name: "u".into(),
-                agent: "worker".into(),
-                gates: vec!["inline".into(), "deferred".into()],
-                on_pass: "none".into(),
-                ..Default::default()
-            },
-        );
-
-        let st = Store::open(":memory:").unwrap();
-        // Begin the run before recording (production ordering): the run-scoped replay lookup
-        // answers only results inside the current run's slice.
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-        crate::spawn_store::record_result(
-            &st,
-            &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
-        )
-        .unwrap();
-
-        let runner = RecordingRunner::new(&[]);
-        for _ in 0..2 {
-            let driver = ReplayDriver::new(&st);
-            let deps = Deps {
-                store: &st,
-                driver: &driver,
-                gates: &runner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-            };
-            run(&cfg, &deps).unwrap();
-        }
-
+        let (runner, events) = replayed_twice(&verify_only_cfg(vec![
+            ("inline", gate_def("true")),
+            (
+                "deferred",
+                config::Gate {
+                    run: "true".into(),
+                    kind: "deferred".into(),
+                    inputs: Vec::new(),
+                },
+            ),
+        ]));
         let calls = runner.calls();
         assert_eq!(
-            calls.iter().filter(|c| c.as_str() == "deferred").count(),
+            runs_of(&runner, "deferred"),
             1,
             "the deferred gate runs once across steps, then replays; calls: {calls:?}"
         );
         assert_eq!(
-            calls.iter().filter(|c| c.as_str() == "inline").count(),
+            runs_of(&runner, "inline"),
             1,
             "the inline gate runs once across steps, then replays; calls: {calls:?}"
         );
-
-        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let verdicts = |gate: &str| {
-            events
-                .iter()
-                .filter(|e| {
-                    e.type_ == contextgraph::TYPE_GATE_VERDICT
-                        && String::from_utf8_lossy(&e.data)
-                            .contains(&format!("\"gate\":\"{gate}\""))
-                })
-                .count()
+            count_carrying(
+                &events,
+                contextgraph::TYPE_GATE_VERDICT,
+                &format!("\"gate\":\"{gate}\""),
+            )
         };
         assert_eq!(
             verdicts("deferred"),
@@ -42984,6 +42521,43 @@ mod tests {
         );
     }
 
+    /// The criterion the plan-critique resume fixtures plan against.
+    const WIDGET_CRITERION: &str = "the widget renderer is implemented";
+
+    /// PLAN_PROTOCOL shape: the split units carry `needs:[]` (only sibling ids ever appear
+    /// here, never the gate) - the exact shape that bypassed the pre-gate wave.
+    fn widget_split() -> Vec<(String, Value)> {
+        ["u-a", "u-b"]
+            .into_iter()
+            .map(|id| {
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id": id, "agent": "worker", "criterion": WIDGET_CRITERION, "needs": []}),
+                )
+            })
+            .collect()
+    }
+
+    /// One step of the plan-critique workflow over `st` under `driver`, grounded by a grep over a
+    /// project whose one file names [`WIDGET_CRITERION`] - two such steps over ONE store model
+    /// the stepwise resume the production `rigger step` path runs on.
+    fn critique_step(st: &Store, driver: &dyn AgentDriver) -> RunState {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {WIDGET_CRITERION}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            grounder: Some(&grep),
+            ..stub_deps(st, driver, vec![WIDGET_CRITERION.to_string()])
+        };
+        run(&critique_cfg(), &deps).unwrap()
+    }
+
     #[test]
     fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated() {
         // The resume-hold arm the approve-only resume test cannot reach (spec 10,
@@ -42995,47 +42569,13 @@ mod tests {
         // resumes over that settled, TERMINAL-but-not-integrated gate. The fan-out must
         // stay HELD across the resume - a step after an escalation must NOT implement the
         // decomposition three reviews rejected, the exact harm the gate exists to prevent.
-        let dir = tempfile::tempdir().unwrap();
-        let criterion = "the widget renderer is implemented";
-        std::fs::write(
-            dir.path().join("feature.rs"),
-            format!("// {criterion}\nfn render() {{}}\n"),
-        )
-        .unwrap();
-        let cfg = critique_cfg();
         let st = Store::open(":memory:").unwrap();
-        let grep = crate::grounder::Grep {
-            root: dir.path().to_string_lossy().into_owned(),
-        };
-        // PLAN_PROTOCOL shape: the split units carry `needs:[]` (only sibling ids ever
-        // appear here, never the gate) - the exact shape that bypassed the pre-gate wave.
-        let split = || {
-            vec![
-                (
-                    TYPE_UNIT_PROPOSED.to_string(),
-                    json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
-                ),
-                (
-                    TYPE_UNIT_PROPOSED.to_string(),
-                    json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":[]}),
-                ),
-            ]
-        };
 
         // Run 1: the gate escalates (an unresolvable rule 7/8 defect - modelled by an
         // always-rejecting adjudicator, since blast-radius overlap no longer rejects); the
         // fan-out is held (no worker runs).
-        let d1 = CritiqueDriver::rejecting(split(), true);
-        let deps1 = Deps {
-            store: &st,
-            driver: &d1,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
-        let rs1 = run(&cfg, &deps1).unwrap();
+        let d1 = CritiqueDriver::rejecting(widget_split(), true);
+        let rs1 = critique_step(&st, &d1);
         assert_eq!(
             rs1.units["plan-critique"].status,
             ledger::Status::Escalated,
@@ -43056,17 +42596,8 @@ mod tests {
         );
 
         // Run 2 over the SAME store (the resume): the gate is terminal-but-not-integrated.
-        let d2 = CritiqueDriver::new(split());
-        let deps2 = Deps {
-            store: &st,
-            driver: &d2,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
-        let _ = run(&cfg, &deps2).unwrap();
+        let d2 = CritiqueDriver::new(widget_split());
+        critique_step(&st, &d2);
         // The resume short-circuit correctly does NOT re-run the gate...
         assert_eq!(
             occurrences(&d2.calls, "judge"),
@@ -43268,43 +42799,11 @@ mod tests {
         // fix the pre-gate planning wave folds the prior window's proposals (needs:[]) as
         // ready and runs the implementers BEFORE the gate re-reaches its (still parked)
         // adjudicator - fanning out over a decomposition NO reviewer has approved.
-        let dir = tempfile::tempdir().unwrap();
-        let criterion = "the widget renderer is implemented";
-        std::fs::write(
-            dir.path().join("feature.rs"),
-            format!("// {criterion}\nfn render() {{}}\n"),
-        )
-        .unwrap();
-        let cfg = critique_cfg();
         let st = Store::open(":memory:").unwrap();
-        let grep = crate::grounder::Grep {
-            root: dir.path().to_string_lossy().into_owned(),
-        };
-        let split = || {
-            vec![
-                (
-                    TYPE_UNIT_PROPOSED.to_string(),
-                    json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
-                ),
-                (
-                    TYPE_UNIT_PROPOSED.to_string(),
-                    json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":[]}),
-                ),
-            ]
-        };
 
         // Run 1: the planner emits the split, then the gate parks mid-review.
-        let d1 = ParkingGateDriver::new(split());
-        let deps1 = Deps {
-            store: &st,
-            driver: &d1,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
-        run(&cfg, &deps1).unwrap();
+        let d1 = ParkingGateDriver::new(widget_split());
+        critique_step(&st, &d1);
         assert_eq!(
             occurrences(&d1.calls, "worker"),
             0,
@@ -43314,17 +42813,8 @@ mod tests {
 
         // Run 2 over the SAME store (the resume): the gate is STILL unresolved (its
         // verdict was never recorded), so the fan-out must remain held.
-        let d2 = ParkingGateDriver::new(split());
-        let deps2 = Deps {
-            store: &st,
-            driver: &d2,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-        };
-        run(&cfg, &deps2).unwrap();
+        let d2 = ParkingGateDriver::new(widget_split());
+        critique_step(&st, &d2);
         assert_eq!(
             occurrences(&d2.calls, "worker"),
             0,
