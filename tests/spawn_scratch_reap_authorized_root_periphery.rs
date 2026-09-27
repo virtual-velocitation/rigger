@@ -31,11 +31,14 @@
 //! reaps - the per-spawn `agent-scratch` dir (spec 34 criterion 1) and the registered
 //! mutation-scratch dir (spec 77 criterion 2, the exact root round 1's reject was about).
 
-use common::fixtures::cleanup;
 use std::path::Path;
 use std::process::{Child, Command};
 
 mod common;
+
+use common::cli::run_rigger_envs;
+use common::cli::seed_store;
+use common::fixtures::cleanup;
 
 use rigger::driver::replay::{mutation_scratch_path, spawn_scratch_path};
 use rigger::reap::processes_rooted_under;
@@ -50,14 +53,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Seed an initialized `.rigger/events.db` under `root`, mirroring `tests/cli.rs::seed_store` -
-/// `rigger result` refuses to fabricate a fresh store from the wrong cwd (spec 05).
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
 }
 
 /// The project identity the binary resolves for `root`, mirroring
@@ -110,27 +105,6 @@ fn seed_run_started(root: &Path, run_id: &str) {
             )],
         )
         .unwrap();
-}
-
-/// Run `rigger <args...>` in `cwd` with extra environment `envs`, mirroring
-/// `tests/cli.rs::run_rigger_envs` - opts out of the auto-started dashboard and isolates the
-/// machine-global instance registry, exactly as every other CLI-driven suite in this tree
-/// does, so this test never leaks a dashboard process or a phantom registry entry.
-fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL

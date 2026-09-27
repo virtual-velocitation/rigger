@@ -5,7 +5,6 @@
 //! same composition path (`Store::open(.rigger/events.db)` namespaced, the
 //! `graph.db` projector, `conductor::STREAM`) the `serve` path uses.
 
-use common::fixtures::pgid_of;
 use rigger::conductor::normalize_ws;
 use std::path::Path;
 use std::process::Command;
@@ -14,6 +13,14 @@ use std::process::Command;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+
+use common::cli::plant_stale_marker;
+use common::cli::run_rigger;
+use common::cli::run_rigger_envs;
+use common::cli::run_stream_identity;
+use common::cli::seed_run_events;
+use common::cli::seed_store;
+use common::fixtures::pgid_of;
 use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` (which
@@ -28,77 +35,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Seed an initialized `.rigger/events.db` under `root`, standing in for the store a
-/// prior `rigger run`/`step` would have created. The store-opening couriers
-/// (`emit`/`result`/`peers`) now REFUSE to fabricate a fresh store from the wrong cwd
-/// (spec 05), so a round-trip test must first establish one, exactly as a real run does
-/// before any courier appends to it. An empty file is a valid empty SQLite database;
-/// `Store::open` adds the schema on first open - so this models "the run created the
-/// store" without needing a full workflow.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
-}
-
-/// The project identity the binary resolves for `root`, mirrored here for seeding: the
-/// tracked `.rigger/project.id` at the git top-level when present, else the git top-level
-/// basename, else `root`'s own basename (never empty) - the precedence
-/// `project_identity_at` uses. A seed appended under this identity lands in the exact
-/// `proj-<id>-run` stream the compiled binary reads back.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Seed run-lifecycle events (`RunStarted`, `SpawnRequested`, `SpawnResult`, `UnitStarted`,
-/// `UnitIntegrated`, `UnitEscalated`, ...) directly into the namespaced run stream, standing
-/// in for the conductor minting them (and for a courier's `rigger result` `SpawnResult`).
-/// The `rigger emit` surface refuses these conductor-owned boundary types (spec 22), so a
-/// test that must seed prior-run residue or a spawn's recorded outcome appends through the
-/// store, not the guarded courier. Each event is byte-identical to what the pre-guard
-/// `rigger emit <type> <json>` seed produced (same type, `data` bytes, and `run` stream,
-/// no metadata), and it binds to the SAME identity the binary resolves for `root`, so every
-/// downstream `rigger step` / `stats` / `validate` reads it back exactly as before.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
 }
 
 /// A throwaway git project with a real commit, so a base ref like `HEAD` resolves.
@@ -135,42 +71,6 @@ fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    run_rigger_envs(cwd, args, &[])
-}
-
-/// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
-/// (stdout, stderr, success). Used by the `rigger validate` advisory tests to stub
-/// `RIGGER_NPM` (so `rigger setup` installs the workflow without a real npm).
-fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    // The step path auto-starts a persistent, detached run dashboard (spec 39, criterion 1);
-    // opt out so these short-lived integration invocations never spawn a real dashboard
-    // process that would outlive the test. Set before the caller's envs so a test could still
-    // override it.
-    cmd.env("RIGGER_NO_DASH", "1");
-    // The step/run/serve paths register this instance in the machine-global registry under
-    // XDG_STATE_HOME (spec 50, criterion 2). Default it to a per-invocation temp dir so the
-    // many tests that drive those paths never seed a phantom into the operator's real
-    // ~/.local/state/rigger/instances - a live discovery entry, rooted at a since-deleted test
-    // tempdir, that a running dash would otherwise pick up. Bound to `state` so the dir lives
-    // until after the command runs; set before the caller's envs so the registry tests that pass
-    // an explicit XDG_STATE_HOME (to read the registry back) still override it.
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// Extract a JSON string field's value from a one-line JSON object `line` - a tiny reader
@@ -8594,21 +8494,6 @@ fn write_liveness_workflow(root: &Path) {
         "name: livetest\ndefaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
     )
     .unwrap();
-}
-
-/// Plant a SYNTHETIC STALE MARKER at exactly `marker` (the path the wave carried), touched
-/// an hour ago - far past the 60s bound. Backdating the mtime removes any dependence on the
-/// test's own wall clock; the sweep reads that mtime.
-fn plant_stale_marker(marker: &Path) {
-    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    std::fs::write(marker, b"heartbeat").unwrap();
-    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-    std::fs::File::options()
-        .write(true)
-        .open(marker)
-        .unwrap()
-        .set_modified(stale)
-        .unwrap();
 }
 
 /// Agent liveness end-to-end (spec 10, unit 3): a spawn carries a `max_wall_clock` bound;

@@ -16,6 +16,9 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
+use common::cli::read_run_events;
+use common::cli::run_rigger;
+use common::cli::seed_store;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -29,14 +32,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Seed an initialized, empty `.rigger/events.db` under `root`. Mirrors
-/// `tests/console_status_periphery.rs`'s `seed_store`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
 }
 
 /// The project identity the binary resolves for `root`. Mirrors
@@ -82,38 +77,6 @@ fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     }
 }
 
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/console_status_periphery.rs`'s `run_rigger`.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// The events read back from the real store, in run order - what `console::fold` needs to
-/// compute the SAME answer the running binary should have printed. Mirrors
-/// `tests/console_status_periphery.rs`'s `read_back_run_events`.
-fn read_back_run_events(root: &Path) -> Vec<Event> {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(
-            rigger::conductor::STREAM,
-            0,
-            rigger::eventstore::Direction::Forward,
-        )
-        .unwrap()
-}
-
 /// `rigger status --line` prints EXACTLY ONE line, and it is `console::fold`'s own
 /// `statusline` computed independently by this test from a real store round trip - not a
 /// second, hand-composed rendering, and no other `rigger status` furniture (needs-you,
@@ -134,7 +97,7 @@ fn status_line_prints_exactly_the_consoles_own_statusline_and_nothing_else() {
     let (out, err, ok) = run_rigger(root, &["status", "--line"]);
     assert!(ok, "rigger status --line must succeed: {err}");
 
-    let events = read_back_run_events(root);
+    let events = read_run_events(root);
     let want = rigger::console::fold(&events, 3).expect("console::fold over the real read-back");
 
     assert_eq!(

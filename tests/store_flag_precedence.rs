@@ -37,6 +37,8 @@ use tempfile::TempDir;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+
+use common::cli::write_workflow;
 use common::rigger_bin;
 
 /// An unreachable but well-formed server address: nothing listens on this loopback port, so the
@@ -66,27 +68,6 @@ fn committed_project() -> TempDir {
         assert!(ok, "git {args:?} must succeed while seeding the repo");
     }
     dir
-}
-
-/// Write `<root>/.rigger/workflow.yml` (and the worker agent it references) so `rigger run` loads a
-/// valid config and reaches the store seam. `store_block` is appended verbatim - `""` pins nothing
-/// (the config rung is no-opinion), `"store:\n  backend: sqlite\n"` pins the local backend beneath
-/// the flag under test.
-fn write_workflow(root: &Path, store_block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
-    let workflow = format!(
-        "name: flagtest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
-         stages:\n  a:\n    agent: worker\n    on_pass: none\n\
-         {store_block}"
-    );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
 }
 
 /// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. The flag
@@ -155,7 +136,7 @@ fn run_bare_conn_flag_selects_the_server_never_dropped_to_sqlite() {
     // shipped binary.
     let project = committed_project();
     let root = project.path();
-    write_workflow(root, "");
+    write_workflow(root, "flagtest", "");
     let out = run_with_flags(root, &["--conn", UNREACHABLE]);
     assert_selected_server(
         &out,
@@ -173,7 +154,7 @@ fn run_conn_flag_beats_a_committed_sqlite_store_config() {
     // was silently discarded. This pins the flag outranking the committed config through the binary.
     let project = committed_project();
     let root = project.path();
-    write_workflow(root, "store:\n  backend: sqlite\n");
+    write_workflow(root, "flagtest", "store:\n  backend: sqlite\n");
     let out = run_with_flags(root, &["--conn", UNREACHABLE]);
     assert_selected_server(
         &out,

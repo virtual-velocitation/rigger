@@ -51,6 +51,8 @@ const STABLE: &str = "pub fn stable_symbol() {}\npub fn stable_caller() { stable
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
+use common::cli::ingested_count;
+
 /// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr,
 /// success). Each invocation gets its own throwaway state home so a short-lived integration run
 /// never registers a phantom instance in the operator's machine-global registry, and never spawns
@@ -69,17 +71,6 @@ fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
-}
-
-/// How many events `rigger graph build` reported ingesting, parsed from the line it prints. This
-/// is the SHIPPED observable for "this build appended nothing", and it is the number that goes
-/// wrong first when a revert is suppressed.
-fn ingested_count(stdout: &str) -> usize {
-    stdout
-        .split_once("ingested ")
-        .and_then(|(_, rest)| rest.split_whitespace().next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("graph build must report its ingested count; got:\n{stdout}"))
 }
 
 /// Drive `graph build` in `root` and return what it reported ingesting, failing loudly rather than

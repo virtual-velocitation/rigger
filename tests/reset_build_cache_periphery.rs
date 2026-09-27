@@ -30,6 +30,8 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use common::cli::run_rigger;
+use common::cli::seed_store;
 use common::fixtures::write_file;
 use rigger::budget::BuildBudget;
 use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner};
@@ -43,20 +45,6 @@ fn temp_project() -> tempfile::TempDir {
     dir
 }
 
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
-/// Seed an initialized, otherwise-empty `.rigger/events.db`, standing in for the store a prior
-/// `rigger run`/`step` would have created (an empty file is a valid empty SQLite database;
-/// `Store::open` adds the schema on first open). `reset --build-cache` needs a resolvable store
-/// only to anchor the scratch root at the SAME repo root every other scratch-touching command
-/// uses - it never reads or writes a single event.
-fn seed_store(root: &Path) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::File::create(event_log(root)).unwrap();
-}
-
 /// The shared gate build cache's resolved path for a `temp_project()` with no `defaults.workdir`
 /// override: `<default scratch root>/cargo-target` (spec 89, criterion 2 - the default
 /// scratch root itself no longer nests inside the repo's own `.rigger`; see
@@ -67,20 +55,6 @@ fn shared_cache_dir(root: &Path) -> PathBuf {
 
 fn guard_path(root: &Path) -> PathBuf {
     common::default_scratch_root(root).join("cargo-target.lock")
-}
-
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// Total bytes of every regular file under `path`, recursively (a missing path sizes to 0) -

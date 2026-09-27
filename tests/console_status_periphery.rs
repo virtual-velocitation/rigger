@@ -17,6 +17,9 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
+use common::cli::read_run_events;
+use common::cli::run_rigger;
+use common::cli::seed_store;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -30,14 +33,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Seed an initialized, empty `.rigger/events.db` under `root`. Mirrors
-/// `tests/cause_wire_periphery.rs`'s `seed_store`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
 }
 
 /// The project identity the binary resolves for `root`. Mirrors
@@ -84,38 +79,6 @@ fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     }
 }
 
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/cause_wire_periphery.rs`'s `run_rigger`.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// The events read back from the real store, in run order - what `console::fold` needs to
-/// compute the SAME answer the running binary should have printed, so this test's expectation
-/// is derived from the core, never hand-typed text that could drift from it.
-fn read_back_run_events(root: &Path) -> Vec<Event> {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(
-            rigger::conductor::STREAM,
-            0,
-            rigger::eventstore::Direction::Forward,
-        )
-        .unwrap()
-}
-
 /// ONE FOLD, the CLI's use of the core: for a run with an escalated unit, `rigger status`'s
 /// FIRST printed line is exactly `console::fold`'s `statusline` computed independently by this
 /// test from a real store round trip, and the needs-you section names that unit through
@@ -136,7 +99,7 @@ fn rigger_status_first_line_and_needs_you_section_are_the_consoles_own_fold() {
     let (out, err, ok) = run_rigger(root, &["status"]);
     assert!(ok, "rigger status must succeed: {err}");
 
-    let events = read_back_run_events(root);
+    let events = read_run_events(root);
     let want = rigger::console::fold(&events, 3).expect("console::fold over the real read-back");
 
     let first_line = out.lines().next().unwrap_or("");
@@ -217,7 +180,7 @@ fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
     let (out, err, ok) = run_rigger(root, &["status"]);
     assert!(ok, "rigger status must succeed: {err}");
 
-    let events = read_back_run_events(root);
+    let events = read_run_events(root);
     let want = rigger::console::fold(&events, 3).expect("console::fold over the real read-back");
     assert_eq!(
         want.dock.needs_you.len(),
@@ -330,7 +293,7 @@ fn console_dock_and_statusline_are_reachable_directly_over_a_real_store_round_tr
         ],
     );
 
-    let events = read_back_run_events(root);
+    let events = read_run_events(root);
     let run = rigger::ledger::project(&events).expect("project a real read-back stream");
     let blockers =
         rigger::blocker::from_events(&events, 3).expect("classify blockers over the real stream");

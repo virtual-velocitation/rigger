@@ -86,6 +86,7 @@
 
 mod common;
 
+use common::cli::run_rigger;
 use std::path::Path;
 use std::process::Command;
 
@@ -205,24 +206,6 @@ fn seed_events(root: &Path, events: Vec<rigger::eventstore::Event>) {
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[event])
             .unwrap();
     }
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success) - mirrors
-/// `tests/cli.rs`'s identical `run_rigger` helper (opts out of the auto-started dashboard and
-/// the machine-global instance registry, exactly as every other periphery suite that spawns the
-/// product does).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// A single reviewless git-backed unit stage - mirrors `tests/cli.rs`'s identical

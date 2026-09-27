@@ -48,6 +48,10 @@ use rigger::eventstore::Event;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+
+use common::cli::body_line_count;
+use common::cli::open_graph;
+use common::cli::seed_rigger_dir;
 use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` (which scopes the
@@ -59,32 +63,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// The project identity the binary resolves for `root`, mirrored here so the seeded `graph.db`
-/// lands under the exact project scope the compiled binary reads back: the git top-level basename
-/// (no tracked `.rigger/project.id` is seeded here), else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Create the `.rigger/` dir under `root` so `Projector::open` can lay `graph.db` beside it.
-fn seed_rigger_dir(root: &Path) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
 }
 
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Opts out of the
@@ -132,27 +110,6 @@ fn seed_def_lang(
 /// Seed a Rust code-entity definition (the common case). Delegates to [`seed_def_lang`].
 fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
     seed_def_lang(p, pos, file, name, kind, line, "rust");
-}
-
-/// Open the seeded `graph.db` under `root`'s `.rigger/`, scoped to the identity the binary reads.
-fn open_graph(root: &Path) -> Projector {
-    let id = run_stream_identity(root);
-    Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap()
-}
-
-/// Count the line-numbered body lines in a `--show` output. Each body line is printed as
-/// `  <n> | <text>` (a right-padded 1-based line number, then ` | `, then the source), so a line
-/// whose text BEFORE the first ` | ` parses as a number is a body line; the site/kind/degree header
-/// and the not-found / stale / extent-unavailable notes never carry that shape.
-fn body_line_count(out: &str) -> usize {
-    out.lines()
-        .filter(|l| {
-            l.trim_start()
-                .split_once(" | ")
-                .map(|(pre, _)| pre.trim().parse::<u32>().is_ok())
-                .unwrap_or(false)
-        })
-        .count()
 }
 
 /// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), a located

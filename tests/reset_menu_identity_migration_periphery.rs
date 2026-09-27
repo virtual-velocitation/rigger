@@ -16,12 +16,16 @@
 
 mod common;
 
+use common::cli::emit;
+use common::cli::run_rigger;
+use common::cli::seed_derived_duplicates;
+use common::cli::seed_store;
+use common::cli::DUP_ROUNDS;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/reset_menu.rs and tests/reset_derived_compaction.rs; each integration
@@ -66,30 +70,6 @@ fn event_log(root: &Path) -> PathBuf {
     root.join(".rigger").join("events.db")
 }
 
-fn seed_store(root: &Path) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::File::create(event_log(root)).unwrap();
-}
-
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-fn emit(root: &Path, typ: &str, json: &str) {
-    let (_o, err, ok) = run_rigger(root, &["emit", typ, json]);
-    assert!(ok, "emit {typ} must succeed; stderr: {err}");
-}
-
 /// Seed lifecycle events directly into the namespaced run stream, standing in for the conductor
 /// minting them (`rigger emit` refuses these conductor-owned boundary types).
 fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
@@ -104,36 +84,6 @@ fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
             )
             .unwrap();
     }
-}
-
-const DUP_KEY: &str = "gc/src/a.rs@h1#0";
-/// `DUP_ROUNDS - 1` recordings are prunable duplicates by `--derived`'s own rule.
-const DUP_ROUNDS: usize = 3;
-
-fn code_entity() -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "file": "src/a.rs", "name": "alpha", "kind": "function", "line": 1, "lang": "rust",
-    }))
-    .unwrap()
-}
-
-fn seed_derived_duplicates(root: &Path) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let mut events = Vec::with_capacity(DUP_ROUNDS);
-    for r in 0..DUP_ROUNDS {
-        events.push(
-            Event::new(
-                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                code_entity(),
-            )
-            .with_meta(rigger::ingest::META_REPLAY_KEY, DUP_KEY)
-            .with_valid_from(UNIX_EPOCH + Duration::from_secs(1_000 + r as u64)),
-        );
-    }
-    store
-        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-        .unwrap();
 }
 
 #[test]

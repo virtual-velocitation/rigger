@@ -71,6 +71,11 @@ use std::process::Command;
 // every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
+#[cfg(feature = "symbols")]
+use common::cli::ingested_count;
+#[cfg(feature = "symbols")]
+use common::cli::run_stream_identity;
+
 /// A throwaway project dir that is its own git repo, so `cmd_graph_build`'s root resolution (the
 /// git top-level) and `project_identity()` (which scopes the graph read `--show`/`--around` use)
 /// are both stable and match between the seed and the binary's own reads.
@@ -103,44 +108,6 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
-}
-
-/// The project identity `cmd_graph_build`/`cmd_graph`'s `--show`/`--around` scope their graph read
-/// under (the basename of the git top-level; `project_identity_at` in `src/main.rs`, not itself
-/// exported) - a fresh `temp_project()` mints no `.rigger/project.id`, so this is the pre-spec-09
-/// legacy basename identity both the CLI and this direct-open read must agree on for item 6's
-/// `Projector::open` to see the SAME store the CLI just wrote. Named to match the identical
-/// helper already cataloged across this suite's sibling periphery files (e.g.
-/// `tests/graph_show_periphery.rs`'s own `run_stream_identity`), so this site joins that existing
-/// duplication cluster rather than minting a new, distinctly-named one.
-#[cfg(feature = "symbols")]
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// How many events `rigger graph build` reported ingesting, parsed from the line it prints - the
-/// shipped observable for "this build did something".
-#[cfg(feature = "symbols")]
-fn ingested_count(stdout: &str) -> usize {
-    stdout
-        .split_once("ingested ")
-        .and_then(|(_, rest)| rest.split_whitespace().next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("graph build must report its ingested count; got:\n{stdout}"))
 }
 
 /// Write a `.rigger/workflow.yml` mirroring the Design text's own example (`stage:implement`,

@@ -33,8 +33,11 @@ mod common;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use common::cli::now_nanos;
+use common::cli::run_rigger;
+use common::cli::seed_store;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -48,15 +51,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// Seed an initialized, EMPTY `.rigger/events.db` under `root` - stands in for the store a prior
-/// `rigger run`/`step` would have created, so `require_store_dir`'s walk finds a real store
-/// instead of refusing to fabricate one. Mirrors `tests/cli.rs`'s `seed_store`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
 }
 
 /// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s
@@ -103,22 +97,6 @@ fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
             )
             .unwrap();
     }
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success) - mirrors
-/// `tests/cli.rs`'s `run_rigger`.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 // --- `rigger watch --once`: the composition root, driven through the real binary ---
@@ -197,19 +175,6 @@ fn watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly()
         out.trim().is_empty(),
         "a clean store must print nothing: {out:?}"
     );
-}
-
-/// Nanosecond wall-clock `recorded_at`/`valid_from`, matching exactly what a real
-/// [`rigger::eventstore::sqlite::Store::append`] stamps - unlike `tests/cli.rs`'s own
-/// `seed_order_signature` (which stamps `0`, harmless for `rigger validate`'s report), a
-/// STALE `recorded_at` here would spuriously also satisfy `watch_poll`'s dead-driver "store
-/// quiet an hour" clause, contaminating the store-integrity assertion below with a SECOND,
-/// unrelated anomaly line.
-fn now_nanos() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as i64
 }
 
 /// Seed `<root>/.rigger/events.db`'s run stream with rows whose position order and revision

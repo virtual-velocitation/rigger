@@ -29,6 +29,9 @@ use rigger::eventstore::Event;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+
+use common::cli::run_stream_identity;
+use common::cli::seed_rigger_dir;
 use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` (which scopes the
@@ -40,32 +43,6 @@ fn temp_project() -> tempfile::TempDir {
         .current_dir(dir.path())
         .status();
     dir
-}
-
-/// The project identity the binary resolves for `root`, mirrored here so the seeded `graph.db`
-/// lands under the exact project scope the compiled binary reads back: the git top-level basename
-/// (no tracked `.rigger/project.id` is seeded here), else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Create the `.rigger/` dir under `root` so `Projector::open` can lay `graph.db` beside it.
-fn seed_rigger_dir(root: &Path) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
 }
 
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Opts out of the

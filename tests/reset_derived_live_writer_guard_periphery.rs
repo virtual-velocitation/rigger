@@ -21,6 +21,7 @@
 
 mod common;
 
+use common::cli::run_rigger_envs;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -102,26 +103,6 @@ fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     }
 }
 
-/// Run `rigger <args...>` in `cwd` with an OWNED, per-call `XDG_STATE_HOME` (so the machine-
-/// global instance registry never leaks a phantom entry into the operator's real one) unless the
-/// caller supplies its own via `envs` - matching `tests/cli.rs`'s `run_rigger_envs` convention.
-fn run_rigger(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
 /// The row count of the seeded event log, so a refused compaction can be proven to have pruned
 /// NOTHING - the guard may only refuse, never partially act.
 fn row_count(root: &Path) -> i64 {
@@ -159,7 +140,7 @@ fn reset_derived_prunes_when_no_run_has_ever_started() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(ok, "a quiet store must still compact; stderr: {err}");
     assert!(
         out.contains("reset --derived: pruned"),
@@ -188,7 +169,7 @@ fn reset_derived_prunes_when_every_unit_is_terminal_and_every_spawn_is_answered(
         ],
     );
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(
         ok,
         "a terminal unit with only answered spawns must not block compaction; stderr: {err}"
@@ -219,7 +200,7 @@ fn reset_derived_ignores_a_prior_runs_unanswered_spawn_and_non_terminal_unit() {
         ],
     );
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(
         ok,
         "a PRIOR run's unanswered spawn/non-terminal unit must not block THIS run's compaction; \
@@ -242,7 +223,7 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
 
     let lock_file = hold_step_lock(root);
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(
         !ok,
         "reset --derived must refuse while a step holds step.lock; stdout: {out:?}"
@@ -259,7 +240,7 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
     FileExt::unlock(&lock_file).unwrap();
     drop(lock_file);
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(
         ok,
         "once released, reset --derived must succeed; stderr: {err}"
@@ -306,7 +287,7 @@ fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_l
 
     let lock_file = hold_step_lock(root);
 
-    let (out, err, ok) = run_rigger(&nested, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(&nested, &["reset", "--derived"], &[]);
     assert!(
         !ok,
         "reset --derived from the nested worktree must refuse the resolved store's held lock; \
@@ -347,7 +328,7 @@ fn reset_derived_refuses_a_non_terminal_unit_between_spawn_rounds_and_prunes_not
     );
     let before = row_count(root);
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(
         !ok,
         "reset --derived must refuse a non-terminal unit between spawn rounds; stdout: {out:?}"
@@ -385,7 +366,7 @@ fn reset_derived_refuses_an_in_flight_spawn_naming_its_id_and_prunes_nothing() {
     );
     let before = row_count(root);
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(
         !ok,
         "reset --derived must refuse while a spawn is in flight; stdout: {out:?}"
@@ -422,7 +403,7 @@ fn reset_derived_fails_the_cli_on_a_malformed_current_run_spawn_event_and_prunes
     seed_run_events(root, &[("SpawnRequested", "{}")]);
     let before = row_count(root);
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(
         !ok,
         "a malformed current-run spawn event must fail the CLI, never read as quiet; \
@@ -463,7 +444,7 @@ fn reset_derived_fails_on_an_unreadable_step_lock_probe_and_prunes_nothing() {
         .expect("stand up step.lock as a directory so the probe's open() faults");
     let before = row_count(root);
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
     assert!(
         !ok,
         "an unreadable step-lock probe must fail the CLI, never proceed to compact; \
@@ -510,7 +491,7 @@ fn reset_derived_refuses_a_live_driver_registration_naming_it() {
     };
     registry::write(&instances_dir, &inst).expect("seed a live registry entry");
 
-    let (out, err, ok) = run_rigger(
+    let (out, err, ok) = run_rigger_envs(
         root,
         &["reset", "--derived"],
         &[("XDG_STATE_HOME", state_home.path().to_str().unwrap())],
@@ -544,7 +525,7 @@ fn reset_derived_ignores_a_registration_for_a_different_store() {
     };
     registry::write(&instances_dir, &inst).expect("seed an unrelated registry entry");
 
-    let (out, err, ok) = run_rigger(
+    let (out, err, ok) = run_rigger_envs(
         root,
         &["reset", "--derived"],
         &[("XDG_STATE_HOME", state_home.path().to_str().unwrap())],
@@ -596,7 +577,7 @@ fn reset_derived_never_deletes_a_stale_foreign_registry_entrys_file() {
         "the entry must exist before the command runs"
     );
 
-    let (out, err, ok) = run_rigger(
+    let (out, err, ok) = run_rigger_envs(
         root,
         &["reset", "--derived"],
         &[("XDG_STATE_HOME", state_home.path().to_str().unwrap())],
@@ -629,7 +610,7 @@ fn reset_derived_force_live_compacts_despite_a_held_step_lock() {
 
     let lock_file = hold_step_lock(root);
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived", "--force-live"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived", "--force-live"], &[]);
     assert!(
         ok,
         "--force-live must skip the guard even while a step lock is held; stderr: {err}"
@@ -656,7 +637,7 @@ fn reset_derived_force_live_compacts_despite_an_in_flight_spawn() {
         ],
     );
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived", "--force-live"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived", "--force-live"], &[]);
     assert!(
         ok,
         "--force-live must skip the guard even with an in-flight spawn; stderr: {err}"
@@ -673,8 +654,8 @@ fn force_live_with_runs_alone_is_inert() {
     let plain = temp_project();
 
     let (out_f, err_f, ok_f) =
-        run_rigger(with_force.path(), &["reset", "--runs", "--force-live"], &[]);
-    let (out_p, err_p, ok_p) = run_rigger(plain.path(), &["reset", "--runs"], &[]);
+        run_rigger_envs(with_force.path(), &["reset", "--runs", "--force-live"], &[]);
+    let (out_p, err_p, ok_p) = run_rigger_envs(plain.path(), &["reset", "--runs"], &[]);
     assert!(
         ok_f,
         "reset --runs --force-live must succeed; stderr: {err_f}"
@@ -704,7 +685,7 @@ fn runs_composed_with_a_refused_derived_still_completes_its_own_prune() {
         ],
     );
 
-    let (out, err, ok) = run_rigger(root, &["reset", "--runs", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--runs", "--derived"], &[]);
     assert!(
         !ok,
         "the composed command must still fail overall (the --derived guard refuses); \
@@ -732,7 +713,7 @@ fn reset_force_live_alone_is_refused_as_no_mode() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (_out, err, ok) = run_rigger(root, &["reset", "--force-live"], &[]);
+    let (_out, err, ok) = run_rigger_envs(root, &["reset", "--force-live"], &[]);
     assert!(!ok, "a bare --force-live must not imply a mode");
     assert!(
         err.contains("at least one mode"),
@@ -748,7 +729,7 @@ fn the_derived_help_entry_documents_force_live_and_owns_the_risk() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (out, err, ok) = run_rigger(root, &["--help"], &[]);
+    let (out, err, ok) = run_rigger_envs(root, &["--help"], &[]);
     assert!(ok, "--help must succeed; stdout: {out}");
     assert!(
         err.contains("--force-live"),

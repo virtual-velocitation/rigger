@@ -132,6 +132,8 @@
 
 mod common;
 
+use common::cli::run_rigger;
+use common::cli::run_rigger_envs;
 use std::path::Path;
 use std::process::Command;
 
@@ -188,30 +190,6 @@ stages:
 "#,
     )
     .unwrap();
-}
-
-/// Run `rigger <args...>` in `cwd` with extra environment `envs` - mirrors `tests/cli.rs`'s
-/// identical `run_rigger_envs` (opts out of the auto-started dashboard and the
-/// machine-global instance registry).
-fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    run_rigger_envs(cwd, args, &[])
 }
 
 /// The branch `HEAD` currently names in `root` (e.g. "main", "master", or whatever `git

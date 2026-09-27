@@ -650,6 +650,9 @@ fn read_run_stream(root: &std::path::Path) -> Vec<Event> {
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
+#[cfg(feature = "symbols")]
+use common::cli::ingested_count;
+
 /// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr, success).
 #[cfg(feature = "symbols")]
 fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
@@ -668,17 +671,6 @@ fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
-}
-
-/// How many events `rigger graph build` reported ingesting, parsed from the line it prints - the
-/// shipped observable for "this build appended nothing".
-#[cfg(feature = "symbols")]
-fn ingested_count(stdout: &str) -> usize {
-    stdout
-        .split_once("ingested ")
-        .and_then(|(_, rest)| rest.split_whitespace().next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("graph build must report its ingested count; got:\n{stdout}"))
 }
 
 /// INTEGRATION, at the crate boundary the binary crosses: the cold `graph build` sink and the run's

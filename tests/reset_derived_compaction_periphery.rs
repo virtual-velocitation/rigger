@@ -81,6 +81,8 @@
 
 mod common;
 
+use common::cli::keyed;
+use common::cli::run_rigger;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
@@ -146,12 +148,6 @@ fn replay_key(row: &Row) -> Option<String> {
 /// namespace assertions exist to catch.
 const KEY_DEF: &str = "gc/src/a.rs@h1#0";
 const KEY_REF: &str = "gc/src/a.rs@h1#1";
-
-fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
-    Event::new(type_, data)
-        .with_meta(rigger::ingest::META_REPLAY_KEY, key)
-        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
-}
 
 fn entity(name: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -615,22 +611,6 @@ fn project_identity(root: &Path) -> String {
         .filter(|s| !s.is_empty())
         .map(String::from)
         .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Run `rigger <args...>` in `cwd`. The dashboard and the machine-global instance registry are
-/// stubbed out so a short-lived invocation leaves no live process or phantom registry entry.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 fn seed_project(root: &Path, rounds: u64) {

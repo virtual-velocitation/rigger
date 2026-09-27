@@ -266,6 +266,7 @@
 
 mod common;
 
+use common::cli::write_workflow;
 use common::fixtures::agent;
 use common::fixtures::gate_def;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
@@ -389,30 +390,6 @@ fn mk_stage(name: &str, gate: &str) -> Stage {
 // anywhere in the diff.
 // ============================================================================================
 
-/// Write a minimal but real `.rigger/agents/worker.md` + `.rigger/workflow.yml` at `root`, so
-/// `config::load` reaches all the way through agent parsing and `Config::validate` - the real
-/// on-disk boundary, not a struct literal built in memory. Mirrors
-/// `tests/build_budget_slots_periphery.rs::write_workflow`'s identical technique for
-/// `build.max_concurrent` (spec 65), now for `regenerate:` (spec 88, criterion 1).
-/// `regenerate_block` is appended verbatim: `""` omits the section entirely (the back-compat
-/// case).
-fn write_workflow(root: &Path, regenerate_block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
-    let workflow = format!(
-        "name: regeneratetest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
-         stages:\n  a:\n    agent: worker\n    on_pass: none\n\
-         {regenerate_block}"
-    );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
-}
-
 #[test]
 fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compat() {
     // (a) a real regenerate: block, TWO rules, the first with TWO paths - proves the YAML
@@ -421,6 +398,7 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     let configured = tempfile::tempdir().expect("create temp project");
     write_workflow(
         configured.path(),
+        "regeneratetest",
         "regenerate:\n\
          - paths: [\"docs/audit/*\", \"docs/other/*\"]\n\
          \u{20}\u{20}run: \"echo one\"\n\
@@ -452,7 +430,7 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     // otherwise, per Workflow::regenerate's own doc comment), never an error and never a
     // silently-defaulted rule.
     let legacy = tempfile::tempdir().expect("create temp project");
-    write_workflow(legacy.path(), "");
+    write_workflow(legacy.path(), "regeneratetest", "");
     let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no regenerate: section must still load");
     assert!(

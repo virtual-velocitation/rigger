@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod cli;
 pub mod fixtures;
 
 /// The product binary that belongs to the target dir a test executable is running out of, or

@@ -137,11 +137,14 @@
 //! Nothing here is feature-gated: `BuildEnv`, `ExecRunner`, `cli::Driver`, and
 //! `config::load` are all compiled and exercised in both feature lanes.
 
+mod common;
+
 use std::path::Path;
 use std::sync::Mutex;
 
 use serde_json::Value;
 
+use common::cli::write_workflow;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, BuildConfig, Config, Gate, Stage};
 use rigger::config_store;
@@ -150,29 +153,6 @@ use rigger::driver::cli;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::gate::{BuildEnv, ExecRunner};
-
-/// Write a minimal but real `.rigger/agents/worker.md` + `.rigger/workflow.yml` at
-/// `root`, so `config::load` reaches all the way through agent parsing and
-/// `Config::validate` - the real on-disk boundary, not a struct literal built in
-/// memory. `build_block` is appended to the workflow verbatim: `""` omits the `build:`
-/// section entirely (the back-compat case - defaults must apply), a `build:\n  ...\n`
-/// block pins an explicit wrapper/cache_dir.
-fn write_workflow(root: &Path, build_block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
-    let workflow = format!(
-        "name: buildenvtest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
-         stages:\n  a:\n    agent: worker\n    on_pass: none\n\
-         {build_block}"
-    );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
-}
 
 /// The public `BuildEnv::vars()` result as a plain map, so an assertion states "these
 /// exact pairs" without caring about the resolver's internal ordering.
@@ -236,6 +216,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     let cache_dir = project.path().join("shared-build-cache");
     write_workflow(
         project.path(),
+        "buildenvtest",
         &format!(
             "build:\n  wrapper: sccache\n  cache_dir: {}\n",
             cache_dir.display()
@@ -268,7 +249,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     // resolve to nothing at all, so today's ambient-environment behavior is genuinely
     // unchanged for every pre-existing project.
     let legacy = tempfile::tempdir().expect("create temp project");
-    write_workflow(legacy.path(), "");
+    write_workflow(legacy.path(), "buildenvtest", "");
     let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no build: section must still load");
     assert_eq!(cfg.workflow.build.wrapper, "");
@@ -292,7 +273,7 @@ fn build_config_round_trips_an_explicit_jobs_value_through_the_real_on_disk_load
     // `serde_yaml::from_str` literal, never through the real `config::load` entry point
     // (agent parsing + `Config::validate` included).
     let project = tempfile::tempdir().expect("create temp project");
-    write_workflow(project.path(), "build:\n  jobs: 6\n");
+    write_workflow(project.path(), "buildenvtest", "build:\n  jobs: 6\n");
     let cfg = config_store::load(project.path().to_str().unwrap())
         .expect("load a valid workflow.yml with an explicit build.jobs value");
     assert_eq!(cfg.workflow.build.jobs, 6);

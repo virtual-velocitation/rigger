@@ -25,6 +25,9 @@
 //! not exercise. It leans on (but does not own) the upsert-live `add_edge` fold arm that landed in
 //! criterion 1.
 
+mod common;
+
+use common::cli::nanos;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Edge, Graph, Projection, REL_GOVERNS, TYPE_DECISION_MADE};
 use rigger::eventstore::Event;
@@ -45,13 +48,6 @@ fn apply_governs(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
         .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
     e.position = pos;
     p.apply(&e).unwrap();
-}
-
-/// The nanosecond `valid_from` an edge carries for a fact that became true `secs` after the epoch -
-/// the public mirror of the crate-private `to_nanos`, computed here so the external test never
-/// reaches into the crate for it.
-fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
 }
 
 /// Every live `GOVERNS` edge in a public `subgraph` result as `(from, to, source, valid_from)`,

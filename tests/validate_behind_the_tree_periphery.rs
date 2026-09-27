@@ -54,6 +54,7 @@
 
 mod common;
 
+use common::cli::run_rigger;
 use common::fixtures::tool_available;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -72,22 +73,6 @@ fn temp_project() -> tempfile::TempDir {
         .status();
     std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
     dir
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success) - mirrors
-/// `tests/validate_advisories.rs`'s identical helper.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// `git <args>` in `root` with a fixed committer identity, panicking with stderr on failure -
