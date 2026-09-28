@@ -1121,9 +1121,10 @@ fn advance_generation(
 /// Settle every node the `prior` generation of `identity` asserted and the newer one has not (yet)
 /// asserted again. A node nothing holds any more - no live generation of any identity asserts it,
 /// no event outside the rule asserted it, and no live edge touches it - is RETIRED: never deleted,
-/// it moves to `retired_nodes` with its kind and attrs, and [`ensure_node`] restores it the moment
-/// anything asserts it again, so what other folds recorded on it (a test file's proof) comes back
-/// with it. A node something still holds keeps only what its live assertions say
+/// it moves to `retired_nodes` without the attrs keys its superseded assertion made, and
+/// [`ensure_node`] restores it the moment anything asserts it again, as the kind that assertion
+/// says, so what other folds recorded on it (a test file's proof) comes back with it while what
+/// the superseded generation said does not. A node something still holds keeps only what its live assertions say
 /// ([`retract_assertion`]).
 fn retire_unheld_nodes(
     tx: &Transaction,
@@ -1170,6 +1171,13 @@ fn retire_unheld_nodes(
             params![id, project],
         )
         .map_err(be)?;
+        remove_attr_keys(
+            tx,
+            "retired_nodes",
+            id,
+            &assertion_keys(attrs.as_deref()),
+            project,
+        )?;
         tx.execute(
             "DELETE FROM nodes WHERE id = ?1 AND project = ?2",
             params![id, project],
@@ -2752,12 +2760,13 @@ fn ensure_node(
     project: &str,
 ) -> Result<(), Error> {
     // A node a superseded generation left unheld was RETIRED, not deleted
-    // ([`retire_unheld_nodes`]): asserting it again restores the row as it was, before the upsert
-    // below merges this assertion into it.
+    // ([`retire_unheld_nodes`]): asserting it again restores what other folds recorded on it, as
+    // the kind THIS assertion says - the retired kind was only the superseded generation's word -
+    // before the upsert below merges this assertion into it.
     tx.execute(
         "INSERT OR IGNORE INTO nodes (id, kind, attrs, project)
-         SELECT id, kind, attrs, project FROM retired_nodes WHERE id = ?1 AND project = ?2",
-        params![id, project],
+         SELECT id, ?3, attrs, project FROM retired_nodes WHERE id = ?1 AND project = ?2",
+        params![id, project, kind],
     )
     .map_err(be)?;
     tx.execute(
@@ -2965,25 +2974,50 @@ fn retract_assertion(
     let Some(kind) = settled_kind(live.iter().map(|(k, _)| k.as_str())) else {
         return Ok(());
     };
-    let keys = |attrs: Option<&str>| -> BTreeSet<String> {
-        attrs
-            .and_then(|a| serde_json::from_str::<BTreeMap<String, serde_json::Value>>(a).ok())
-            .map(|m| m.into_keys().collect())
-            .unwrap_or_default()
-    };
-    let held: BTreeSet<String> = live.iter().flat_map(|(_, a)| keys(a.as_deref())).collect();
-    for key in keys(retracted).difference(&held) {
-        tx.execute(
-            "UPDATE nodes SET attrs = json_remove(attrs, ?3) WHERE id = ?1 AND project = ?2",
-            params![id, project, format!("$.\"{key}\"")],
-        )
-        .map_err(be)?;
-    }
+    let held: BTreeSet<String> = live
+        .iter()
+        .flat_map(|(_, a)| assertion_keys(a.as_deref()))
+        .collect();
+    let stale: BTreeSet<String> = assertion_keys(retracted)
+        .difference(&held)
+        .cloned()
+        .collect();
+    remove_attr_keys(tx, "nodes", id, &stale, project)?;
     tx.execute(
         "UPDATE nodes SET kind = ?3 WHERE id = ?1 AND project = ?2",
         params![id, project, kind],
     )
     .map_err(be)?;
+    Ok(())
+}
+
+/// The attrs keys an assertion's `attrs` JSON carries (none for absent or unreadable attrs).
+fn assertion_keys(attrs: Option<&str>) -> BTreeSet<String> {
+    attrs
+        .and_then(|a| serde_json::from_str::<BTreeMap<String, serde_json::Value>>(a).ok())
+        .map(|m| m.into_keys().collect())
+        .unwrap_or_default()
+}
+
+/// Remove every attrs key in `keys` from node `id`'s row in `table` (`nodes` or `retired_nodes`),
+/// leaving no attrs at all (as a node never given any has) when none remain.
+fn remove_attr_keys(
+    tx: &Transaction,
+    table: &str,
+    id: &str,
+    keys: &BTreeSet<String>,
+    project: &str,
+) -> Result<(), Error> {
+    for key in keys {
+        tx.execute(
+            &format!(
+                "UPDATE {table} SET attrs = NULLIF(json_remove(attrs, ?3), '{{}}')
+                  WHERE id = ?1 AND project = ?2"
+            ),
+            params![id, project, format!("$.\"{key}\"")],
+        )
+        .map_err(be)?;
+    }
     Ok(())
 }
 
