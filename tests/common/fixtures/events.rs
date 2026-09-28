@@ -162,27 +162,50 @@ pub enum CountedRead {
         stream: String,
         event_type: String,
     },
+    /// A typed read: `only` is whether the selection named the types it hands back (`Only`)
+    /// or the ones it refuses (`Except`), and `types` are those names in the order given.
+    Typed {
+        stream: String,
+        from: Revision,
+        only: bool,
+        types: Vec<String>,
+        materialized: usize,
+    },
 }
 
 impl CountedRead {
     /// The events this call handed back to its caller so far.
     pub fn materialized(&self) -> usize {
         match self {
-            CountedRead::Stream { materialized, .. } | CountedRead::All { materialized, .. } => {
-                *materialized
-            }
+            CountedRead::Stream { materialized, .. }
+            | CountedRead::All { materialized, .. }
+            | CountedRead::Typed { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
             CountedRead::LastPosition { .. } => 0,
         }
     }
 
+    /// This call with its count cleared: what was asked, not what came back.
+    pub fn uncounted(&self) -> CountedRead {
+        let mut read = self.clone();
+        match &mut read {
+            CountedRead::Stream { materialized, .. }
+            | CountedRead::All { materialized, .. }
+            | CountedRead::Typed { materialized, .. } => *materialized = 0,
+            CountedRead::SubscribeStream { delivered, .. }
+            | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
+            CountedRead::LastPosition { .. } => {}
+        }
+        read
+    }
+
     /// Add `n` handed-back events to this call's count; a lookup hands back none.
     fn add(&mut self, n: usize) {
         match self {
-            CountedRead::Stream { materialized, .. } | CountedRead::All { materialized, .. } => {
-                *materialized += n
-            }
+            CountedRead::Stream { materialized, .. }
+            | CountedRead::All { materialized, .. }
+            | CountedRead::Typed { materialized, .. } => *materialized += n,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
             CountedRead::LastPosition { .. } => {}
@@ -304,4 +327,181 @@ impl EventStore for ReadCountingStore<'_> {
         });
         self.inner.last_position(stream, event_type)
     }
+}
+
+/// The derived index types a one-shot fixture floods the log with - the four
+/// `ingest::DERIVED_INDEX_TYPES`, spelled out because this fixture compiles into crates that do
+/// not all see the `ingest` module (a test asserting on them compares against that constant).
+pub const ONE_SHOT_DERIVED_TYPES: [&str; 4] = [
+    "CodeEntityExtracted",
+    "EdgeInferred",
+    "DocConceptExtracted",
+    "DocLinkExtracted",
+];
+
+/// What a one-shot command may cost over [`seed_one_shot_fixture`]'s log (spec 101): the current
+/// run's own non-derived events and the carried-over knowledge of every run, and nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OneShotFixture {
+    /// The per-stream revision of the current run's `RunStarted`.
+    pub boundary: Revision,
+    /// The current run's own events a one-shot read hands back: its `RunStarted` and its two
+    /// notes (never the derived events appended during it, never its carried-over events).
+    pub run_events: usize,
+    /// The `DecisionMade`, `LessonLearned` and `ReviewFinding` events of every run.
+    pub carry_over: usize,
+}
+
+impl OneShotFixture {
+    /// The events one read of the run materializes: the run's own plus the carry-over.
+    pub fn cost(&self) -> usize {
+        self.run_events + self.carry_over
+    }
+
+    /// The three calls ONE read of the run on `stream` makes, as the counting double records
+    /// them: the boundary lookup, the carried-over knowledge by type over the whole stream, and
+    /// the run slice from the boundary with the derived and carried-over types refused.
+    pub fn read(&self, stream: &str) -> Vec<CountedRead> {
+        let carry = ["DecisionMade", "LessonLearned", "ReviewFinding"];
+        let names = |types: &[&str]| types.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        vec![
+            CountedRead::LastPosition {
+                stream: stream.to_string(),
+                event_type: "RunStarted".to_string(),
+            },
+            CountedRead::Typed {
+                stream: stream.to_string(),
+                from: 0,
+                only: true,
+                types: names(&carry),
+                materialized: self.carry_over,
+            },
+            CountedRead::Typed {
+                stream: stream.to_string(),
+                from: self.boundary,
+                only: false,
+                types: names(&[&ONE_SHOT_DERIVED_TYPES[..], &carry[..]].concat()),
+                materialized: self.run_events,
+            },
+        ]
+    }
+
+    /// `times` reads of the run on `stream`, back to back.
+    pub fn reads(&self, stream: &str, times: usize) -> Vec<CountedRead> {
+        (0..times).flat_map(|_| self.read(stream)).collect()
+    }
+}
+
+/// A `RunStarted` for run `run` over `criteria`, stamped with its run id as the conductor mints it.
+fn run_started(run: &str, criteria: &[&str]) -> Event {
+    Event::new(
+        "RunStarted",
+        serde_json::to_vec(&serde_json::json!({"run": run, "criteria": criteria})).unwrap(),
+    )
+    .with_meta("run_id", run)
+}
+
+/// `n` derived index events, cycling the four [`ONE_SHOT_DERIVED_TYPES`].
+fn derived_events(n: usize) -> Vec<Event> {
+    (0..n)
+        .map(|i| {
+            ev(
+                ONE_SHOT_DERIVED_TYPES[i % 4],
+                r#"{"from":"a","rel":"CALLS","to":"b"}"#,
+            )
+        })
+        .collect()
+}
+
+/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 derived index
+/// events before the current run's boundary, then the current run (started over `criteria`) with
+/// derived events of its own appended during it. Each prior run left a decision, a lesson or a
+/// finding the current run carries over; the current run holds two of its own plus two notes.
+pub fn seed_one_shot_fixture(
+    store: &dyn EventStore,
+    stream: &str,
+    criteria: &[&str],
+) -> OneShotFixture {
+    let append = |events: &[Event]| {
+        store
+            .append(stream, ExpectedRevision::Any, events)
+            .expect("the one-shot fixture appends");
+    };
+    let decision = |id: &str, file: &str| {
+        ev(
+            "DecisionMade",
+            &format!(r#"{{"id":"{id}","summary":"chose {id}","governs":["{file}"]}}"#),
+        )
+    };
+    append(&[
+        run_started("run-a", &["a prior campaign"]),
+        ev("UnitStarted", r#"{"id":"ua","unit":"ua","agent":"impl"}"#),
+        decision("d-a", "a.rs"),
+        ev(
+            "LessonLearned",
+            r#"{"id":"l-a","summary":"learned a","about":["a.rs"]}"#,
+        ),
+    ]);
+    for _ in 0..10 {
+        append(&derived_events(10_000));
+    }
+    append(&[
+        run_started("run-b", &["another prior campaign"]),
+        ev("UnitStarted", r#"{"id":"ub","unit":"ub","agent":"impl"}"#),
+        ev(
+            "ReviewFinding",
+            r#"{"id":"f-b","by":"lens","summary":"found b","about":["b.rs"]}"#,
+        ),
+    ]);
+    for _ in 0..10 {
+        append(&derived_events(10_000));
+    }
+    append(&[run_started("run-c", criteria), ev("RunNote", "{}")]);
+    let boundary = store
+        .last_position(stream, "RunStarted")
+        .expect("the fixture's boundary reads")
+        .expect("the fixture started a run");
+    append(&derived_events(50));
+    append(&[
+        decision("d-c", "c.rs"),
+        ev(
+            "ReviewFinding",
+            r#"{"id":"f-c","by":"lens","summary":"found c","about":["c.rs"]}"#,
+        ),
+        ev("RunNote", "{}"),
+    ]);
+    append(&derived_events(50));
+    OneShotFixture {
+        boundary,
+        run_events: 3,
+        carry_over: 5,
+    }
+}
+
+/// THE ONE-SHOT PROGRESS FIXTURE (spec 101): the progress store beside [`seed_one_shot_fixture`]'s
+/// log - two reports from each superseded run (`run-a`, `run-b`) and `current` from the current
+/// run `run-c`, each on its run's own progress stream (`progress/<run>`, spelled out because this
+/// fixture compiles into crates that do not all see the `progress` module) and stamped with its
+/// run, as the progress writer records them - so a read of the current run's progress costs
+/// exactly `current` reports.
+pub fn seed_one_shot_progress(store: &dyn EventStore, current: usize) {
+    let report = |run: &str, n: usize| {
+        for i in 0..n {
+            let body =
+                serde_json::json!({"id": "u/implementer#0", "activity": format!("{run} step {i}")});
+            store
+                .append(
+                    &format!("progress/{run}"),
+                    ExpectedRevision::Any,
+                    &[
+                        Event::new("AgentProgress", serde_json::to_vec(&body).unwrap())
+                            .with_meta("run_id", run),
+                    ],
+                )
+                .expect("the one-shot progress fixture appends");
+        }
+    };
+    report("run-a", 2);
+    report("run-b", 2);
+    report("run-c", current);
 }
