@@ -808,6 +808,11 @@ let firstStep = true
 // per iteration - so a worker spawned several steps ago is still recognized as running however
 // long its own round takes.
 const inFlight = new Map()
+// How many workers have settled so far. The loop snapshots it right before each courier step:
+// a worker that settles WHILE the step runs deletes itself from `inFlight` before the wait at
+// the bottom is built, so that wait could never see it - a changed count is how the loop knows
+// a settle landed during the step and steps again at once instead.
+let settledSinceStep = 0
 // A death-report courier that itself died. Also lives OUTSIDE the loop, for the identical
 // reason `inFlight` does: a worker spawned several steps ago can still push into this the moment
 // it finally settles, and a fresh per-iteration array (the pre-pipelining shape) would silently
@@ -848,6 +853,7 @@ function spawnNewItems(wave) {
   for (const req of newReqs) {
     const p = runWorker(req, fatal).then(() => {
       inFlight.delete(req.id)
+      settledSinceStep += 1
     })
     inFlight.set(req.id, p)
   }
@@ -864,6 +870,7 @@ for (;;) {
   // `--fresh` rides the FIRST step only (a one-shot new-run boundary); adopt it thereafter.
   const FRESHFLAG = firstStep && FRESH ? ' --fresh' : ''
   firstStep = false
+  const seen = settledSinceStep
   let step
   try {
     step = await agent(
@@ -975,8 +982,10 @@ for (;;) {
   // unanswered spawn but nothing is running and nothing new was parked, so stepping again would
   // spin. This is an anomaly, not a completion or an ordinary pipelining pause (an empty wave
   // WITH a straggler still in flight is the ordinary pause - see the final wait below) - stop
-  // loudly rather than resolve as done or loop forever.
-  if (wave.length === 0 && inFlight.size === 0) {
+  // loudly rather than resolve as done or loop forever. A settle during the courier step is NOT
+  // that anomaly: the last worker may have recorded its result after `rigger step` read the
+  // stream, so this step could not fold it yet - step again to fold it instead of stopping.
+  if (wave.length === 0 && inFlight.size === 0 && settledSinceStep === seen) {
     stop(
       '`rigger step` parked no new items and nothing is in flight, yet is not done (a worker ' +
         'likely resolved without self-reporting)',
@@ -986,7 +995,10 @@ for (;;) {
   // Otherwise something is still running - this step's own new items, a straggler from an
   // earlier one, or both - and nothing about this step warrants stopping. Wait for ANY of them
   // to settle (spec 89, criterion 5: that settling is the signal a courier should run again
-  // immediately), then loop back to step 1.
+  // immediately), then loop back to step 1. A settle during the courier step already IS that
+  // signal, and the settled worker is no longer in `inFlight` for the race to see - so step
+  // again at once rather than wait for a different worker to settle.
+  if (settledSinceStep !== seen) continue
   await Promise.race(Array.from(inFlight.values()))
 }
 
