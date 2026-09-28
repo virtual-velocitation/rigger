@@ -102,13 +102,19 @@ fn installed_session_settings(base: &[u8]) -> Value {
 
 /// `argv` carries the session settings, the spawn-bound MCP server alone, and both helper agents.
 fn assert_spawn_is_configured(argv: &[String]) {
+    assert_settings_are_the_installed_ones(argv);
+    assert_mcp_config_is_the_installed_server(argv);
+    assert_helper_agents_reach_the_spawn(argv);
+}
+
+/// `argv`'s `--settings` is exactly what the hooks installers build: the SessionStart prime
+/// hook, the PreToolUse grep-guard and the status line.
+fn assert_settings_are_the_installed_ones(argv: &[String]) {
     assert_eq!(
         flag_json(argv, "--settings"),
         installed_session_settings(b""),
         "the spawn's settings are exactly the hooks and status line `rigger setup` installs"
     );
-    assert_mcp_config_is_the_installed_server(argv);
-    assert_helper_agents_reach_the_spawn(argv);
 }
 
 /// `argv`'s `--mcp-config` is the one `rigger` server the MCP installer builds for this spawn,
@@ -199,16 +205,19 @@ fn porcelain(dir: &Path) -> String {
     )
 }
 
-#[test]
-fn a_headless_spawn_carries_the_hooks_and_status_line_rigger_setup_installs() {
+/// Launch one spawn in a fresh committed worktree and hand the argv it received to `check`.
+fn spawn_in_a_fresh_worktree(check: fn(&[String])) {
     let dir = committed_worktree();
-    let argv = launch_capturing(dir.path(), "");
-    assert_eq!(
-        flag_json(&argv, "--settings"),
-        installed_session_settings(b""),
-        "the SessionStart prime hook, the PreToolUse grep-guard and the status line reach the \
-         spawn exactly as the hooks installers build them"
-    );
+    check(&launch_capturing(dir.path(), ""));
+}
+
+rigger::test_cases! {
+    a_headless_spawn_carries_the_hooks_and_status_line_rigger_setup_installs:
+        spawn_in_a_fresh_worktree(assert_settings_are_the_installed_ones);
+    a_headless_spawn_carries_the_installer_built_mcp_server:
+        spawn_in_a_fresh_worktree(assert_mcp_config_is_the_installed_server);
+    a_headless_spawn_carries_both_helper_agents_as_committed:
+        spawn_in_a_fresh_worktree(assert_helper_agents_reach_the_spawn);
 }
 
 #[test]
@@ -221,18 +230,6 @@ fn a_headless_spawn_merges_the_hooks_onto_its_own_settings() {
         installed_session_settings(own.as_bytes()),
         "the spawn's own settings survive and the hooks are merged onto them"
     );
-}
-
-#[test]
-fn a_headless_spawn_carries_the_installer_built_mcp_server() {
-    let dir = committed_worktree();
-    assert_mcp_config_is_the_installed_server(&launch_capturing(dir.path(), ""));
-}
-
-#[test]
-fn a_headless_spawn_carries_both_helper_agents_as_committed() {
-    let dir = committed_worktree();
-    assert_helper_agents_reach_the_spawn(&launch_capturing(dir.path(), ""));
 }
 
 #[test]
