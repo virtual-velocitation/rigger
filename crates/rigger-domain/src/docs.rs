@@ -227,15 +227,14 @@ fn discipline_body(ctx: &DocsContext) -> String {
          deletes every superseded generation and re-recording, and compacts the file so \
          events.db shrinks on disk. Every other event survives byte-for-byte - lessons, \
          decisions, findings, gate verdicts, and the whole run history `rigger stats` and replay \
-         read. The live edges a rebuild folds are unchanged: the generation after a shed one \
-         already retired its structural edges, nothing reads a shed recording again (a file that \
-         returns to an earlier content re-emits its batch), and the prune carries a design \
-         fact's EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps \
-         the date it first became true rather than being re-dated to whichever recording \
-         survived. The one thing a rebuild of the compacted log does not re-create is a node \
-         only a shed generation defined, which the whole log keeps as an orphan no live edge \
-         reaches. WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at \
-         all: it never sheds the index itself. The latest generation of every file stays, so on \
+         read. The live graph a rebuild folds is unchanged: a newer generation of a file \
+         retires every fact the one before it asserted and it does not, so the whole log \
+         already folds to each file's latest generation; nothing reads a shed recording again \
+         (a file that returns to an earlier content re-emits its batch); and the prune carries \
+         a design fact's EARLIEST valid-time within its unbroken run of generations onto the \
+         recording it keeps, so a design fact keeps the date it first became true rather than \
+         being re-dated to whichever recording survived. WHAT IT CANNOT RECLAIM, because \
+         this decides whether it is worth running at all: it never sheds the index itself. The latest generation of every file stays, so on \
          a log that holds each file once, at one recording per key, `rigger reset --derived` \
          deletes ZERO rows from it and reports so - that is the expected report on a clean log, \
          not a failure, and the derived index remains the bulk of the log by design because it \
