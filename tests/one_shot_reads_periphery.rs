@@ -57,6 +57,24 @@ fn payload_ids(events: &[Event]) -> Vec<String> {
         .collect()
 }
 
+/// `beta`'s history in a shared `events.db`: a run started as `run`, a decision, a lesson, a
+/// derived edge and a note - a neighbor whose records no read of another project's run may hold.
+fn seed_beta_history(beta: &dyn EventStore, run: &str, decision: &str) {
+    beta.append(
+        STREAM,
+        ExpectedRevision::Any,
+        &[
+            Event::new("RunStarted", format!(r#"{{"run":"{run}"}}"#).into_bytes())
+                .with_meta("run_id", run),
+            ev("DecisionMade", &format!(r#"{{"id":"{decision}"}}"#)),
+            ev("LessonLearned", r#"{"id":"l-beta"}"#),
+            ev("EdgeInferred", r#"{"from":"a","rel":"CALLS","to":"b"}"#),
+            ev("RunNote", "{}"),
+        ],
+    )
+    .unwrap();
+}
+
 /// Given one `events.db` file two projects share - `alpha` holding two superseded runs and 200,000
 /// derived events before its current run's boundary, `beta` holding runs, decisions and derived
 /// events of its own on both sides of alpha's history - when alpha's run is read through the
@@ -74,24 +92,9 @@ fn a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read
     let backend = Store::open(db.to_str().unwrap()).unwrap();
     let alpha = Namespaced::new(&backend, "alpha");
     let beta = Namespaced::new(&backend, "beta");
-    let beta_history = |run: &str, decision: &str| {
-        beta.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[
-                Event::new("RunStarted", format!(r#"{{"run":"{run}"}}"#).into_bytes())
-                    .with_meta("run_id", run),
-                ev("DecisionMade", &format!(r#"{{"id":"{decision}"}}"#)),
-                ev("LessonLearned", r#"{"id":"l-beta"}"#),
-                ev("EdgeInferred", r#"{"from":"a","rel":"CALLS","to":"b"}"#),
-                ev("RunNote", "{}"),
-            ],
-        )
-        .unwrap();
-    };
-    beta_history("beta-1", "d-beta-1");
+    seed_beta_history(&beta, "beta-1", "d-beta-1");
     let fixture = seed_one_shot_fixture(&alpha, STREAM, &["the current campaign"]);
-    beta_history("beta-2", "d-beta-2");
+    seed_beta_history(&beta, "beta-2", "d-beta-2");
 
     let above = ReadCountingStore::new(&alpha);
     let events = rigger::run::read::read_run(&above, STREAM).unwrap();
@@ -287,16 +290,23 @@ fn scoped_run_stream(root: &Path) -> String {
     )
 }
 
+/// Rewrite every event on `root`'s run stream that `condition` (an SQL predicate over the
+/// `events` row) selects with `set` (an SQL assignment), around the store's own write guards - a
+/// log state only a stale or broken writer leaves. Returns how many rows it rewrote.
+fn rewrite_run_stream(root: &Path, set: &str, condition: &str) -> usize {
+    let conn = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
+    conn.execute(
+        &format!("UPDATE events SET {set} WHERE stream = ?1 AND ({condition})"),
+        [scoped_run_stream(root)],
+    )
+    .unwrap()
+}
+
 /// Make every event on `root`'s run stream that `condition` (an SQL predicate over the `events`
 /// row) selects undecodable: its `meta` becomes a blob no read can turn back into an event, so any
 /// command that materializes one fails. Returns how many it poisoned.
 fn poison(root: &Path, condition: &str) -> usize {
-    let conn = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
-    conn.execute(
-        &format!("UPDATE events SET meta = X'ff' WHERE stream = ?1 AND ({condition})"),
-        [scoped_run_stream(root)],
-    )
-    .unwrap()
+    rewrite_run_stream(root, "meta = X'ff'", condition)
 }
 
 /// `rigger <args>` in `root`, which must succeed; its stdout.
@@ -769,5 +779,268 @@ fn a_refresh_to_per_run_progress_streams_drops_a_live_runs_earlier_reports_and_t
              drops that run's earlier reports from these views"
         ),
         "the handbook names the refresh drop"
+    );
+}
+
+/// Given one `events.db` two projects share, where `beta` has started a run and `alpha` has not,
+/// when `alpha`'s current run is read through the product's composition (a project namespace over
+/// the file-backed store), then alpha names NO run (beta's `RunStarted` is never alpha's boundary)
+/// and its whole stream but the derived types is its run, in one boundary lookup and one typed
+/// read. Once alpha holds the one-shot fixture, the same read names alpha's run and hands back its
+/// slice alone, costing exactly the run's own events plus the typed carry-over.
+#[test]
+fn a_current_run_read_through_a_shared_events_file_names_only_its_own_projects_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let alpha = Namespaced::new(&backend, "alpha");
+    let beta = Namespaced::new(&backend, "beta");
+    seed_beta_history(&beta, "beta-1", "d-beta-1");
+    alpha
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                ev("UnitStarted", r#"{"id":"u0"}"#),
+                ev("EdgeInferred", r#"{"from":"a","rel":"CALLS","to":"b"}"#),
+                ev("DecisionMade", r#"{"id":"d-0"}"#),
+            ],
+        )
+        .unwrap();
+    seed_beta_history(&beta, "beta-2", "d-beta-2");
+
+    let counted = ReadCountingStore::new(&alpha);
+    let (events, run_id) = rigger::run::read::read_current_run(&counted, STREAM).unwrap();
+    assert_eq!(
+        run_id, "",
+        "no run started names no run, never a neighbor's"
+    );
+    assert_eq!(types(&events), ["UnitStarted", "DecisionMade"]);
+    assert_eq!(payload_ids(&events), ["u0", "d-0"]);
+    assert_eq!(
+        counted.reads(),
+        [
+            CountedRead::LastPosition {
+                stream: STREAM.to_string(),
+                event_type: "RunStarted".to_string(),
+            },
+            CountedRead::Typed {
+                stream: STREAM.to_string(),
+                from: 0,
+                only: false,
+                types: ONE_SHOT_DERIVED_TYPES.map(String::from).to_vec(),
+                materialized: 2,
+            },
+        ]
+    );
+
+    let gamma = Namespaced::new(&backend, "gamma");
+    let fixture = seed_one_shot_fixture(&gamma, STREAM, &["the current campaign"]);
+    seed_beta_history(&beta, "beta-3", "d-beta-3");
+    let counted = ReadCountingStore::new(&gamma);
+    let (events, run_id) = rigger::run::read::read_current_run(&counted, STREAM).unwrap();
+    assert_eq!(run_id, "run-c");
+    assert_eq!(
+        types(&events),
+        [
+            "RunStarted",
+            "RunNote",
+            "DecisionMade",
+            "ReviewFinding",
+            "RunNote"
+        ]
+    );
+    assert_eq!(payload_ids(&events), ["", "", "d-c", "f-c", ""]);
+    assert_eq!(events[0].revision, fixture.boundary);
+    assert_eq!(counted.reads(), fixture.read(STREAM));
+    assert_eq!(counted.materialized(), fixture.cost());
+}
+
+/// Given the one-shot fixture under `alpha` in a shared `events.db`, when a concurrent writer
+/// appends to the backend BELOW the project namespace at each point of one read of alpha's run,
+/// then the read is a log prefix of alpha's run whatever lands: alpha's own write (a decision,
+/// then a spawn result) before either typed read, or between them, is read whole and once, in log
+/// order; one after the last read is not read at all; and a neighbor's write at the same point is
+/// never read and costs alpha nothing.
+#[test]
+fn a_run_read_through_the_namespace_is_a_log_prefix_whatever_a_concurrent_writer_appends() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let fixture = seed_one_shot_fixture(
+        &Namespaced::new(&backend, "alpha"),
+        STREAM,
+        &["the current campaign"],
+    );
+    let alpha_run = format!("{}{STREAM}", Namespaced::prefix_for("alpha"));
+    let beta_run = format!("{}{STREAM}", Namespaced::prefix_for("beta"));
+    let late = |tag: &str| {
+        vec![
+            ev("DecisionMade", &format!(r#"{{"id":"d-{tag}"}}"#)),
+            ev("SpawnResult", &format!(r#"{{"id":"s-{tag}"}}"#)),
+        ]
+    };
+    let before = ["d-a", "l-a", "f-b", "", "", "d-c", "f-c", ""];
+    let owned = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    let read_with_writer = |after: usize, stream: &str, tag: &str| -> (Vec<String>, usize) {
+        let counted = ReadCountingStore::new(&backend).interleaving(after, stream, late(tag));
+        let events =
+            rigger::run::read::read_run(&Namespaced::new(&counted, "alpha"), STREAM).unwrap();
+        let positions: Vec<u64> = events.iter().map(|e| e.position).collect();
+        let mut ordered = positions.clone();
+        ordered.sort_unstable();
+        ordered.dedup();
+        assert_eq!(positions, ordered, "each event once, in log order");
+        (payload_ids(&events), counted.materialized())
+    };
+
+    assert_eq!(
+        read_with_writer(0, &alpha_run, "w0"),
+        (
+            owned(&[&before[..], &["d-w0", "s-w0"]].concat()),
+            fixture.cost() + 3
+        ),
+        "a write before the carry-over read: its decision is read by both typed reads, held once"
+    );
+    assert_eq!(
+        read_with_writer(1, &alpha_run, "w1"),
+        (
+            owned(&[&before[..], &["d-w0", "s-w0", "d-w1", "s-w1"]].concat()),
+            fixture.cost() + 2 + 1 + 2
+        ),
+        "a write between the typed reads is in the slice: read whole, never a decision missing \
+         beside a later result"
+    );
+    assert_eq!(
+        read_with_writer(2, &alpha_run, "w2").0,
+        [&before[..], &["d-w0", "s-w0", "d-w1", "s-w1"]].concat(),
+        "a write after the last read is not read"
+    );
+    let (ids, cost) = read_with_writer(1, &beta_run, "beta");
+    assert_eq!(
+        ids,
+        [
+            &before[..],
+            &["d-w0", "s-w0", "d-w1", "s-w1", "d-w2", "s-w2"]
+        ]
+        .concat(),
+        "a neighbor's write is never read"
+    );
+    assert_eq!(
+        cost,
+        fixture.cost() + 3 + 3 + 3,
+        "a neighbor's write costs alpha nothing"
+    );
+}
+
+/// Given one `events.db` holding eleven decisions of this project (and one whose payload is not a
+/// decision) and a neighbor project's decisions recorded after them, when a session starts and
+/// runs `rigger prime`, then it prints exactly this project's ten newest decisions, newest first -
+/// the neighbor's are never read into it, and the unreadable payload is skipped without taking a
+/// slot.
+#[test]
+fn prime_prints_this_projects_ten_newest_decisions_never_a_neighbors() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    {
+        let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+        let own = Namespaced::new(&backend, &run_stream_identity(root));
+        let decisions: Vec<Event> = (1..=11)
+            .map(|i| {
+                ev(
+                    "DecisionMade",
+                    &format!(r#"{{"id":"d-{i:02}","summary":"chose {i:02}","governs":["x.rs"]}}"#),
+                )
+            })
+            .chain([ev("DecisionMade", r#"{"note":"not a decision"}"#)])
+            .collect();
+        own.append(STREAM, ExpectedRevision::Any, &decisions)
+            .unwrap();
+        let beta = Namespaced::new(&backend, "beta");
+        beta.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[ev(
+                "DecisionMade",
+                r#"{"id":"d-beta","summary":"a neighbor's","governs":["x.rs"]}"#,
+            )],
+        )
+        .unwrap();
+    }
+
+    let expected: Vec<String> = std::iter::once("# Rigger: recent decisions".to_string())
+        .chain((2..=11).rev().map(|i| format!("- d-{i:02}: chose {i:02}")))
+        .collect();
+    assert_eq!(
+        rigger_ok(root, &["prime"])
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+/// Given a project whose run stream holds a disorder a stale writer left in a run BEFORE the
+/// current run's boundary, when the operator polls `rigger watch --once`, then the poll reports
+/// nothing - it reads the current run, never the project's history - while `rigger validate`, the
+/// whole-store order-signature detector, still reports that disorder. Store integrity is judged
+/// over the run a poll reads; the history is `rigger validate`'s.
+#[test]
+fn watch_leaves_a_disorder_before_the_run_boundary_to_validate() {
+    let dir = common::cli::temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init scaffolds the project: {err}");
+    {
+        let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+        Namespaced::new(&backend, &run_stream_identity(root))
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[
+                    ev("RunNote", r#"{"id":"stale-0"}"#),
+                    ev("RunNote", r#"{"id":"stale-1"}"#),
+                    ev("RunNote", r#"{"id":"stale-2"}"#),
+                    Event::new("RunStarted", br#"{"run":"run-c","criteria":[]}"#.to_vec())
+                        .with_meta("run_id", "run-c"),
+                    ev("RunNote", "{}"),
+                ],
+            )
+            .unwrap();
+    }
+    // A stale writer swapped the first two history rows' revisions: the log's second row now
+    // carries a revision below the first's, before the run's boundary.
+    assert_eq!(
+        rewrite_run_stream(root, "revision = 100", "revision = 0"),
+        1
+    );
+    assert_eq!(rewrite_run_stream(root, "revision = 0", "revision = 1"), 1);
+    assert_eq!(
+        rewrite_run_stream(root, "revision = 1", "revision = 100"),
+        1
+    );
+
+    assert_eq!(
+        rigger_ok(root, &["watch", "--once"]),
+        "",
+        "a disorder before the boundary is not the poll's to report"
+    );
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "validate reports and exits 0: {err}");
+    assert!(
+        err.contains("stream run has 1 row(s)"),
+        "validate still reports the disorder in the history: {err}"
+    );
+
+    // Control: a disorder INSIDE the run is the poll's to report - the poll judges the run it
+    // reads, so its silence above is the boundary, not a blind poll.
+    assert_eq!(
+        rewrite_run_stream(root, "revision = 50", "type = 'RunStarted'"),
+        1
+    );
+    let polled = rigger_ok(root, &["watch", "--once"]);
+    assert!(
+        polled.contains("store integrity") && polled.contains("1 row(s)"),
+        "a disorder inside the run is reported: {polled}"
     );
 }

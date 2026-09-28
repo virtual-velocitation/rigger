@@ -255,8 +255,8 @@ impl<'a> ReadCountingStore<'a> {
     }
 
     /// This double with a concurrent writer: `events` land on `stream` of the inner store the
-    /// moment the read at index `after` of the call log (0-based, in call order) returns, so a
-    /// test places an append exactly between two reads of one command.
+    /// moment the call at index `after` of the call log (0-based, in call order; a boundary lookup
+    /// counts) returns, so a test places an append exactly between two calls of one command.
     pub fn interleaving(self, after: usize, stream: &str, events: Vec<Event>) -> Self {
         *self.interleaved.lock().unwrap() = Some((after, stream.to_string(), events));
         self
@@ -360,11 +360,13 @@ impl EventStore for ReadCountingStore<'_> {
         Ok(self.counted(at, sub))
     }
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
-        self.record(CountedRead::LastPosition {
+        let at = self.record(CountedRead::LastPosition {
             stream: stream.to_string(),
             event_type: event_type.to_string(),
         });
-        self.inner.last_position(stream, event_type)
+        let boundary = self.inner.last_position(stream, event_type);
+        self.land_interleaved(at);
+        boundary
     }
     fn read_stream_typed(
         &self,
