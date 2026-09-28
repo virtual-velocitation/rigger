@@ -267,17 +267,16 @@ pub enum DashProbe {
 }
 
 /// Everything [`detect`] needs, already gathered by the caller (store, process
-/// table, and status - never the driver). Two DIFFERENT event slices, because the
-/// signals are scoped differently: the five run signals read this project's
-/// CURRENT RUN stream (mirroring `rigger status`'s own scope), while store
-/// integrity reads the WHOLE log across every stream (mirroring `rigger validate`'s
-/// order-signature detector, spec 71) - a disordered stream is a store-wide fault,
-/// not a per-run one.
+/// table, and status - never the driver). Every signal reads ONE event slice: this
+/// project's CURRENT RUN (mirroring `rigger status`'s own scope), so a poll costs the
+/// run's own events and never the project's history (spec 101). Store integrity is
+/// therefore judged over the run too: a row a stale writer reissued INTO the run is
+/// reported, while a disorder anywhere else in the log is `rigger validate`'s
+/// whole-store order-signature detector's to report (spec 71), not a poll's.
 pub struct WatchInputs<'a> {
-    /// This project's current run's event slice (`conductor::STREAM`, run-scoped).
+    /// This project's current run's event slice (`conductor::STREAM`, run-scoped), in
+    /// position order - every signal's input, store integrity included.
     pub run_events: &'a [Event],
-    /// The full log across every stream, position-ordered (for store integrity).
-    pub full_events: &'a [Event],
     /// The moment the caller gathered these inputs.
     pub now: SystemTime,
     /// When the run's last event was recorded, or `None` for an empty run.
@@ -551,8 +550,8 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
         }
     }
 
-    // Signal 6 (beyond the skill's five): store integrity.
-    for (stream, rows) in out_of_order_streams(inputs.full_events) {
+    // Signal 6 (beyond the skill's five): store integrity, over the run.
+    for (stream, rows) in out_of_order_streams(inputs.run_events) {
         out.push(Anomaly {
             signal: Signal::StoreIntegrity,
             subject: stream,

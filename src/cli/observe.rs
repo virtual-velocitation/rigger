@@ -174,7 +174,7 @@ pub(crate) fn cmd_progress(args: &[String]) -> Res {
     // Resolve the current run READ-ONLY from the run store, only to scope the report.
     let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let (_, run_id) = read_current_run(&run_store)?;
+    let (_, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
@@ -254,7 +254,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // The current run's slice of the run stream, and its id.
     let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let (run_slice, run_id) = read_current_run(&run_store)?;
+    let (run_slice, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
     let run_events = run_slice.as_slice();
 
     // Spec 94, criterion 5: `--line` needs only the run's event slice and the configured

@@ -355,11 +355,19 @@ mod tests {
 
         let empty = Store::open(":memory:").unwrap();
         empty
-            .append(STREAM, ExpectedRevision::NoStream, &[ev("UnitStarted", "{}")])
+            .append(
+                STREAM,
+                ExpectedRevision::NoStream,
+                &[ev("UnitStarted", "{}")],
+            )
             .unwrap();
         let (events, run_id) = crate::run::read::read_current_run(&empty, STREAM).unwrap();
         assert_eq!(run_id, "", "no run started names no run");
-        assert_eq!(events.len(), 1, "with no run started the whole stream is the run");
+        assert_eq!(
+            events.len(),
+            1,
+            "with no run started the whole stream is the run"
+        );
     }
 
     /// With no run started the whole stream is the run: one typed read from revision 0 refusing

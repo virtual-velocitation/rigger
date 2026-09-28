@@ -1119,14 +1119,20 @@ pub(crate) fn cmd_prime(args: &[String]) -> Res {
         }
         return Ok(());
     }
-    let store = resolve_store(&selection, &path)?;
-    let events = store.read_all(0, Direction::Backward, &Filter::default())?;
+    let loc = StoreLocation {
+        dir: std::env::current_dir()?.join(RIGGER_DIR),
+    };
+    let backend = resolve_store(&selection, &path)?;
+    // Every run's decisions BY TYPE on this project's run stream (spec 101): a session start
+    // reads the decisions it prints and nothing else - no derived event, no other project's.
+    let decisions = Namespaced::new(backend.as_ref(), &loc.identity()).read_stream_typed(
+        conductor::STREAM,
+        0,
+        rigger::eventstore::TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
+    )?;
     println!("# Rigger: recent decisions");
     let mut shown = 0;
-    for e in &events {
-        if e.type_ != contextgraph::TYPE_DECISION_MADE {
-            continue;
-        }
+    for e in decisions.iter().rev() {
         if let Ok(d) = serde_json::from_slice::<PeerDecision>(&e.data) {
             println!("- {}: {}", d.id, d.summary);
             shown += 1;

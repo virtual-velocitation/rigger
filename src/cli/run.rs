@@ -353,7 +353,7 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (run_events, run_id) = read_current_run(&store)?;
+    let (run_events, run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
     let rs = ledger::project(&run_events)?;
 
     let unit = rs
@@ -608,7 +608,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         if let Some(live_branches) =
             live_branches_for_sweep(runscope::read::read_run(&store, conductor::STREAM))
         {
-            let fence_events = read_current_run(&store)
+            let fence_events = runscope::read::read_current_run(&store, conductor::STREAM)
                 .map(|(run, _)| run)
                 .unwrap_or_default();
             match rigger::worktree::sweep_terminal(
@@ -670,10 +670,9 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // never reads a prior run's leftover mtime) and, since `run_id` never changes within a
     // step, reused verbatim for the hung-attention cursor path too (see `pre_hung_ids`
     // below). Read ONCE here, before the sweep mutates the log.
-    let pre = runscope::read::read_run(&store, conductor::STREAM)?;
-    // Empty before the first RunStarted (the first step, where nothing is in-flight to sweep
-    // and nothing has ever been surfaced anyway).
-    let run_id = runscope::current_run_id(&pre).unwrap_or_default();
+    // The run id is empty before the first RunStarted (the first step, where nothing is
+    // in-flight to sweep and nothing has ever been surfaced anyway).
+    let (pre, run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
     // The hung-attention CROSSING BOUNDARY (spec 69, criterion 5; review u69c5 round 3,
     // cause genuine-defect): the spawn ids already surfaced on the `attention` wire as of
     // the end of the PREVIOUS `rigger step` invocation, read from the persisted cursor
@@ -704,7 +703,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
             Ok(taxonomy) => {
                 match rigger::liveness::sweep(
                     &store,
-                    runscope::current_run(&pre),
+                    &pre,
                     root,
                     &run_id,
                     &taxonomy,
@@ -791,13 +790,13 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     };
     let rs = conductor::run(&cfg, &deps)?;
 
-    let events = runscope::read::read_run(&store, conductor::STREAM)?;
+    let (events, wave_run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
     // The printed wave is the FULL pending frontier (every parked spawn without a
     // result), so a killed or re-run step process orphans nothing and a relaunched
     // driver resumes the in-flight wave (see spawn::step_result). Scoped to the CURRENT
     // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
     // run's RunStarted, so they never reappear in this run's wave (Gap 11).
-    let mut step = spawn::step_result(runscope::current_run(&events)).map_err(|e| e.to_string())?;
+    let mut step = spawn::step_result(&events).map_err(|e| e.to_string())?;
     // Stamp each bounded wave item with the RESOLVED absolute path of its liveness marker
     // (spec 10, unit 3, BLOCKER-1): the thin driver frames both the worker's heartbeat
     // `touch` and its staleness watchdog around THIS path, never re-deriving a scratch root
@@ -806,13 +805,12 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // above reads and this run's id - so the worker-write path is byte-identical to the
     // sweep-read path under ANY scratch config. Only a bounded spawn carries a marker.
     if let Some(root) = &scratch_root {
-        let run_id = runscope::current_run_id(&events).unwrap_or_default();
         for item in step.wave.iter_mut() {
             if item.max_wall_clock.is_some() {
                 // A degenerate id (never a real spawn id rigger itself mints) yields no
                 // marker path at all rather than a fabricated placeholder - the item simply
                 // carries no liveness marker, the same as any other unbounded spawn.
-                item.marker_path = rigger::liveness::marker_path(root, &run_id, &item.id)
+                item.marker_path = rigger::liveness::marker_path(root, &wave_run_id, &item.id)
                     .map(|p| p.to_string_lossy().into_owned());
             }
         }
@@ -851,8 +849,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // when no budget halt is set. (The teardown's never-delete-live guard reads the same hung set
     // through `terminal_and_no_live_worker` below, so a hung-but-alive worker is spared under any
     // halt - not just when its reason is the one surfaced here.)
-    let hung =
-        rigger::liveness::hung_spawns(runscope::current_run(&events)).map_err(|e| e.to_string())?;
+    let hung = rigger::liveness::hung_spawns(&events).map_err(|e| e.to_string())?;
     if step.halted.is_none() && !hung.is_empty() {
         // Recovery: record a real result on the named spawn (last-write-wins supersedes the
         // fault), then re-drive.
@@ -1181,7 +1178,7 @@ pub(crate) fn cmd_prompt(args: &[String]) -> Res {
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (events, _) = read_current_run(&store)?;
+    let (events, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
     match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
         Some(p) => {
             println!("{p}");
@@ -1221,7 +1218,7 @@ pub(crate) fn cmd_scratch(args: &[String]) -> Res {
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let (_, run_id) = read_current_run(&store)?;
+    let (_, run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
     let repo = loc
         .dir
         .parent()
@@ -1493,7 +1490,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // and `rigger dash` all name the ONE base the run anchored on. A run started before base
     // persistence existed (or without a repo) carries none, so fall back to the same
     // flag/env/default resolution the run branch was anchored with.
-    let release_base = read_current_run(&store)
+    let release_base = runscope::read::read_current_run(&store, conductor::STREAM)
         .ok()
         .and_then(|(events, _)| runscope::current_run_base(&events))
         .unwrap_or_else(|| {
@@ -1510,7 +1507,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // stats row shows (one authority) to stderr. Best-effort: a read hiccup never fails a run that
     // already succeeded, and on the shipped non-symbols default retention is unmeasured so nothing
     // prints and the default run output is unchanged.
-    if let Ok((events, _)) = read_current_run(&store) {
+    if let Ok((events, _)) = runscope::read::read_current_run(&store, conductor::STREAM) {
         let m = metrics::project(&events);
         if let Some(line) = parallelism_retention_line(&m) {
             if m.parallelism_retention_warns() {
@@ -1937,7 +1934,7 @@ fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::er
 /// stamp on the step path - by the time this runs, `fresh_run_if_requested` has already
 /// ensured/minted the run, so the id is always available for a real run.
 fn start_run_dashboard(store: &dyn EventStore) -> Option<dash::ReapedChild> {
-    if let Ok((_, run_id)) = read_current_run(store) {
+    if let Ok((_, run_id)) = runscope::read::read_current_run(store, conductor::STREAM) {
         record_dash_attempt(&run_id);
     }
     match spawn_run_dashboard() {
@@ -2393,7 +2390,7 @@ fn ensure_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) {
     if dash_ensure_suppressed(env_disabled, config_dash_enabled) {
         return;
     }
-    if let Ok((_, run_id)) = read_current_run(store) {
+    if let Ok((_, run_id)) = runscope::read::read_current_run(store, conductor::STREAM) {
         record_dash_attempt(&run_id);
     }
     let marker_path = std::path::PathBuf::from(db_path(DASH_MARKER_FILE));
@@ -2615,7 +2612,7 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // legitimate (see [`result_advisories`]). Weave with unit-10: under `--if-absent`
     // nothing can supersede (the CAS refuses), so the supersede note is suppressed -
     // the "left it untouched" line below reports that case honestly.
-    let (prior, _) = read_current_run(&store)?;
+    let (prior, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
     for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
         eprintln!("{note}");
     }

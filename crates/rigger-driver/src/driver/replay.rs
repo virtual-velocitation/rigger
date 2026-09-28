@@ -293,8 +293,8 @@ impl AgentDriver for ReplayDriver<'_> {
         // Read the run stream fresh on every spawn: the whole run's state lives in the
         // log, and a concurrent sibling spawn in the same wave may have appended a park
         // since this call started.
-        let all =
-            crate::run::read::read_run(self.store, STREAM).map_err(|e| Error(e.to_string()))?;
+        let (events, _) = crate::run::read::read_current_run(self.store, STREAM)
+            .map_err(|e| Error(e.to_string()))?;
         // Scope the spawn lookup to the CURRENT run (completes Gap 11): spawn ids for the
         // fixed stages (`plan/...`, `plan-critique/adjudicator#N`, `plan/replan#N`) are
         // spec-INDEPENDENT, so without run-scoping a fresh run REPLAYS a prior run's
@@ -303,7 +303,7 @@ impl AgentDriver for ReplayDriver<'_> {
         // (observed: a spec-12 run replayed the spec-10 plan-critique reject). Answering
         // and park-dedup must see only THIS run's events; the park itself is already
         // run-stamped (`park_in_run`).
-        let events = crate::run::current_run(&all);
+        let events = events.as_slice();
 
         // ANSWER an already-recorded spawn (replay): a recorded RESULT for this id means
         // the agent already ran, so return its outcome without re-running it. A recorded

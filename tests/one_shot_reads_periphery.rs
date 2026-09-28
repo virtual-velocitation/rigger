@@ -41,19 +41,6 @@ use serde_json::{json, Value};
 /// The carried-over types, spelled out: a run read hands back every one of them from every run.
 const CARRY_OVER: [&str; 3] = ["DecisionMade", "LessonLearned", "ReviewFinding"];
 
-/// What a repo step that starts a criterion unit reads of a superseded run, spelled out: the
-/// carried-over types and the criterion-adoption lifecycle types.
-const CARRY_OVER_AND_ADOPTION: [&str; 8] = [
-    "DecisionMade",
-    "LessonLearned",
-    "ReviewFinding",
-    "RunStarted",
-    "UnitStarted",
-    "UnitIntegrated",
-    "UnitFailed",
-    "UnitStatus",
-];
-
 /// Each event's type, in the order the read handed them back.
 fn types(events: &[Event]) -> Vec<&str> {
     events.iter().map(|e| e.type_.as_str()).collect()
@@ -449,7 +436,10 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
 
     // `rigger prime`: every run's decisions by type, newest first, after its instructions line.
     assert_eq!(
-        rigger_ok(root, &["prime"]).lines().skip(1).collect::<Vec<_>>(),
+        rigger_ok(root, &["prime"])
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>(),
         [
             "# Rigger: recent decisions",
             "- d-c: chose d-c",
@@ -661,8 +651,20 @@ fn a_step_that_does_not_ingest_advances_the_run_without_materializing_a_derived_
 /// latest-generation seed is criterion 3's, not this criterion's.
 #[cfg(not(feature = "symbols"))]
 #[test]
-fn a_repo_step_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_and_adoption_by_type(
-) {
+fn a_repo_step_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_and_adoption_by_type()
+{
+    /// What a repo step that starts a criterion unit reads of a superseded run, spelled out: the
+    /// carried-over types and the criterion-adoption lifecycle types.
+    const CARRY_OVER_AND_ADOPTION: [&str; 8] = [
+        "DecisionMade",
+        "LessonLearned",
+        "ReviewFinding",
+        "RunStarted",
+        "UnitStarted",
+        "UnitIntegrated",
+        "UnitFailed",
+        "UnitStatus",
+    ];
     let criterion = "alpha lands cleanly";
     let scaffold = |root: &Path| {
         common::cli::seed_store(root);
@@ -702,7 +704,12 @@ fn a_repo_step_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_an
     // Control: a fresh step over the same log with the superseded runs' `RunStarted` poisoned too.
     let control = common::git::temp_git_project_with_commit();
     scaffold(control.path());
-    seed_poisoned_project(control.path(), &[criterion], &CARRY_OVER_AND_ADOPTION, |_| {});
+    seed_poisoned_project(
+        control.path(),
+        &[criterion],
+        &CARRY_OVER_AND_ADOPTION,
+        |_| {},
+    );
     assert_eq!(
         poison(
             control.path(),
@@ -711,7 +718,10 @@ fn a_repo_step_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_an
         2
     );
     let (_out, err, ok) = run_rigger(control.path(), &["step", "--spec", "spec.md"]);
-    assert!(!ok, "a step whose adoption read meets a poisoned event fails: {err}");
+    assert!(
+        !ok,
+        "a step whose adoption read meets a poisoned event fails: {err}"
+    );
 }
 
 /// Given a live run whose earlier progress reports a binary predating the per-run progress
@@ -733,7 +743,10 @@ fn a_refresh_to_per_run_progress_streams_drops_a_live_runs_earlier_reports_and_t
             ],
         )
         .unwrap();
-    assert_eq!(rigger::progress::read_run(&store, "run-c").unwrap().len(), 0);
+    assert_eq!(
+        rigger::progress::read_run(&store, "run-c").unwrap().len(),
+        0
+    );
 
     rigger::progress_store::record(&store, "run-c", "u/implementer#0", "after the refresh")
         .unwrap();

@@ -468,7 +468,7 @@ fn watch_and_self_reap_on_idle(
 }
 
 /// Read this project's CURRENT-run events and run id from `events_db` under `identity` through
-/// the one-shot read of the run ([`read_current_run`], spec 101). An absent db is an empty run
+/// the one-shot read of the run ([`runscope::read::read_current_run`], spec 101). An absent db is an empty run
 /// and NO file is created (the guard precedes [`Store::open`], which would otherwise fabricate
 /// one).
 fn dash_read_run(
@@ -483,7 +483,10 @@ fn dash_read_run(
     // different-user / permission edge §48 contemplates), so the dashboard read reports an empty run
     // against a live server (d-u2rr-observer-selection-loud, spec-19c loud-failure-surfacing).
     let sel = store_selection(None, None)?;
-    Ok(with_project_store(events_db, identity, &sel, read_current_run)?.unwrap_or_default())
+    Ok(with_project_store(events_db, identity, &sel, |store| {
+        runscope::read::read_current_run(store, conductor::STREAM)
+    })?
+    .unwrap_or_default())
 }
 
 /// Build the context subgraph around the run's own units/decisions/findings from
@@ -670,7 +673,7 @@ fn dash_read_sqlite_stream_readonly(
 ) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
     Ok(
         with_project_store(path, project, &StoreSelection::Sqlite, |store| {
-            Ok(read_current_run(store)?.0)
+            Ok(runscope::read::read_current_run(store, conductor::STREAM)?.0)
         })?
         .unwrap_or_default(),
     )
@@ -704,7 +707,7 @@ fn dash_attach_run(inst: &rigger::registry::Instance) -> Vec<Event> {
                     StoreSelection::Server(_) => {
                         let backend = resolve_store(&sel, &events_db_path)?;
                         let store = Namespaced::new(backend.as_ref(), &inst.project);
-                        read_current_run(&store)?.0
+                        runscope::read::read_current_run(&store, conductor::STREAM)?.0
                     }
                 }
             }

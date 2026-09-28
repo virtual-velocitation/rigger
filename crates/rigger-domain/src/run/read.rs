@@ -31,32 +31,24 @@ pub const ADOPTION_TYPES: [&str; 5] = [
     TYPE_UNIT_STATUS,
 ];
 
-/// What the run slice refuses at the store: the derived index types (their fold is `graph.db`)
-/// and the carried-over types (already read whole by type, so never read twice). Built from the
-/// two lists, so a type added to either is refused here too.
-const RUN_SLICE_REFUSES: [&str; DERIVED_INDEX_TYPES.len() + CARRY_OVER_TYPES.len()] = {
-    let mut refused = [""; DERIVED_INDEX_TYPES.len() + CARRY_OVER_TYPES.len()];
-    let mut i = 0;
-    while i < refused.len() {
-        refused[i] = if i < DERIVED_INDEX_TYPES.len() {
-            DERIVED_INDEX_TYPES[i]
-        } else {
-            CARRY_OVER_TYPES[i - DERIVED_INDEX_TYPES.len()]
-        };
-        i += 1;
-    }
-    refused
-};
-
 /// The current run's own events, from its boundary forward, with the derived index types
-/// excluded at the store, together with the carried-over knowledge by type - in log (position)
-/// order, each event once. The run slice starts at the boundary's POSITION
-/// ([`EventStore::read_stream_typed`] anchors `from` on the event at that revision), so a row a
-/// stale writer reissued after the boundary at a low revision is read where the log recorded it,
-/// and a fold over this sees the disorder. A command that folds [`crate::run::current_run`] over
-/// this sees exactly the slice it saw over the whole stream, and a cross-run fold of decisions,
-/// lessons and findings sees every one of them; what it never materializes is a prior run's
-/// other events or any derived event.
+/// excluded at the store, together with the carried-over knowledge of every run by type - in log
+/// (position) order, each event once.
+///
+/// A LOG PREFIX, whatever a concurrent writer appends. The carried-over knowledge is read first
+/// and the run slice second, and the slice refuses only the derived types, so it holds the run's
+/// own decisions, lessons and findings too. Every carried-over event at or after the boundary was
+/// committed before the slice read began, so the slice holds it as well, and merging the two
+/// reads by position and dropping the repeated positions leaves exactly every non-derived event
+/// of the run up to the slice's head plus the carried-over events before the boundary: an event
+/// appended between the two reads is in the slice, never missing beside a later one.
+///
+/// The run slice starts at the boundary's POSITION ([`EventStore::read_stream_typed`] anchors
+/// `from` on the event at that revision), so a row a stale writer reissued after the boundary at a
+/// low revision is read where the log recorded it, and a fold over this sees the disorder. A
+/// command that folds [`crate::run::current_run`] over this sees exactly the slice it saw over the
+/// whole stream, and a cross-run fold of decisions, lessons and findings sees every one of them;
+/// what it never materializes is a prior run's other events or any derived event.
 ///
 /// The boundary is [`EventStore::last_position`]'s answer for the run's `RunStarted`. With no
 /// run started yet the whole stream is the run, so everything but the derived types is read.
@@ -68,10 +60,24 @@ pub fn read_run(store: &dyn EventStore, stream: &str) -> Result<Vec<Event>, Erro
     events.extend(store.read_stream_typed(
         stream,
         boundary,
-        TypeSelection::Except(&RUN_SLICE_REFUSES),
+        TypeSelection::Except(&DERIVED_INDEX_TYPES),
     )?);
     events.sort_by_key(|e| e.position);
+    events.dedup_by_key(|e| e.position);
     Ok(events)
+}
+
+/// THE CURRENT RUN, READ ONCE: [`read_run`]'s slice of the current run
+/// ([`crate::run::current_run`]) and the run's id ([`crate::run::current_run_id`], empty when no
+/// run has started) - the one composition every one-shot command, the MCP tools and a step's
+/// run-scoped folds share.
+pub fn read_current_run(
+    store: &dyn EventStore,
+    stream: &str,
+) -> Result<(Vec<Event>, String), Error> {
+    let read = read_run(store, stream)?;
+    let run_id = super::current_run_id(&read).unwrap_or_default();
+    Ok((super::current_run(&read).to_vec(), run_id))
 }
 
 #[cfg(test)]
@@ -79,19 +85,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_run_slice_refuses_exactly_the_derived_and_the_carried_over_types() {
-        assert_eq!(
-            RUN_SLICE_REFUSES,
-            [
-                "CodeEntityExtracted",
-                "EdgeInferred",
-                "DocConceptExtracted",
-                "DocLinkExtracted",
-                "DecisionMade",
-                "LessonLearned",
-                "ReviewFinding",
-            ]
-        );
+    fn the_carried_over_and_adoption_types_are_exactly_these() {
         assert_eq!(
             CARRY_OVER_TYPES,
             ["DecisionMade", "LessonLearned", "ReviewFinding"]

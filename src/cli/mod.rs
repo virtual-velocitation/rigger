@@ -1689,22 +1689,13 @@ fn result_of_at(
     id: &str,
     sel: &StoreSelection,
 ) -> Result<Option<spawn::SpawnResult>, Box<dyn std::error::Error>> {
-    let Some((events, _)) = with_project_store(path, project, sel, read_current_run)? else {
+    let Some((events, _)) = with_project_store(path, project, sel, |store| {
+        runscope::read::read_current_run(store, conductor::STREAM)
+    })?
+    else {
         return Ok(None);
     };
     Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
-}
-
-/// THE ONE-SHOT READ OF THE RUN (spec 101): the current run's slice of `store`'s run stream and
-/// the run's id, read from the run's boundary with the carried-over knowledge by type
-/// ([`runscope::read::read_run`]) - never the whole log. The one read `rigger status`, `rigger
-/// progress`, `rigger watch` and the dash snapshot fold.
-fn read_current_run(
-    store: &dyn EventStore,
-) -> Result<(Vec<Event>, String), rigger::eventstore::Error> {
-    let read = runscope::read::read_run(store, conductor::STREAM)?;
-    let run_id = runscope::current_run_id(&read).unwrap_or_default();
-    Ok((runscope::current_run(&read).to_vec(), run_id))
 }
 
 /// Run `run_id`'s progress reports out of `project`'s namespace of the progress store
@@ -2816,7 +2807,7 @@ fn watch_poll(
 }
 
 /// [`watch_poll`] over an already-opened run store: every store input [`watch::detect`] needs
-/// comes from ONE read of the run ([`read_current_run`], spec 101), so a poll costs the run's
+/// comes from ONE read of the run ([`runscope::read::read_current_run`], spec 101), so a poll costs the run's
 /// own events plus the carried-over knowledge, never the project's history.
 fn watch_poll_over(
     loc: &StoreLocation,
@@ -2824,7 +2815,7 @@ fn watch_poll_over(
 ) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
     let now = std::time::SystemTime::now();
 
-    let (run_events, run_id) = read_current_run(run_store)?;
+    let (run_events, run_id) = runscope::read::read_current_run(run_store, conductor::STREAM)?;
     let last_event_at = run_events.last().map(|e| e.recorded_at);
     // When THIS run began - its own leading `RunStarted`'s `recorded_at` (`current_run`
     // always slices from that event onward), or `None` when no run has started yet in
@@ -3015,7 +3006,6 @@ fn watch_poll_over(
 
     let inputs = watch::WatchInputs {
         run_events: &run_events,
-        full_events: &run_events,
         now,
         last_event_at,
         step_lock_free,
@@ -11338,7 +11328,7 @@ mod tests {
     // --- Spec 101, criterion 2: ONE-SHOT COMMANDS READ FROM THE BOUNDARY ---
 
     /// `rigger status`, `rigger progress` and the dash snapshot (its local and attached arms
-    /// alike) fold exactly one read of the run - [`read_current_run`] - and over a log holding
+    /// alike) fold exactly one read of the run - [`runscope::read::read_current_run`] - and over a log holding
     /// 200,000 derived events and two superseded runs before the boundary it costs exactly the
     /// run's own events plus the typed carry-over, asserted through the counting store double,
     /// and hands back the current run's slice and id.
@@ -11349,7 +11339,7 @@ mod tests {
         let inner = Store::open(":memory:").unwrap();
         let fixture = seed_one_shot_fixture(&inner, conductor::STREAM, &[]);
         let store = ReadCountingStore::new(&inner);
-        let (run, run_id) = read_current_run(&store).unwrap();
+        let (run, run_id) = runscope::read::read_current_run(&store, conductor::STREAM).unwrap();
         assert_eq!(store.reads(), fixture.read(conductor::STREAM));
         assert_eq!(store.materialized(), fixture.cost());
         assert_eq!(run_id, "run-c");

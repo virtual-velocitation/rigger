@@ -1569,8 +1569,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // (`crate::run::current_run`): a prior run's non-terminal residue sits before this
     // run's `RunStarted` and so can never seed ready work (the Gap 11 zombie fix), while
     // its decisions/findings stay visible as memory through the whole-stream graph.
-    let all_prior = crate::run::read::read_run(deps.store, STREAM)?;
-    let prior_events = crate::run::current_run(&all_prior);
+    let (prior_events, _) = crate::run::read::read_current_run(deps.store, STREAM)?;
+    let prior_events = prior_events.as_slice();
     let prior = ledger::project(prior_events).map_err(|e| Error(e.to_string()))?;
     // Replay idempotency (spec 04, criterion 4): seed the replay-key set from the prior
     // log's [`META_REPLAY_KEY`] metadata so a step re-running the conductor over recorded
@@ -1600,7 +1600,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // The type test comes first in BOTH arms, so the partition is a property of the code rather
     // than of the key's spelling: a derived event is excluded here even if its key looks like a
     // lifecycle key, and a non-derived event is ineligible below even if its key looks like a
-    // content key. `all_prior` is the whole-stream read this function already did - no extra
+    // content key. `prior_events` is the read of the run this function already took - no extra
     // store round-trip.
     let mut replayed_keys: HashSet<String> = prior_events
         .iter()
@@ -2167,8 +2167,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         && !ctx.budget_halted.load(Ordering::SeqCst);
     ctx.run_deferred_gates(&stages, converged)?;
 
-    let events = crate::run::read::read_run(deps.store, STREAM)?;
-    let current_events = crate::run::current_run(&events);
+    let (current_events, _) = crate::run::read::read_current_run(deps.store, STREAM)?;
+    let current_events = current_events.as_slice();
     // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1),
     // then stamp the live HALT reason (Gap 13) from the conductor's IN-PROCESS breaker
     // state, not from a fold of the log: a halt is a runtime condition of THIS process (a
@@ -3212,10 +3212,11 @@ impl RunCtx<'_> {
         Ok(())
     }
 
-    /// The run this step folds, read from its boundary with the carried-over knowledge by type
-    /// ([`crate::run::read::read_run`], spec 101) - never the whole log.
-    fn read_run(&self) -> Result<Vec<Event>, Error> {
-        crate::run::read::read_run(self.deps.store, STREAM).map_err(|e| Error(e.to_string()))
+    /// The current run this step folds ([`crate::run::read::read_current_run`], spec 101): its
+    /// own events from its boundary - never the whole log. The one read every run-scoped fold of
+    /// this context takes.
+    fn read_current_run(&self) -> Result<Vec<Event>, Error> {
+        Ok(crate::run::read::read_current_run(self.deps.store, STREAM)?.0)
     }
 
     /// The integrating commit(s) of `unit` to REVERT for a compensation (spec 12, unit 4):
@@ -3230,11 +3231,9 @@ impl RunCtx<'_> {
     /// integrated more than once across compensation cycles, or landed more than one
     /// commit in a single integration.
     fn commits_to_compensate(&self, unit: &str) -> Vec<String> {
-        let all = match crate::run::read::read_run(self.deps.store, STREAM) {
-            Ok(e) => e,
-            Err(_) => return Vec::new(),
+        let Ok(events) = self.read_current_run() else {
+            return Vec::new();
         };
-        let events = crate::run::current_run(&all);
         let already = self.compensated_commits.lock().unwrap();
         let mut commits: Vec<String> = Vec::new();
         for e in events
@@ -3885,7 +3884,7 @@ impl RunCtx<'_> {
         // replay-keyed) UnitStarted records the adoption in the SAME event as its own
         // branch/agent - never a second event, and never a window where the emitted
         // record and the actual worktree seed could disagree. Computed unconditionally
-        // on every call (a cheap full-log fold), but its own durable provenance write
+        // on every call (one read of the lifecycle types), but its own durable provenance write
         // and git side effect only ever mutate once - see
         // [`Self::adopt_prior_criterion_branch`]'s own doc comment (round 4: the
         // provenance below is never freshly re-derived once decided, so this call is
@@ -4251,9 +4250,8 @@ impl RunCtx<'_> {
     fn review_round_start_sha(&self, unit: &str, attempt: u32, dir: &str) -> Result<String, Error> {
         let key = review_round_start_key(unit, attempt);
         if self.replayed_keys.lock().unwrap().contains(&key) {
-            let events = crate::run::read::read_run(self.deps.store, STREAM)?;
-            let events = crate::run::current_run(&events);
-            return Ok(recorded_review_round_start_sha(events, unit, attempt).unwrap_or_default());
+            let events = self.read_current_run()?;
+            return Ok(recorded_review_round_start_sha(&events, unit, attempt).unwrap_or_default());
         }
         let sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
@@ -4736,19 +4734,18 @@ impl RunCtx<'_> {
         unit: &str,
         named_spawn_id: &str,
     ) -> Result<bool, Error> {
-        let all = crate::run::read::read_run(self.deps.store, STREAM)?;
         // Scoped to THIS run alone (mirrors `run()`'s own `prior_events` fold and every
         // `liveness::sweep`/`hung_spawns` call site): an unscoped whole-stream read would let
         // a PRIOR run's leftover `SpawnRequested` for a same-named unit (a re-run that reuses
         // a slug) satisfy this guard for a unit this run has never touched - the same Gap 11
         // zombie class `crate::run::current_run`'s own doc comment names.
-        let events = crate::run::current_run(&all);
+        let events = self.read_current_run()?;
         let scratch = crate::worktree::scratch_root_from_env(
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
         );
         Ok(liveness::spawn_is_halted(
-            events,
+            &events,
             &scratch,
             &self.run_id,
             unit,
@@ -6761,8 +6758,7 @@ impl RunCtx<'_> {
     /// All scoping is within the CURRENT run ([`current_run`](crate::run::current_run)), so a
     /// prior run's approve never counts.
     fn gating_spawn_emitted_approve(&self, id: &str) -> Result<bool, Error> {
-        let all = self.read_run()?;
-        let events = crate::run::current_run(&all);
+        let events = self.read_current_run()?;
         Ok(events.iter().any(|e| {
             e.type_ == contextgraph::TYPE_DECISION_MADE
                 // Attributed EXACTLY by the emitting spawn's [`META_SPAWN`] stamp: it counts
@@ -6796,9 +6792,8 @@ impl RunCtx<'_> {
     /// `false` there and a genuine in-process review failure still propagates to remediation
     /// unchanged - only a REPLAYED recorded error re-parks.
     fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
-        let all = self.read_run()?;
-        let events = crate::run::current_run(&all);
-        Ok(spawn::result_of(events, id)
+        let events = self.read_current_run()?;
+        Ok(spawn::result_of(&events, id)
             .map_err(|e| Error(e.to_string()))?
             .is_some_and(|res| res.is_error() && !res.is_liveness_fault()))
     }
@@ -6849,8 +6844,8 @@ impl RunCtx<'_> {
         // agent ran out-of-process and its findings went to the graph, so its empty stdout
         // is a valid outcome, not degeneracy. The live drivers never record a spawn
         // result, so this read is `None` there and the in-process observation stands.
-        let events = self.read_run()?;
-        let replayed = spawn::result_of(crate::run::current_run(&events), id)
+        let events = self.read_current_run()?;
+        let replayed = spawn::result_of(&events, id)
             .map_err(|e| Error(e.to_string()))?
             .is_some();
         Ok(!replayed)
@@ -7485,7 +7480,7 @@ impl RunCtx<'_> {
     /// diff, exactly the behavior `specs/91-mutation-runs-once-at-the-check-in-seam.md`
     /// documents for a run with nothing to diff against.
     fn run_base_env(&self) -> String {
-        self.read_run()
+        self.read_current_run()
             .ok()
             .and_then(|events| crate::run::current_run_base_tip(&events))
             .unwrap_or_default()
@@ -9289,8 +9284,7 @@ impl RunCtx<'_> {
     /// simply supersedes an earlier, smaller map) - the same latest-position-wins
     /// idiom every other log-derived state in this file already reads by.
     fn read_plan_landed(&self, unit: &str) -> Result<HashMap<String, String>, Error> {
-        let all = self.read_run()?;
-        let events = crate::run::current_run(&all);
+        let events = self.read_current_run()?;
         let id = format!("plan-landed:{unit}");
         let mut map = HashMap::new();
         for e in events
@@ -10819,7 +10813,7 @@ impl RunCtx<'_> {
         integrated: &HashSet<String>,
         terminal: &HashSet<String>,
     ) -> Result<(), Error> {
-        let events = self.read_run()?;
+        let events = self.read_current_run()?;
         // GATE INHERITANCE (spec 103, decided): the fan-out template's gates are the
         // base every proposed unit's stage carries below - a proposal's own `gates`
         // field is accepted for compatibility and UNIONED in ([`union_gates`]), so a
@@ -10858,7 +10852,7 @@ impl RunCtx<'_> {
         // against the same value regardless of walk order, so the ADD-before-refine order
         // reads the refined unit's episode exactly as correctly as refine-before-ADD does.
         let mut final_episode: HashMap<String, String> = HashMap::new();
-        for e in crate::run::current_run(&events) {
+        for e in &events {
             if e.type_ != TYPE_UNIT_PROPOSED {
                 continue;
             }
@@ -10880,7 +10874,7 @@ impl RunCtx<'_> {
         // harvest here re-parks ancient units at attempt #0. Observed live: the first
         // run under the scoped binary rose u-metrics-mod from a weeks-dead aborted
         // run, a second time, BECAUSE of the scoping it evaded.
-        for e in crate::run::current_run(&events) {
+        for e in &events {
             if e.type_ != TYPE_UNIT_PROPOSED {
                 continue;
             }

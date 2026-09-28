@@ -518,20 +518,20 @@ impl<'a> Server<'a> {
         )
     }
 
-    /// The run a tool folds, read fresh from its boundary with the carried-over knowledge by
-    /// type ([`crate::run::read::read_run`], spec 101) - never the whole log.
-    fn read_run(&self) -> Result<Vec<Event>, ToolError> {
-        crate::run::read::read_run(self.store, &self.stream)
+    /// The current run a tool folds and its id, read fresh from its boundary with the
+    /// carried-over knowledge by type ([`crate::run::read::read_current_run`], spec 101) - never
+    /// the whole log.
+    fn read_current_run(&self) -> Result<(Vec<Event>, String), ToolError> {
+        crate::run::read::read_current_run(self.store, &self.stream)
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))
     }
 
-    /// The current run's id, resolved fresh from the run stream - the SAME derivation
-    /// [`tool_activity`](Server::tool_activity) uses for its own `run_id`, shared here for
+    /// The current run's id, resolved fresh from the run stream - the SAME read
+    /// [`tool_activity`](Server::tool_activity) takes for its own `run_id`, shared here for
     /// the two spawn-bound tools ([`tool_progress`], [`tool_scratch`]) that need it to
     /// resolve a per-run record/path, never a second parallel resolution.
     fn current_run_id(&self) -> Result<String, ToolError> {
-        let all = self.read_run()?;
-        Ok(crate::run::current_run_id(&all).unwrap_or_default())
+        Ok(self.read_current_run()?.1)
     }
 
     /// `rigger_progress` (spec 104's spawn MCP server, addendum §4.3): record one live
@@ -689,9 +689,8 @@ impl<'a> Server<'a> {
     /// --json` prints. Read-only; the progress store and markers are optional (a server
     /// started without them still returns the frontier).
     fn tool_activity(&self) -> Result<Value, ToolError> {
-        let all = self.read_run()?;
-        let run_events = crate::run::current_run(&all);
-        let run_id = crate::run::current_run_id(&all).unwrap_or_default();
+        let (run_events, run_id) = self.read_current_run()?;
+        let run_events = run_events.as_slice();
 
         let prog_events: Vec<Event> = match self.progress {
             Some(store) => crate::progress::read_run(store, &run_id).unwrap_or_default(),
