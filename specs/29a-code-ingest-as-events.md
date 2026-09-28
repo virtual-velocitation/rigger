@@ -9,9 +9,9 @@ First of the three unified-KG specs (section 6): it lands the code half of the o
 ## Design
 
 The tree-sitter touch point today is `extract::extract(source, lang, ts_language, tags_query) ->
-FileSymbols` (`src/grounder/symbols/extract.rs`), driven by `build_index` -> `index_one_file`
-(`src/grounder/symbols/mod.rs`) into the parser-free model (`Lang`/`Kind`/`Def`/`SymRef`/
-`FileSymbols`/`SymbolIndex`, `src/grounder/symbols/model.rs`). This spec keeps that extraction but
+FileSymbols` (`crates/rigger-grounder/src/grounder/symbols/extract.rs`), driven by `build_index` -> `index_one_file`
+(`crates/rigger-grounder/src/grounder/symbols/mod.rs`) into the parser-free model (`Lang`/`Kind`/`Def`/`SymRef`/
+`FileSymbols`/`SymbolIndex`, `crates/rigger-grounder/src/grounder/symbols/model.rs`). This spec keeps that extraction but
 routes its output through the event log:
 
 - **Emit.** The per-file extraction emits `CodeEntityExtracted` (one per definition) and

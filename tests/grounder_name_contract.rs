@@ -1,7 +1,7 @@
 //! PERIPHERY (contract / API) tests for the grounder NAME-RESOLUTION contract
 //! (spec 57, criterion 1), driven as an EXTERNAL consumer of the `rigger` crate.
 //!
-//! The in-module `#[cfg(test)]` tests in `src/grounder/mod.rs` exercise the same three
+//! The in-module `#[cfg(test)]` tests in `crates/rigger-grounder/src/grounder/mod.rs` exercise the same three
 //! items, but from INSIDE the crate - they would pass even if the items were
 //! `pub(crate)`. This file lives in the integration-test crate, so it reaches
 //! `grounder_for`, `is_retired_grounder`, and `retired_grounder_error` ONLY through the

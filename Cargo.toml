@@ -20,7 +20,7 @@ repository = "https://github.com/virtual-velocitation/rigger"
 # edition 2021's default for a non-virtual root anyway; named explicitly so the workspace's
 # resolution behavior never depends on an implicit default.
 [workspace]
-members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver"]
+members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver", "crates/rigger-grounder"]
 resolver = "2"
 
 # THE PRINCIPLES AS LINTS (workspace split, step 0): an enum whose largest variant dwarfs the
@@ -59,7 +59,7 @@ default = ["symbols", "store"]
 # that lane. `store` stays the name-carrying half of the check and the literal feature
 # a caller can pass explicitly (e.g. alongside `--no-default-features`) to get the same
 # surface without `symbols`.
-store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlite/store", "rigger-process/store", "rigger-worktree-git/store", "rigger-gates-shell/store", "rigger-driver/store"]
+store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlite/store", "rigger-process/store", "rigger-worktree-git/store", "rigger-gates-shell/store", "rigger-driver/store", "rigger-grounder/store"]
 # THE PURE SUBSET (spec 93, criterion 1): a `core` module imports none of `std::fs`,
 # `std::process`, `std::net`, `std::time::SystemTime::now`, `rusqlite`, `tokio`,
 # `rustix`, `fs2`, `ignore` or `uuid` - every time and age it needs is an input. Every
@@ -68,7 +68,7 @@ store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlit
 # builds only the pure subset, natively and for `wasm32-unknown-unknown`. Carries no
 # dependency of its own: the pure subset needs nothing beyond `serde`/`serde_json`,
 # already unconditional.
-core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/core", "rigger-process/core", "rigger-worktree-git/core", "rigger-gates-shell/core", "rigger-driver/core"]
+core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/core", "rigger-process/core", "rigger-worktree-git/core", "rigger-gates-shell/core", "rigger-driver/core", "rigger-grounder/core"]
 # Deterministic, dependency-light STRUCTURAL grounding (spec 15): tree-sitter parsers +
 # the tags mechanism, compiled into the binary (no runtime-loaded artifacts). Carried in
 # `default`, so a plain `cargo build` ships it; a minimal build drops it via
@@ -77,16 +77,7 @@ core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/c
 # depend on `tree-sitter` only as a dev-dep and couple at runtime through
 # `tree-sitter-language`, so this set is ABI-pinned by `tree-sitter-tags` (which requires
 # an exact `tree-sitter` minor); unit 2 extends this feature with the other four grammars.
-symbols = [
-    "dep:tree-sitter",
-    "dep:tree-sitter-tags",
-    "dep:tree-sitter-rust",
-    "dep:tree-sitter-c-sharp",
-    "dep:tree-sitter-javascript",
-    "dep:tree-sitter-typescript",
-    "dep:tree-sitter-go",
-    "dep:tree-sitter-python",
-]
+symbols = ["rigger-grounder/symbols"]
 
 [dependencies]
 # The domain ring (workspace split): its lanes follow this crate's `store`/`core` features.
@@ -111,6 +102,9 @@ rigger-gates-shell = { path = "crates/rigger-gates-shell", default-features = fa
 # The agent-host adapters (workspace split, ring 3). Not optional, like the adapters above; its
 # own `store`/`core` features (forwarded above) gate it exactly as the root gated it.
 rigger-driver = { path = "crates/rigger-driver", default-features = false }
+# The grounding adapters (workspace split, ring 3). Not optional, like the adapters above; its
+# own `store`/`core`/`symbols` features (forwarded above) gate it exactly as the root gated it.
+rigger-grounder = { path = "crates/rigger-grounder", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # The declarative failure taxonomy (spec 10, unit 2) matches a failure's captured
 # output against a rule's `output_regex`. Pure-Rust and non-optional: `output_regex`
@@ -127,28 +121,6 @@ serde_json = "1"
 serde_path_to_error = "0.1"
 serde_yaml = "0.9"
 thiserror = "2"
-# Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
-# concrete syntax tree; tree-sitter-tags runs each grammar's `tags` query to yield uniform
-# definition/reference tags. `tree-sitter-tags` requires an exact `tree-sitter` MINOR, so it
-# pins the runtime version; grammar crates couple only through `tree-sitter-language`, so a
-# grammar's `LANGUAGE` (a `LanguageFn`) converts to `tree_sitter::Language` via `.into()`
-# regardless of which `tree-sitter` minor built it. Unit 1 ships the Rust grammar; unit 2
-# adds the remaining four on this same base. All optional, all under the `symbols` feature.
-tree-sitter = { version = "0.25", optional = true }
-tree-sitter-tags = { version = "0.25", optional = true }
-tree-sitter-rust = { version = "0.24", optional = true }
-# The remaining four shipped languages (unit 2). Each couples to the runtime only through
-# `tree-sitter-language` (its `LANGUAGE` is a `LanguageFn` that `.into()`s to
-# `tree_sitter::Language`), so the pinned `tree-sitter` / `tree-sitter-tags` 0.25 ABI drives
-# resolution and these grammar minors are chosen to match it. All optional, all under the
-# `symbols` feature. The JavaScript/TypeScript family is two crates (one grammar each);
-# `tree-sitter-typescript` exposes `LANGUAGE_TYPESCRIPT` (and `LANGUAGE_TSX`), so `.ts`/`.tsx`
-# both resolve through it.
-tree-sitter-c-sharp = { version = "0.23", optional = true }
-tree-sitter-javascript = { version = "0.23", optional = true }
-tree-sitter-typescript = { version = "0.23", optional = true }
-tree-sitter-go = { version = "0.23", optional = true }
-tree-sitter-python = { version = "0.23", optional = true }
 
 # THE CORE LANE IS PURE (spec 93, criterion 1): these seven crates are exactly the ones
 # the `store`-gated modules need and the pure `core` subset must never see - each is
@@ -165,15 +137,6 @@ tree-sitter-python = { version = "0.23", optional = true }
 # unaffected: these seven are exactly as mandatory there as they were before this split.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
-# The shared project walk (`grounder::walk_guarded`) scopes ingest + grounding to the
-# project's own sources by honoring the repository's OWN version-control ignore rules
-# (spec 49, section 3). This is the canonical, well-tested pure-Rust gitignore engine,
-# used only by `store`-gated code (the ingest/grounding walk) - see the target-cfg note
-# above for why it lives in this table rather than the unconditional `[dependencies]`.
-# We use only its committed-`.gitignore` matching (global + `.git/info/exclude`
-# disabled) so the scoping is machine-independent and the same tree yields a
-# byte-identical graph.
-ignore = "0.4"
 uuid = { version = "1", features = ["v4"] }
 # The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
 # (spec 78): `kill_process`/`test_kill_process`, never a `Command::new("kill")` shell-out and

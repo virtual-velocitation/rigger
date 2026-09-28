@@ -221,7 +221,7 @@ fn frame_at_full_extent_completes_under_8ms_of_core_time_against_the_real_store(
 /// kinds (`method`, `module`) are the test author's own educated guess at what a real extractor
 /// emits, never verified against the extractor itself. This repository's own real store is the
 /// one place that guess is actually checked: every kind THIS repository's own extraction pass
-/// (`src/grounder/symbols/extract.rs::kind_of` / `events.rs::kind_str`) really assigns to a drawn
+/// (`crates/rigger-grounder/src/grounder/symbols/extract.rs::kind_of` / `events.rs::kind_str`) really assigns to a drawn
 /// entity must resolve through `kind_colour` without panicking, named or default - proving the
 /// documented four-plus-default palette is exhaustive against the real extractor's real output,
 /// not just the fixture author's guess of what that output would be. (`legend`'s own wire colour

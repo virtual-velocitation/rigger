@@ -16,7 +16,7 @@ Today structural grounding is stitched in `build_prompt_with_failure` (`src/cond
 calls `gr.ground(&query, 8)`, builds a `seed` Vec from the returned refs' `.file` fields, then
 calls `graph_context(seed)` which runs a single `graph.subgraph(seed, 2)`. Blast radius is a
 separate `BlastRadius { precise: Vec<String>, safe: Vec<String>, serialize: bool }` struct
-(`src/grounder/mod.rs`) with per-grounder overrides (`grounder/symbols/grounder.rs`,
+(`crates/rigger-grounder/src/grounder/mod.rs`) with per-grounder overrides (`grounder/symbols/grounder.rs`,
 `grounder/symbols/hybrid.rs`) and a `record_blast_radius` audit emit (`conductor.rs`).
 
 With code and design intent now IN the graph (29a/29b), unify:

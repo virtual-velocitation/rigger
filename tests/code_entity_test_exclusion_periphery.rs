@@ -1952,7 +1952,7 @@ rigger::test_cases! {
 
 rigger::test_cases! {
     /// sdet finding, round 7: `resolve_out_of_line_target`'s `#[path]`-override branch
-    /// (`src/grounder/symbols/events.rs`) joins the declaring file's own directory onto the raw
+    /// (`crates/rigger-grounder/src/grounder/symbols/events.rs`) joins the declaring file's own directory onto the raw
     /// attribute string with a single `format!("{declaring_dir}/{p}")` and does no `..`/`.`
     /// normalization before looking the result up in `idx.files()`, whose keys are always the
     /// project's real, already-clean relative paths (never containing a literal `..` segment). A

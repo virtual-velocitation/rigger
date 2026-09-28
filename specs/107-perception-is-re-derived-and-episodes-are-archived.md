@@ -49,7 +49,7 @@ seam loudly, so a future event type is classified the day it is added.
 (`src/conductor.rs:2954`), append ONE event per file generation,
 `GenerationIngested { prefix, file, blob, extractor }`, where `blob` is the git blob id of the
 content ingested and `extractor` the extraction version, and fold the extracted batch
-(`symbols::events::extract_events`, `src/grounder/symbols/events.rs:171`; the design and
+(`symbols::events::extract_events`, `crates/rigger-grounder/src/grounder/symbols/events.rs:171`; the design and
 workflow extractors) into `graph.db` through the same `apply`, keyed in the `applied` table by
 the ledger event's position and carrying the generation's replay key
 `<prefix>/<file>@<blob>#<i>` in each edge's `source`. The cold-build sink (`cmd_graph_build`,

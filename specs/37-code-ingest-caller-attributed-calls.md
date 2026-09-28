@@ -20,10 +20,10 @@ Additive: the existing `<file> --REFERENCES--> G` edge and its consumers are unt
 
 ## Design
 
-The extractor (`src/grounder/symbols/extract.rs`, the ONLY function that touches tree-sitter) runs
+The extractor (`crates/rigger-grounder/src/grounder/symbols/extract.rs`, the ONLY function that touches tree-sitter) runs
 the grammar's `tags` query and lowers each tag into a `Def { kind, name, line }` or a
-`SymRef { name, line }` (`src/grounder/symbols/model.rs`). A `SymRef` keeps only name + line - the
-enclosing definition is thrown away. The emit pass (`src/grounder/symbols/events.rs`
+`SymRef { name, line }` (`crates/rigger-grounder/src/grounder/symbols/model.rs`). A `SymRef` keeps only name + line - the
+enclosing definition is thrown away. The emit pass (`crates/rigger-grounder/src/grounder/symbols/events.rs`
 `extract_events`) turns each `SymRef` into `EdgeInferred { file, name, lang, fresh }`, and the fold
 (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) resolves `name` to a callee entity and folds
 `<file> --REFERENCES--> <callee>`.

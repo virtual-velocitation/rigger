@@ -1,7 +1,7 @@
 //! Periphery (API / integration) tests for spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED:
 //! the workflow-definition indexer (`src/grounder/workflowdef.rs`, new pub `extract_events` /
 //! `project_events` / `project_batches`, plus new pub `KIND_STAGE` / `REL_NEEDS` / `REL_RUNS` /
-//! `REL_REVIEWS`) and the JavaScript plain-constant tags fix (`src/grounder/symbols/registry.rs`).
+//! `REL_REVIEWS`) and the JavaScript plain-constant tags fix (`crates/rigger-grounder/src/grounder/symbols/registry.rs`).
 //!
 //! Every existing test of this criterion's new code (`workflowdef::tests`, the new
 //! `contextgraph::sqlite::tests::workflow_definition_events_fold_into_...` fold test, and

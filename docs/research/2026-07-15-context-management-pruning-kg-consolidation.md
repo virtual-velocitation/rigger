@@ -144,7 +144,7 @@ extraction (this project has hit weekly usage limits).
    the `BlastRadius` two-view struct + default-impl contortions (`grounder/mod.rs:135-191`) and
    the seed-vs-precise divergence doc/workaround (`conductor.rs:5863-5969`, ~150-200 LOC) with
    `EXTRACTED`/`INFERRED`/`AMBIGUOUS` tiers filtered per consumer; replace the hub-percentile
-   heuristic with community detection. Do this when next touching `src/grounder/symbols/`.
+   heuristic with community detection. Do this when next touching `crates/rigger-grounder/src/grounder/symbols/`.
 
 4. **The unified event-sourced KG substrate** (concepts 2+3 combined; the endgame). Fold the
    `symbols` code graph into the `contextgraph` projection; ingest docs/rationale as

@@ -55,7 +55,7 @@
     "reason": "`real_files`, `real_workspace_files` and `real_map` memoize three different scans of the tree; the only shared shape is the standard `OnceLock` memoization idiom."
   },
   {
-    "id": "dup-37f6bddf866b",
+    "id": "dup-7727a9cc5ba0",
     "disposition": "not-a-duplicate",
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
@@ -145,7 +145,7 @@
     "reason": "Three contract checks of different clauses (revision assignment and order on append, backward-read order and inclusive lower bound, forward-read inclusive `from`) that share only the append-then-read setup every contract check performs."
   },
   {
-    "id": "dup-7e1f522f852f",
+    "id": "dup-4b942d7302a6",
     "disposition": "not-a-duplicate",
     "reason": "Two different enum mappings: `ConceptKind::node_kind` names a design concept's node kind while `LinkRel::rel` names a design link's edge relation; only the match-to-constant shape is shared."
   },
@@ -250,7 +250,7 @@
     "reason": "Both seed through the shared `store_with`/`keyed`; one proves distinct keys measure no duplication, the other that one key under two covered types is two subjects and cross-checks the real prune."
   },
   {
-    "id": "dup-2aabb2b82325",
+    "id": "dup-9408447d0007",
     "disposition": "not-a-duplicate",
     "reason": "Two named modes of the shared `name_occurrence_map` (counting references too vs definitions only), feeding two different ranking signals."
   },
@@ -265,12 +265,12 @@
     "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
   },
   {
-    "id": "dup-ab86de4a6b66",
+    "id": "dup-d36198b3982d",
     "disposition": "not-a-duplicate",
     "reason": "Both build through the shared `grounder_over`; they pin two different ranking rules (definition over reference, exact over contains tier)."
   },
   {
-    "id": "dup-d45ee6096ba3",
+    "id": "dup-56485f8d4262",
     "disposition": "not-a-duplicate",
     "reason": "Three different reindex scenarios with different steps and assertions: a concurrent peer's persisted write, a changed file, and a deleted file."
   },
@@ -310,7 +310,7 @@
     "reason": "One test drives the reference fold arm's own supersede on a refs-only file; the other pins that re-extracting file A leaves file B's reference edge live - a different arm and a different scope boundary."
   },
   {
-    "id": "dup-852917647aea",
+    "id": "dup-a34b5b595e15",
     "disposition": "not-a-duplicate",
     "reason": "concept_events and link_events are the two typed callers of the shared sorted_events emitter; each supplies its own sort order, event type and payload."
   },
@@ -370,17 +370,17 @@
     "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and then delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, rather than re-implementing it."
   },
   {
-    "id": "dup-f8130edd50f7",
+    "id": "dup-a3035b401227",
     "disposition": "not-a-duplicate",
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
   },
   {
-    "id": "dup-b435f9efe66c",
+    "id": "dup-f83d81bb94ee",
     "disposition": "not-a-duplicate",
     "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
   },
   {
-    "id": "dup-cdcd442232af",
+    "id": "dup-6741e1f3023b",
     "disposition": "not-a-duplicate",
     "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
   },
@@ -430,7 +430,7 @@
     "reason": "The replay driver's `spawn_request` assembles the parked request from an agent definition and the conductor's spawn options, while the test fixture builds a minimal request from bare labels with every optional field empty."
   },
   {
-    "id": "dup-6c4197f4d7b0",
+    "id": "dup-9b727c38b8a1",
     "disposition": "not-a-duplicate",
     "reason": "The audit's `scan_file`/`tokenize` produce a normalized token stream and function spans over every Rust file for similarity shingling (and must run in every feature lane), while `extract` returns symbol definitions through the optional tree-sitter grammars; different outputs for different consumers."
   },
@@ -500,7 +500,7 @@
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
   {
-    "id": "dup-d507d0e6cd18",
+    "id": "dup-cbe8527c9623",
     "disposition": "not-a-duplicate",
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
   },
@@ -625,7 +625,7 @@
     "reason": "`stage` builds a review-less never-merging `Stage` for the replay tests while `agent_with_prompt` builds an `AgentDef`; they construct different types."
   },
   {
-    "id": "dup-20c2938a0805",
+    "id": "dup-207b5aa153cb",
     "disposition": "not-a-duplicate",
     "reason": "Three enum-to-string mappings over different enums (edge direction to SQL, entity kind, language)."
   },
@@ -635,12 +635,12 @@
     "reason": "`as_str`/`response` map four different enums (failure cause, gate outcome, ledger status, watch response) to their own strings."
   },
   {
-    "id": "dup-15058e86d477",
+    "id": "dup-e3c162b7bd56",
     "disposition": "not-a-duplicate",
     "reason": "Three predicates over different inputs (a markdown path extension, a spec element start, an error-shaping identifier)."
   },
   {
-    "id": "dup-664af4b75f14",
+    "id": "dup-ed93266f67c6",
     "disposition": "not-a-duplicate",
     "reason": "Two cold-start tests over different readers (the spec store load and the workflow-definition projection), each asserting its own empty result."
   },

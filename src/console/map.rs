@@ -1115,7 +1115,7 @@ pub fn fit_entity(model: &MapModel, viewport_w: f64, viewport_h: f64, id: &str) 
 
 /// THE MAP's four KIND COLOURS (Design, LEGEND: "the entity dot and its four kind colours") - the
 /// only definition kinds a reader reasons about by sight: a function, a type (struct/enum/class/
-/// interface all fold to `type` - see `src/grounder/symbols/extract.rs::kind_of`), a trait, a
+/// interface all fold to `type` - see `crates/rigger-grounder/src/grounder/symbols/extract.rs::kind_of`), a trait, a
 /// constant. `(kind, label, colour)` triples, in the legend's own display order.
 pub const KIND_COLOURS: &[(&str, &str, &str)] = &[
     ("function", "Function", "#6ea8fe"),
@@ -1125,7 +1125,7 @@ pub const KIND_COLOURS: &[(&str, &str, &str)] = &[
 ];
 
 /// The neutral colour a [`DrawEntity::kind`] outside [`KIND_COLOURS`] paints with (`method`,
-/// `impl`, `module`, `other` - see `src/grounder/symbols/events.rs::kind_str` - or an empty/
+/// `impl`, `module`, `other` - see `crates/rigger-grounder/src/grounder/symbols/events.rs::kind_str` - or an empty/
 /// unknown kind): these are structural definition kinds, not vocabulary Design's own "four kind
 /// colours" distinguishes on sight, so they share ONE default rather than growing a fifth
 /// hand-picked colour.

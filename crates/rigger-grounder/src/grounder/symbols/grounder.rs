@@ -1658,7 +1658,7 @@ mod tests {
     fn ground_answers_audit_questions_5_and_8_against_the_real_rigger_js() {
         let real = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("workflows")
+                .join("../../workflows")
                 .join("rigger.js"),
         )
         .expect("this project's own workflows/rigger.js must be readable");

@@ -327,7 +327,7 @@ spec-authoring failure class. The graph's own structural retrieval serves the sy
 **Gated on** §2.2 (project-scoping enforced on shared-backend nodes/edges) and §2.3 (run
 provenance) — the two invariants that make a shared, cross-run KG safe.
 
-_Code:_ `src/contextgraph/` (new node kinds + fold arms), `src/grounder/symbols/` (re-expressed
+_Code:_ `src/contextgraph/` (new node kinds + fold arms), `crates/rigger-grounder/src/grounder/symbols/` (re-expressed
 as an event-emitting extractor that folds into the projection), `graph_context`
 (`src/conductor.rs`) unified traversal, docs ingestion.
 

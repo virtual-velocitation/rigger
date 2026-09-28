@@ -2078,7 +2078,7 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 7] = [
+const SPLIT_CRATES: [&str; 8] = [
     "crates/rigger-domain",
     "crates/rigger-store-sqlite",
     "crates/rigger-graph-sqlite",
@@ -2086,6 +2086,7 @@ const SPLIT_CRATES: [&str; 7] = [
     "crates/rigger-worktree-git",
     "crates/rigger-gates-shell",
     "crates/rigger-driver",
+    "crates/rigger-grounder",
 ];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
@@ -3502,7 +3503,7 @@ fn find_same_named_helper_functions(files: &[FileScan], refs: &[FnRef]) -> Vec<D
 
 /// This file's own bespoke source-text scanner (`scan_file`, the frame-stack scanner) and
 /// token-level lexer (`tokenize`) alongside the codebase's ONE canonical tree-sitter-based
-/// extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc calls it "the ONE
+/// extractor, `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract` (its own module doc calls it "the ONE
 /// function that touches tree-sitter", architecture 5.5.3) - a fourth semantic cluster, added
 /// per the adjudicator's REMEDY after u85c1's architecture lens routed this exact pair to this
 /// criterion BY NAME across two prior review rounds and it was never added. `scan_file` and
@@ -3519,8 +3520,9 @@ fn find_bespoke_lexer_vs_canonical_extractor(files: &[FileScan], refs: &[FnRef])
         let sf = r.scanned(files);
         let is_bespoke_lexer = sf.file == "tests/simplification_audit.rs"
             && matches!(sf.name.as_str(), "scan_file" | "tokenize");
-        let is_canonical_extractor =
-            sf.file == "src/grounder/symbols/extract.rs" && sf.name == "extract";
+        let is_canonical_extractor = sf.file
+            == "crates/rigger-grounder/src/grounder/symbols/extract.rs"
+            && sf.name == "extract";
         if is_bespoke_lexer || is_canonical_extractor {
             hits.push(dup_site(sf, &files[r.file_idx].tokens));
         }
@@ -3546,7 +3548,7 @@ fn build_extra_semantic_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupC
         sweep_cluster(
             "bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor",
             find_bespoke_lexer_vs_canonical_extractor(files, refs),
-            "src/grounder/symbols/extract.rs::extract as the ONE function that touches source \
+            "crates/rigger-grounder/src/grounder/symbols/extract.rs::extract as the ONE function that touches source \
              parsing (already its own module doc's claim, architecture 5.5.3) - this file's own \
              scan_file/tokenize are ad hoc scanners for the identical job and should route \
              through an injected-grammar extractor rather than re-deriving structure by hand",
@@ -3978,7 +3980,7 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
          draw, were closed the same way: a RECALL gap the architecture lens routed to this \
          criterion by name across two prior review rounds - this file's own bespoke source-text \
          lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter \
-         extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, \
+         extractor, `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract` (its own module doc's claim, \
          architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision \
          `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the \
          adversary found by reading every `same-named helper` cluster against \
@@ -4196,7 +4198,7 @@ fn render_section_3(files: &[FileScan]) -> String {
     let ingest_caller = line_of(CONDUCTOR, "self.ingest_project_batches()");
     let paced = line_of(INGEST, "symbols::events::project_batches_paced");
     let design = line_of(INGEST, "design::events::project_batches(");
-    let grounder = line_of("src/grounder/mod.rs", "pub trait Grounder");
+    let grounder = line_of("crates/rigger-domain/src/grounder.rs", "pub trait Grounder");
     let mut out = String::new();
     out.push_str("## 3. Boundary Violations\n\n");
     out.push_str(
@@ -4252,7 +4254,7 @@ fn render_section_3(files: &[FileScan]) -> String {
         three named `project_batches`), so this boundary violation and that \
         duplication finding are two symptoms of one root cause - `ingest.rs` naming \
         each concrete grounder submodule because no port exposes either. The \
-        `Grounder` port (`src/grounder/mod.rs:{grounder}`: `ground`, `reindex`, \
+        `Grounder` port (`crates/rigger-domain/src/grounder.rs:{grounder}`: `ground`, `reindex`, \
         `blast_radius`, `index_stamp`) serves real-time per-query grounding of an \
         agent's prompt; none of its methods exposes \"hand me every indexed file's \
         projected events for a whole-project batch ingest,\" so `ingest.rs` - itself \
@@ -4264,8 +4266,16 @@ fn render_section_3(files: &[FileScan]) -> String {
         or a standalone `SymbolProjector` trait) covering both concrete modules, so \
         `ingest.rs` depends on one abstraction instead of either concrete grounder \
         module for its whole-project walk.\n\n",
-        cite_fn(files, "src/grounder/design/events.rs", "project_batches"),
-        cite_fn(files, "src/grounder/symbols/events.rs", "project_batches"),
+        cite_fn(
+            files,
+            "crates/rigger-grounder/src/grounder/design/events.rs",
+            "project_batches"
+        ),
+        cite_fn(
+            files,
+            "crates/rigger-grounder/src/grounder/symbols/events.rs",
+            "project_batches"
+        ),
         cite_fn(files, "src/grounder/workflowdef.rs", "project_batches"),
     );
     let _ = write!(
@@ -4285,7 +4295,7 @@ fn render_section_3(files: &[FileScan]) -> String {
         concern.\n\n",
         line_of(INGEST, "store::content_hash("),
         line_of("src/canary_store.rs", "store::content_hash("),
-        cite_fn(files, "src/grounder/symbols/store.rs", "content_hash"),
+        cite_fn(files, "crates/rigger-grounder/src/grounder/symbols/store.rs", "content_hash"),
         line_of("src/canary_store.rs", "parallel"),
         line_of(
             "crates/rigger-domain/src/community.rs",
@@ -4319,8 +4329,8 @@ fn render_section_3(files: &[FileScan]) -> String {
     let projection_importers = [
         "src/concepts.rs",
         "src/dash.rs",
-        "src/grounder/symbols/events.rs",
-        "src/grounder/design/events.rs",
+        "crates/rigger-grounder/src/grounder/symbols/events.rs",
+        "crates/rigger-grounder/src/grounder/design/events.rs",
     ];
     for rel in projection_importers {
         test_only_hits(rel, "contextgraph::sqlite::Projector");
@@ -4639,7 +4649,7 @@ fn render_section_4() -> String {
         "RETIRED-FEATURE REMNANTS. `turbovec` (spec 57, \"Retire turbovec\"): grepped \
         the whole tree (`src/`, `tests/`, `docs/`, `specs/`, `Cargo.toml`) for every \
         mention - found only the deliberate migration-error guard code \
-        (`src/grounder/mod.rs`'s `is_retired_grounder` / the loud \
+        (`crates/rigger-grounder/src/grounder/mod.rs`'s `is_retired_grounder` / the loud \
         `retired_grounder_error`) plus the tests and docs that keep it retired \
         (`tests/turbovec_retired.rs`, `tests/turbovec_retired_cargo_boundary.rs`, \
         `tests/grounder_name_contract.rs`, and several others naming it as a \
@@ -4682,7 +4692,7 @@ fn render_section_4() -> String {
 // the prose can never cite a stale count. Closing or changing a cited cluster makes the render
 // panic with the id, which is the prompt to re-cite that sentence.
 
-const PROJECT_BATCHES: &str = "dup-f8130edd50f7";
+const PROJECT_BATCHES: &str = "dup-a3035b401227";
 
 /// The real catalog's cluster `id`, which the report's prose cites.
 fn cited(id: &str) -> &'static DupCluster {
@@ -5496,14 +5506,14 @@ fn render_section_6() -> String {
         `project_batches` functions, in {batch_files}) are one root cause, not two - fix \
         once. {batch_n} CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): \
         `{PROJECT_BATCHES}`'s own mechanical `proposed_home` suggests relocating into `tests/common`, \
-        but every site is production code under `src/grounder/`, not a test helper - the \
+        but every site is production code under `crates/rigger-grounder/src/grounder/` and `src/grounder/`, not a test helper - the \
         mechanical heuristic has no \"add a port method\" category to route a production \
         duplicate to, so it mis-fires here. This plan follows section 3's own reasoned \
         disposition instead: add a `Grounder::project_batches` port method (or a standalone \
         `SymbolProjector` trait) covering all {batch_n} concrete modules, and point `ingest.rs` \
         at it.\n\
-        - Files: `src/ingest.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/events.rs`, \
-        `src/grounder/design/events.rs`, `src/grounder/workflowdef.rs`.\n\
+        - Files: `src/ingest.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/events.rs`, \
+        `crates/rigger-grounder/src/grounder/design/events.rs`, `src/grounder/workflowdef.rs`.\n\
         - Expected line delta: roughly neutral - one new trait method plus {batch_n} thin impls, \
         minus the {batch_n} duplicate bodies `{PROJECT_BATCHES}` catalogs.\n\
         - Risk: medium. `ingest.rs`'s own module doc calls it \"the ONE walk-and-content-key \
@@ -5706,8 +5716,8 @@ fn render_section_6() -> String {
         `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \
-        `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `src/grounder/mod.rs`, \
-        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
+        `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
+        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
         `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
@@ -6236,7 +6246,7 @@ fn resolve_out_of_line_test_files(files: &[(String, String)]) -> BTreeSet<String
     test_files
 }
 
-/// The declaring file's OWN "file-per-module" directory - mirrors `src/grounder/symbols/
+/// The declaring file's OWN "file-per-module" directory - mirrors `crates/rigger-grounder/src/grounder/symbols/
 /// events.rs`'s production `module_dir` exactly (spec 87 round-1 fix,
 /// `resolvers_agree_on_a_transitive_second_hop`): for `mod.rs`/`lib.rs`/`main.rs`, its own
 /// PARENT directory (these three names never introduce a new directory level of their own); for
@@ -9166,7 +9176,7 @@ mod tests {
                     "tests/simplification_audit.rs",
                     "fn scan_file() {}\nfn tokenize() {}\nfn unrelated() {}\n",
                 ),
-                ("src/grounder/symbols/extract.rs", "pub fn extract() {}\n"),
+                ("crates/rigger-grounder/src/grounder/symbols/extract.rs", "pub fn extract() {}\n"),
             ],
             find_bespoke_lexer_vs_canonical_extractor,
             &["scan_file", "tokenize", "extract"],
@@ -9176,11 +9186,11 @@ mod tests {
     rigger::test_cases! {
         /// The recall gap u85c1's architecture lens routed to this criterion by name across two
         /// prior review rounds, verified closed on the REAL tree: `scan_file`, `tokenize` (this
-        /// file's own bespoke scanner/lexer) and `extract` (`src/grounder/symbols/extract.rs`, the
+        /// file's own bespoke scanner/lexer) and `extract` (`crates/rigger-grounder/src/grounder/symbols/extract.rs`, the
         /// codebase's one canonical tree-sitter extractor) land in one cluster.
         the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster:
             assert_real_cluster_of_holds(
-            "src/grounder/symbols/extract.rs",
+            "crates/rigger-grounder/src/grounder/symbols/extract.rs",
             "extract",
             ["scan_file", "tokenize"],
         );
@@ -10562,7 +10572,7 @@ mod tests {
     // -------------------------------------------------------------------------------------
     // Round 1 class 3 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`):
     // THE TWO RESOLVERS AGREE, PROVEN - `resolve_out_of_line_test_files` (this file's bespoke
-    // text scan) against `out_of_line_test_module_files` (`src/grounder/symbols/events.rs`, spec
+    // text scan) against `out_of_line_test_module_files` (`crates/rigger-grounder/src/grounder/symbols/events.rs`, spec
     // 86's canonical production resolver), compared directly over the same fixture trees and the
     // real tree.
     // -------------------------------------------------------------------------------------
@@ -10667,7 +10677,7 @@ mod tests {
             assert_eq!(refs.len(), 1);
             assert_eq!(refs[0].file, "src/lonely.rs");
         };
-        /// Class 1 ("TEST REGIONS ARE MOD SPANS"): the real `src/grounder/symbols/events.rs`
+        /// Class 1 ("TEST REGIONS ARE MOD SPANS"): the real `crates/rigger-grounder/src/grounder/symbols/events.rs`
         /// shape (`sdet-u87c2-mod-body-level-test-statements-leak-as-production-refs`) - a named
         /// `use` import sits directly inside `#[cfg(test)] mod tests { .. }`, ABOVE its `#[test]`
         /// fn (never itself a `ScannedFn`), naming `orphan`. Before round 1, `in_test_range` was

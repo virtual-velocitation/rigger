@@ -24,7 +24,7 @@ MIGRATION, decided: existing test-entity nodes are retired by the fold's superse
 mechanism on the next ingest, not by a store wipe. Supersession is keyed on a file's FRESH
 BOUNDARY, and a file that now extracts to NOTHING (every entity it held was test code, the
 central case: a `tests/*.rs` file) still stamps one: the ingest emits that file's boundary with
-an empty entity set instead of skipping the file. Today `src/grounder/symbols/events.rs`
+an empty entity set instead of skipping the file. Today `crates/rigger-grounder/src/grounder/symbols/events.rs`
 drops a file that yields no entities from the batch list, and the fold's `supersede_file_edges`
 runs only on a fresh boundary, so a non-empty-to-empty file never retires its old nodes; both
 change so that empty-after-exclusion is a first-class boundary, riding the existing batch

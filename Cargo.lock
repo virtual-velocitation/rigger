@@ -1882,13 +1882,13 @@ name = "rigger"
 version = "0.3.0"
 dependencies = [
  "fs2",
- "ignore",
  "kurrentdb",
  "regex",
  "rigger-domain",
  "rigger-driver",
  "rigger-gates-shell",
  "rigger-graph-sqlite",
+ "rigger-grounder",
  "rigger-process",
  "rigger-store-sqlite",
  "rigger-worktree-git",
@@ -1903,14 +1903,6 @@ dependencies = [
  "testcontainers",
  "thiserror",
  "tokio",
- "tree-sitter",
- "tree-sitter-c-sharp",
- "tree-sitter-go",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-tags",
- "tree-sitter-typescript",
  "uuid",
 ]
 
@@ -1967,6 +1959,28 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "rigger-grounder"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "ignore",
+ "rigger-domain",
+ "rigger-graph-sqlite",
+ "rigger-process",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
+ "tree-sitter-go",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-tags",
+ "tree-sitter-typescript",
 ]
 
 [[package]]

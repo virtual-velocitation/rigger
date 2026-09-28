@@ -8,7 +8,7 @@ production functions of the three god files, and counted name occurrences (doc m
 strings) rather than references from code. A corrected quick pass over all 1,484 production
 functions in `src/`, counting references from production code only, found 89 with zero
 production references, every one of them referenced from tests alone (e.g.
-`src/grounder/symbols/events.rs:17 index_events`, 21 test references; the `SpawnRequest`
+`crates/rigger-grounder/src/grounder/symbols/events.rs:17 index_events`, 21 test references; the `SpawnRequest`
 builders `with_title`/`with_reviews`/`with_model`/`with_blast_radius` in `crates/rigger-domain/src/spawn.rs`;
 `src/worktree.rs` `expect_merged` and `is_dirty`). That pass is itself approximate in both
 directions: its `#[cfg(test)]` stripping over-counts `src/dash.rs`, and it misclassified

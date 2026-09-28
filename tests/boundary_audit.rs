@@ -468,6 +468,7 @@ const ADAPTER_SRCS: &[&str] = &[
     "crates/rigger-worktree-git/src",
     "crates/rigger-gates-shell/src",
     "crates/rigger-driver/src",
+    "crates/rigger-grounder/src",
 ];
 
 /// Items the workspace plan assigns to an adapter crate that still live in the root crate,
@@ -560,6 +561,46 @@ const DEFERRED_ADAPTER_ITEMS: &[(&str, &str, &str)] = &[
         "src/worktree.rs",
         "scratch_root_path_from_env",
         "lesson-split-worktree-scratch-root-reach",
+    ),
+    (
+        "src/grounder/workflowdef.rs",
+        "workflow_doc",
+        "lesson-split-grounder-workflowdef-config-store",
+    ),
+    (
+        "src/grounder/workflowdef.rs",
+        "stage_id",
+        "lesson-split-grounder-workflowdef-config-store",
+    ),
+    (
+        "src/grounder/workflowdef.rs",
+        "gate_id",
+        "lesson-split-grounder-workflowdef-config-store",
+    ),
+    (
+        "src/grounder/workflowdef.rs",
+        "agent_id",
+        "lesson-split-grounder-workflowdef-config-store",
+    ),
+    (
+        "src/grounder/workflowdef.rs",
+        "ConceptTuple",
+        "lesson-split-grounder-workflowdef-config-store",
+    ),
+    (
+        "src/grounder/workflowdef.rs",
+        "LinkTuple",
+        "lesson-split-grounder-workflowdef-config-store",
+    ),
+    (
+        "src/grounder/workflowdef.rs",
+        "reviewers_of",
+        "lesson-split-grounder-workflowdef-config-store",
+    ),
+    (
+        "src/grounder/workflowdef.rs",
+        "light_reviewers_of",
+        "lesson-split-grounder-workflowdef-config-store",
     ),
 ];
 

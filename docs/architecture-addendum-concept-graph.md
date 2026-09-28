@@ -2,7 +2,7 @@
 
 **Status:** design, approved for planning. Current-state facts are grounded in the code as of
 2026-07-21 (`src/main.rs` `cmd_graph`, `src/conductor.rs` `ingest_project_into_graph`, the
-`src/grounder/symbols` tree-sitter extractor); figures marked *(est.)* are not measured.
+`crates/rigger-grounder/src/grounder/symbols` tree-sitter extractor); figures marked *(est.)* are not measured.
 **Scope:** an addendum to `docs/architecture.md`, building on the unified event-sourced
 knowledge graph established in the context-management addendum (its §6). It makes that graph a
 **general, standalone capability**: point rigger at ANY repository — any language, any domain,
@@ -153,7 +153,7 @@ checkout, with no run required.
   creates) the per-project graph, ingests the tree, and is the entry the dash and the report read.
   The existing seeded `rigger graph --around` becomes one query over the result.
 
-_Code:_ `src/grounder/symbols/` (the tree-sitter extractor, re-expressed as an
+_Code:_ `crates/rigger-grounder/src/grounder/symbols/` (the tree-sitter extractor, re-expressed as an
 event-emitting ingest that folds into the projection), `src/main.rs` `cmd_graph` (a `build`
 subcommand + cold-checkout entry), `src/contextgraph/` fold arms.
 

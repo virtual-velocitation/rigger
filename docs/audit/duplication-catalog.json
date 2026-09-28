@@ -19,13 +19,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b367a30bfb32",
+    "id": "dup-c3aadd27d8c7",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "no_result_error",
         "content_hash": "4a002dd947bf783c"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/mod.rs",
+        "name": "retired_grounder_error",
+        "content_hash": "b0b4170272f04fb7"
       },
       {
         "file": "src/conductor.rs",
@@ -36,11 +41,6 @@
         "file": "src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
         "content_hash": "f49253da8951d862"
-      },
-      {
-        "file": "src/grounder/mod.rs",
-        "name": "retired_grounder_error",
-        "content_hash": "b0b4170272f04fb7"
       },
       {
         "file": "src/worktree.rs",
@@ -189,7 +189,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a25a8548b751",
+    "id": "dup-1b43f290c1fa",
     "classification": "semantic",
     "sites": [
       {
@@ -225,6 +225,11 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "\".rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/mod.rs",
+        "name": "\".rigger\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
       {
@@ -406,11 +411,6 @@
         "file": "src/docs.rs",
         "name": "\"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \\\n             the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \\\n             for an index that has drifted from files you just changed (a unit's own commit, a \\\n             rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \\\n             store from the structural context graph, so it costs only the named files, never a \\\n             walk of the whole tree.\\n\"",
         "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/grounder/mod.rs",
-        "name": "\".rigger\"",
-        "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "src/grounder/workflowdef.rs",
@@ -2629,7 +2629,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \\\n        `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `src/grounder/mod.rs`, \\\n        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \\\n        `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing {rigger_n} sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\"",
+        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \\\n        `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \\\n        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \\\n        `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing {rigger_n} sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3448,7 +3448,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d507d0e6cd18",
+    "id": "dup-cbe8527c9623",
     "classification": "near",
     "sites": [
       {
@@ -3459,6 +3459,11 @@
       {
         "file": "crates/rigger-domain/src/spawn.rs",
         "name": "speculation_group_id",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/mod.rs",
+        "name": "retired_grounder_error",
         "content_hash": "b0b4170272f04fb7"
       },
       {
@@ -3485,11 +3490,6 @@
         "file": "src/conductor.rs",
         "name": "review_protocol",
         "content_hash": "ad5fb8a54854c70a"
-      },
-      {
-        "file": "src/grounder/mod.rs",
-        "name": "retired_grounder_error",
-        "content_hash": "b0b4170272f04fb7"
       },
       {
         "file": "src/grounder/workflowdef.rs",
@@ -3537,7 +3537,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 11 files: crates/rigger-domain/src/spawn.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/conductor.rs, src/grounder/mod.rs, src/grounder/workflowdef.rs, src/main.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 11 files: crates/rigger-domain/src/spawn.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/conductor.rs, src/grounder/workflowdef.rs, src/main.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -3634,7 +3634,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-15058e86d477",
+    "id": "dup-e3c162b7bd56",
     "classification": "near",
     "sites": [
       {
@@ -3643,7 +3643,7 @@
         "content_hash": "10531b120a3ce094"
       },
       {
-        "file": "src/grounder/design/extract.rs",
+        "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
         "name": "is_markdown",
         "content_hash": "4310c0bf95dade40"
       },
@@ -3653,7 +3653,7 @@
         "content_hash": "10531b120a3ce094"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/spec.rs, src/grounder/design/extract.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/spec.rs, crates/rigger-grounder/src/grounder/design/extract.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -4806,6 +4806,254 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-a34b5b595e15",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/design/events.rs",
+        "name": "concept_events",
+        "content_hash": "c330a1aabb7814df"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/design/events.rs",
+        "name": "link_events",
+        "content_hash": "b720cfd877b1834f"
+      }
+    ],
+    "proposed_home": "events::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-a3035b401227",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/design/events.rs",
+        "name": "project_batches",
+        "content_hash": "39e94ea67a233f3d"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
+        "name": "project_batches",
+        "content_hash": "4499ea2368cf4384"
+      },
+      {
+        "file": "src/grounder/workflowdef.rs",
+        "name": "project_batches",
+        "content_hash": "753b4cc1b69015a5"
+      }
+    ],
+    "proposed_home": "one shared `project_batches` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-7727a9cc5ba0",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
+        "name": "is_handbook_path",
+        "content_hash": "605edabf599dba5d"
+      },
+      {
+        "file": "src/canary_store.rs",
+        "name": "any_finding_is_critical",
+        "content_hash": "605edabf599dba5d"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/design/extract.rs, src/canary_store.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-4b942d7302a6",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/design/model.rs",
+        "name": "node_kind",
+        "content_hash": "aea43631b2ca33c2"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/design/model.rs",
+        "name": "rel",
+        "content_hash": "2825a08ad7bc0fae"
+      }
+    ],
+    "proposed_home": "model::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-f83d81bb94ee",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
+        "name": "extract_events",
+        "content_hash": "3c3bfb09d86e247e"
+      },
+      {
+        "file": "src/grounder/workflowdef.rs",
+        "name": "extract_events",
+        "content_hash": "f568f3ce1045c031"
+      }
+    ],
+    "proposed_home": "one shared `extract_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-207b5aa153cb",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
+        "name": "kind_str",
+        "content_hash": "356013c71e3aa4fe"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
+        "name": "lang_str",
+        "content_hash": "5e060abaf3ab9226"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "direction_sql",
+        "content_hash": "93065e93693e5696"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/symbols/events.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-9b727c38b8a1",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
+        "name": "extract",
+        "content_hash": "14778559878ebbc0"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "scan_file",
+        "content_hash": "60bf386502b24d78"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "tokenize",
+        "content_hash": "d2e6d386ca26d8f2"
+      }
+    ],
+    "proposed_home": "crates/rigger-grounder/src/grounder/symbols/extract.rs::extract as the ONE function that touches source parsing (already its own module doc's claim, architecture 5.5.3) - this file's own scan_file/tokenize are ad hoc scanners for the identical job and should route through an injected-grammar extractor rather than re-deriving structure by hand",
+    "note": "mandatory sweep: bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-6741e1f3023b",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "changed_files",
+        "content_hash": "93ca262f6550fdfe"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "changed_files",
+        "content_hash": "f015a84399a6f2d4"
+      }
+    ],
+    "proposed_home": "one shared `changed_files` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-9408447d0007",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "commonness_map",
+        "content_hash": "69a1745f640bba61"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "ambiguity_map",
+        "content_hash": "f03ee759c936574c"
+      }
+    ],
+    "proposed_home": "grounder::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-d36198b3982d",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "a_reference_ranks_below_a_definition_of_the_same_name",
+        "content_hash": "e5fced6ba9ae3eeb"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token",
+        "content_hash": "ea616e2ee222df17"
+      }
+    ],
+    "proposed_home": "grounder::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-56485f8d4262",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "a_concurrent_reindex_from_a_second_grounder_is_not_clobbered",
+        "content_hash": "c65e696a3d1a2829"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "reindex_replaces_only_a_changed_files_symbols",
+        "content_hash": "689eaf585426ba5c"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
+        "name": "reindex_over_a_deleted_file_stops_grounding_it",
+        "content_hash": "bc3620c1de34c286"
+      }
+    ],
+    "proposed_home": "grounder::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-ed93266f67c6",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/symbols/store.rs",
+        "name": "load_is_none_on_a_cold_start",
+        "content_hash": "b2406461db19bf89"
+      },
+      {
+        "file": "src/grounder/workflowdef.rs",
+        "name": "project_events_on_a_missing_workflow_yields_nothing_never_a_crash",
+        "content_hash": "091dee4e354d9612"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/symbols/store.rs, src/grounder/workflowdef.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-af816213608d",
     "classification": "semantic",
     "sites": [
@@ -4981,7 +5229,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"Two real recall gaps surfaced this way and were closed by widening the mechanical \\\n         sweep with a new generalizable detector each - not a one-off citation - so the fix \\\n         catches every present and future instance of its class, each pinned by a real-tree \\\n         regression test: `find_proc_stat_or_status_readers` (decision \\\n         `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or \\\n         `/proc/<pid>/status` literal, closing the spec's own named worked example - \\\n         `{}` `process_state` next to `{}` `pid_starttime`, the \\\n         same job on the same file with a different field/shape, upheld at spec 62's capstone; \\\n         `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) \\\n         groups 2+ non-test functions per `(file, Self type)` that build a `Self {{ .. }}` / \\\n         `TypeName {{ .. }}` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` \\\n         reading MISSING from its own `ok`/`failed` cluster even though all three are parallel \\\n         constructors for one struct. A third worked example, `exploration_graph` (independently \\\n         defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and \\\n         `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass \\\n         with no sweep needed - confirming the mechanical pass itself has real recall, not only \\\n         the two widened sweeps. Two further real defects, found on review rather than in this \\\n         draw, were closed the same way: a RECALL gap the architecture lens routed to this \\\n         criterion by name across two prior review rounds - this file's own bespoke source-text \\\n         lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter \\\n         extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, \\\n         architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision \\\n         `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the \\\n         adversary found by reading every `same-named helper` cluster against \\\n         `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying \\\n         REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/\\\n         `subscribe_stream` across the `EventStore` trait's three backend adapters plus a test \\\n         double, `blast_radius` across the `Grounder` trait's own default method, its override, \\\n         and a test double) - closed by excluding members whose extracted Self type differs \\\n         across the group when at least one comes from an actual `\\\" for \\\"` trait impl (decision \\\n         `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring \\\n         `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. \\\n         Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \\\n         excluded this criterion's own citation-guard periphery file from the draw's population \\\n         (see this subsection's opening paragraph); that exclusion still applies unchanged.\"",
+        "name": "\"Two real recall gaps surfaced this way and were closed by widening the mechanical \\\n         sweep with a new generalizable detector each - not a one-off citation - so the fix \\\n         catches every present and future instance of its class, each pinned by a real-tree \\\n         regression test: `find_proc_stat_or_status_readers` (decision \\\n         `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or \\\n         `/proc/<pid>/status` literal, closing the spec's own named worked example - \\\n         `{}` `process_state` next to `{}` `pid_starttime`, the \\\n         same job on the same file with a different field/shape, upheld at spec 62's capstone; \\\n         `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) \\\n         groups 2+ non-test functions per `(file, Self type)` that build a `Self {{ .. }}` / \\\n         `TypeName {{ .. }}` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` \\\n         reading MISSING from its own `ok`/`failed` cluster even though all three are parallel \\\n         constructors for one struct. A third worked example, `exploration_graph` (independently \\\n         defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and \\\n         `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass \\\n         with no sweep needed - confirming the mechanical pass itself has real recall, not only \\\n         the two widened sweeps. Two further real defects, found on review rather than in this \\\n         draw, were closed the same way: a RECALL gap the architecture lens routed to this \\\n         criterion by name across two prior review rounds - this file's own bespoke source-text \\\n         lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter \\\n         extractor, `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract` (its own module doc's claim, \\\n         architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision \\\n         `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the \\\n         adversary found by reading every `same-named helper` cluster against \\\n         `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying \\\n         REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/\\\n         `subscribe_stream` across the `EventStore` trait's three backend adapters plus a test \\\n         double, `blast_radius` across the `Grounder` trait's own default method, its override, \\\n         and a test double) - closed by excluding members whose extracted Self type differs \\\n         across the group when at least one comes from an actual `\\\" for \\\"` trait impl (decision \\\n         `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring \\\n         `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. \\\n         Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \\\n         excluded this criterion's own citation-guard periphery file from the draw's population \\\n         (see this subsection's opening paragraph); that exclusion still applies unchanged.\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -5190,30 +5438,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-20c2938a0805",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "direction_sql",
-        "content_hash": "93065e93693e5696"
-      },
-      {
-        "file": "src/grounder/symbols/events.rs",
-        "name": "kind_str",
-        "content_hash": "356013c71e3aa4fe"
-      },
-      {
-        "file": "src/grounder/symbols/events.rs",
-        "name": "lang_str",
-        "content_hash": "5e060abaf3ab9226"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/grounder/symbols/events.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-831910355599",
     "classification": "near",
     "sites": [
@@ -5271,25 +5495,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cdcd442232af",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "name": "changed_files",
-        "content_hash": "f015a84399a6f2d4"
-      },
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "changed_files",
-        "content_hash": "93ca262f6550fdfe"
-      }
-    ],
-    "proposed_home": "one shared `changed_files` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-90067fabd6a8",
     "classification": "near",
     "sites": [
@@ -5324,25 +5529,6 @@
       }
     ],
     "proposed_home": "blast_radius_eval::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-37f6bddf866b",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/canary_store.rs",
-        "name": "any_finding_is_critical",
-        "content_hash": "605edabf599dba5d"
-      },
-      {
-        "file": "src/grounder/design/extract.rs",
-        "name": "is_handbook_path",
-        "content_hash": "605edabf599dba5d"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/canary_store.rs, src/grounder/design/extract.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5932,192 +6118,6 @@
       }
     ],
     "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-852917647aea",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/grounder/design/events.rs",
-        "name": "concept_events",
-        "content_hash": "c330a1aabb7814df"
-      },
-      {
-        "file": "src/grounder/design/events.rs",
-        "name": "link_events",
-        "content_hash": "b720cfd877b1834f"
-      }
-    ],
-    "proposed_home": "events::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-f8130edd50f7",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "src/grounder/design/events.rs",
-        "name": "project_batches",
-        "content_hash": "39e94ea67a233f3d"
-      },
-      {
-        "file": "src/grounder/symbols/events.rs",
-        "name": "project_batches",
-        "content_hash": "4499ea2368cf4384"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "project_batches",
-        "content_hash": "753b4cc1b69015a5"
-      }
-    ],
-    "proposed_home": "one shared `project_batches` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-7e1f522f852f",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/grounder/design/model.rs",
-        "name": "node_kind",
-        "content_hash": "aea43631b2ca33c2"
-      },
-      {
-        "file": "src/grounder/design/model.rs",
-        "name": "rel",
-        "content_hash": "2825a08ad7bc0fae"
-      }
-    ],
-    "proposed_home": "model::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-b435f9efe66c",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/events.rs",
-        "name": "extract_events",
-        "content_hash": "3c3bfb09d86e247e"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "extract_events",
-        "content_hash": "f568f3ce1045c031"
-      }
-    ],
-    "proposed_home": "one shared `extract_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-6c4197f4d7b0",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/extract.rs",
-        "name": "extract",
-        "content_hash": "14778559878ebbc0"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "scan_file",
-        "content_hash": "60bf386502b24d78"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "tokenize",
-        "content_hash": "d2e6d386ca26d8f2"
-      }
-    ],
-    "proposed_home": "src/grounder/symbols/extract.rs::extract as the ONE function that touches source parsing (already its own module doc's claim, architecture 5.5.3) - this file's own scan_file/tokenize are ad hoc scanners for the identical job and should route through an injected-grammar extractor rather than re-deriving structure by hand",
-    "note": "mandatory sweep: bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-2aabb2b82325",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "commonness_map",
-        "content_hash": "69a1745f640bba61"
-      },
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "ambiguity_map",
-        "content_hash": "f03ee759c936574c"
-      }
-    ],
-    "proposed_home": "grounder::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-ab86de4a6b66",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "a_reference_ranks_below_a_definition_of_the_same_name",
-        "content_hash": "e5fced6ba9ae3eeb"
-      },
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token",
-        "content_hash": "ea616e2ee222df17"
-      }
-    ],
-    "proposed_home": "grounder::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-d45ee6096ba3",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "a_concurrent_reindex_from_a_second_grounder_is_not_clobbered",
-        "content_hash": "c65e696a3d1a2829"
-      },
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "reindex_replaces_only_a_changed_files_symbols",
-        "content_hash": "689eaf585426ba5c"
-      },
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "reindex_over_a_deleted_file_stops_grounding_it",
-        "content_hash": "bc3620c1de34c286"
-      }
-    ],
-    "proposed_home": "grounder::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-664af4b75f14",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/store.rs",
-        "name": "load_is_none_on_a_cold_start",
-        "content_hash": "b2406461db19bf89"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "project_events_on_a_missing_workflow_yields_nothing_never_a_crash",
-        "content_hash": "091dee4e354d9612"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/grounder/symbols/store.rs, src/grounder/workflowdef.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
