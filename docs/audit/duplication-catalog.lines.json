@@ -54,8 +54,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 984,
-        "end_line": 992
+        "start_line": 1096,
+        "end_line": 1104
       },
       {
         "file": "tests/common/fixtures/graph.rs",
@@ -609,8 +609,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 880,
-        "end_line": 880
+        "start_line": 992,
+        "end_line": 992
       },
       {
         "file": "tests/cli.rs",
@@ -4974,8 +4974,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 132,
-        "end_line": 138
+        "start_line": 144,
+        "end_line": 150
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
