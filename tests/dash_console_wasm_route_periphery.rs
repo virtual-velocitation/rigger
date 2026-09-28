@@ -1,7 +1,7 @@
 //! Periphery (contract / API / integration) test for spec 93 criterion 3, THE BUILD EMBEDS
 //! IT: the `/console/core.wasm` route, driven over a REAL socket.
 //!
-//! `src/dash.rs`'s own inside-out unit test
+//! `crates/rigger-dash/src/dash.rs`'s own inside-out unit test
 //! (`console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm`) calls the
 //! private `route` function directly, in-process - it never crosses `handle_conn`, the TCP
 //! socket, or real HTTP response framing, and it never observes what a REAL client actually
@@ -18,10 +18,10 @@
 //! this exact granularity:
 //!
 //! - The byte-for-byte comparison against the embedded `CONSOLE_CORE_WASM` constant: that
-//!   constant is deliberately private (see its own doc comment in `src/dash.rs` - a `pub`
+//!   constant is deliberately private (see its own doc comment in `crates/rigger-dash/src/dash.rs` - a `pub`
 //!   accessor with no real production consumer would itself be a dead-code candidate spec
 //!   87's audit must disposition), so its one out-of-crate verification need is already
-//!   proven from `src/dash.rs`'s own `#[cfg(test)] mod tests`
+//!   proven from `crates/rigger-dash/src/dash.rs`'s own `#[cfg(test)] mod tests`
 //!   (`embedded_artifact_matches_a_fresh_independent_nested_build`, opt-in via
 //!   `RIGGER_CONSOLE_WASM_EMBED_VERIFY=1`) - the one legitimate place for it. This file
 //!   instead proves the REAL-SOCKET dispatch and framing contract: the served bytes are a
@@ -29,7 +29,7 @@
 //!   headers that correctly name a binary payload, and identical across independent
 //!   connections (never recomputed per request).
 //! - The read-only 405 guard: `route`'s `method != "GET"` check runs BEFORE any path is even
-//!   inspected, and `src/dash.rs`'s own real-socket test
+//!   inspected, and `crates/rigger-dash/src/dash.rs`'s own real-socket test
 //!   (`a_post_over_a_real_socket_is_refused_without_touching_the_store`) already proves that
 //!   guard at this exact real-socket granularity for a representative path - the branch
 //!   never reads `path` at all, so it holds for `/console/core.wasm` by construction, not by
@@ -84,7 +84,7 @@ fn the_served_console_wasm_route_returns_a_real_wasm_module_with_correct_binary_
         !body.is_empty() && body.len() < THREE_MB,
         "the served console-core wasm module is {} bytes, outside (0, 3 MB) (spec 93 \
          criterion 3), proven over the real socket - not just the embedded constant \
-         `src/dash.rs`'s own unit test inspects in-process",
+         `crates/rigger-dash/src/dash.rs`'s own unit test inspects in-process",
         body.len()
     );
 }

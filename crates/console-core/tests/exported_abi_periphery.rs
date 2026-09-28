@@ -1738,7 +1738,7 @@ fn console_call_palette_commands_scopes_to_an_explicit_position_through_the_publ
 /// `src/lib.rs`'s own private `dispatch_tests`, which never crosses `console_call`'s
 /// pointer-packing marshaling: (a) fold to a scrub position via `fold_at`, (b) push a new
 /// event via `fold_push` with NO intervening `fold_at` call (exactly what `connectStream`'s
-/// push handler does in `src/console.html` while the page is scrubbed - it calls
+/// push handler does in `crates/rigger-dash/src/console.html` while the page is scrubbed - it calls
 /// `fold_push` unconditionally, then skips `render()`/`fold_at` because `STATE.live` is
 /// false), (c) assert `palette_commands`, called with that SAME position, still answers the
 /// SCRUBBED window through the real ABI, not the live one a regressed ambient-cursor design

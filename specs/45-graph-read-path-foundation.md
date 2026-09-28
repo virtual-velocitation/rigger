@@ -18,7 +18,7 @@ surface only; it does not change the fold or add an event type.
 ### A dedicated, lazy graph provider
 
 `serve` today receives one `provider` closure (`src/main.rs`) that `dash_read_graph` fills with a
-run-seeded `subgraph(graph_seeds(events), 2)`, and `route` (`src/dash.rs`) serves every `/api/*` path -
+run-seeded `subgraph(graph_seeds(events), 2)`, and `route` (`crates/rigger-dash/src/dash.rs`) serves every `/api/*` path -
 including the state poll and the graph views - purely over that one pre-fetched `DashInputs` tuple. The
 state poll (`/api/state`, `/api/events`) runs every 1.5s and does NOT need the graph; the graph views
 run only on panel load, a drill, a lens flip, or a call query.

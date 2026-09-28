@@ -319,7 +319,7 @@ fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_tes
 /// Spec 93 criterion 3, THE BUILD EMBEDS IT: "a workflow-level install in
 /// `.github/workflows/rust.yml`; no unit installs it". `build.rs`'s nested cross-compile of
 /// `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer build compiles
-/// `src/dash.rs` - which is every cargo invocation in THIS workflow (none of them build the
+/// `crates/rigger-dash/src/dash.rs` - which is every cargo invocation in THIS workflow (none of them build the
 /// pure `--features core` lane exclusively): `build-test`'s default AND
 /// `--no-default-features` lanes, `install-nolock`'s default-feature install, and
 /// `kurrentdb`'s `--no-default-features` clippy/test. Each of those three jobs' own
@@ -334,7 +334,7 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
             targets.contains("wasm32-unknown-unknown"),
             "job `{job}`'s rust-toolchain step must declare `targets: wasm32-unknown-unknown` \
              (spec 93 criterion 3: build.rs's nested cross-compile of crates/console-core \
-             needs it whenever this job's cargo invocations compile src/dash.rs, which none \
+             needs it whenever this job's cargo invocations compile crates/rigger-dash/src/dash.rs, which none \
              of `{job}`'s commands avoid). Found targets: {targets:?}"
         );
     }

@@ -36,7 +36,7 @@ each arm at the node/edge level while preserving everything else it does:
   unit owns. That finding-invalidation reads the finding's `$.unit` attribute (a string token, not a
   `KIND_UNIT` node) and must be unaffected. Any other content or lifecycle side-effect an arm performs
   is preserved; only its machinery node/edge creation is removed.
-- **Re-point the run-tree seed.** `graph_seeds` (`src/dash.rs` ~1663) enumerates unit/decision/finding
+- **Re-point the run-tree seed.** `graph_seeds` (`crates/rigger-dash/src/dash.rs` ~1663) enumerates unit/decision/finding
   ids to seed the dash's run-scoped pre-fetch, and the run-tree's click-to-seed seeds the graph with a
   unit id. With unit nodes gone a unit seed lands nowhere, so re-point the seed to the decisions and
   files that unit produced (which remain in the graph) - clicking a unit in the run-tree still lands on

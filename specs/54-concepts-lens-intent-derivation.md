@@ -36,7 +36,7 @@ model.
   human name for an idea. A concept with no doc member (possible at high resolution) falls back to
   its most-central member's label.
 
-### The lens: `lens=concepts` (`src/dash.rs` + `src/dash.html`)
+### The lens: `lens=concepts` (`crates/rigger-dash/src/dash.rs` + `crates/rigger-dash/src/dash.html`)
 
 - The pluggable bucket key gains `concepts`: nodes carrying live `REALIZES` membership bucket by
   their concept; the overview shows concept super-nodes (sized by member count, weighted

@@ -9,12 +9,12 @@ spec 19 over-refined in decomposition; each split spec is small and atomic).
 ## Design
 
 Builds on `rigger status` (`cmd_status` in `src/main.rs`), the stats attribution
-(`append_review_quality` in `src/main.rs`), the dashboard (`src/dash.rs`,
+(`append_review_quality` in `src/main.rs`), the dashboard (`crates/rigger-dash/src/dash.rs`,
 `dash::DEFAULT_PORT`), setup (`cmd_setup` in `src/main.rs`), the native workflow
 (`workflows/rigger.js`: `meta`, `phaseOf`, the `log()` sites), the wire (`SpawnRequest` in
 `crates/rigger-domain/src/spawn.rs`), and the unit's criterion text (`Stage.coverage` in `crates/rigger-conductor/src/conductor.rs`).
 
-**Unit 1 - current-blocker line (touches `src/main.rs`, `src/dash.rs`).** A pure classifier
+**Unit 1 - current-blocker line (touches `src/main.rs`, `crates/rigger-dash/src/dash.rs`).** A pure classifier
 over run state yields, for each in-flight unit, a one-line current blocker from a fixed set
 of kinds: building (attempt n), reviewing, reject-recurrence (#n/max with the cause),
 approved-not-integrated (verdict not on result channel), escalated, budget (spent/cap). It

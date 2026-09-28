@@ -40,7 +40,7 @@ part of the run's scratch and reclaimed with it. The `result` message becomes th
 host-launched prompt carries no instruction to report a result, a model or a heartbeat.
 
 THE SPAWN MCP SERVER, decided: `rigger mcp --spawn <id>` extends the stdio server
-(`src/mcpserver.rs:567`) with a spawn-bound surface: `rigger_emit`, `rigger_peers`,
+(`crates/rigger-dash/src/mcpserver.rs:567`) with a spawn-bound surface: `rigger_emit`, `rigger_peers`,
 `rigger_ground`, `rigger_graph`, `rigger_progress`, `rigger_scratch`. Every write is stamped
 with the bound spawn; a write naming another spawn is refused. There is no result tool.
 

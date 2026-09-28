@@ -1,5 +1,5 @@
 #!/bin/sh
-# A fixture standing in for the real `cargo` binary, for `build/console_wasm.rs`'s
+# A fixture standing in for the real `cargo` binary, for `crates/rigger-dash/build/console_wasm.rs`'s
 # `build_wasm_artifact` periphery tests: records its own argv and every env var it
 # actually received into $RECORDING_CARGO_DUMP_FILE (an env var the test sets before
 # calling `build_wasm_artifact`), so a test can assert on the exact command line and the

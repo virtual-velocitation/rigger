@@ -960,7 +960,7 @@ conflict and an agent cannot fan out.
 
 An observer wants ONE place to watch every run on their machine. If each observation point
 bound its own address, that view would scatter across an unpredictable set of addresses and
-force the observer to hunt for the right one. So `rigger dash` (`src/dash.rs`) binds a
+force the observer to hunt for the right one. So `rigger dash` (`crates/rigger-dash/src/dash.rs`) binds a
 **machine-level singleton at a fixed, stable address**: `http://127.0.0.1:7420/`
 (`dash::DEFAULT_PORT`) - a second `rigger dash` recognizes the running singleton and exits
 without binding a second one, never searching upward. The loop driver's native step path

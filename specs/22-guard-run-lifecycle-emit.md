@@ -16,7 +16,7 @@ The defect is NOT the store walk-up (bounded at the main-repo root; cross-projec
 is already closed - see `walk_stores_from` / `main_repo_root` in `src/main.rs`). The defect
 is that the emit surface accepts an ARBITRARY event type.
 
-`emit_event` (`src/mcpserver.rs`) is the SHARED CORE of both `rigger emit` (the CLI,
+`emit_event` (`crates/rigger-dash/src/mcpserver.rs`) is the SHARED CORE of both `rigger emit` (the CLI,
 `cmd_emit` in `src/main.rs`) and `rigger_emit` (the MCP tool, `tool_emit`). It reads the
 `type` field with no allowlist and appends it to the run stream, so `rigger emit
 RunStarted '{...}'` lands a run boundary in the live store. Run boundaries (`RunStarted`,
@@ -24,7 +24,7 @@ RunStarted '{...}'` lands a run boundary in the live store. Run boundaries (`Run
 (`start_fresh` / `ensure_started`) - a path that does NOT go through `emit_event` and is
 therefore unaffected by this change.
 
-**Unit 1 - allowlist the emit surface (touches `src/mcpserver.rs`).** In the shared
+**Unit 1 - allowlist the emit surface (touches `crates/rigger-dash/src/mcpserver.rs`).** In the shared
 `emit_event` core, ALLOWLIST exactly the agent-emittable context event types - the
 context-graph `TYPE_*` set: `DecisionMade`, `ReviewFinding`, `LessonLearned` (referenced
 from the `crates/rigger-domain/src/contextgraph.rs` constants so the list stays in sync, never hand-copied). REFUSE

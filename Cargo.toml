@@ -20,7 +20,7 @@ repository = "https://github.com/virtual-velocitation/rigger"
 # edition 2021's default for a non-virtual root anyway; named explicitly so the workspace's
 # resolution behavior never depends on an implicit default.
 [workspace]
-members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver", "crates/rigger-grounder", "crates/rigger-config-files", "crates/rigger-conductor", "crates/rigger-console"]
+members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver", "crates/rigger-grounder", "crates/rigger-config-files", "crates/rigger-conductor", "crates/rigger-console", "crates/rigger-dash"]
 resolver = "2"
 
 # THE PRINCIPLES AS LINTS (workspace split, step 0): an enum whose largest variant dwarfs the
@@ -59,7 +59,7 @@ default = ["symbols", "store"]
 # that lane. `store` stays the name-carrying half of the check and the literal feature
 # a caller can pass explicitly (e.g. alongside `--no-default-features`) to get the same
 # surface without `symbols`.
-store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlite/store", "rigger-process/store", "rigger-worktree-git/store", "rigger-gates-shell/store", "rigger-driver/store", "rigger-grounder/store", "rigger-config-files/store", "rigger-conductor/store", "rigger-console/store"]
+store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlite/store", "rigger-process/store", "rigger-worktree-git/store", "rigger-gates-shell/store", "rigger-driver/store", "rigger-grounder/store", "rigger-config-files/store", "rigger-conductor/store", "rigger-console/store", "rigger-dash/store"]
 # THE PURE SUBSET (spec 93, criterion 1): a `core` module imports none of `std::fs`,
 # `std::process`, `std::net`, `std::time::SystemTime::now`, `rusqlite`, `tokio`,
 # `rustix`, `fs2`, `ignore` or `uuid` - every time and age it needs is an input. Every
@@ -68,7 +68,7 @@ store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlit
 # builds only the pure subset, natively and for `wasm32-unknown-unknown`. Carries no
 # dependency of its own: the pure subset needs nothing beyond `serde`/`serde_json`,
 # already unconditional.
-core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/core", "rigger-process/core", "rigger-worktree-git/core", "rigger-gates-shell/core", "rigger-driver/core", "rigger-grounder/core", "rigger-config-files/core", "rigger-conductor/core", "rigger-console/core"]
+core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/core", "rigger-process/core", "rigger-worktree-git/core", "rigger-gates-shell/core", "rigger-driver/core", "rigger-grounder/core", "rigger-config-files/core", "rigger-conductor/core", "rigger-console/core", "rigger-dash/core"]
 # Deterministic, dependency-light STRUCTURAL grounding (spec 15): tree-sitter parsers +
 # the tags mechanism, compiled into the binary (no runtime-loaded artifacts). Carried in
 # `default`, so a plain `cargo build` ships it; a minimal build drops it via
@@ -117,6 +117,10 @@ rigger-conductor = { path = "crates/rigger-conductor", default-features = false 
 # it is `core` and compiles in every lane, exactly as it did in the root; its own `store`/`core`
 # features (forwarded above) follow this crate's lane.
 rigger-console = { path = "crates/rigger-console", default-features = false }
+# The delivery ring (workspace split, ring 4): the HTTP dashboard and the MCP server. Not optional,
+# like the crates above; its own `store`/`core` features (forwarded above) gate it exactly as the
+# root gated it, and its build script embeds the console core only in the lanes that compile it.
+rigger-dash = { path = "crates/rigger-dash", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # The declarative failure taxonomy (spec 10, unit 2) matches a failure's captured
 # output against a rule's `output_regex`. Pure-Rust and non-optional: `output_regex`

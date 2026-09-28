@@ -6,7 +6,7 @@
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Card, CardRef,
 //! CardResponse, card, route, ...}`), so they guard the exact boundaries the inside-out unit test
-//! (`src/dash.rs mod metadata_card_c2`, which reaches `card` via `super::` in-process) is
+//! (`crates/rigger-dash/src/dash.rs mod metadata_card_c2`, which reaches `card` via `super::` in-process) is
 //! structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the card BEHAVIOUR but never that `card` and its

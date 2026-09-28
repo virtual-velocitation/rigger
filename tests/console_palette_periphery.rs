@@ -17,7 +17,7 @@ use common::served::{assert_served_console_page_carries, served_console_body};
 
 rigger::test_cases! {
     /// THE PALETTE's own markup: a dialog carrying a filter input and a results list, hidden
-    /// until opened, wired to the header's existing palette button (`src/console.html`'s own
+    /// until opened, wired to the header's existing palette button (`crates/rigger-dash/src/console.html`'s own
     /// `palbtn`, already present since criterion 1 - see `p94-u94c1-shell-and-fonts-impl`'s own
     /// note that it deliberately left the dialog markup for this criterion).
     the_served_console_page_carries_the_palette_dialog_markup:

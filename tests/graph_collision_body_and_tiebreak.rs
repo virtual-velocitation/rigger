@@ -4,7 +4,7 @@
 //! adds the OUTSIDE-IN layer that the density proof is structurally blind to: the exact collision-body
 //! CONTRACT and the pass's DEGENERATE branches.
 //!
-//! Two properties, each a distinct branch of the served page's own JS (`src/dash.html`:
+//! Two properties, each a distinct branch of the served page's own JS (`crates/rigger-dash/src/dash.html`:
 //! `kgLabelDims` / `kgNodeBody` / `kgSeparate`):
 //!   * the COLLISION BODY encloses the circle PLUS the label box - a longer label widens the body
 //!     horizontally beyond the bare circle (the label is part of the node), the label box hangs BELOW

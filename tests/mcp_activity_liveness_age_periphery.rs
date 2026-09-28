@@ -1,5 +1,5 @@
 //! Periphery for spec 77's Option-returning `crate::liveness::marker_path` contract at the MCP
-//! `rigger_activity` seam (`src/mcpserver.rs::tool_activity`) - the one consumer of that changed
+//! `rigger_activity` seam (`crates/rigger-dash/src/mcpserver.rs::tool_activity`) - the one consumer of that changed
 //! contract this unit's own diff left with ZERO test coverage of the `Some(path)` arm.
 //!
 //! WHY THIS GAP SURVIVED. Round 7 (spec 77 Design `d77-injective-scratch-naming`) changed

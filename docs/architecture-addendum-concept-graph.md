@@ -259,8 +259,8 @@ build step, inline SVG), per the dash charter.
   level (concepts, or a community, or a drilled group) and drills on demand — never every raw node
   at once.
 
-_Code:_ `src/dash.rs` (a parameterized `/api/graph?lens=&layer=&resolution=&tier=&path=` route
-over the projection) + `src/dash.html` (the lens/layer/grain controls, the concept overview, and
+_Code:_ `crates/rigger-dash/src/dash.rs` (a parameterized `/api/graph?lens=&layer=&resolution=&tier=&path=` route
+over the projection) + `crates/rigger-dash/src/dash.html` (the lens/layer/grain controls, the concept overview, and
 cross-axis drill in the inline SVG renderer).
 
 ## 7. Workstream E — Concept report + query surface

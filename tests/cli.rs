@@ -16462,7 +16462,7 @@ fn status_prints_no_dashboard_line_when_none_was_ever_recorded() {
 }
 
 /// spec 22, criterion 2 (the ACCEPT arm - sibling to the refuse arm proven directly in
-/// `src/mcpserver.rs`): the shared `emit_event` core still ACCEPTS every agent-emittable
+/// `crates/rigger-dash/src/mcpserver.rs`): the shared `emit_event` core still ACCEPTS every agent-emittable
 /// context event and appends it, so both the CLI (`rigger emit`) and the MCP
 /// (`rigger_emit`) surfaces that share this one core keep working after the allowlist
 /// guard. The allowlist is exactly the three context-graph events an agent records
@@ -16482,7 +16482,7 @@ fn emit_event_accepts_every_agent_context_event_and_appends_it() {
     use serde_json::json;
 
     // The complete agent-emittable allowlist, each referenced from the SAME defining
-    // constant the production allowlist (`EMITTABLE_TYPES` in `src/mcpserver.rs`) is built
+    // constant the production allowlist (`EMITTABLE_TYPES` in `crates/rigger-dash/src/mcpserver.rs`) is built
     // from, so the test's notion of "accepted" cannot drift from the producers'. The
     // constants are independent of the allowlist array, so dropping a type FROM
     // `EMITTABLE_TYPES` still turns this test RED (the type is emitted here and refused
@@ -20408,7 +20408,7 @@ fn step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_st
 /// probe `rigger::dash::dash_serving_pid_on` reports a REAL, separately-compiled `rigger dash`
 /// process's own OS-reported pid - proven against the actual product binary as the server, not
 /// only the implementer's own in-crate unit tests (`dash_serving_pid_on_reports_the_pid_a_real_
-/// dash_response_names` et al in `src/dash.rs`), which can only ever stand up a FAKE listener
+/// dash_response_names` et al in `crates/rigger-dash/src/dash.rs`), which can only ever stand up a FAKE listener
 /// inside the SAME test process and so structurally can never observe a genuine cross-process
 /// `X-Rigger-Dash-Pid` round trip - the same class of gap a real subprocess closes that the
 /// bind-confirmation periphery test above already closes for criterion 1.
@@ -24427,7 +24427,7 @@ fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
 
     // Held: bind a listener in this process and describe its own address - the discovered
     // holder must be THIS test process. Checked as the exact `by pid {N}` attribution phrase
-    // [`format_held_port`] (src/dash.rs) renders, not a raw pid-string substring test: this
+    // [`format_held_port`] (crates/rigger-dash/src/dash.rs) renders, not a raw pid-string substring test: this
     // project's mandatory pid-namespace test sandbox (.cargo/pidns-runner.sh, every test binary
     // here runs AS PID 1 of its own fresh namespace) makes a raw `contains(&pid.to_string())`
     // meaningless, since "1" is trivially a substring of the loopback address "127.0.0.1" that

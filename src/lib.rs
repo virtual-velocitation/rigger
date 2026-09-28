@@ -41,7 +41,7 @@ pub use rigger_config_files::config_store;
 pub use rigger_console::console;
 pub mod contextgraph;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod dash;
+pub use rigger_dash::dash;
 /// The self-documenting discipline pipeline (spec 20, unit 1): a typed, code-derived
 /// context rendered into the `using-rigger` skill and the handbook discipline chapter,
 /// so the operating discipline stays in lock-step with the code the binary runs on.
@@ -55,17 +55,17 @@ pub use rigger_domain::failure;
 pub use rigger_gates_shell::gate;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_dash::mcpserver;
 pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
+pub use rigger_domain::metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::hooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::liveness;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_grounder::ingest;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod mcpserver;
-pub use rigger_domain::metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]

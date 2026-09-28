@@ -13,7 +13,7 @@ is progressive disclosure, never clutter.
 
 ## Design
 
-### Subject x lens re-projection (`src/dash.rs` route + `src/dash.html`)
+### Subject x lens re-projection (`crates/rigger-dash/src/dash.rs` route + `crates/rigger-dash/src/dash.html`)
 
 - **The route composes `seed` with `lens`:** `seed=<id>&lens=<files|code|concepts>` re-grains the
   SUBJECT at the chosen altitude instead of switching to a whole-graph overview. The projection rule:
@@ -35,7 +35,7 @@ is progressive disclosure, never clutter.
   whole-graph overview. The existing views (neighborhood, calls, drill) remain reachable from any
   member click - the instrument composes rather than modes.
 
-### The rationale overlay (`src/dash.rs` + `src/dash.html`)
+### The rationale overlay (`crates/rigger-dash/src/dash.rs` + `crates/rigger-dash/src/dash.html`)
 
 - **Per-node "why" on demand:** every rendered node (any lens, any view) can reveal its rationale
   LEAVES - the decisions, findings, and lessons attached to it through the live knowledge edges

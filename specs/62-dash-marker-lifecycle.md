@@ -12,7 +12,7 @@ are in flight.
 
 ## Design
 
-- **Marker follows bind** (`src/dash.rs` / `src/main.rs` dash startup): the marker is written
+- **Marker follows bind** (`crates/rigger-dash/src/dash.rs` / `src/main.rs` dash startup): the marker is written
   only AFTER the listener has bound. A failed bind leaves the prior marker byte-for-byte
   untouched and writes nothing.
 - **Stale markers self-heal** (`src/main.rs` dash startup): a successful start replaces

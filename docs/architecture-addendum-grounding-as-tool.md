@@ -3,7 +3,7 @@
 **Status:** design, approved for planning. Quantitative claims are grounded in a measurement of the
 live `.rigger/graph.db` taken 2026-07-21 and a reading of the grounding path
 (`build_prompt_with_failure` / `graph_context` / `write_design_intent`, `crates/rigger-conductor/src/conductor.rs`) and the
-MCP tool surface (`src/mcpserver.rs`); figures marked *(est.)* are not measured.
+MCP tool surface (`crates/rigger-dash/src/mcpserver.rs`); figures marked *(est.)* are not measured.
 **Scope:** an addendum to `docs/architecture.md`. It changes **how an agent consumes the knowledge
 graph during a run** — from a capped blob PUSHED into every prompt to a HYBRID: push only the small
 deterministic layer the agent must be *guaranteed* to see, and let the agent PULL everything else on
@@ -164,7 +164,7 @@ grows from file-scoped peers to a real query set, every tool a thin caller of th
   `subgraph`/`explain`/path already exist for the dash. This workstream exposes them over MCP, it
   does not reinvent retrieval.
 
-_Code:_ `src/mcpserver.rs` (new `tools/list` entries + `call_tool` arms), `src/main.rs` (CLI parity
+_Code:_ `crates/rigger-dash/src/mcpserver.rs` (new `tools/list` entries + `call_tool` arms), `src/main.rs` (CLI parity
 subcommands), all delegating to the existing `contextgraph` traversal + `ground` pass.
 
 ## 5. Workstream C — Teach the agent, and keep review deterministic

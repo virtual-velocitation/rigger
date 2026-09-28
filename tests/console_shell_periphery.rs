@@ -3,7 +3,7 @@
 //! a REAL socket - the same real-wire gap `tests/dash_console_wasm_route_periphery.rs`
 //! already closes for the sibling static `/console/core.wasm` route (this file mirrors
 //! its harness verbatim; see that file's own doc comment for why an in-process
-//! `route(...)` call, which `src/dash.rs`'s own unit tests already use, is not enough on
+//! `route(...)` call, which `crates/rigger-dash/src/dash.rs`'s own unit tests already use, is not enough on
 //! its own for a binary/near-binary payload: `Content-Length` must name the actual wire
 //! byte count, and a woff2 body must survive a raw socket read byte-for-byte).
 //!
@@ -109,7 +109,7 @@ fn an_unknown_font_asset_is_a_plain_404_over_a_real_socket() {
 }
 
 /// Spec 94 criterion 1, THE PAGE IS THE MOCK'S SHELL, proven over the REAL SOCKET (not
-/// just the in-process `route(...)` call `src/dash.rs`'s own unit test already makes):
+/// just the in-process `route(...)` call `crates/rigger-dash/src/dash.rs`'s own unit test already makes):
 /// every one of the seven shell regions the Design names - header, tab bar, health
 /// strip, view, dock, scrubber, statusline - is present with the mock's own class
 /// names, and the light and dark theme token blocks are BOTH served verbatim (bare

@@ -2,12 +2,12 @@
 
 **Goal:** rigger has grown by accretion. `src/` is 128,533 lines in 56 files, three of which are
 programs rather than modules - `crates/rigger-conductor/src/conductor.rs` 34,677 lines, `src/main.rs` 24,024,
-`src/dash.rs` 11,120 (plus `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` 7,320) - holding most of the 3,367
+`crates/rigger-dash/src/dash.rs` 11,120 (plus `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` 7,320) - holding most of the 3,367
 functions. `tests/` is 97,633 lines in 153 files, roughly one periphery file per spec criterion,
 with `tests/cli.rs` alone at 26,930 lines and 2,804 `#[test]`s overall. There are 76 separate
 `Command::new` sites. The loop adds and reviews per unit and never consolidates, so duplication
 accumulates without any single bad commit; the review panel has already caught instances left
-standing (`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s `/proc` pid scan, upheld at spec 62's
+standing (`crates/rigger-dash/src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s `/proc` pid scan, upheld at spec 62's
 capstone). Operator rule (2026-09-06): DRY is STRICT - any logic present in more than one place
 anywhere in the codebase is a violation, with no "small enough to duplicate" exemption. This
 spec produces the audit REPORT that the refactoring specs will be derived from. It changes no
@@ -88,7 +88,7 @@ which instrument found what.
 ## Done when
 
 - [ ] a test proves THE RESPONSIBILITY MAP IS COMPLETE: `tests/simplification_audit.rs` scans
-  every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `src/dash.rs` and asserts the
+  every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `crates/rigger-dash/src/dash.rs` and asserts the
   committed `docs/audit/responsibility-map.json` assigns each one a proposed module with its
   line span, and the report's section 1 renders that map as a proposed module tree with a
   reason per assignment. This criterion OWNS the scanner and the responsibility map; the

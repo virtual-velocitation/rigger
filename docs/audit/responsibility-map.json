@@ -7501,7 +7501,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "073696b216b7b684"
+    "content_hash": "e453d2883c8865ad"
   },
   {
     "file": "src/main.rs",
@@ -11736,7 +11736,7 @@
     "content_hash": "ef9b2ca75dbd6d9a"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_font_response",
     "is_test": false,
     "proposed_module": null,
@@ -11744,7 +11744,7 @@
     "content_hash": "588e1f70923cc330"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "free_port_from",
     "is_test": false,
     "proposed_module": null,
@@ -11752,7 +11752,7 @@
     "content_hash": "1d88c9fa973bb0bf"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "probe_dash_head",
     "is_test": false,
     "proposed_module": null,
@@ -11760,7 +11760,7 @@
     "content_hash": "2fb5699d64097126"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_on",
     "is_test": false,
     "proposed_module": null,
@@ -11768,7 +11768,7 @@
     "content_hash": "10cc6889f7ad5edb"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_pid_on",
     "is_test": false,
     "proposed_module": "dash::registry",
@@ -11776,7 +11776,7 @@
     "content_hash": "62f26cfcdcb4ef21"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "header_line_value",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -11784,7 +11784,7 @@
     "content_hash": "0f724585c97d8aa5"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "head_has_header_line",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -11792,7 +11792,7 @@
     "content_hash": "812d23fec4e2234d"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "head_block_ended",
     "is_test": false,
     "proposed_module": null,
@@ -11800,7 +11800,7 @@
     "content_hash": "b7a5a0f841aa923b"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "bind_singleton",
     "is_test": false,
     "proposed_module": "dash::server",
@@ -11808,7 +11808,7 @@
     "content_hash": "485912a8af57db4e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "displayable_pid",
     "is_test": false,
     "proposed_module": "dash::registry",
@@ -11816,7 +11816,7 @@
     "content_hash": "1a7d357441aa89ca"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "serialize",
     "is_test": false,
     "proposed_module": "dash::dash_marker",
@@ -11824,7 +11824,7 @@
     "content_hash": "ae59e279bddbb068"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "parse",
     "is_test": false,
     "proposed_module": "dash::dash_marker",
@@ -11832,7 +11832,7 @@
     "content_hash": "989385f7c03ec4cc"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "read",
     "is_test": false,
     "proposed_module": "dash::dash_marker",
@@ -11840,7 +11840,7 @@
     "content_hash": "2ebb4cc111541aab"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "write",
     "is_test": false,
     "proposed_module": "dash::dash_marker",
@@ -11848,7 +11848,7 @@
     "content_hash": "dc80009378909d6b"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "tcp_listen_inode_for_port",
     "is_test": false,
     "proposed_module": "dash::server",
@@ -11856,7 +11856,7 @@
     "content_hash": "43b397f70223e67e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "pid_holding_port",
     "is_test": false,
     "proposed_module": "dash::registry",
@@ -11864,7 +11864,7 @@
     "content_hash": "ee14afb57d8c1d20"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "process_state",
     "is_test": false,
     "proposed_module": "dash::server",
@@ -11872,7 +11872,7 @@
     "content_hash": "3bd187225302aa2f"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -11880,7 +11880,7 @@
     "content_hash": "f21be154e408dca1"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "describe_held_port",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -11888,7 +11888,7 @@
     "content_hash": "f2aaa6d03a20c1f5"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "held_port_holder",
     "is_test": false,
     "proposed_module": null,
@@ -11896,7 +11896,7 @@
     "content_hash": "b05264f8e453f228"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "describe_held_port_if_confirmed",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -11904,7 +11904,7 @@
     "content_hash": "7c4849e8dde54cb9"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "url_port",
     "is_test": false,
     "proposed_module": null,
@@ -11912,7 +11912,7 @@
     "content_hash": "e14eed4fd0903055"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "pid_if_port_matches",
     "is_test": false,
     "proposed_module": "dash::registry",
@@ -11920,7 +11920,7 @@
     "content_hash": "93a52ff6dfe385ee"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status",
     "is_test": false,
     "proposed_module": null,
@@ -11928,7 +11928,7 @@
     "content_hash": "9de6848f18feca7b"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_start_needed",
     "is_test": false,
     "proposed_module": null,
@@ -11936,7 +11936,7 @@
     "content_hash": "ec64fb731411ea4e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "should_reap_singleton",
     "is_test": false,
     "proposed_module": null,
@@ -11944,7 +11944,7 @@
     "content_hash": "f032c7df600f9f21"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "instance_views",
     "is_test": false,
     "proposed_module": "dash::registry",
@@ -11952,7 +11952,7 @@
     "content_hash": "a04ae876b2e0fd27"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "instances_json",
     "is_test": false,
     "proposed_module": "dash::registry",
@@ -11960,7 +11960,7 @@
     "content_hash": "f7564d47f4e16852"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "build_state",
     "is_test": false,
     "proposed_module": null,
@@ -11968,7 +11968,7 @@
     "content_hash": "2c230bec5be85701"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "build_graph_view",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -11976,7 +11976,7 @@
     "content_hash": "13c6adda403353e5"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject",
     "is_test": false,
     "proposed_module": "dash::reproject",
@@ -11984,7 +11984,7 @@
     "content_hash": "fc9e7d68d2de1cb2"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "cap_clusters",
     "is_test": false,
     "proposed_module": "dash::reproject",
@@ -11992,7 +11992,7 @@
     "content_hash": "50a792b5ab8fd5ef"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "reprojection_lens_key",
     "is_test": false,
     "proposed_module": "dash::reproject",
@@ -12000,7 +12000,7 @@
     "content_hash": "d02c6b45d8a6acf3"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject_derived",
     "is_test": false,
     "proposed_module": "dash::reproject",
@@ -12008,7 +12008,7 @@
     "content_hash": "774ea4044f4aebc9"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject_files",
     "is_test": false,
     "proposed_module": "dash::reproject",
@@ -12016,7 +12016,7 @@
     "content_hash": "74ab8fd938245771"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "rationale_batch",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12024,7 +12024,7 @@
     "content_hash": "454204c093df9980"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "graph_json",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12032,7 +12032,7 @@
     "content_hash": "50e782869a6d96fe"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "parse_call_dir",
     "is_test": false,
     "proposed_module": null,
@@ -12040,7 +12040,7 @@
     "content_hash": "830907d2941ebe56"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "call_node_view",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12048,7 +12048,7 @@
     "content_hash": "a84cd97245590e6f"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "call_edge_view",
     "is_test": false,
     "proposed_module": null,
@@ -12056,7 +12056,7 @@
     "content_hash": "afa94efb24ffdd16"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "ref_node_view",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12064,7 +12064,7 @@
     "content_hash": "011ea9bff83669da"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_view",
     "is_test": false,
     "proposed_module": null,
@@ -12072,7 +12072,7 @@
     "content_hash": "90dd5a24f498b31c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_route",
     "is_test": false,
     "proposed_module": "dash::server",
@@ -12080,7 +12080,7 @@
     "content_hash": "fe663756820da5df"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "build_run_tree",
     "is_test": false,
     "proposed_module": null,
@@ -12088,7 +12088,7 @@
     "content_hash": "6765d5c15c72ddad"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "unit_node",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12096,7 +12096,7 @@
     "content_hash": "c5411ce53ca390ab"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "role_stage",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12104,7 +12104,7 @@
     "content_hash": "8258e3a07a0efb98"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "driver_stage",
     "is_test": false,
     "proposed_module": null,
@@ -12112,7 +12112,7 @@
     "content_hash": "d470f7ffcc6a905f"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "rollup",
     "is_test": false,
     "proposed_module": null,
@@ -12120,7 +12120,7 @@
     "content_hash": "cae62ba111ae3b5e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "stage_of_role",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12128,7 +12128,7 @@
     "content_hash": "6891c3b738d6ea72"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "role_and_agent",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12136,7 +12136,7 @@
     "content_hash": "7c4d0bf034f393f9"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "gates_status",
     "is_test": false,
     "proposed_module": null,
@@ -12144,7 +12144,7 @@
     "content_hash": "3166a4158645b430"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "advanced_past_gates",
     "is_test": false,
     "proposed_module": null,
@@ -12152,7 +12152,7 @@
     "content_hash": "e007d3ab707efe29"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "unit_live_status",
     "is_test": false,
     "proposed_module": null,
@@ -12160,7 +12160,7 @@
     "content_hash": "5cc1b6e7739a00df"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "spec_of",
     "is_test": false,
     "proposed_module": null,
@@ -12168,7 +12168,7 @@
     "content_hash": "eb3e8f9655d76d32"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "graph_seeds",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12176,7 +12176,7 @@
     "content_hash": "581748fd0e7ee3f3"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "event_seed_ids",
     "is_test": false,
     "proposed_module": null,
@@ -12184,7 +12184,7 @@
     "content_hash": "b97f606eae649837"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "unit_seeds",
     "is_test": false,
     "proposed_module": null,
@@ -12192,7 +12192,7 @@
     "content_hash": "8b7614add9f2cbd3"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "repoint_seed",
     "is_test": false,
     "proposed_module": null,
@@ -12200,7 +12200,7 @@
     "content_hash": "c099bc852c996ed3"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "is_console_event",
     "is_test": false,
     "proposed_module": null,
@@ -12208,7 +12208,7 @@
     "content_hash": "2959071f4dfb672c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_wire",
     "is_test": false,
     "proposed_module": null,
@@ -12216,7 +12216,7 @@
     "content_hash": "072259bf776690b7"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_progress_wire",
     "is_test": false,
     "proposed_module": null,
@@ -12224,7 +12224,7 @@
     "content_hash": "89d43196e8777a6c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "event_view",
     "is_test": false,
     "proposed_module": null,
@@ -12232,7 +12232,7 @@
     "content_hash": "037422d5ce1216ef"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "field_str",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12240,7 +12240,7 @@
     "content_hash": "9110bcd5b6a7e579"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "field_str_array",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12248,7 +12248,7 @@
     "content_hash": "a8dbca0a42164ec8"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "now_unix",
     "is_test": false,
     "proposed_module": null,
@@ -12256,7 +12256,7 @@
     "content_hash": "fb91652155031be3"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "state_json",
     "is_test": false,
     "proposed_module": null,
@@ -12264,7 +12264,7 @@
     "content_hash": "647104ec85e10b43"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "events_json",
     "is_test": false,
     "proposed_module": null,
@@ -12272,7 +12272,7 @@
     "content_hash": "ccc9a9803f7be45c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_snapshot_json",
     "is_test": false,
     "proposed_module": null,
@@ -12280,7 +12280,7 @@
     "content_hash": "1d1ffc67f39080ab"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "live_page",
     "is_test": false,
     "proposed_module": null,
@@ -12288,7 +12288,7 @@
     "content_hash": "80a8c5659589e0c2"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_page",
     "is_test": false,
     "proposed_module": null,
@@ -12296,7 +12296,7 @@
     "content_hash": "fba6262a4c0a33c1"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "render_export",
     "is_test": false,
     "proposed_module": null,
@@ -12304,7 +12304,7 @@
     "content_hash": "dab213b1acf74b48"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "escape_for_script",
     "is_test": false,
     "proposed_module": "dash::render",
@@ -12312,7 +12312,7 @@
     "content_hash": "e289d4dd4b32171a"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "new",
     "is_test": false,
     "proposed_module": "dash::response",
@@ -12320,7 +12320,7 @@
     "content_hash": "b1e042534a39485f"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "rendered",
     "is_test": false,
     "proposed_module": "dash::response",
@@ -12328,7 +12328,7 @@
     "content_hash": "883d3e8064b7d7f9"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "text",
     "is_test": false,
     "proposed_module": "dash::response",
@@ -12336,7 +12336,7 @@
     "content_hash": "a333a5588cbbfc40"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "binary",
     "is_test": false,
     "proposed_module": "dash::response",
@@ -12344,7 +12344,7 @@
     "content_hash": "1d58754097b21ae6"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "reason",
     "is_test": false,
     "proposed_module": "dash::response",
@@ -12352,7 +12352,7 @@
     "content_hash": "c419a38eba2be7c7"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "write_to",
     "is_test": false,
     "proposed_module": "dash::response",
@@ -12360,7 +12360,7 @@
     "content_hash": "79d41d594414647b"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "route",
     "is_test": false,
     "proposed_module": "dash::server",
@@ -12368,7 +12368,7 @@
     "content_hash": "16bcb4ac3f340970"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "percent_decode",
     "is_test": false,
     "proposed_module": null,
@@ -12376,7 +12376,7 @@
     "content_hash": "2eecd079d952fc6b"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "query_param",
     "is_test": false,
     "proposed_module": null,
@@ -12384,7 +12384,7 @@
     "content_hash": "fca5fa0bc37ed361"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "parse_request_line",
     "is_test": false,
     "proposed_module": null,
@@ -12392,7 +12392,7 @@
     "content_hash": "e8470c8f1ccd915c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "serve_on",
     "is_test": false,
     "proposed_module": "dash::server",
@@ -12400,7 +12400,7 @@
     "content_hash": "1e7bb113d454f86c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "handle_conn",
     "is_test": false,
     "proposed_module": "dash::server",
@@ -12408,7 +12408,7 @@
     "content_hash": "35365e9ee2d2b61e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "env_duration_ms",
     "is_test": false,
     "proposed_module": null,
@@ -12416,7 +12416,7 @@
     "content_hash": "91180a43c64adcd9"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "write_sse",
     "is_test": false,
     "proposed_module": null,
@@ -12424,7 +12424,7 @@
     "content_hash": "a584bf0fa44227d7"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "write_retained_window_gone",
     "is_test": false,
     "proposed_module": null,
@@ -12432,15 +12432,15 @@
     "content_hash": "a20b249e818015b5"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "serve_console_stream",
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "6e3f395a2f91b165"
+    "content_hash": "7dcacf5aea17a1ec"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "get_static",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12448,7 +12448,7 @@
     "content_hash": "45992246031d92a4"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "assert_console_page_carries",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12456,7 +12456,7 @@
     "content_hash": "73c2f4f553471756"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "seeded_run",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12464,7 +12464,7 @@
     "content_hash": "b5bb0988a5c7d8b0"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "local_instance",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12472,7 +12472,7 @@
     "content_hash": "98f565c0accdb4cb"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "instance_views_project_a_sorted_credential_free_landing",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12480,7 +12480,7 @@
     "content_hash": "2152275994d065f5"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "instance_view_age_floors_at_zero_for_a_future_heartbeat",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12488,7 +12488,7 @@
     "content_hash": "991e649e061e5fe7"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "api_instances_route_renders_the_landing_list",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12496,7 +12496,7 @@
     "content_hash": "b1f257b7c34a0c49"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12504,7 +12504,7 @@
     "content_hash": "f5141db35d539c8e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_core_wasm_artifact_is_under_the_three_megabyte_budget",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12512,15 +12512,15 @@
     "content_hash": "083b7133969cf209"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "embedded_artifact_matches_a_fresh_independent_nested_build",
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d8e5ebdfc87b8ee6"
+    "content_hash": "189589695d160026"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_route_serves_the_shell_page_with_mock_regions_and_both_theme_token_blocks",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12528,7 +12528,7 @@
     "content_hash": "420f9e8a0c6d9ea9"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_route_never_references_an_external_url",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12536,7 +12536,7 @@
     "content_hash": "072f2b992eedfecf"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_fonts_route_serves_each_embedded_font_and_its_license_text",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12544,7 +12544,7 @@
     "content_hash": "39a33a00e9ae22c4"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_page_wires_the_theme_toggles_persistence_round_trip",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12552,7 +12552,7 @@
     "content_hash": "1cb146fc775321bc"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "root_serves_the_embedded_page_with_the_placeholder_resolved",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12560,7 +12560,7 @@
     "content_hash": "96d2eddfb95607fb"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "gates_status_never_fabricates_passed_for_an_off_linear_unverdicted_unit",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12568,7 +12568,7 @@
     "content_hash": "8a417e38fee1d7fa"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "free_port_from_returns_the_start_port_when_free_and_the_next_free_one_when_it_is_taken",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12576,7 +12576,7 @@
     "content_hash": "d76a4585af1b7c40"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "bind_singleton_binds_the_exact_port_and_never_searches",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12584,7 +12584,7 @@
     "content_hash": "614cde770847a4f4"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "bind_singleton_short_circuits_on_an_already_serving_rigger_dash",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12592,7 +12592,7 @@
     "content_hash": "d6e9501e8d1acc34"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "serve_reply",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12600,7 +12600,7 @@
     "content_hash": "cdb584f2ada73d9a"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "serve_dribble",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12608,7 +12608,7 @@
     "content_hash": "dfe43bdb9d84017c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "timed_dash_probe",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12616,7 +12616,7 @@
     "content_hash": "fac926ab04840d09"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "assert_pid_probe",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12624,7 +12624,7 @@
     "content_hash": "b482016d807cd53d"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_on_is_false_for_a_non_dash_listener",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12632,7 +12632,7 @@
     "content_hash": "828b67ecfb59adeb"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_on_is_bounded_against_a_byte_dribbling_holder",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12640,7 +12640,7 @@
     "content_hash": "82eafc0795288879"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12648,7 +12648,7 @@
     "content_hash": "d76fed9068330483"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_serving_pid_on_is_none_when_nothing_answers",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12656,7 +12656,7 @@
     "content_hash": "2e4a220a1b2773b0"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "bind_singleton_cold_race_loser_resolves_across_the_accept_window",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12664,7 +12664,7 @@
     "content_hash": "df698cfca632c94e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_page_layout_cannot_scroll_the_body_horizontally",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12672,7 +12672,7 @@
     "content_hash": "f22772129fdf0ccf"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_landing_view_lists_instances_and_threads_the_attach_selector",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12680,7 +12680,7 @@
     "content_hash": "40757003d731ba58"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "css_rule",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12688,7 +12688,7 @@
     "content_hash": "419df00fde1e7465"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_dashboard_fits_one_screen_with_internal_scroll",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12696,7 +12696,7 @@
     "content_hash": "d791600a20ce3e27"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "cells_fit_or_wrap_and_wide_cells_scroll_in_their_own_container",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12704,7 +12704,7 @@
     "content_hash": "3cd51ff56a6d332a"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_decision_history_renders_each_decision_as_a_native_details_with_preview_and_full_body",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12712,7 +12712,7 @@
     "content_hash": "f3a9b8682ed29cba"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "state_endpoint_projects_the_seeded_run",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12720,7 +12720,7 @@
     "content_hash": "d37e8dbb1503d69e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_filter_admits_only_the_named_run_lifecycle_types",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12728,7 +12728,7 @@
     "content_hash": "381569a98ec5e454"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_wire_matches_console_cores_wire_event_shape",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12736,7 +12736,7 @@
     "content_hash": "dfe843c703bff94a"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_wire_carries_recorded_at",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12744,7 +12744,7 @@
     "content_hash": "03146eb8aa738ea1"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_event_wire_with_a_malformed_body_degrades_to_null_data",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12752,7 +12752,7 @@
     "content_hash": "200e7b25650637f8"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_progress_wire_with_a_malformed_body_degrades_to_empty_id_and_activity",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12760,7 +12760,7 @@
     "content_hash": "95a90ce6ffd94cc7"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12768,7 +12768,7 @@
     "content_hash": "fe683ff8e0d43875"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "state_carries_the_live_agent_activity",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12776,7 +12776,7 @@
     "content_hash": "9c695b797fa084c5"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "state_counts_grep_fallbacks_and_carries_them_in_the_review_outcomes_data",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12784,7 +12784,7 @@
     "content_hash": "bfe12ca89d334297"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "done",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12792,7 +12792,7 @@
     "content_hash": "5fc633758c1610fb"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "run_tree_projects_the_spine_with_collapse_expand_and_driver_lines",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12800,7 +12800,7 @@
     "content_hash": "810a5b1ec3c1ab2e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "review_verdicts_come_straight_from_the_metrics_classification",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12808,7 +12808,7 @@
     "content_hash": "cd900851780a682c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "events_endpoint_is_since_exclusive",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12816,7 +12816,7 @@
     "content_hash": "cfc5f17580f8ad79"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "no_mutating_endpoint_exists",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12824,7 +12824,7 @@
     "content_hash": "f740e85c180d8191"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "export_inlines_the_snapshot_as_a_static_page",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12832,7 +12832,7 @@
     "content_hash": "a33334097d03a193"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "export_neutralizes_a_script_breakout_in_the_inlined_state",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12840,7 +12840,7 @@
     "content_hash": "5596b6d65f6276e7"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "decision_view_strikes_through_superseded_entries",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12848,7 +12848,7 @@
     "content_hash": "5e31a83c75362212"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12856,7 +12856,7 @@
     "content_hash": "694123ee3646a812"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12864,7 +12864,7 @@
     "content_hash": "93095dfe55512711"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12872,7 +12872,7 @@
     "content_hash": "02ca250151089f5f"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "cluster_detail_under_files_lens_is_unconditionally_empty",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12880,7 +12880,7 @@
     "content_hash": "19ab515e90c39260"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12888,7 +12888,7 @@
     "content_hash": "256afd6dcfc4732c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12896,7 +12896,7 @@
     "content_hash": "4841a8863a05023f"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "tiered_chain_graph",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12904,7 +12904,7 @@
     "content_hash": "af1813d03552b9d9"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_returns_a_tier_tagged_seeded_neighborhood_as_json",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12912,7 +12912,7 @@
     "content_hash": "5944136cab502b6c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_percent_decodes_the_seed_so_select_to_seed_reaches_ids_with_special_chars",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12920,7 +12920,7 @@
     "content_hash": "b065b0b7aae82e6a"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_degrades_gracefully_for_an_unknown_seed_and_an_empty_graph",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12928,7 +12928,7 @@
     "content_hash": "52461852d69d9a47"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_is_read_only_a_non_get_is_405",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12936,7 +12936,7 @@
     "content_hash": "afbf2df1ff4d7cd4"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dispatch_graph",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12944,7 +12944,7 @@
     "content_hash": "45f6e53bce37596c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_dispatches_cluster_overview_and_seed_by_parameter",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12952,7 +12952,7 @@
     "content_hash": "a315016e401c1caa"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_overview_route_degrades_gracefully_on_an_empty_graph",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12960,7 +12960,7 @@
     "content_hash": "09757476be6b9fb1"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "neighborhood_bounds_by_depth_follows_both_directions_and_skips_invalidated_edges",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12968,7 +12968,7 @@
     "content_hash": "9d642d740a4dd6e4"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12976,7 +12976,7 @@
     "content_hash": "6ab698beceb4e3a2"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "path_is_the_shortest_route_between_two_selected_nodes_over_currently_valid_edges",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12984,7 +12984,7 @@
     "content_hash": "b18a6f85098d8701"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_flags_god_nodes_and_returns_the_query_path_between_two_selected_nodes",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -12992,7 +12992,7 @@
     "content_hash": "8a095455fa6f57c8"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "provenance_graph",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13000,7 +13000,7 @@
     "content_hash": "fc07d78b4a351948"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "explain_returns_a_nodes_incident_edges_as_source_and_tier_tagged_provenance",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13008,7 +13008,7 @@
     "content_hash": "a5f83258fb11b844"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_carries_the_seed_nodes_explain_provenance",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13016,7 +13016,7 @@
     "content_hash": "c9395ebed186ef07"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "graph_seeds_enumerate_decisions_findings_and_their_files_never_units",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13024,7 +13024,7 @@
     "content_hash": "8115d2522c34bd17"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13032,7 +13032,7 @@
     "content_hash": "f32c1a8c7d8d47cc"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_run_tree_click_to_seed_route_lands_a_unit_on_a_real_neighborhood",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13040,7 +13040,7 @@
     "content_hash": "cd96828f93451b49"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "unit_seeds_scope_content_to_the_owning_unit",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13048,7 +13048,7 @@
     "content_hash": "11fa1cccf1cb792c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "repoint_seed_passes_a_known_node_and_re_points_a_unit_id",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13056,7 +13056,7 @@
     "content_hash": "2e19339a633ced39"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "build_state_on_an_empty_run_is_empty_not_a_panic",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13064,7 +13064,7 @@
     "content_hash": "d810a76725c82391"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "release_ready_is_surfaced_on_the_dash_only_for_a_done_run",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13072,7 +13072,7 @@
     "content_hash": "f0cc1f113cf18d56"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "release_ready_pr_command_newline_renders_as_a_real_line_break_not_a_collapsed_run_on",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13080,7 +13080,7 @@
     "content_hash": "96eb534f00048b87"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "request_line_parsing_extracts_method_and_target",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13088,7 +13088,7 @@
     "content_hash": "7df5c76f7a82b796"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "query_param_reads_since",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13096,7 +13096,7 @@
     "content_hash": "e29b4cfc0e39d705"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "endpoints_serve_over_a_real_socket_against_a_seeded_store",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13104,7 +13104,7 @@
     "content_hash": "12b6394751f1da01"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_post_over_a_real_socket_is_refused_without_touching_the_store",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13112,7 +13112,7 @@
     "content_hash": "7165985941b4a11a"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_provider_is_consulted_only_on_graph_requests_not_the_state_poll",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13120,7 +13120,7 @@
     "content_hash": "e5f8dea3c6300819"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_marker_round_trips_through_its_on_disk_record",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13128,7 +13128,7 @@
     "content_hash": "43afe6f8cb550a25"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_marker_parse_rejects_a_malformed_record",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13136,7 +13136,7 @@
     "content_hash": "a6b3331edca5835e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_marker_reads_none_for_an_absent_file",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13144,7 +13144,7 @@
     "content_hash": "f758d2e85cac3e27"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port_always_names_the_address_even_with_no_holder",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13152,7 +13152,7 @@
     "content_hash": "1f52ccc3957f4e99"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port_names_the_pid_and_state_for_a_running_holder",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13160,7 +13160,7 @@
     "content_hash": "5183df67babca9ed"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port_names_the_pid_alone_when_its_state_is_not_discoverable",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13168,7 +13168,7 @@
     "content_hash": "ba5564151ed5d7d5"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "format_held_port_gives_the_stopped_listener_diagnosis_naming_resume_or_kill",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13176,7 +13176,7 @@
     "content_hash": "9c64d0e25bb3478e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "pid_holding_port_finds_the_pid_of_a_listener_bound_in_this_process",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13184,7 +13184,7 @@
     "content_hash": "e17d1e6ff9a81d13"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "pid_holding_port_is_none_for_a_port_nothing_is_listening_on",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13192,7 +13192,7 @@
     "content_hash": "62f9f13d5b4f8195"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "assert_names_this_process_as_holder",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13200,7 +13200,7 @@
     "content_hash": "197a538170a9758d"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "describe_held_port_if_confirmed_is_none_when_nothing_holds_the_port",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13208,7 +13208,7 @@
     "content_hash": "5afd1c65a5e928a0"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_start_needed_is_true_when_none_serving_and_false_when_one_serves",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13216,7 +13216,7 @@
     "content_hash": "fe31f6933d208578"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13224,7 +13224,7 @@
     "content_hash": "a3fca3be029d8d1f"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13232,7 +13232,7 @@
     "content_hash": "c0e168a4ea52a29d"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "url_port_parses_the_recorded_shape_and_rejects_anything_else",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13240,7 +13240,7 @@
     "content_hash": "1010d75adeec48b1"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13248,7 +13248,7 @@
     "content_hash": "aa9625a7d9075a20"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "should_reap_singleton_reaps_only_when_no_registered_instance_is_live",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13256,7 +13256,7 @@
     "content_hash": "3811d6e947c03b18"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13264,7 +13264,7 @@
     "content_hash": "82d7d10d90a82a52"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_page_carries_the_directed_call_layered_render",
     "is_test": true,
     "proposed_module": "dash::tests",
@@ -13272,7 +13272,7 @@
     "content_hash": "fdb8cece7ddd0c17"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "cnode",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13280,7 +13280,7 @@
     "content_hash": "fc1ed02167d0f736"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "layer_of",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13288,7 +13288,7 @@
     "content_hash": "787fbc55bd7c40ff"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "ids",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13296,7 +13296,7 @@
     "content_hash": "06c0663d9424e6ff"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_view_down_signs_callees_positive_and_carries_frontier_and_back",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13304,7 +13304,7 @@
     "content_hash": "e39634d1dc200bfd"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_view_up_negates_callers_and_carries_the_referenced_sidecar",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13312,7 +13312,7 @@
     "content_hash": "d556ffd2ec3353a7"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_view_both_centers_the_seed_with_callees_right_and_callers_left",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13320,7 +13320,7 @@
     "content_hash": "54fdfd6d99aba1b7"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_plain_neighborhood_omits_every_additive_call_field",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13328,7 +13328,7 @@
     "content_hash": "03d6e2eab8e72177"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13336,7 +13336,7 @@
     "content_hash": "8ecac9fb455f9918"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_route_clamps_depth_and_defaults_the_tier_floor",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13344,7 +13344,7 @@
     "content_hash": "75be4937150436f9"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "calls_route_walks_both_directions_for_dir_both",
     "is_test": true,
     "proposed_module": "dash::tests::calls_route_c4",
@@ -13352,7 +13352,7 @@
     "content_hash": "9189ef0feb66b649"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "finding_node",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13360,7 +13360,7 @@
     "content_hash": "d2392356fd11b09f"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "rationale_graph",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13368,7 +13368,7 @@
     "content_hash": "396d4d647ede8239"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "leaf_fields",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13376,7 +13376,7 @@
     "content_hash": "51ffe8dcbbe610a3"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "node_rationale_returns_attached_leaves_ordered_by_kind_then_id",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13384,7 +13384,7 @@
     "content_hash": "d58f9de199e0279e"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_finding_leaf_carries_content_only_never_the_by_or_unit_machinery",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13392,7 +13392,7 @@
     "content_hash": "c50c229302605d88"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_handbook_rule_and_a_supersedes_edge_are_not_rationale",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13400,7 +13400,7 @@
     "content_hash": "d790ff029b1b9981"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "an_invalidated_edge_is_not_live_rationale",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13408,7 +13408,7 @@
     "content_hash": "08da5a3be85585cb"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_node_without_rationale_returns_none",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13416,7 +13416,7 @@
     "content_hash": "bd8eb00444fee358"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_batch_covers_the_visible_set_and_keeps_only_nodes_with_rationale",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13424,7 +13424,7 @@
     "content_hash": "742c4aa629f8c492"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_batch_is_deterministic_across_request_order_and_dedups",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13432,7 +13432,7 @@
     "content_hash": "a4a9b78e48203657"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_explain_route_returns_the_batch_in_one_request",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13440,7 +13440,7 @@
     "content_hash": "f3ed4ac57950d7b4"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "an_absent_explain_leaves_the_graph_route_unchanged",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
@@ -13448,7 +13448,7 @@
     "content_hash": "403e29cf2597be4b"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "memory_rail_lists_decisions_findings_and_concepts_excluding_lessons",
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
@@ -13456,7 +13456,7 @@
     "content_hash": "f580ab47fa0586af"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "memory_rail_is_empty_for_a_node_with_no_governing_memory",
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
@@ -13464,7 +13464,7 @@
     "content_hash": "a2627a17ed7cab41"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "memory_rail_concepts_are_live_from_node_realizes_edges_to_a_concept_target_deduped_by_id",
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
@@ -13472,7 +13472,7 @@
     "content_hash": "8eb6de44fda8597c"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_seeded_route_carries_memory_without_adding_a_single_node_to_the_neighborhood",
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
@@ -13480,7 +13480,7 @@
     "content_hash": "11eaada167d3ce6d"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "a_cluster_drill_carries_no_memory_field",
     "is_test": true,
     "proposed_module": "dash::tests::subject_view_c5",
@@ -13488,7 +13488,7 @@
     "content_hash": "09d17d5aceb6b8d8"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_graph",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13496,7 +13496,7 @@
     "content_hash": "815e4779b4ee03a2"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_code_entity_carries_file_line_degree_community_concepts_and_memory_counts",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13504,7 +13504,7 @@
     "content_hash": "0722061d5edea7dc"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_membership_less_entity_has_no_community_and_no_line",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13512,7 +13512,7 @@
     "content_hash": "202b7505d5eb1b99"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_proven_code_entity_carries_proven_by_and_proof_evidence",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13520,7 +13520,7 @@
     "content_hash": "bd3bb32ce9ca10bb"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_an_unproven_code_entity_has_proven_by_zero_and_no_evidence",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13528,7 +13528,7 @@
     "content_hash": "a808b6ba8699d231"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "assert_card_reports_no_proof",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13536,7 +13536,7 @@
     "content_hash": "d673433d2ac3fdb2"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_file_lists_its_contained_entities_as_top_entities",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13544,7 +13544,7 @@
     "content_hash": "2a9a843c9b0c59eb"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_concept_lists_its_realizing_members_as_top_evidence",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13552,7 +13552,7 @@
     "content_hash": "a06503e74df0e5ed"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_concept_carries_each_top_evidence_members_own_kind",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13560,7 +13560,7 @@
     "content_hash": "c5532f70e79ad331"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_a_file_carries_each_top_entity_members_own_kind",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13568,7 +13568,7 @@
     "content_hash": "aed46477c387a4c1"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "card_of_an_unknown_id_is_none",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
@@ -13576,7 +13576,7 @@
     "content_hash": "817b643b153ea919"
   },
   {
-    "file": "src/dash.rs",
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one",
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",

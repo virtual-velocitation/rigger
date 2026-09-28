@@ -2,7 +2,7 @@
 //! `wasm32-unknown-unknown` cross-compile of `crates/console-core`, and its embedding into
 //! the served `/console/core.wasm` route.
 //!
-//! `build/console_wasm.rs` is `#[path]`-included by both `build.rs` (compiled into the
+//! `crates/rigger-dash/build/console_wasm.rs` is `#[path]`-included by both `build.rs` (compiled into the
 //! build-script crate) and this file (compiled into this integration-test binary), the same
 //! technique `tests/gitsemver_derivation.rs` and `tests/build_watch_paths.rs` already use for
 //! the identical reason: a build script cannot be exercised by `cargo test` directly.
@@ -11,9 +11,9 @@
 //! no cross-compile - and runs on every `cargo test`, always. The one check that is not
 //! cheap - independently re-cross-compiling `console-core` for `wasm32-unknown-unknown` a
 //! second time and comparing it byte-for-byte against the artifact `build.rs` already
-//! embedded - needs the embedded `CONSOLE_CORE_WASM` constant `src/dash.rs` deliberately
+//! embedded - needs the embedded `CONSOLE_CORE_WASM` constant `crates/rigger-dash/src/dash.rs` deliberately
 //! keeps private (a `pub` accessor with no real production consumer would itself be a
-//! dead-code candidate spec 87's audit must disposition), so it lives in `src/dash.rs`'s
+//! dead-code candidate spec 87's audit must disposition), so it lives in `crates/rigger-dash/src/dash.rs`'s
 //! own `#[cfg(test)] mod tests` instead, gated behind `RIGGER_CONSOLE_WASM_EMBED_VERIFY=1`,
 //! the same opt-in shape `RIGGER_CORE_LANE_VERIFY=1` (`tests/core_lane_purity_audit.rs`) and
 //! `RIGGER_CONSOLE_CORE_ABI_VERIFY=1` (`crates/console-core/tests/exports.rs`) already use
@@ -39,7 +39,7 @@
 
 mod common;
 
-#[path = "../build/console_wasm.rs"]
+#[path = "../crates/rigger-dash/build/console_wasm.rs"]
 #[allow(dead_code)]
 mod console_wasm;
 

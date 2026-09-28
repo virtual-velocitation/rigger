@@ -67,7 +67,7 @@ rigger::test_cases! {
 /// beyond the server's retained window triggers a snapshot re-fetch";
 /// `adj-u94c3-r2-verdict-reject-retained-window-gap-refetch`). A real `EventSource` sets
 /// `readyState` to `CLOSED` only for a DEFINITIVE server refusal (`write_retained_window_
-/// gone`, `src/dash.rs`'s own `410`) - never for an ordinary dropped connection, which it
+/// gone`, `crates/rigger-dash/src/dash.rs`'s own `410`) - never for an ordinary dropped connection, which it
 /// retries on its own with no page-side call at all (`readyState` stays `CONNECTING` for
 /// that case, and this page must do nothing then, or every routine reconnect would refetch
 /// the whole snapshot). `onerror` must act on exactly that `CLOSED` signal by re-fetching

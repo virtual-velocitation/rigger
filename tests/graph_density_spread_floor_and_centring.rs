@@ -3,7 +3,7 @@
 //! AND label area, and every edge is drawable at real densities, deterministically) is proven by
 //! `readable_graph_density_scaled_spacing.rs`. That proof only ever exercises the DENSE, accessors-
 //! present path where the spread factor is > 1; it is structurally blind to the three other branches
-//! of the served page's own JS (`src/dash.html`: `kgSpread` / `forceLayout`) that this file adds:
+//! of the served page's own JS (`crates/rigger-dash/src/dash.html`: `kgSpread` / `forceLayout`) that this file adds:
 //!
 //!   * the SPREAD FLOOR + degenerate inputs - `kgSpread` returns EXACTLY 1 when the radius/label
 //!     accessors are absent (the layered call-DAG and the bare structural harness path), when the node

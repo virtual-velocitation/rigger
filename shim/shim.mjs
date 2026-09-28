@@ -22,7 +22,7 @@
 // injection -> run the agent via query() with the proxy server -> rigger_result.
 //
 // Every rigger tool reply is a tools/call result whose payload is under
-// `structuredContent` (the Rust server wraps it there, see src/mcpserver.rs); this
+// `structuredContent` (the Rust server wraps it there, see crates/rigger-dash/src/mcpserver.rs); this
 // driver unwraps it on every call.
 //
 // This file is split into a pure driver (runWorkflow / the proxy + loop), wired

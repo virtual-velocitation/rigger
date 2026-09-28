@@ -1,7 +1,7 @@
 //! Periphery (contract / API / integration) test for spec 94, criterion 2: THE SNAPSHOT AND
 //! THE STREAM's stream half, `GET /api/console/stream?since=N`, driven over a REAL socket.
 //!
-//! `src/dash.rs`'s own inside-out unit tests prove `is_console_event`/`console_event_wire`
+//! `crates/rigger-dash/src/dash.rs`'s own inside-out unit tests prove `is_console_event`/`console_event_wire`
 //! and the `/api/console/snapshot` body against the pure `route` function - they never open a
 //! socket, so they cannot prove the actual `text/event-stream` wire framing, the `since=`
 //! resume, the append-to-delivery latency, or that two connections can be open AT ONCE. This
@@ -18,7 +18,7 @@
 //! feature-gated). No reference to any external tool or project; hyphens, never em dashes.
 //!
 //! THE SNAPSHOT half (the `/api/console/snapshot` bootstrap read) and the STREAM's
-//! `liveness`/`heartbeat` frames get the SAME real-socket treatment below: `src/dash.rs`'s
+//! `liveness`/`heartbeat` frames get the SAME real-socket treatment below: `crates/rigger-dash/src/dash.rs`'s
 //! own inside-out unit tests prove the snapshot body and the `is_console_event` filter
 //! against the pure `route` function / private helpers, in-process, but never open a socket
 //! and never observe the `liveness`/`heartbeat` frames at all (no test anywhere did, before
@@ -334,10 +334,10 @@ fn a_newly_appended_console_event_arrives_as_an_event_frame_and_a_graph_type_nev
 
 /// `console_event_wire`'s additive `recorded_at` field (spec 94 criterion 3,
 /// `d-u94c3-wire-event-recorded-at`) reaches a REAL client over the stream's `event` frame -
-/// not just `src/dash.rs`'s own inside-out unit test
+/// not just `crates/rigger-dash/src/dash.rs`'s own inside-out unit test
 /// (`console_event_wire_carries_recorded_at`), which proves the JSON shape against the pure
 /// function in isolation and never crosses a socket. `console_event_wire` is the SAME
-/// function the snapshot's `events` array serializes with (`src/dash.rs:2845`), so this one
+/// function the snapshot's `events` array serializes with (`crates/rigger-dash/src/dash.rs:2845`), so this one
 /// real-socket proof for the stream's `event` frame covers both call sites of the one
 /// wire-shaping authority. Proves the wall-clock second `console::scrub_track`'s hour ticks
 /// need actually survives real HTTP/SSE framing - the one hop the in-process tests cannot see.
@@ -677,7 +677,7 @@ fn get_json(addr: std::net::SocketAddr, path: &str) -> (u16, Option<String>, ser
 
 /// THE SNAPSHOT (spec 94, criterion 2): `GET /api/console/snapshot` bootstraps a console tab
 /// over a REAL socket - run identity, the type-filtered console-event feed, progress lines,
-/// liveness ages, and the definition's stage/gate names. `src/dash.rs`'s own inside-out unit
+/// liveness ages, and the definition's stage/gate names. `crates/rigger-dash/src/dash.rs`'s own inside-out unit
 /// test (`console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions`)
 /// proves this exact body against the pure `route` function, in-process - it never crosses
 /// `handle_conn`, real HTTP response framing, or an actual bound socket a browser tab hits.
@@ -695,7 +695,7 @@ fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_defi
             r#"{"run":"r1","spec":"specs/94-the-console-shell-and-the-live-data-plane.md"}"#,
         )
         // `current_run_id`/`current_run_base` scope by this meta key, exactly like a real
-        // RunStarted and like `src/dash.rs`'s own pure-function unit test for this same body.
+        // RunStarted and like `crates/rigger-dash/src/dash.rs`'s own pure-function unit test for this same body.
         .with_meta(META_RUN_ID, "r1"),
     );
     append_at_next_position(

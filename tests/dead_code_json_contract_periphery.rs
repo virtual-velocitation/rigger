@@ -67,7 +67,7 @@
 //! private-helper changes with no new cross-module seam). The one periphery-visible surface item:
 //! the fix removes 4 named false-positive candidates from the committed artifact -
 //! `Namespaced::new` (`src/eventstore/namespace.rs`), `ReplayDriver::new`
-//! (`crates/rigger-driver/src/driver/replay.rs`), `Buckets::new` (`src/dash.rs`), `Server::new` (`src/mcpserver.rs`) -
+//! (`crates/rigger-driver/src/driver/replay.rs`), `Buckets::new` (`crates/rigger-dash/src/dash.rs`), `Server::new` (`crates/rigger-dash/src/mcpserver.rs`) -
 //! a regression class round 1's periphery layer could not yet pin since it postdates round 1. The
 //! ROUND 2 test after the round-1 tests below closes that gap. EXEMPT: the `dyn`/`impl`-keyword
 //! strip itself has no committed-artifact fact to assert against (zero `impl dyn` blocks exist in
@@ -479,8 +479,8 @@ rigger::test_cases! {
             &[
                 ("new", Some("crates/rigger-store-sqlite/src/eventstore/namespace.rs")), // Namespaced::new
                 ("new", Some("crates/rigger-driver/src/driver/replay.rs")),        // ReplayDriver::new
-                ("new", Some("src/dash.rs")),                 // Buckets::new
-                ("new", Some("src/mcpserver.rs")),            // Server::new
+                ("new", Some("crates/rigger-dash/src/dash.rs")),                 // Buckets::new
+                ("new", Some("crates/rigger-dash/src/mcpserver.rs")),            // Server::new
             ],
             "a regression of the round-2 impl_assoc_qualifier-reuses-impl_self_type fix: this \
              constructor's enclosing impl block declares its own leading generic/lifetime \
@@ -567,13 +567,13 @@ rigger::test_cases! {
         );
     /// Regression pin for the real bug criterion 3 found and fixed while researching dispositions
     /// (decision `u87c3-self-colon-colon-qualifier-false-positive`, see the module doc comment):
-    /// `DashMarker::parse` (`src/dash.rs:398`) is referenced only via `Self::parse(...)` from its
+    /// `DashMarker::parse` (`crates/rigger-dash/src/dash.rs:398`) is referenced only via `Self::parse(...)` from its
     /// own `DashMarker::read`, itself called in real production code (`main.rs:5731/7313/7629`) -
     /// it must never again appear as a dead-code candidate, which would recommend deleting live
     /// code.
     dash_marker_parse_the_self_colon_colon_false_positive_stays_absent:
         assert_absent_from_dead_code(
-            &[("parse", Some("src/dash.rs"))],
+            &[("parse", Some("crates/rigger-dash/src/dash.rs"))],
             "a regression of the Self:: qualifier-attribution fix \
              (u87c3-self-colon-colon-qualifier-false-positive); it is called from real production \
              code via Self::parse inside DashMarker::read and must never be recommended for \

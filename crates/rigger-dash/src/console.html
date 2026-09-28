@@ -577,7 +577,7 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
     // since that URL's own since= is frozen at page-load and never re-evaluated - the
     // native retry itself needs no page-side reconnect call, but ONLY because the
     // server now reads the id: line this same retry sends back as Last-Event-ID
-    // (write_sse/handle_conn, src/dash.rs) and resumes from there instead. fold_push
+    // (write_sse/handle_conn, crates/rigger-dash/src/dash.rs) and resumes from there instead. fold_push
     // is additionally idempotent by position (console-core's own op_fold_push), so
     // even a frame this resume mechanism still lets through twice renders no duplicate
     // mark and grows session.events by zero, not by one. The health strip's
@@ -590,7 +590,7 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
     // browser's OWN retry reopens this same URL automatically, needing nothing from
     // this handler (the case above). A stale since/Last-Event-ID the store can no
     // longer serve instead gets a REAL, distinct HTTP response
-    // (write_retained_window_gone, src/dash.rs) - which is a definitive server
+    // (write_retained_window_gone, crates/rigger-dash/src/dash.rs) - which is a definitive server
     // refusal, so the spec sets readyState to CLOSED and fires error exactly ONCE,
     // with no further auto-retry at the same stale position. That CLOSED state is
     // the one signal this handler acts on: re-fetch the snapshot, fold_reset onto

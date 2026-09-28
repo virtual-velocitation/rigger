@@ -7,7 +7,7 @@
 //! every edge's endpoints end up separated by at least the sum of their node radii, so an edge is
 //! drawable as a visible relationship rather than a zero-length stub inside the clump.
 //!
-//! The layout is client-side JS in `src/dash.html` (`forceLayout` scaled by `kgSpread`, then the c1
+//! The layout is client-side JS in `crates/rigger-dash/src/dash.html` (`forceLayout` scaled by `kgSpread`, then the c1
 //! `kgSeparate`). Following the spec-42/55/59-c1 precedent this is a read-only presentation change, so
 //! the proof is a RUNTIME harness (node's built-in `vm`, hermetic, no npm) that extracts the served
 //! page's own `<script>` and EXECUTES the layout to assert on the resulting positions. Two layers:

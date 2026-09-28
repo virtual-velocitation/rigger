@@ -384,7 +384,7 @@ pub struct PaletteCommand {
 }
 
 /// The seven views the tab bar renders, left to right (Design §1's own row; §6.9: "the
-/// digits 0-6 switch views") - the SAME `data-view` slugs `src/console.html`'s tab
+/// digits 0-6 switch views") - the SAME `data-view` slugs `crates/rigger-dash/src/console.html`'s tab
 /// markup already carries, so a palette pick needs no second slug table kept in step by
 /// hand.
 pub const VIEWS: [(&str, &str); 7] = [

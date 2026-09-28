@@ -35,7 +35,7 @@ alive. The plugin's monitor entry runs it with `when: "always"`.
 
 THE OPERATOR TOOLS, decided: `rigger mcp` serves `rigger_status`, `rigger_hold`,
 `rigger_release`, `rigger_resume_unit` and `rigger_run` beside the lookup tools
-(`src/mcpserver.rs:567`). Each write tool calls the function its CLI verb calls, so tool and
+(`crates/rigger-dash/src/mcpserver.rs:567`). Each write tool calls the function its CLI verb calls, so tool and
 verb append identical events.
 
 THE DETACHED SUPERVISOR, decided: `rigger run --detach <spec>` re-executes the supervisor as

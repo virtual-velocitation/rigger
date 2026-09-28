@@ -6,8 +6,8 @@
 `rusqlite`, `tokio`, `std::fs`, `std::process` or `std::net` - yet the library cannot be built
 without its I/O dependencies, because every one of them (`rusqlite`, `kurrentdb`, `tokio`,
 `rustix`, `fs2`, `ignore`, `uuid`) is unconditional in `Cargo.toml`. So the dashboard page
-reimplements the fold and the graph queries in JavaScript (`src/dash.html`, 2,398 lines) over
-payloads `src/dash.rs` (11,240 lines) computes, and a fourth copy of the fold is written every
+reimplements the fold and the graph queries in JavaScript (`crates/rigger-dash/src/dash.html`, 2,398 lines) over
+payloads `crates/rigger-dash/src/dash.rs` (11,240 lines) computes, and a fourth copy of the fold is written every
 time an operator scripts against the store. The Mission Control console
 (docs/architecture-addendum-mission-control.md) requires the library's own fold and graph
 queries to run inside the page, which means the pure subset must build for
@@ -66,7 +66,7 @@ projection and asserts identical unit statuses, blockers, attention entries and 
 
 THE QUERY ENGINE MOVES WITH THE OPS, decided: the graph queries the dashboard computes
 today (`neighborhood`, `card`, `path`, `clustered_overview` and `cluster_detail` in
-`src/dash.rs`, with their `Lens`, `Neighborhood` and `ClusterOverview` result types) are
+`crates/rigger-dash/src/dash.rs`, with their `Lens`, `Neighborhood` and `ClusterOverview` result types) are
 pure over `contextgraph::Graph` and relocate into `contextgraph` (the "model and queries" the
 feature split names as core), where `communities` and `search` are authored beside them;
 `dash.rs` stays wholly behind `store` and calls the relocated functions. "The graph ops" of criterion 5

@@ -21,7 +21,7 @@
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Lens, from_query,
 //! clustered_overview, cluster_detail, route, NeighborhoodNode.shared, ...}` + the two concept
-//! consts), so they guard the exact boundaries the inside-out unit test (`src/dash.rs mod tests`,
+//! consts), so they guard the exact boundaries the inside-out unit test (`crates/rigger-dash/src/dash.rs mod tests`,
 //! which reaches the same functions via `super::` and calls the folds in-process) is structurally
 //! blind to:
 //!

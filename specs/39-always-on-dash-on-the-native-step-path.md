@@ -18,7 +18,7 @@ returns.
 `cmd_step` (`src/main.rs`) advances one frontier and returns; `start_run_dashboard` /
 `spawn_run_dashboard` (`src/main.rs`) pick a free port, spawn `rigger dash --port <n>` as a child,
 and return a `dash::ReapedChild` whose Drop reaps the child (spec 19b unit 3's reaping). The dash is
-read-only and self-contained (`src/dash.rs`), and `rigger status` already reads a liveness marker the
+read-only and self-contained (`crates/rigger-dash/src/dash.rs`), and `rigger status` already reads a liveness marker the
 run maintains (`src/main.rs` notes the auto-started dashboard + the liveness marker `rigger status`
 consults). Three changes, scoped to the step drive path and the dash lifecycle:
 

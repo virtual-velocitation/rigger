@@ -38,7 +38,7 @@ result as events:
   lexicographically (the dominant-kind tie-break discipline the overview already uses) - a
   deterministic label always exists; nothing waits on a model.
 
-### The lens: `lens=code` (`src/dash.rs` + `src/dash.html`)
+### The lens: `lens=code` (`crates/rigger-dash/src/dash.rs` + `crates/rigger-dash/src/dash.html`)
 
 - The overview/drill bucket key becomes PLUGGABLE: `lens=files` (the default today's directory fold,
   unchanged and byte-identical when `lens` is absent) or `lens=code`, which buckets every node

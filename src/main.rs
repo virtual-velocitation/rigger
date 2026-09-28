@@ -8309,7 +8309,7 @@ fn watch_poll(
     let recorded = recorded_dash_url(loc);
     let (dash, dash_breadcrumb_written_at) = match (recorded, marker) {
         // A recorded URL with a parseable port is the canonical authority, exactly as
-        // `dash::dash_status` (src/dash.rs) decides it for the mismatched-marker case
+        // `dash::dash_status` (crates/rigger-dash/src/dash.rs) decides it for the mismatched-marker case
         // sibling criterion u69c4 hardened: the probe targets the URL'S OWN port, and a
         // marker's pid is named ONLY when its port matches the url's - a mismatched
         // marker's pid belongs to some other dash and is never printed as this url's.
@@ -15271,7 +15271,7 @@ mod tests {
     /// doc), but it exercises the SAME gate this round's fix adds from the other side: an
     /// ephemeral port NOTHING holds. `wait_for_dash_bind` fails here for the harness's own
     /// early-exit reason, not a held port - the exact "unrelated reason" class this fix must
-    /// never mislabel. `describe_held_port_if_confirmed` (src/dash.rs) is unit-tested directly
+    /// never mislabel. `describe_held_port_if_confirmed` (crates/rigger-dash/src/dash.rs) is unit-tested directly
     /// against both a held and an unheld port; this test locks the PRODUCTION WIRING end to end,
     /// the gap round 2 shipped with (no step-path mirror of the CLI arm's regression test).
     #[test]

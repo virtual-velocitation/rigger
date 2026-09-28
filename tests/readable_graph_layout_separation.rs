@@ -6,7 +6,7 @@
 //! label's bounding box (the label is part of the node, so text can never sit under a neighbour),
 //! until no two bodies intersect.
 //!
-//! The layout is client-side JS in `src/dash.html` (`forceLayout` / `kgSeparate` / `kgNodeBody`), a
+//! The layout is client-side JS in `crates/rigger-dash/src/dash.html` (`forceLayout` / `kgSeparate` / `kgNodeBody`), a
 //! read-only presentation change with no route/projection/data-shape change - so the proof follows
 //! the spec-42/55 precedent: a RUNTIME harness (node's built-in `vm`, hermetic, no npm) extracts the
 //! served page's own `<script>` and EXECUTES the layout to assert on the resulting positions. Two

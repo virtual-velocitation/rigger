@@ -7,7 +7,7 @@
 //! (`rigger::progress::{AgentProgress, GREP_FALLBACK_PREFIX, record, STREAM}`,
 //! `rigger::metrics::grep_fallbacks`, `rigger::dash::{build_state, state_json, MetricsView}`), so
 //! they guard exactly the boundaries the inside-out unit tests (`src/metrics.rs mod tests` and
-//! `src/dash.rs mod tests`, which reach the same functions via `super::` and hand-build events
+//! `crates/rigger-dash/src/dash.rs mod tests`, which reach the same functions via `super::` and hand-build events
 //! with `Event::new`) are structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit tests reach the metric, the predicate, the prefix const, and

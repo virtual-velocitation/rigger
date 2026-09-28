@@ -9,7 +9,7 @@
 //! and appear (a monotone reveal); and hovering ANY node always surfaces its label through a native
 //! `<title>` tooltip that needs no layout room, so a hidden label is one hover away.
 //!
-//! The declutter is client-side JS in `src/dash.html`: `kgLabelThresholds` assigns each node the
+//! The declutter is client-side JS in `crates/rigger-dash/src/dash.html`: `kgLabelThresholds` assigns each node the
 //! smallest effective scale at which its body clears every MORE-IMPORTANT node's body, `kgVisibleLabels`
 //! is the visible set at a scale (every node whose threshold the scale has crossed), and the zoom
 //! handler (`kgApplyLabels`, off `applyKgView`) toggles a `.kg-nolabel` class by comparing the live

@@ -393,7 +393,7 @@ Mockup — a new panel in the existing dash:
 - PROJECT + RUN SCOPED (§2.2/§2.3): the panel shows exactly one project's graph with a run
   filter; a shared-backend deployment never leaks another project's nodes.
 
-_Code:_ `src/dash.rs` + `src/dash.html` (a new KG panel + a read-only
+_Code:_ `crates/rigger-dash/src/dash.rs` + `crates/rigger-dash/src/dash.html` (a new KG panel + a read-only
 `/api/graph?seed=&depth=&tier=` endpoint over the projection), reusing the `subgraph` traversal
 and confidence tiers from §6 and the live/historical labels from spec 21.
 

@@ -10,7 +10,7 @@
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Lens,
 //! clustered_overview, cluster_detail, neighborhood, route, ...}`), so they guard the exact
-//! boundaries the inside-out unit test (`src/dash.rs mod tests`, which reaches the same functions via
+//! boundaries the inside-out unit test (`crates/rigger-dash/src/dash.rs mod tests`, which reaches the same functions via
 //! `super::` and calls the folds in-process) is structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the files-lens BEHAVIOUR but never that the

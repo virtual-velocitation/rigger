@@ -7,11 +7,11 @@ from Workstream B of `docs/architecture-addendum-pit-of-success.md`.
 
 ## Design
 
-Builds on the dashboard (`src/dash.rs`, `src/dash.html`, `dash::DEFAULT_PORT`), the run
+Builds on the dashboard (`crates/rigger-dash/src/dash.rs`, `crates/rigger-dash/src/dash.html`, `dash::DEFAULT_PORT`), the run
 entry points (`run_workflow` / `run_cli` / `cmd_serve` in `src/main.rs`), the peers sidecar
 (`Sidecar::start`), and the shim (`shim/shim.mjs`).
 
-**Unit 1 - always-on dash (touches `src/main.rs`, `src/dash.rs`).** Whenever any driver
+**Unit 1 - always-on dash (touches `src/main.rs`, `crates/rigger-dash/src/dash.rs`).** Whenever any driver
 (the native workflow, `rigger serve`, `rigger run`, `rigger workflow`) has a run in flight,
 it ensures a `rigger dash` is serving that run - auto-started if none is up, on
 `DEFAULT_PORT` or the next free port so concurrent harnesses each get their own, its URL
@@ -19,7 +19,7 @@ printed at run start and shown in `rigger status`. There is NO opt-in flag: a ru
 harness you cannot see is the opacity this campaign removes. This unit OWNS dash START and
 URL discoverability; STOPPING/reaping the dash is unit 3's, not this unit's.
 
-**Unit 2 - responsive redesign (touches `src/dash.html`).** The decision history renders in
+**Unit 2 - responsive redesign (touches `crates/rigger-dash/src/dash.html`).** The decision history renders in
 an `overflow-x:auto` container with no wrapping, so long text scrolls far right and the page
 body scrolls horizontally. Make decision/finding text wrap (`overflow-wrap`/`white-space:
 normal`) and render as wrapped rows or cards; guarantee the page BODY never scrolls
@@ -28,7 +28,7 @@ horizontally (only intentionally-wide content scrolls in its own container); col
 (rule 4): the adjudicator must demand explicit evidence (the changed CSS/markup and a
 description of behavior at narrow and wide widths), not accept a green build as proof.
 
-**Unit 3 - no orphaned processes (touches `src/main.rs`, `shim/shim.mjs`, `src/dash.rs`).**
+**Unit 3 - no orphaned processes (touches `src/main.rs`, `shim/shim.mjs`, `crates/rigger-dash/src/dash.rs`).**
 A run starts long-lived `rigger` children - the MCP server (`rigger serve`, spawned by the
 shim), the peers `Sidecar`, and the auto-started dash - and at least one is not reaped when
 the driving agent finishes, leaving an orphaned `rigger` process that never ends. Give every

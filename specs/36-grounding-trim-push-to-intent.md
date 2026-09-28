@@ -29,7 +29,7 @@ Split grounding by stage at the assembly seam:
 
 - an **IMPLEMENT** spawn (the implementer role) gets a TRIMMED slice: `write_code_neighborhood` +
   `write_design_intent` + a one-line pointer to the pull tools - `rigger_peers` for prior
-  decisions/lessons/findings scoped to the blast-radius files, uncapped (MCP + CLI, `src/mcpserver.rs`
+  decisions/lessons/findings scoped to the blast-radius files, uncapped (MCP + CLI, `crates/rigger-dash/src/mcpserver.rs`
   / `cmd_peers` in `src/main.rs`), and `rigger graph --around <file|entity>` for code navigation,
   which since spec 37 answers who-calls-X and the caller/callee neighborhood (`cmd_graph` in
   `src/main.rs`). It OMITS `write_capped_decisions` / `write_capped_lessons` / `write_capped_findings`.

@@ -108,67 +108,67 @@ const CONSOLE_FONTS: &[(&str, &str, &[u8])] = &[
     (
         "sora/Sora-400.woff2",
         "font/woff2",
-        include_bytes!("../crates/rigger-console/src/console/fonts/sora/Sora-400.woff2"),
+        include_bytes!("../../rigger-console/src/console/fonts/sora/Sora-400.woff2"),
     ),
     (
         "sora/Sora-500.woff2",
         "font/woff2",
-        include_bytes!("../crates/rigger-console/src/console/fonts/sora/Sora-500.woff2"),
+        include_bytes!("../../rigger-console/src/console/fonts/sora/Sora-500.woff2"),
     ),
     (
         "sora/Sora-600.woff2",
         "font/woff2",
-        include_bytes!("../crates/rigger-console/src/console/fonts/sora/Sora-600.woff2"),
+        include_bytes!("../../rigger-console/src/console/fonts/sora/Sora-600.woff2"),
     ),
     (
         "sora/OFL.txt",
         "text/plain; charset=utf-8",
-        include_bytes!("../crates/rigger-console/src/console/fonts/sora/OFL.txt"),
+        include_bytes!("../../rigger-console/src/console/fonts/sora/OFL.txt"),
     ),
     (
         "source-sans-3/SourceSans3-400.woff2",
         "font/woff2",
         include_bytes!(
-            "../crates/rigger-console/src/console/fonts/source-sans-3/SourceSans3-400.woff2"
+            "../../rigger-console/src/console/fonts/source-sans-3/SourceSans3-400.woff2"
         ),
     ),
     (
         "source-sans-3/SourceSans3-600.woff2",
         "font/woff2",
         include_bytes!(
-            "../crates/rigger-console/src/console/fonts/source-sans-3/SourceSans3-600.woff2"
+            "../../rigger-console/src/console/fonts/source-sans-3/SourceSans3-600.woff2"
         ),
     ),
     (
         "source-sans-3/SourceSans3-400italic.woff2",
         "font/woff2",
         include_bytes!(
-            "../crates/rigger-console/src/console/fonts/source-sans-3/SourceSans3-400italic.woff2"
+            "../../rigger-console/src/console/fonts/source-sans-3/SourceSans3-400italic.woff2"
         ),
     ),
     (
         "source-sans-3/OFL.txt",
         "text/plain; charset=utf-8",
-        include_bytes!("../crates/rigger-console/src/console/fonts/source-sans-3/OFL.txt"),
+        include_bytes!("../../rigger-console/src/console/fonts/source-sans-3/OFL.txt"),
     ),
     (
         "jetbrains-mono/JetBrainsMono-400.woff2",
         "font/woff2",
         include_bytes!(
-            "../crates/rigger-console/src/console/fonts/jetbrains-mono/JetBrainsMono-400.woff2"
+            "../../rigger-console/src/console/fonts/jetbrains-mono/JetBrainsMono-400.woff2"
         ),
     ),
     (
         "jetbrains-mono/JetBrainsMono-500.woff2",
         "font/woff2",
         include_bytes!(
-            "../crates/rigger-console/src/console/fonts/jetbrains-mono/JetBrainsMono-500.woff2"
+            "../../rigger-console/src/console/fonts/jetbrains-mono/JetBrainsMono-500.woff2"
         ),
     ),
     (
         "jetbrains-mono/OFL.txt",
         "text/plain; charset=utf-8",
-        include_bytes!("../crates/rigger-console/src/console/fonts/jetbrains-mono/OFL.txt"),
+        include_bytes!("../../rigger-console/src/console/fonts/jetbrains-mono/OFL.txt"),
     ),
 ];
 
@@ -3529,7 +3529,7 @@ where
 /// Env override for [`serve_console_stream`]'s poll interval (milliseconds) - how often it
 /// re-consults `provider` for new console events/progress lines. Tiny by default so the
 /// spec's one-second delivery bound has ample margin; the crate's own tests can shrink it
-/// further for a tight deadline, mirroring [`crate::main`]'s `DASH_REAP_POLL_ENV` pattern
+/// further for a tight deadline, mirroring the binary's `main.rs` `DASH_REAP_POLL_ENV` pattern
 /// for the same "real cadence in production, fast in tests" shape.
 const DASH_STREAM_POLL_MS_ENV: &str = "RIGGER_DASH_STREAM_POLL_MS";
 /// Env override for the `liveness` frame's cadence (milliseconds), matching Design's "every
@@ -3644,7 +3644,7 @@ fn serve_console_stream<F>(
     // forever, at the identical stale `since=` - the very stall this guard exists to
     // end. A non-200 response is instead a "fail the connection": `readyState` is set to
     // `CLOSED` and `error` fires ONCE with no further auto-retry, which is the one signal
-    // `connectStream`'s `onerror` handler (`src/console.html`) can act on to re-fetch
+    // `connectStream`'s `onerror` handler (`crates/rigger-dash/src/console.html`) can act on to re-fetch
     // `/api/console/snapshot`, `fold_reset` onto the CURRENT state, and reopen the stream
     // from the fresh head - rather than replaying a position the store can never serve
     // again.
@@ -3740,7 +3740,7 @@ fn serve_console_stream<F>(
     }
 }
 
-// `build/console_wasm.rs` is `#[path]`-included here too (alongside `build.rs` and
+// `crates/rigger-dash/build/console_wasm.rs` is `#[path]`-included here too (alongside `build.rs` and
 // `tests/console_wasm_build_periphery.rs`), gated to `#[cfg(test)]` so the nested-cargo-
 // invocation logic never compiles into the shipped binary - only `mod tests` below needs
 // it, to reproduce `build.rs`'s own nested build independently. Declared at THIS nesting
@@ -3985,7 +3985,7 @@ mod tests {
             );
             return;
         }
-        let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let project_root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         let scratch = tempfile::tempdir().expect("tempdir");
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
         let artifact = console_wasm::build_wasm_artifact(

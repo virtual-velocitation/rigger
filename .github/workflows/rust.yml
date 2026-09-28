@@ -58,7 +58,7 @@ jobs:
         with:
           components: clippy, rustfmt
           # Spec 93 criterion 3: build.rs nested-cross-compiles crates/console-core for
-          # wasm32-unknown-unknown whenever a cargo invocation compiles src/dash.rs -
+          # wasm32-unknown-unknown whenever a cargo invocation compiles crates/rigger-dash/src/dash.rs -
           # both the default and --no-default-features lanes in this job do - so the
           # target must be present before either runs. A workflow-level install, never
           # a per-unit one.

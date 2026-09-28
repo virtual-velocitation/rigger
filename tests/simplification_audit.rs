@@ -1,5 +1,5 @@
 //! Spec 85 criterion 1, THE RESPONSIBILITY MAP: a deterministic, zero-new-dependency scan of
-//! every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `src/dash.rs`, each assigned a
+//! every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `crates/rigger-dash/src/dash.rs`, each assigned a
 //! proposed module (ports-and-adapters shape) with its current line span and a reason, written
 //! to `docs/audit/responsibility-map.json` and rendered as section 1 of
 //! `docs/audit/2026-09-simplification-audit.md`. This unit OWNS the scanner and the
@@ -116,7 +116,7 @@ use rigger::grounder::symbols::store::content_hash;
 const TARGET_FILES: [&str; 3] = [
     "crates/rigger-conductor/src/conductor.rs",
     "src/main.rs",
-    "src/dash.rs",
+    "crates/rigger-dash/src/dash.rs",
 ];
 
 // =========================================================================================
@@ -1403,7 +1403,7 @@ const MAIN_RULES: &[Rule] = &[
     },
 ];
 
-/// `src/dash.rs`'s free-function rule table - dash.rs is the read-only observability adapter,
+/// `crates/rigger-dash/src/dash.rs`'s free-function rule table - dash.rs is the read-only observability adapter,
 /// so its concerns split along serve-the-request vs. render-the-page vs. reproject-the-graph.
 const DASH_RULES: &[Rule] = &[
     Rule {
@@ -1558,7 +1558,7 @@ fn rules_for(file: &str) -> &'static [Rule] {
     match file {
         "crates/rigger-conductor/src/conductor.rs" => CONDUCTOR_RULES,
         "src/main.rs" => MAIN_RULES,
-        "src/dash.rs" => DASH_RULES,
+        "crates/rigger-dash/src/dash.rs" => DASH_RULES,
         _ => &[],
     }
 }
@@ -1651,7 +1651,7 @@ fn file_stem(file: &str) -> &str {
     match file {
         "crates/rigger-conductor/src/conductor.rs" => "conductor",
         "src/main.rs" => "main",
-        "src/dash.rs" => "dash",
+        "crates/rigger-dash/src/dash.rs" => "dash",
         other => Path::new(other)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -1888,7 +1888,7 @@ fn render_section_1(entries: &[MapEntry], lines: &[MapEntryLines]) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `src/dash.rs` \
+        "Every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `crates/rigger-dash/src/dash.rs` \
          ({} functions total), assigned to a proposed module by \
          `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier \
          (never by hand). Instrument: the brace-matching scanner over the three named files.",
@@ -2082,7 +2082,7 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 11] = [
+const SPLIT_CRATES: [&str; 12] = [
     "crates/rigger-domain",
     "crates/rigger-store-sqlite",
     "crates/rigger-graph-sqlite",
@@ -2094,6 +2094,7 @@ const SPLIT_CRATES: [&str; 11] = [
     "crates/rigger-config-files",
     "crates/rigger-conductor",
     "crates/rigger-console",
+    "crates/rigger-dash",
 ];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
@@ -2205,12 +2206,12 @@ const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/dash.rs",
+        "crates/rigger-dash/src/dash.rs",
         "get_static",
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/dash.rs",
+        "crates/rigger-dash/src/dash.rs",
         "export_neutralizes_a_script_breakout_in_the_inlined_state",
         SampleVerdict::NoDuplicate,
     ),
@@ -2343,7 +2344,7 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
      `a_crashed_implementer_renders_no_gates_node`'s crash-and-no-Gates assertions; both now call \
      `assert_crash_at_implement_and_no_gates`",
     "`src/main.rs` `dash_read_liveness` repeated `liveness_ages_for_wave`'s marker-age loop, as \
-     did `rigger_activity` in `src/mcpserver.rs`; all three now call `liveness::marker_ages`",
+     did `rigger_activity` in `crates/rigger-dash/src/mcpserver.rs`; all three now call `liveness::marker_ages`",
     "`src/main.rs` `merge_hung_attention_defers_to_an_existing_budget_halt` was a value-only \
      copy of `merge_hung_attention_does_nothing_when_not_newly_hung`; both are now cases of \
      `assert_merge_hung_attention_leaves_untouched`",
@@ -3306,7 +3307,7 @@ fn build_sweep_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupCluster> {
 }
 
 /// Every function that reads a `/proc/<pid>/stat` or `/proc/<pid>/status` path (spec 85 Goal's
-/// own named example: "`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s `/proc` pid scan, upheld at
+/// own named example: "`crates/rigger-dash/src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s `/proc` pid scan, upheld at
 /// spec 62's capstone"). Verified by reading (not merely inferred from the sweep above, which
 /// is call-SITE not function granularity): `dash.rs::process_state` and `reap.rs::pid_starttime`
 /// both do `std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?` then
@@ -4002,7 +4003,7 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
          Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \
          excluded this criterion's own citation-guard periphery file from the draw's population \
          (see this subsection's opening paragraph); that exclusion still applies unchanged.",
-        cite_fn(real_files(), "src/dash.rs", "process_state"),
+        cite_fn(real_files(), "crates/rigger-dash/src/dash.rs", "process_state"),
         cite_fn(
             real_files(),
             "crates/rigger-process/src/reap.rs",
@@ -4339,7 +4340,7 @@ fn render_section_3(files: &[FileScan]) -> String {
     );
     let projection_importers = [
         "src/concepts.rs",
-        "src/dash.rs",
+        "crates/rigger-dash/src/dash.rs",
         "crates/rigger-grounder/src/grounder/symbols/events.rs",
         "crates/rigger-grounder/src/grounder/design/events.rs",
     ];
@@ -4407,7 +4408,7 @@ fn render_section_3(files: &[FileScan]) -> String {
     let _ = writeln!(
         out,
         "A second mutation authority for one domain: the one previously-known \
-        instance in this codebase (`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s \
+        instance in this codebase (`crates/rigger-dash/src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s \
         `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \
         is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \
         is section 2's finding (`u85c2-proc-stat-worked-example`, \
@@ -5541,7 +5542,7 @@ fn render_section_6() -> String {
         proc_literals.id, proc_readers.id,
     ));
     out.push_str(&format!(
-        "- Scope: the production half is done - `src/dash.rs::process_state` and \
+        "- Scope: the production half is done - `crates/rigger-dash/src/dash.rs::process_state` and \
         `crates/rigger-process/src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through \
         `crates/rigger-process/src/reap.rs::stat_field_after_comm`, the one parser of the kernel's \
         `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What \
@@ -5608,14 +5609,14 @@ fn render_section_6() -> String {
         - Unblocks: shrinks `main.rs` to its production code before tier 3's own main.rs \
         split.\n\n",
     );
-    let dash_groups: Vec<String> = god_file_shape("src/dash.rs")
+    let dash_groups: Vec<String> = god_file_shape("crates/rigger-dash/src/dash.rs")
         .test_groups
         .iter()
         .map(|g| format!("`{g}`"))
         .collect();
-    out.push_str("#### 6. Extract `src/dash.rs`'s inline test module\n\n");
+    out.push_str("#### 6. Extract `crates/rigger-dash/src/dash.rs`'s inline test module\n\n");
     out.push_str(&test_extraction_scope(
-        "src/dash.rs",
+        "crates/rigger-dash/src/dash.rs",
         "src/dash/tests",
         &format!(
             "Lower effort than items 4-5: section 1's own classifier already found {} \
@@ -5674,9 +5675,11 @@ fn render_section_6() -> String {
         `cli/` module tree, matching the ports-and-adapters shape this project already \
         mandates everywhere else.\n\n",
     );
-    out.push_str("#### 9. Split `src/dash.rs`'s production code into `src/dash/*.rs`\n\n");
+    out.push_str(
+        "#### 9. Split `crates/rigger-dash/src/dash.rs`'s production code into `src/dash/*.rs`\n\n",
+    );
     out.push_str(&production_split_scope(
-        "src/dash.rs",
+        "crates/rigger-dash/src/dash.rs",
         "`src/dash/mod.rs`",
         "src/dash",
     ));
@@ -5729,7 +5732,7 @@ fn render_section_6() -> String {
         `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \
-        `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
+        `crates/rigger-dash/src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
         `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
         `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \
@@ -7658,7 +7661,7 @@ mod tests {
     #[test]
     fn a_named_test_submodule_keeps_its_own_identity() {
         let mut f = ScannedFn {
-            file: "src/dash.rs".to_string(),
+            file: "crates/rigger-dash/src/dash.rs".to_string(),
             name: "a_case".to_string(),
             start_line: 1,
             end_line: 2,
@@ -7994,7 +7997,7 @@ mod tests {
         /// Spec 90 criterion 2, CLAIM 2 for `docs/audit/responsibility-map.json`: a synthetic
         /// fixture tree (never the real checked-out one - [`build_map`] requires all three
         /// [`TARGET_FILES`] to exist, so this writes trivial stand-ins for the two it does not
-        /// exercise) proves a pin bump (5 unrelated comment lines prepended to `src/dash.rs`,
+        /// exercise) proves a pin bump (5 unrelated comment lines prepended to `crates/rigger-dash/src/dash.rs`,
         /// shifting every entry in it) leaves the guarded map byte-identical, because
         /// `content_hash` keys on each function's own raw text, never its line number.
         a_pin_bump_leaves_the_guarded_responsibility_map_byte_identical:
@@ -8002,9 +8005,9 @@ mod tests {
                 &[
                     ("crates/rigger-conductor/src/conductor.rs", "fn one() {}\n"),
                     ("src/main.rs", "fn two() {}\n"),
-                    ("src/dash.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
+                    ("crates/rigger-dash/src/dash.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
                 ],
-                "src/dash.rs",
+                "crates/rigger-dash/src/dash.rs",
                 |root| ledger_json(&build_map(root), map_entry_wire),
                 "a pin bump that only shifts every entry's OWN line number must leave the guarded \
                  responsibility map byte-identical (spec 90 criterion 2)",
@@ -8040,7 +8043,7 @@ mod tests {
                 &[
                     ("crates/rigger-conductor/src/conductor.rs", "fn one() {}\n"),
                     ("src/main.rs", "fn two() {}\n"),
-                    ("src/dash.rs", "fn three() {}\n"),
+                    ("crates/rigger-dash/src/dash.rs", "fn three() {}\n"),
                 ],
                 (
                     "crates/rigger-conductor/src/conductor.rs",
@@ -8062,7 +8065,7 @@ mod tests {
     /// count, every module's own heading with its declared function count, and the unassigned
     /// heading with its declared count - never the exact citation bytes, which are free to
     /// legitimately move between explicit `RIGGER_AUDIT_WRITE=1` regens (a pin bump anywhere
-    /// in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` or `src/dash.rs`).
+    /// in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` or `crates/rigger-dash/src/dash.rs`).
     fn assert_section_1_structurally_matches(committed_section_1: &str, entries: &[MapEntry]) {
         assert!(
             committed_section_1.starts_with("## 1. Responsibility Map"),
@@ -10417,7 +10420,7 @@ mod tests {
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("crates/rigger-conductor/src/conductor.rs"));
         assert!(rendered.contains("src/main.rs"));
-        assert!(rendered.contains("src/dash.rs"));
+        assert!(rendered.contains("crates/rigger-dash/src/dash.rs"));
         // Cites section 5's own headline test-suite consolidation items.
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
@@ -10759,7 +10762,7 @@ mod tests {
     fn a_shared_name_referenced_via_self_colon_colon_from_within_its_own_impl_is_not_a_false_positive(
     ) {
         // Spec 87 criterion 3 regression, found while researching dispositions: the real
-        // `src/dash.rs` `DashMarker::parse` (ambiguous with `gate.rs`/`ledger.rs` x2/`failure.rs`'s
+        // `crates/rigger-dash/src/dash.rs` `DashMarker::parse` (ambiguous with `gate.rs`/`ledger.rs` x2/`failure.rs`'s
         // own `parse`s) is referenced ONLY via `Self::parse(...)` from its own `DashMarker::read`
         // (dash.rs:408) - itself a REAL production call path (`main.rs:5731/7313/7629` all call
         // `DashMarker::read`). `qualifier_before` (round 1) captures the literal token text

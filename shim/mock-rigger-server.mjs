@@ -2,7 +2,7 @@
 // A tiny mock of `rigger serve`'s MCP stdio server, used ONLY by shim.test.mjs.
 //
 // It speaks the same newline-delimited JSON-RPC the real Rust server speaks
-// (src/mcpserver.rs): initialize, tools/list, and tools/call for the four rigger
+// (crates/rigger-dash/src/mcpserver.rs): initialize, tools/list, and tools/call for the four rigger
 // tools, with every tools/call payload returned under `structuredContent` (so the
 // test exercises the shim's unwrap, exactly like the real server).
 //

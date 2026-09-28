@@ -10,7 +10,7 @@
     "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
   },
   {
-    "id": "dup-24db461612c2",
+    "id": "dup-0e7d0c54553e",
     "disposition": "not-a-duplicate",
     "reason": "`ids` lists a neighborhood view's node ids for a dash test while `light_reviewers_of` reads a review panel's light-tier roster; they share only the collect-into-a-Vec shape."
   },
@@ -470,7 +470,7 @@
     "reason": "No second stat parse remains: `stat_field_after_comm` is the one `/proc/<pid>/stat` parser, `read_ppid` reads the different `/status` file, `pgid_of` calls the parser (only its panic message names the path), and the rest are this audit's own sweep and fixture strings."
   },
   {
-    "id": "dup-3885489aa2a0",
+    "id": "dup-5976e8817fac",
     "disposition": "not-a-duplicate",
     "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store, the on-disk run stream) and call it."
   },
@@ -595,22 +595,22 @@
     "reason": "`edge_desc` renders a graph edge while `runs_menu_line` renders a run-menu row; they format different fields into different lines."
   },
   {
-    "id": "dup-3f680da704c9",
+    "id": "dup-a249dbf31ece",
     "disposition": "not-a-duplicate",
     "reason": "Tests that each assert a different property of a different served page or shipped file; only the fetch-then-contains shape is shared."
   },
   {
-    "id": "dup-4d77d0fdce5a",
+    "id": "dup-e79afb3298c3",
     "disposition": "not-a-duplicate",
     "reason": "Route tests over different query parameters asserting different outcomes (explain absent, cluster drill, unknown card subject)."
   },
   {
-    "id": "dup-20e69e434836",
+    "id": "dup-b3200e581798",
     "disposition": "not-a-duplicate",
     "reason": "`card_graph` and `fixture_graph` seed different nodes and edges for the metadata-card tests they each serve."
   },
   {
-    "id": "dup-776fd9e153e2",
+    "id": "dup-fae663db78c7",
     "disposition": "not-a-duplicate",
     "reason": "Card-route tests asserting different fields for different subjects (known versus unknown, code subject, membership-less entity, param precedence)."
   },
@@ -825,17 +825,17 @@
     "reason": "One-line edge constructors for different relations with different liveness: a live community-membership edge in the map tests and an extracted reference edge through the shared `edge` fixture."
   },
   {
-    "id": "dup-4ccd568cae24",
+    "id": "dup-22a325f863b8",
     "disposition": "not-a-duplicate",
     "reason": "Unrelated tests sharing only a short arrange-assert shape: the dash serving the embedded wasm artifact, and two scanner cases about where a cfg(test) attribute sits."
   },
   {
-    "id": "dup-232528c40d46",
+    "id": "dup-6997565e3dc0",
     "disposition": "not-a-duplicate",
     "reason": "Unrelated tests sharing only the read-then-assert-contains shape: a dash CSS layout rule and a CI workflow job script."
   },
   {
-    "id": "dup-59fa698ee47b",
+    "id": "dup-9904088ec60d",
     "disposition": "not-a-duplicate",
     "reason": "Lookups over two different read models: a dash Neighborhood node's optional layer, and a call-graph node's layer in the shared graph fixtures."
   },

@@ -307,7 +307,7 @@ computes; the verdict-channel diagnostic that today only appears in stats become
 the blocker kinds.
 
 _Code:_ `cmd_status` (`src/main.rs`); the stats attribution in `append_review_quality`
-(`src/main.rs`); `src/dash.rs`.
+(`src/main.rs`); `crates/rigger-dash/src/dash.rs`.
 
 ### 4.2 Setup + run discoverability + always-on dash
 
@@ -333,7 +333,7 @@ addendum exists to remove: **an active harness must always have a dash.**
   hiding the dash.
 
 _Code:_ `cmd_setup` (`src/main.rs`); the run entry points `run_workflow` / `run_cli`;
-`dash::DEFAULT_PORT`, the dash lifecycle (`src/dash.rs`).
+`dash::DEFAULT_PORT`, the dash lifecycle (`crates/rigger-dash/src/dash.rs`).
 
 ### 4.3 Workflow tagline + live work-line
 
@@ -366,7 +366,7 @@ _Code:_ `meta`, `phaseOf`, the `log()` sites (`workflows/rigger.js`); `SpawnRequ
 wrapping, so long decision text scrolls far to the right and the page body scrolls
 horizontally.
 
-**Fix.** A responsive pass on `src/dash.html`:
+**Fix.** A responsive pass on `crates/rigger-dash/src/dash.html`:
 
 - Decision/finding text wraps (`overflow-wrap`/`white-space: normal`); decisions render
   as wrapped rows or cards, not a wide non-wrapping block.
@@ -375,7 +375,7 @@ horizontally.
 - General responsive layout: relative units, the existing `cols2` grid collapses
   gracefully on narrow viewports, content stays readable on small screens.
 
-_Code:_ `src/dash.html`.
+_Code:_ `crates/rigger-dash/src/dash.html`.
 
 ### 4.5 No orphaned processes
 
@@ -389,7 +389,7 @@ kill-on-drop / kill-on-parent-exit guard — so a normally-finishing or crashing
 leaves no orphan.
 
 _Code:_ `run_workflow` / `cmd_serve` / `Sidecar::start` (`src/main.rs`), the shim
-(`shim/shim.mjs`), the dash lifecycle (`src/dash.rs`).
+(`shim/shim.mjs`), the dash lifecycle (`crates/rigger-dash/src/dash.rs`).
 
 ### 4.6 A wedged run surfaces as a loud error
 

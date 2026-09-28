@@ -12,7 +12,7 @@ rail, never nodes or grouping keys.
 
 The mockup file is the visual contract for all of the below; it renders standalone.
 
-- **Code lens** (`src/dash.html`, the `data-lens` code tab): nodes are code entities ONLY,
+- **Code lens** (`crates/rigger-dash/src/dash.html`, the `data-lens` code tab): nodes are code entities ONLY,
   shaped by kind (functions circles, types rounded squares, traits diamonds), labeled with
   the bare name. Edges typed and directed: solid `calls`, dashed structural (`implements`,
   `contains`, `creates`, `reads`), each labeled. Coupling communities are low-contrast
@@ -63,7 +63,7 @@ The mockup file is the visual contract for all of the below; it renders standalo
   coupling community its members belong to), not a storage schema name like `file`,
   `decision`, or a kind-fallback bucket - so this collapse does not violate criterion 1's
   storage-schema-name purity rule above; it re-affirms that rule at the collapsed zoom.
-- **Data plumbing** (`src/dash.rs`, only as needed): payloads carry what the views consume -
+- **Data plumbing** (`crates/rigger-dash/src/dash.rs`, only as needed): payloads carry what the views consume -
   entity kind, typed edges, community id + label, per-file entity counts and coupling
   weights, concept evidence weights, the subject's governs-linked memory rows. Gaps close by
   extending the EXISTING view DTOs (dash stays a thin read-only adapter; projection modules

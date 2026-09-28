@@ -1,7 +1,7 @@
 # 98 - The Knowledge tab absorbs the inspector
 
 **Goal:** the knowledge-graph inspector (three lenses: the labelled code map of spec 84, the
-files lens, the concepts lens) lives in the old dashboard page, `src/dash.html`, beside a run
+files lens, the concepts lens) lives in the old dashboard page, `crates/rigger-dash/src/dash.html`, beside a run
 tree and metrics the console now renders better. With specs 93-97 landed, two pages fold the
 same log and draw the same graph. Mission Control's Knowledge tab
 (docs/architecture-addendum-mission-control.md, section 5.4) takes the inspector in, adds the
@@ -27,7 +27,7 @@ lit` or `nothing in flight at this moment`, and the explore rail's `Changing rig
 chips lead into that radius. The toggle removes the overlay without moving the camera. The
 overlay is computed by the core from the fold, so scrubbing moves it with the run.
 
-THE OLD PAGE RETIRES, decided: `rigger dash` serves the console at `/`; `src/dash.html` and
+THE OLD PAGE RETIRES, decided: `rigger dash` serves the console at `/`; `crates/rigger-dash/src/dash.html` and
 the page-side fold and layout code it carried are deleted; the graph payload route and
 `/api/state` remain for external readers; the served page holds no fold and no graph
 algorithm in script - an audit test asserts the console script contains only the loader,
@@ -65,7 +65,7 @@ not carried over; their questions are answered by Theater and Plan.
   toggle clears the marks without moving the camera, and at a position with nothing in flight
   the hint says so. This criterion OWNS the overlay only.
 - [ ] a test proves THE OLD PAGE RETIRES: `rigger dash` serves the console at `/`,
-  `src/dash.html` no longer exists in the tree, the graph payload route and `/api/state`
+  `crates/rigger-dash/src/dash.html` no longer exists in the tree, the graph payload route and `/api/state`
   still answer, and the served script passes the no-fold-in-script audit. This criterion OWNS
   the retirement and the audit only.
 - [ ] both feature lanes and the core lane green (fmt, clippy, test).

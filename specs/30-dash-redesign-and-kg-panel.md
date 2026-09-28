@@ -1,6 +1,6 @@
 # 30 - Dash redesign: responsive shell, the run tree, and the unified-KG detail panel
 
-**Goal:** rebuild the always-on `rigger dash` (`src/dash.html` + `src/dash.rs`) as a responsive,
+**Goal:** rebuild the always-on `rigger dash` (`crates/rigger-dash/src/dash.html` + `crates/rigger-dash/src/dash.rs`) as a responsive,
 self-contained observability surface whose SPINE is the unit -> stage -> role -> agent tree, and
 whose unified knowledge graph (section 6) renders as the DETAIL VIEW of the selected node. This
 replaces today's fixed-1200px, left-aligned, flat-panel dash whose id cells render one char per line,

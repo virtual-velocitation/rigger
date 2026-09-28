@@ -1888,6 +1888,7 @@ dependencies = [
  "rigger-conductor",
  "rigger-config-files",
  "rigger-console",
+ "rigger-dash",
  "rigger-domain",
  "rigger-driver",
  "rigger-gates-shell",
@@ -1947,6 +1948,25 @@ dependencies = [
  "rigger-domain",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rigger-dash"
+version = "0.3.0"
+dependencies = [
+ "rigger-conductor",
+ "rigger-config-files",
+ "rigger-console",
+ "rigger-domain",
+ "rigger-driver",
+ "rigger-graph-sqlite",
+ "rigger-grounder",
+ "rigger-process",
+ "rigger-store-sqlite",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
 ]
 
 [[package]]
