@@ -227,6 +227,74 @@ fn a_file_that_returns_to_an_earlier_content_keeps_that_generation_and_sheds_the
     );
 }
 
+/// The valid-time a surviving design fact carries is the earliest recording of THAT fact - the
+/// byte-identical payload - within THAT batch identity, never the identity's earliest date and
+/// never another identity's. `docs/f.md` asserts `a` at h1 and re-asserts it at h2, where it also
+/// asserts a new fact `b` (recorded twice); `docs/g.md` records the byte-identical `a` payload
+/// later, under its own identity.
+#[test]
+fn a_carried_valid_time_is_the_earliest_recording_of_the_same_fact_in_the_same_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let events = vec![
+        keyed(
+            TYPE_DOC_LINK_EXTRACTED,
+            link("src/a.rs"),
+            "gd/docs/f.md@h1#0",
+            10,
+        ),
+        keyed(
+            TYPE_DOC_LINK_EXTRACTED,
+            link("src/a.rs"),
+            "gd/docs/f.md@h2#0",
+            20,
+        ),
+        keyed(
+            TYPE_DOC_LINK_EXTRACTED,
+            link("src/b.rs"),
+            "gd/docs/f.md@h2#1",
+            20,
+        ),
+        keyed(
+            TYPE_DOC_LINK_EXTRACTED,
+            link("src/b.rs"),
+            "gd/docs/f.md@h2#1",
+            25,
+        ),
+        keyed(
+            TYPE_DOC_LINK_EXTRACTED,
+            link("src/a.rs"),
+            "gd/docs/g.md@k1#0",
+            30,
+        ),
+    ];
+    let (backend, db) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
+    let identity = rigger::ingest::derived_index_identity();
+    let prefix = Namespaced::prefix_for(PROJECT);
+
+    let pruned = backend.prune_derived_index(&prefix, &identity).unwrap();
+    assert_eq!(
+        pruned.removed,
+        per_type(0, 0, 0, 2),
+        "h1's recording is superseded and h2#1's first recording is an exact-key duplicate"
+    );
+    assert_eq!(pruned.superseded_generations, 1);
+
+    let kept: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
+    assert_eq!(
+        kept,
+        vec![
+            // `a` was first asserted by the shed h1 generation: its date comes back from it.
+            ("gd/docs/f.md@h2#0".to_string(), nanos(10)),
+            // `b` is a different fact: it keeps the date IT was first recorded at, not h1's.
+            ("gd/docs/f.md@h2#1".to_string(), nanos(20)),
+            // The same bytes under another identity are another file's fact: never carried.
+            ("gd/docs/g.md@k1#0".to_string(), nanos(30)),
+        ],
+        "each surviving design fact carries the earliest date of its own payload in its own \
+         identity"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // 2. Identity is per stream and per prefix
 // ---------------------------------------------------------------------------------------
