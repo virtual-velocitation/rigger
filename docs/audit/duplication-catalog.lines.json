@@ -5220,7 +5220,7 @@
     ]
   },
   {
-    "id": "dup-192f39380415",
+    "id": "dup-4152c282e52a",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5384,13 +5384,13 @@
       },
       {
         "file": "tests/run_boundary_lookup_periphery.rs",
-        "start_line": 72,
-        "end_line": 72
+        "start_line": 41,
+        "end_line": 41
       },
       {
         "file": "tests/run_boundary_lookup_periphery.rs",
-        "start_line": 270,
-        "end_line": 270
+        "start_line": 80,
+        "end_line": 80
       },
       {
         "file": "tests/store_append_order_periphery.rs",

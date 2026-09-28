@@ -5564,7 +5564,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-192f39380415",
+    "id": "dup-4152c282e52a",
     "classification": "semantic",
     "sites": [
       {
@@ -5730,12 +5730,12 @@
       {
         "file": "tests/run_boundary_lookup_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/run_boundary_lookup_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "c9acaf03cef6d3a0"
+        "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
         "file": "tests/store_append_order_periphery.rs",
