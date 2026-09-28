@@ -974,6 +974,74 @@ mod tests {
         }
     }
 
+    /// Lesson lesson-u101c2r3-grep-guard-literal-not-stripped: Claude Code runs every matching
+    /// PreToolUse hook in parallel on the ORIGINAL tool input and keeps whichever hook's
+    /// `updatedInput` arrives last, so a sibling rewriting hook (the `rtk` rewriter turns
+    /// `grep --literal x` into `rtk grep --literal x`) can overwrite a stripped command and the
+    /// marker reaches the real grep (`unrecognized option '--literal'`). The escape hatch must
+    /// therefore never depend on a rewrite winning that race: the marker lives in a trailing
+    /// shell comment the shell itself discards, the guard passes that command through with no
+    /// rewrite at all, and a bare `--literal` argv word - which would reach grep whenever a
+    /// sibling hook's rewrite wins - is denied with the hint that names the working spelling.
+    #[test]
+    fn grep_guard_decision_passes_a_literal_comment_without_depending_on_a_rewrite() {
+        for command in [
+            "grep -n foo src/cli/guard.rs  # --literal",
+            "grep -rn foo src | head -5 # --literal",
+            "true;grep pattern src/main.rs # --literal",
+            "rtk grep -n foo src # --literal",
+            "grep -n foo src #   --literal",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                GuardDecision::Allow,
+                "a grep carrying the marker in a trailing comment passes untouched: {command:?}"
+            );
+        }
+        for command in [
+            "grep --literal -n foo src/cli/guard.rs",
+            "grep -rn --literal foo src | head -5",
+            "grep -n foo src/cli/guard.rs --literal",
+            r#""grep" "--literal" pattern src/main.rs"#,
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a bare --literal argv word would reach grep when a sibling hook's rewrite \
+                 wins, so it is denied with the hint: {command:?}"
+            );
+        }
+        assert!(
+            GREP_GUARD_MESSAGE.contains("# --literal"),
+            "the hint must name the comment spelling that survives any sibling rewrite"
+        );
+    }
+
+    /// A shell comment is inert: `grep` inside one is not an invocation, and a `#` that does
+    /// not begin a word (`$#`, `a#b`) opens no comment, so it can never hide a real grep.
+    #[test]
+    fn grep_guard_decision_reads_shell_comments_as_inert_and_only_at_a_word_start() {
+        assert_eq!(
+            grep_guard_decision("Bash", &serde_json::json!({"command": "ls src # grep later"})),
+            GuardDecision::Allow,
+            "a grep named only inside a comment is not an invocation"
+        );
+        for command in [
+            "echo $# ; grep foo src",
+            "echo a#b; grep foo src",
+            "echo '# --literal'; grep foo src",
+            "echo \\# --literal; grep foo src",
+            "echo hi # note\ngrep foo src",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a # that opens no comment, or a comment ended by its newline, must not hide \
+                 the grep: {command:?}"
+            );
+        }
+    }
+
     /// A path-qualified spelling of a DIFFERENT command (not `grep`) must still be allowed - the
     /// basename comparison must not become a substring match.
     #[test]
