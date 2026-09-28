@@ -555,6 +555,15 @@ pub trait EventStore: Send + Sync {
     /// (**inclusive**): it replays that stream's events from `from` onward, then
     /// delivers new ones live.
     fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error>;
+
+    /// The per-stream revision of the NEWEST event of type `event_type` on `stream`, or `None`
+    /// when the stream holds no such event (or does not exist). The answer is the inclusive
+    /// `from` [`read_stream`](EventStore::read_stream) takes, so a read from it starts AT that
+    /// event: with `RunStarted` it is the current run's boundary (spec 101).
+    ///
+    /// A backend answers from its own index, or by a backward read that stops at the first
+    /// match - never by reading the stream forward, and never by materializing it.
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error>;
 }
 
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.

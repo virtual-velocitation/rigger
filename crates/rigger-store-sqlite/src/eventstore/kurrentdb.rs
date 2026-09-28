@@ -546,6 +546,35 @@ impl EventStore for Store {
         });
         Ok(Subscription::new(rx, err, stop, handle))
     }
+
+    /// A backward read from the stream's end that stops at the first event of `event_type`:
+    /// the server has no index over event types, so the bound is that first match, and only
+    /// the events after it are ever read.
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        let opts = ReadStreamOptions::default()
+            .position(StreamPosition::End)
+            .backwards();
+        self.rt.block_on(async {
+            let mut rs = match self.client.read_stream(stream, &opts).await {
+                Ok(rs) => rs,
+                Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
+                Err(e) => return Err(Error::Backend(format!("kurrentdb: last position: {e}"))),
+            };
+            loop {
+                match rs.next().await {
+                    Ok(Some(ev)) => {
+                        if let Some(rec) = original(&ev) {
+                            if rec.event_type == event_type {
+                                return Ok(Some(rec.revision as Revision));
+                            }
+                        }
+                    }
+                    Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
+                    Err(e) => return Err(Error::Backend(format!("kurrentdb: last position: {e}"))),
+                }
+            }
+        })
+    }
 }
 
 fn current_thread_rt(err: &Arc<Mutex<Option<String>>>) -> Option<tokio::runtime::Runtime> {

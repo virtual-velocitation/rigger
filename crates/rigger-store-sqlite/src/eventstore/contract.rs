@@ -99,12 +99,10 @@ fn last_position_answers_the_newest_boundary_without_reading_the_stream(store: &
         "the lookup hands back no event: {:?}",
         counted.reads()
     );
-    let lookups_only = counted.reads().iter().all(|r| {
-        matches!(
-            r,
-            crate::event_fixtures::CountedRead::LastPosition { .. }
-        )
-    });
+    let lookups_only = counted
+        .reads()
+        .iter()
+        .all(|r| matches!(r, crate::event_fixtures::CountedRead::LastPosition { .. }));
     assert!(
         lookups_only && counted.reads().len() == 5,
         "the lookup issues no stream or $all read, so no forward read from 0 ever happens: {:?}",

@@ -32,7 +32,13 @@ CREATE TABLE IF NOT EXISTS events (
   UNIQUE(stream, revision)
 );
 CREATE INDEX IF NOT EXISTS idx_events_stream ON events(stream);
+CREATE INDEX IF NOT EXISTS idx_events_stream_type ON events(stream, type, position);
 ";
+
+/// The boundary lookup behind [`EventStore::last_position`]: one seek of
+/// `idx_events_stream_type` to the stream-and-type run's highest position.
+const LAST_POSITION_SQL: &str =
+    "SELECT revision FROM events WHERE stream = ?1 AND type = ?2 ORDER BY position DESC LIMIT 1";
 
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
 
@@ -959,6 +965,13 @@ impl EventStore for Store {
                 revision: from - 1,
             },
         ))
+    }
+
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(LAST_POSITION_SQL, params![stream, event_type], |r| r.get(0))
+            .optional()
+            .map_err(be)
     }
 }
 

@@ -134,6 +134,10 @@ impl EventStore for Namespaced<'_> {
         let inner = self.inner.subscribe_stream(&self.scoped(stream), from)?;
         Ok(strip_subscription(inner, self.prefix.clone()))
     }
+
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        self.inner.last_position(&self.scoped(stream), event_type)
+    }
 }
 
 /// Wrap a subscription so each delivered event has the namespace prefix stripped

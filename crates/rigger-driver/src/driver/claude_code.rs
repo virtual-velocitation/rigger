@@ -1416,6 +1416,13 @@ mod tests {
                 "the failing double answers reads only".into(),
             ))
         }
+        fn last_position(
+            &self,
+            _stream: &str,
+            _event_type: &str,
+        ) -> Result<Option<crate::eventstore::Revision>, crate::eventstore::Error> {
+            Ok(None)
+        }
     }
 
     #[test]
