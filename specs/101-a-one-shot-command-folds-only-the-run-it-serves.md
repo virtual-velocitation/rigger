@@ -143,6 +143,11 @@ that step-wide assertion. Neither unit builds the other's half.
   (the existing replay-idempotency tests stay green unchanged).
 - *Revert:* a file reverted to an earlier generation finds the newer generation as its latest and
   re-emits; the next lookup then answers the reverted generation.
+- *Revert and drop under compaction (criterion 4):* a revert to an earlier generation
+  re-asserts that generation's facts as the newest generation, so retired facts return live under
+  the newer valid-time and the compaction keeps only that newest recording. A generation that
+  drops EVERY fact of a file leaves the file's node live only while a live decision, lesson or
+  finding edge touches it.
 - *Concurrent step and status:* status reads the boundary and the typed carry-over and takes no
   step lock; the step's lookups read committed rows only. A `rigger graph build` running beside a
   step can record one generation twice, as it can today, and criterion 4's dedup collapses it.
@@ -156,9 +161,39 @@ recording per exact replay key (13 duplicates on this store) and leaves every su
 generation in place. It keeps, per `<prefix>/<file>` identity, only the recordings of the
 LATEST generation, carrying the earliest valid-time onto a kept recording exactly as the
 reasserting-types rule already does. Correctness is rebuild-identical: `graph.db` rebuilt
-from the compacted log equals `graph.db` rebuilt from the full log, byte for byte. A file
+from the compacted log equals `graph.db` rebuilt from the full log, byte for byte in the live
+projection defined in the next block. A file
 reverted to an earlier content re-emits its batch (that is already how the walk keys), so
 no shed generation is ever needed again.
+
+**A GENERATION SUPERSEDES THE WHOLE PRIOR GENERATION OF ITS FILE, IN BOTH HALVES.** The graph
+models the target project's CURRENT state. Today a design-doc generation that drops a link leaves
+the prior generation's edge live (`valid_to` null), and a code generation that drops an entity
+retires the entity's edges but leaves its node live, so a whole-log rebuild carries facts the tree
+no longer makes and the compacted-log rebuild does not. A whole-log rebuild that keeps a dropped
+fact live is a defect of the fold, and this spec closes it. When a newer generation of a
+`<prefix>/<file>` identity folds, every fact the prior generation asserted for that file that the
+newer generation does not re-assert is retired (`valid_to` stamped, never deleted), exactly as the
+code half already retires a prior generation's edges: the design half's links
+(`DocLinkExtracted`) and concepts (`DocConceptExtracted`) exactly as the code half's edges. A node
+that no live generation asserts and no live edge touches is retired the same way; a node that a
+live decision, lesson or finding edge still touches stays live. The mechanism is the fold's, at
+the single fold authority for each arm (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`
+and the domain rules in `crates/rigger-domain/src/contextgraph.rs`), never a second pass or a
+post-fold sweep. This is what makes criterion 4's identity hold whenever a later generation DROPS
+a fact, not only when it adds or moves one.
+- *The identity.* "`graph.db` rebuilt ... byte-identical" is the LIVE PROJECTION: the public wire
+  form of `Projector::whole()` (every node, every live edge, every column, deterministically
+  ordered) of `graph.db` rebuilt from the compacted log versus from the original log. The
+  `graph.db` FILE differs by construction (the applied ledger records every folded position, and
+  retired rows are history the compacted log no longer replays), so file bytes are not the
+  identity. A test asserting this identity MUST seed at least one generation that drops a design
+  link and one that drops a code entity, besides the ordinary add-and-move generations, and MUST
+  NOT except any node or edge from the equality.
+- *Ownership.* Criterion 4's unit owns the fold change, and its blast radius grows to
+  `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` and
+  `crates/rigger-domain/src/contextgraph.rs`, because the compaction's correctness argument IS
+  this agreement; no other criterion touches the fold.
 
 **THE LIVE-WRITER GUARD READS LIVENESS.** `refuse_derived_reset_if_live` (`src/cli/hygiene.rs:610`) treats a
 non-terminal unit as a live writer; a run whose driver died leaves units non-terminal
