@@ -959,7 +959,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ce83655c125c",
+    "id": "dup-ebca87df825d",
     "classification": "semantic",
     "sites": [
       {
@@ -3509,17 +3509,12 @@
       },
       {
         "file": "tests/stop_failure_hook_periphery.rs",
-        "name": "\".rigger/progress.db\"",
+        "name": "\".rigger\"",
         "content_hash": "0ab805b5101d6502"
       },
       {
         "file": "tests/stop_failure_hook_periphery.rs",
         "name": "\".rigger/events.db\"",
-        "content_hash": "0ab805b5101d6502"
-      },
-      {
-        "file": "tests/stop_failure_hook_periphery.rs",
-        "name": "\".rigger/progress.db\"",
         "content_hash": "0ab805b5101d6502"
       },
       {
@@ -3714,7 +3709,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 550 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 549 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -3733,6 +3728,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, tests/postmerge_gate_error_cleanup_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-9d4ce6bab62d",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "read_stream",
+        "content_hash": "c8c8f6b7905795c6"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "read_stream_typed",
+        "content_hash": "454c49c5b1ce3e1d"
+      }
+    ],
+    "proposed_home": "conductor::capped_reads",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -3943,7 +3957,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2d4c80fb45b9",
+    "id": "dup-c138bb72172b",
     "classification": "near",
     "sites": [
       {
@@ -3967,6 +3981,11 @@
         "content_hash": "b56b232956ab7336"
       },
       {
+        "file": "crates/rigger-domain/src/progress.rs",
+        "name": "each_run_reports_on_its_own_stream_and_a_run_less_report_on_the_bare_one",
+        "content_hash": "7fca351216d814bf"
+      },
+      {
         "file": "tests/simplification_audit.rs",
         "name": "impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type",
         "content_hash": "7fca351216d814bf"
@@ -3987,7 +4006,7 @@
         "content_hash": "c8f8739d03c01acf"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-console/src/console/map.rs, crates/rigger-domain/src/ledger.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-console/src/console/map.rs, crates/rigger-domain/src/ledger.rs, crates/rigger-domain/src/progress.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -4529,13 +4548,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-5976e8817fac",
+    "id": "dup-8a4b1bf83c41",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-dash/src/mcpserver.rs",
         "name": "current_run_id",
-        "content_hash": "655714045ed19a7a"
+        "content_hash": "a8af39b7a9614f5d"
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
@@ -4908,6 +4927,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-557d6899b868",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/metrics.rs",
+        "name": "total",
+        "content_hash": "44de1a1689a04847"
+      },
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "cost",
+        "content_hash": "44de1a1689a04847"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/metrics.rs, tests/common/fixtures/events.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-6ffa6e5d1f83",
     "classification": "exact",
     "sites": [
@@ -5215,6 +5253,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-161c827c2a70",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-driver/src/driver/claude_code.rs",
+        "name": "read_stream",
+        "content_hash": "15c8be542e599d87"
+      },
+      {
+        "file": "crates/rigger-driver/src/driver/claude_code.rs",
+        "name": "read_stream_typed",
+        "content_hash": "89569eba9bc0ed5c"
+      }
+    ],
+    "proposed_home": "claude_code::failing_read_store",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-cd5c22f2a701",
     "classification": "semantic",
     "sites": [
@@ -5373,25 +5430,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-driver/src/liveness.rs, src/cli/setup.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-c0f477204b6e",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-driver/src/sidecar.rs",
-        "name": "len",
-        "content_hash": "07fa8526610ffde5"
-      },
-      {
-        "file": "tests/store_content_identity_periphery.rs",
-        "name": "batch_calls",
-        "content_hash": "d6e6009d558eb127"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-driver/src/sidecar.rs, tests/store_content_identity_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5564,7 +5602,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4152c282e52a",
+    "id": "dup-7754dca4d470",
     "classification": "semantic",
     "sites": [
       {
@@ -5586,6 +5624,11 @@
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "Connection::open_with_flags",
         "content_hash": "c9fe8bd11b5e51a4"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -5656,6 +5699,11 @@
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
+        "file": "tests/one_shot_reads_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "e7e57a0fdf78bcfe"
       },
       {
         "file": "tests/reset_derived_compaction.rs",
@@ -5749,7 +5797,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 36 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 38 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6170,6 +6218,25 @@
       }
     ],
     "proposed_home": "contract::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-8bed086eddda",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
+        "name": "read_stream",
+        "content_hash": "6e7dea32ae785cf9"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
+        "name": "read_stream_typed",
+        "content_hash": "6e7dea32ae785cf9"
+      }
+    ],
+    "proposed_home": "namespace::namespaced",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -7213,6 +7280,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/store_secrets.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-c82a46fd1fec",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "read_stream",
+        "content_hash": "cda0d30d2571ad60"
+      },
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "read_stream_typed",
+        "content_hash": "cda0d30d2571ad60"
+      }
+    ],
+    "proposed_home": "events::silent_store",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

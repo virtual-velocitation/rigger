@@ -37,16 +37,16 @@
   "found_occurrences": [
     {
       "file": "crates/rigger-domain/src/eventstore.rs",
-      "line": 105,
+      "line": 114,
       "pattern": "uuid::",
-      "gated_by_line": 103,
+      "gated_by_line": 112,
       "reason": "Event::new's mint() store-arm mints the id's real entropy via uuid; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint() below, returning an empty id) satisfying the same call site under core-only - see that module's own doc on the split."
     },
     {
       "file": "crates/rigger-domain/src/eventstore.rs",
-      "line": 105,
+      "line": 114,
       "pattern": "SystemTime::now",
-      "gated_by_line": 103,
+      "gated_by_line": 112,
       "reason": "Event::new's mint() store-arm reads the real clock; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint() below, returning SystemTime::UNIX_EPOCH) satisfying the same call site under core-only - CONSTRAINTS WALK's 'the core has no now(), every age arrives as an input'."
     }
   ],

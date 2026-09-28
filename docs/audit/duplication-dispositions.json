@@ -470,11 +470,6 @@
     "reason": "No second stat parse remains: `stat_field_after_comm` is the one `/proc/<pid>/stat` parser, `read_ppid` reads the different `/status` file, `pgid_of` calls the parser (only its panic message names the path), and the rest are this audit's own sweep and fixture strings."
   },
   {
-    "id": "dup-5976e8817fac",
-    "disposition": "not-a-duplicate",
-    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store, the on-disk run stream) and call it."
-  },
-  {
     "id": "dup-2b572fcabbd4",
     "disposition": "not-a-duplicate",
     "reason": "`SpawnResult::liveness_fault` is the product constructor, and the test fixture calls it and encodes the result as an event for a fold input."
@@ -563,11 +558,6 @@
     "id": "dup-f61039476fc4",
     "disposition": "not-a-duplicate",
     "reason": "Three struct projections into different output shapes (a map candidate, the responsibility-map wire record and its line-number record) over different source types."
-  },
-  {
-    "id": "dup-2d4c80fb45b9",
-    "disposition": "not-a-duplicate",
-    "reason": "Unit tests of different functions (module-of, district-purpose, short run id, spec stem, impl self-type, where-clause stripping, identifier kind) that share only the assert-equality shape."
   },
   {
     "id": "dup-cf5c8cd56db9",
@@ -668,11 +658,6 @@
     "id": "dup-df893b1b93d7",
     "disposition": "not-a-duplicate",
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
-  },
-  {
-    "id": "dup-c0f477204b6e",
-    "disposition": "not-a-duplicate",
-    "reason": "`len` reports a sidecar's entry count while `batch_calls` reads a test double's recorded batch count."
   },
   {
     "id": "dup-58e746ca5c35",
@@ -908,5 +893,40 @@
     "id": "dup-78c48ff4c88e",
     "disposition": "not-a-duplicate",
     "reason": "Two levels of one rule, not two copies: `ReviewPanel::gating_agent_ids` names one panel's gating agents, and the config-level `gating_agent_ids` unions that method over the default panel and every stage's panel plus each stage's standalone adjudicator. The workspace split put the panel method in the domain crate and the Config-level fold beside `Config`, so the two same-named functions now sit in different files."
+  },
+  {
+    "id": "dup-8a4b1bf83c41",
+    "disposition": "not-a-duplicate",
+    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's run from its boundary, the on-disk run stream) and call it."
+  },
+  {
+    "id": "dup-557d6899b868",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different sums that share only the shape `a + b`: the metrics total of two token counts, and the one-shot fixture's read cost (the run's own events plus the carried-over events)."
+  },
+  {
+    "id": "dup-8bed086eddda",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name, stripping the prefix from what comes back) is already the one `scoped`/`strip` pair both call."
+  },
+  {
+    "id": "dup-c82a46fd1fec",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of `SilentStore`, each answering its own read empty - the double's whole contract, one line per method the port requires."
+  },
+  {
+    "id": "dup-9d4ce6bab62d",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the capped-reads test double, each forwarding its own inner read after the one shared `charge` of the read cap."
+  },
+  {
+    "id": "dup-161c827c2a70",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the failing-read test double, each answering the one shared `read_failure`."
+  },
+  {
+    "id": "dup-c138bb72172b",
+    "disposition": "not-a-duplicate",
+    "reason": "Unit tests of different functions (module-of, district-purpose, short run id, spec stem, the per-run progress stream name, impl self-type, where-clause stripping, identifier kind) that share only the assert-equality shape."
   }
 ]
