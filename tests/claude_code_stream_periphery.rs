@@ -1229,3 +1229,69 @@ fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_s
     // process rigger's own ordinary completion path is responsible for reaping.
     common::terminate_pid(descendant_pid);
 }
+
+// ---- THE STOP's bound: `max_wall_clock` 0 is unbounded, never a 5 s stop ----
+
+/// The silent-past-the-poll fixture (silent 7 s, then a result), launched with no wall
+/// clock bound.
+const SILENT_PAST_THE_POLL: &str = "claude-code-silent-past-the-poll-then-result-agent.sh";
+
+#[test]
+fn an_unbounded_launch_silent_past_the_poll_still_records_its_result() {
+    // 2026-09-28: the unbounded launch's 5 s wake-up took the wall-clock STOP branch, so a
+    // session that thought in silence for 5 s was stopped as a liveness fault reading
+    // "silent for 0s" - every real agent's long first turn.
+    let fx = Fixture::new();
+    let o = opts("u104-unbounded/implementer#0");
+
+    let result = fx
+        .driver_running(SILENT_PAST_THE_POLL)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect("an unbounded launch waits for its result however long the silence");
+
+    assert_eq!(result.output, "done: thought past the poll");
+    let results = fx.spawn_results();
+    assert_eq!(results.len(), 1, "exactly one SpawnResult landed");
+    let res = spawn::SpawnResult::from_event(&results[0]).unwrap();
+    assert!(
+        !res.is_error() && !res.is_liveness_fault(),
+        "no fault fires on an unbounded launch: {res:?}"
+    );
+}
+
+#[test]
+fn a_bounded_launch_silent_past_its_wall_clock_is_still_stopped() {
+    let fx = Fixture::new();
+    let o = opts("u104-unbounded/implementer#0");
+
+    let (err, _elapsed) = stop(
+        &fx.stopping_driver(SILENT_PAST_THE_POLL, Duration::from_millis(200)),
+        &o,
+    );
+
+    assert!(err.contains("silent for 1s"), "{err}");
+    let results = fx.spawn_results();
+    assert_eq!(results.len(), 1, "exactly one liveness-fault result landed");
+    assert!(spawn::SpawnResult::from_event(&results[0])
+        .unwrap()
+        .is_liveness_fault());
+}
+
+#[test]
+fn an_unbounded_launch_whose_child_exited_behind_a_held_pipe_ends_with_no_result() {
+    // No EOF ever arrives (a descendant still holds the stdout pipe), so on an unbounded
+    // launch the wake-up re-checking the child is the only thing that sees the session end.
+    let started = Instant::now();
+    let err = spawn_fails_classified(
+        "claude-code-exits-leaving-a-descendant-on-the-pipe-agent.sh",
+        None,
+        AgentFailure::Unknown,
+        "a session that exited with no result classifies unknown",
+    );
+    assert!(err.contains("ended with no result"), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the read ends at the wake-up after the child exits: {:?}",
+        started.elapsed()
+    );
+}
