@@ -23,11 +23,20 @@ pub struct Instruction {
 
 /// The built-in layer, in the order it is injected. The first entry is the engineering law
 /// the project holds every change to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and
-/// BDD where relevant, the one-pass-by-excellence rule and the mutation rule.
-pub const BUILTIN: &[(&str, &str)] = &[(
-    "engineering-principles",
-    include_str!("instructions/engineering-principles.md"),
-)];
+/// BDD where relevant. The second is the working discipline every agent follows: one pass by
+/// excellence, fanning mechanical work out to the `lookup` and `verify` helpers, and the rule
+/// that a surviving mutant is always a failure. A harness-wide rule lives here once, never
+/// copied into persona files.
+pub const BUILTIN: &[(&str, &str)] = &[
+    (
+        "engineering-principles",
+        include_str!("instructions/engineering-principles.md"),
+    ),
+    (
+        "working-discipline",
+        include_str!("instructions/working-discipline.md"),
+    ),
+];
 
 /// The heading that opens the injected layers in a system prompt; tests and `rigger prime`
 /// key on it.

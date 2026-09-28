@@ -30,7 +30,7 @@ pub mod grounder;
 /// predicate the live run and the standalone `rigger graph build` both seed from.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
-/// Instruction injection: the built-in engineering law and the operator's
+/// Instruction injection: the built-in engineering law and working discipline and the operator's
 /// `.rigger/instructions/*.md` layered into every spawned agent's system prompt.
 pub mod instructions;
 pub mod ledger;

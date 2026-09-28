@@ -302,8 +302,9 @@ rigger prime [<spec>]       print recent decisions (what the hook runs); given a
 path, also names `rigger validate <spec>` (the pre-launch\n                              \
 spec lint) as a next step\n  \
 rigger instructions         print the instructions every spawned agent is held to:\n                              \
-the built-in engineering law, then each operator file\n                              \
-in .rigger/instructions/ (filename order)\n  \
+the built-in law and working discipline, then each\n                              \
+operator file in .rigger/instructions/ (filename\n                              \
+order)\n  \
 rigger version              print the crate version and the build-provenance id\n                              \
 (a git commit/describe embedded at build time) so an\n                              \
 agent can identify the exact binary. Also `--version`\n\n\

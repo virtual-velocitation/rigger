@@ -212,13 +212,13 @@ gates:                      # the project's verification library, referenced by 
   # run, silently). A run whose `RunStarted` predates this field has no base to diff
   # against; `test -n` refuses loud rather than sweeping an empty diff. The checkin
   # stage's own task text (below, and the `rust-engineer` persona's checkin-stage
-  # prose) carries the kill-or-justify protocol: read `mutants.out/outcomes.json`,
-  # kill each missed mutant with a strengthened test or justify it via an
-  # `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and
+  # prose) carries the survivor-closing protocol: read `mutants.out/outcomes.json`,
+  # close each missed mutant with a test that fails on it or a rewrite that removes
+  # the mutable site (never an `exclude_re` or `mutants::skip`: a survivor is always
+  # a failure, and the gate below refuses the unit for either), commit, and
   # record the deterministic per-mutant accounting as a DecisionMade. Declaring a
   # gate under this exact id requires `cargo-mutants` on PATH (`rigger validate`
-  # checks at run start). The gate fails on MISSED mutants only (spec 91: "fails while a
-  # missed mutant is neither killed nor justified"). A TIMEOUT is a detection, not a miss:
+  # checks at run start). The gate fails on MISSED mutants only. A TIMEOUT is a detection, not a miss:
   # the suite hangs or overruns under the mutant (a server that returns at once, an
   # inverted loop guard - hang-class mutants the suite catches only by bounded waits), and
   # cargo-mutants exits 3 for it. On the first live check-in (spec 89, 2026-09-14) the same

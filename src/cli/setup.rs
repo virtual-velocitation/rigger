@@ -83,6 +83,9 @@ struct ScaffoldReport {
     wrote_workflow: bool,
     /// Agent files this run newly wrote (empty when they already existed).
     new_agents: Vec<String>,
+    /// Fan-out helper files this run newly wrote under `.claude/agents/` (empty when they
+    /// already existed).
+    new_helpers: Vec<String>,
     /// True when this run installed or updated the SessionStart hook in
     /// `.claude/settings.json` (false when the hook was already present unchanged).
     wrote_hook: bool,
@@ -102,6 +105,7 @@ impl ScaffoldReport {
     fn changed(&self) -> bool {
         self.wrote_workflow
             || !self.new_agents.is_empty()
+            || !self.new_helpers.is_empty()
             || self.wrote_hook
             || !self.gitignore_added.is_empty()
             || self.minted_id.is_some()
@@ -198,6 +202,18 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         std::fs::write(&settings_path, &merged)?;
     }
 
+    // 3b. Install the fan-out helpers the built-in working discipline names, at the
+    // `.claude/agents/` path it names them by. An existing helper is kept (the operator may
+    // have tuned it), so a rerun writes nothing.
+    let helpers_dir = claude_dir.join("agents");
+    std::fs::create_dir_all(&helpers_dir)?;
+    let mut new_helpers = Vec::new();
+    for (file, content) in SCAFFOLD_HELPER_AGENTS {
+        if write_if_absent(&helpers_dir.join(file), content)? {
+            new_helpers.push(file.to_string());
+        }
+    }
+
     // 4. Write .gitignore entries for machine-local installs, the always-on dash's runtime
     // breadcrumbs, and the per-machine store-connection secret file, when they are not already
     // ignored or tracked. `.claude/` and `.rigger/shim/` are the machine-local installs;
@@ -230,6 +246,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     Ok(ScaffoldReport {
         wrote_workflow,
         new_agents,
+        new_helpers,
         wrote_hook,
         gitignore_added,
         minted_id,
@@ -402,6 +419,12 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
         lines.push(format!(
             "scaffolded .rigger/agents/{{{}}}",
             report.new_agents.join(", ")
+        ));
+    }
+    if !report.new_helpers.is_empty() {
+        lines.push(format!(
+            "scaffolded the fan-out helpers .claude/agents/{{{}}}",
+            report.new_helpers.join(", ")
         ));
     }
     if report.wrote_hook {
@@ -1145,8 +1168,9 @@ const SCAFFOLD_INSTRUCTIONS_README: &str = "\
 
 Every `*.md` file in this directory (except this README) is appended, in filename order,
 to the system prompt of every agent rigger spawns: after the agent's persona and the
-built-in engineering principles, before rigger's communication discipline. Name files with
-a numeric prefix (`10-house.md`, `20-team.md`) to control their order.
+built-in engineering principles and working discipline, before rigger's communication
+discipline. Name files with a numeric prefix (`10-house.md`, `20-team.md`) to control their
+order.
 
 Run `rigger instructions` to read exactly what your agents are held to.
 
@@ -1270,17 +1294,25 @@ gates: [build, audit, test, lint, boundary, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n";
 
+/// The fan-out helpers every persona dispatches (the built-in working discipline names them):
+/// `lookup`, one Haiku instance per graph node, and `verify`, one Sonnet instance for builds
+/// and test runs. `rigger init` installs them at `.claude/agents/`, where Claude Code discovers
+/// subagents; the text is this repository's own committed helpers, so the two cannot drift.
+const SCAFFOLD_HELPER_AGENTS: &[(&str, &str)] = &[
+    ("lookup.md", include_str!("../../.claude/agents/lookup.md")),
+    ("verify.md", include_str!("../../.claude/agents/verify.md")),
+];
+
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
 /// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
 /// referenced id is seeded here (the two stay in lockstep so a fresh `rigger init` seeds
 /// no stray, unreferenced agent). The ids match this project's own canonical personas
 /// (planner, rust-engineer, architecture-reviewer, sdet, adversary, adjudicator); the
 /// four generic placeholder personas (implementer, devils-advocate, reviewer.architecture,
-/// reviewer.technical) deliberately do NOT appear. Model tiers are a conscious seed
-/// default: the implementer ships on a cheap-first `model_ladder` (`[sonnet, opus]`, spec 10
-/// unit 4) so its first attempt is cheap and a persistently-failing unit escalates to the
-/// strong model under remediation; the lenses stay on `sonnet` and the adversary and
-/// adjudicator on a fixed `opus` (judgment is not laddered). Each is a
+/// reviewer.technical) deliberately do NOT appear. Every seed, reviewers included, runs on
+/// `opus` and may fan its mechanical work out (`Agent` in `tools`, `recurse: true`) to the
+/// `lookup` and `verify` helpers [`SCAFFOLD_HELPER_AGENTS`] installs; the discipline that
+/// governs that fan-out is the built-in instruction layer, never copied into a seed. Each is a
 /// markdown-with-frontmatter definition `config::load` parses; filenames are arbitrary, the
 /// `id` is what the workflow binds to.
 const SCAFFOLD_AGENTS: &[(&str, &str)] = &[
@@ -1288,9 +1320,10 @@ const SCAFFOLD_AGENTS: &[(&str, &str)] = &[
         "planner.md",
         "---\n\
 id: planner\n\
-model: sonnet\n\
-tools: [Read, Grep, Glob]\n\
+model: opus\n\
+tools: [Read, Grep, Glob, Agent]\n\
 isolation: none\n\
+recurse: true\n\
 ---\n\
 You decompose the spec into a DAG of small, independently-verifiable units, one\n\
 per acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n",
@@ -1299,10 +1332,10 @@ per acceptance criterion. Emit each as a UnitProposed decision. Do not write cod
         "rust-engineer.md",
         "---\n\
 id: rust-engineer\n\
-model_ladder: [sonnet, opus]\n\
-tools: [Read, Edit, Write, Grep, Glob, Bash]\n\
+model: opus\n\
+tools: [Read, Edit, Write, Grep, Glob, Bash, Agent]\n\
 isolation: worktree\n\
-recurse: false\n\
+recurse: true\n\
 ---\n\
 You implement ONE fully-specified unit inside your worktree, in idiomatic Rust.\n\
 Write the failing test first, confirm RED, implement minimally, confirm GREEN, run\n\
@@ -1312,9 +1345,10 @@ the named gates, commit. Report the final line as JSON: {\"id\",\"pass\",\"evide
         "architecture-reviewer.md",
         "---\n\
 id: architecture-reviewer\n\
-model: sonnet\n\
-tools: [Read, Grep, Glob, Bash]\n\
+model: opus\n\
+tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
+recurse: true\n\
 ---\n\
 You review a diff for architectural defects ONLY. Quote the rule or doc violated.\n\
 Name the SOLID principle for each finding.\n\
@@ -1324,9 +1358,10 @@ Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
         "sdet.md",
         "---\n\
 id: sdet\n\
-model: sonnet\n\
-tools: [Read, Grep, Glob, Bash]\n\
+model: opus\n\
+tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
+recurse: true\n\
 ---\n\
 You review a diff for correctness, error-handling, test coverage, and idiomatic\n\
 defects ONLY. Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n\
@@ -1337,8 +1372,9 @@ Confirm the unit's first source commit follows a test commit (red before green).
         "---\n\
 id: adversary\n\
 model: opus\n\
-tools: [Read, Grep, Glob, Bash]\n\
+tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
+recurse: true\n\
 ---\n\
 You are the adversary (tier 2). You run AFTER the lenses and review THEIR findings\n\
 AND the diff, trying to PROVE THE LENSES WRONG: hold them to a higher bar, surface\n\
@@ -1351,8 +1387,9 @@ skepticism; cite file:line. Record findings with rigger_emit.\n",
         "---\n\
 id: adjudicator\n\
 model: opus\n\
-tools: [Read, Grep, Glob, Bash]\n\
+tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
+recurse: true\n\
 ---\n\
 You are the adjudicator (tier 3), the neutral final judge. Weigh the expert lenses\n\
 against the adversary and decide who wins. Be neutral in tone but EXTREMELY strict\n\

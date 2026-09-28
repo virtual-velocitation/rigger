@@ -39,7 +39,12 @@ shim/node_modules/
 .DS_Store
 .idea/
 .vscode/
+# Claude Code machine-local state, except the committed fan-out helper agents that the
+# built-in working discipline names (`rigger init` installs the same files for a consumer).
 .claude
+!/.claude/
+/.claude/*
+!/.claude/agents/
 .rigger/shim
 # The run's transient scratch root: unit/review worktrees + their build dirs
 # (defaults.workdir / RIGGER_TMPDIR override the location; Gap 14)

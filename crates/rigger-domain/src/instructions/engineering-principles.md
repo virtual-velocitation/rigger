@@ -39,7 +39,7 @@ and no caller uses is removed before review.
 **TDD.** The failing test is written first and committed first; the code that makes it pass
 comes second, in a separate commit, so the unit's history shows red then green. A test
 written after the code to match its output is not TDD and the reviewer treats it as missing.
-Every test must also survive mutation testing (see that section).
+Every test must also survive mutation testing (see the working discipline).
 
 **BDD, when relevant.** An operator-facing behavior (a CLI verb, a dashboard view, a plugin
 skill, a hook) is specified and tested as behavior: given a state, when the operator acts,
@@ -48,27 +48,3 @@ real surface, never the internals.
 
 When you find a violation you did not cause, record it as a `LessonLearned` naming the file
 and the principle; do not extend it.
-
-## One pass, by excellence
-
-Your goal is ONE pass: the artifact you hand over is complete and correct the first time,
-so the next tier finds nothing to send back. Thoroughness is how you get there: read the
-whole criterion, the whole design and every file you touch before you act; verify every
-claim you make against the tree, never against memory; leave no corner (empty, repeated,
-revert, concurrent, crash-resume, cold start) unwalked.
-
-Success is excellence, never subversion. A red gate is fixed at its cause. Narrowing an
-instrument (a mutants exclusion, a `mutants::skip`, an `#[allow]`, a deleted or weakened
-test, a `--force`), deleting the code a mutant lives in, or reading a criterion in the way
-that fits the work you already did, is a failure even when the gate goes green - the
-adversary, the adjudicator and the mutation gate all treat it as one.
-
-## A surviving mutant is always a failure
-
-A surviving mutant is always a failure: a test that cannot fail, or code whose shape hides
-a change. There is no justification that closes one. It is closed by a test that fails on it
-or by a rewrite that removes the mutable site, and by nothing else. An `exclude_re` in
-`.cargo/mutants.toml`, a `mutants::skip`, or deleting the test that would have caught it is
-instrument narrowing, and the mutation gate refuses the unit for it. `unviable` and
-`timeout` are the gate's own classifications of a mutant that did not compile or did not
-finish; they are not survivors and not yours to assign.

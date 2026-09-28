@@ -7,10 +7,10 @@ An agent is one Markdown file in `.rigger/agents/<id>.md`: YAML frontmatter that
 ```markdown
 ---
 id: implementer
-model: sonnet
-tools: [Read, Edit, Write, Grep, Glob, Bash]
+model: opus
+tools: [Read, Edit, Write, Grep, Glob, Bash, Agent]
 isolation: worktree
-recurse: false
+recurse: true
 ---
 You implement ONE fully-specified unit inside your worktree. Write the failing
 test first, confirm RED, implement minimally, confirm GREEN, run the named gates,
@@ -25,26 +25,30 @@ commit. Report the final line as JSON: {"id","pass","evidence"}.
 | `model` | `opus` \| `sonnet` \| `haiku` | The capability tier. Always an alias, never a pinned model ID - the alias resolves to the current model of that tier at spawn time, so the fleet upgrades when the driver does. See "Model tiering" below. |
 | `tools` | list of tool names | The capability allowlist. The agent physically cannot call anything not listed - this is enforcement, not advice. See [tools-and-context.md](tools-and-context.md). |
 | `isolation` | `worktree` (or omit) | `worktree` gives the agent its own git worktree on its own branch; it cannot see or corrupt another agent's files. Mandatory for anything that writes code in a fan-out. |
-| `recurse` | `true` \| `false` | Whether the agent may spawn sub-agents. Default deny for workers. A recursing implementer is how one runaway loop burns a five-hour budget in fifteen minutes - constrain capability, do not rely on prompt instructions. |
+| `recurse` | `true` \| `false` | Whether the agent keeps the `Agent` tool and may dispatch subagents. `false` strips every spawn tool from the grant, whatever `tools` lists. Rigger's own personas are `recurse: true` so they can fan mechanical work out to the `lookup` and `verify` helpers (see "Fanning out" below); the built-in working discipline bounds that fan-out. |
 
 The body below the frontmatter is the agent's entire system prompt. Everything the agent knows about its job comes from three places: this prompt, the per-task assignment the conductor sends it, and the context slice it retrieves through grounding.
 
-## Model tiering: pay for judgment, not for typing
+## Model tiering: judgment on opus, mechanics on the helpers
 
-The tier assignment is an economic decision with a quality floor. The pattern proven across Rigger's own runs:
+Every persona runs on `opus`, reviewers included: planning, implementing, reviewing and adjudicating are all judgment, and a unit that lands right the first time costs less than a cheap attempt that is sent back. The cheap tiers do the mechanical work, as subagents the persona dispatches:
 
 | Tier | Use for | Rigger examples |
 |---|---|---|
-| `opus` | Judgment: planning, adversarial review, adjudication, genuinely novel implementation | `planner`, `adversary`, `adjudicator`, the senior-engineer role |
-| `sonnet` | Execution against an explicit spec: mechanical implementation, lens review with a rubric, integration | `implementer`, `reviewer.technical`, `scribe` |
-| `haiku` | Cheap single-purpose calls: escalation formatting, summaries | escalation notices |
+| `opus` | Every persona: planning, implementation, each review tier, adjudication | `planner`, `rust-engineer`, `architecture-reviewer`, `sdet`, `adversary`, `adjudicator` |
+| `sonnet` | One mechanical run at a time: a build, the gate battery, a test run, a mutant reproduction | the `verify` helper |
+| `haiku` | One knowledge-graph question per node, many in parallel | the `lookup` helper |
 
-Two rules make the cheap tiers work:
+Never hardcode a model ID (`claude-sonnet-4-6`) in an agent file. The alias is the design: when the harness maps `opus` to a newer Opus, every agent upgrades for free, and nothing rots.
 
-1. **Plan with the expensive model, execute with the cheap one.** An Opus plan pass that produces an explicit, unambiguous unit spec lets a Sonnet implementer execute it at a fraction of the cost with no quality loss. The intelligence is in the spec; the execution is mechanical.
-2. **Cheap models need explicit prompts.** Sonnet does not infer your conventions the way Opus does. Spell out the who / what / when / where / why, enumerate the checks, name the files, and state the architectural rules it must review against. Vague prompt + cheap model = generic output.
+## Fanning out: the lookup and verify helpers
 
-Never hardcode a model ID (`claude-sonnet-4-6`) in an agent file. The alias is the design: when the harness maps `sonnet` to a newer Sonnet, every agent upgrades for free, and nothing rots.
+Two helper subagents live in `.claude/agents/`, where Claude Code discovers subagents; `rigger init` installs them in every project, and an existing copy is kept:
+
+- `lookup` (`haiku`) answers ONE question about ONE knowledge-graph node through the rigger graph tools. A persona dispatches one instance per graph node, in parallel, and never one per file: the graph is the lookup surface, and a per-file fan-out goes around it. A literal `Grep` is its last resort and is reported as a `GAP:` line so the graph gap gets fixed.
+- `verify` (`sonnet`) runs a build, the gate battery, a test run or a mutant reproduction and reports the exact result. A persona runs one at a time, because builds hold the machine-wide build slots.
+
+A persona needs `Agent` in `tools` and `recurse: true` to dispatch them. How to use them - which work fans out, how many run at once, what stays in the persona's own turn - is the built-in working discipline (below), so a persona file never restates it.
 
 ## Prompt-writing practice
 
@@ -78,11 +82,16 @@ Some rules apply to every agent regardless of its role: how code is shaped, how 
 persona  +  built-in instructions  +  operator instructions  +  communication discipline
 ```
 
-**The built-in layer** ships inside the binary and reaches every agent Rigger spawns, including an agent with an empty body. It is the engineering law every change is held to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and BDD where a behavior is operator-facing, one pass by excellence, and the rule that a surviving mutant is always a failure. Its source is `crates/rigger-domain/src/instructions/engineering-principles.md`; no configuration removes it.
+**The built-in layer** ships inside the binary and reaches every agent Rigger spawns, including an agent with an empty body. It has two entries, injected in this order:
+
+1. `engineering-principles` - the engineering law every change is held to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD, and BDD where a behavior is operator-facing. Source: `crates/rigger-domain/src/instructions/engineering-principles.md`.
+2. `working-discipline` - how every agent works: one pass by excellence, fanning mechanical work out to the `lookup` and `verify` helpers, and the rule that a surviving mutant is always a failure. Source: `crates/rigger-domain/src/instructions/working-discipline.md`.
+
+No configuration removes either. Because they reach every spawn, a persona file carries only role-specific text: its role, its lane, its defect classes and its output contract. A rule that applies to every role belongs in the instruction layer, never copied into each persona, where the copies drift the moment one is edited.
 
 **The operator layer** is every `*.md` file in `.rigger/instructions/`, appended in filename order after the built-ins, each under a `## <file stem>` heading. Use a numeric prefix (`10-house.md`, `20-team.md`) to control the order. `rigger init` scaffolds the directory with a `README.md` that explains it; the README itself is never injected. Put project-wide house rules here instead of into personas, and keep each persona about its role.
 
-**Reading the composed layers.** `rigger instructions` prints exactly what your agents are held to: the built-in law first, then each operator file by name, or `(none)` when the directory holds no instruction files. `rigger prime` opens every session with a one-line summary of the layers in force.
+**Reading the composed layers.** `rigger instructions` prints exactly what your agents are held to: the two built-in entries first, then each operator file by name, or `(none)` when the directory holds no instruction files. `rigger prime` opens every session with a one-line summary of the layers in force.
 
 **The definition pin.** Operator instruction files are part of a run's definition, alongside `workflow.yml` and the agent files. Editing one while a run is live changes the definition hash, and the next step halts as a definition drift. Edit instructions between runs, or continue deliberately with `--rebase-definition`.
 
@@ -91,8 +100,8 @@ persona  +  built-in instructions  +  operator instructions  +  communication di
 You do not have to write a fleet from scratch. [agency-agents](https://github.com/msitarzewski/agency-agents) (MIT) is a collection of 200+ specialized agent definitions - engineering, testing, security, design, and a dozen other divisions - in the same Markdown-with-YAML-frontmatter shape Rigger reads. To adopt one:
 
 1. Copy the `.md` file into `.rigger/agents/` and rename its identity field to Rigger's `id:` (lowercase, hyphenated, role-shaped).
-2. Decide the five frontmatter fields deliberately for YOUR loop: pick the `model` tier by the judgment the role needs (see "Model tiering" above), narrow `tools` to the minimum the role requires (reviewers get read-only), add `isolation: worktree` to anything that writes code in a fan-out, and leave `recurse` off for workers.
-3. Keep the body's role and workflow; strip platform-specific instructions that assume a particular editor or chat UI.
+2. Decide the five frontmatter fields deliberately for YOUR loop: pick the `model` tier by the judgment the role needs (see "Model tiering" above), narrow `tools` to the minimum the role requires (reviewers get read-only), add `isolation: worktree` to anything that writes code in a fan-out, and grant `Agent` with `recurse: true` so the agent can dispatch the helpers.
+3. Keep the body's role and workflow; strip platform-specific instructions that assume a particular editor or chat UI, and any rule the built-in layer already carries.
 4. `rigger validate` confirms the fleet loads; a workflow stage can then reference the agent by `id`.
 
 Treat imported prompts as first drafts: the checklist below applies to them the same as to agents you write yourself.

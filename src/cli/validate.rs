@@ -1095,7 +1095,8 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 }
 
 /// `rigger instructions` - print the composed instruction layers every spawned agent
-/// receives: the built-in law, then the operator files in `.rigger/instructions/`.
+/// receives: the built-in law and working discipline, then the operator files in
+/// `.rigger/instructions/`.
 pub(crate) fn cmd_instructions(_args: &[String]) -> Res {
     let ops = config_store::load_instructions(Path::new("."))?;
     print!("{}", instructions::render(&ops));
