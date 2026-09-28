@@ -1197,7 +1197,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "55ed3a28f84d4337"
+    "content_hash": "578d1f7c8cee3650"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1390,6 +1390,14 @@
     "proposed_module": "conductor::review",
     "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
     "content_hash": "5889367b1fce9456"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "task_block",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "d29f691f58ca89df"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2582,6 +2590,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "8d86fd05aa4f33d5"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "every_unit_prompt_leads_with_its_name_and_verbatim_criterion",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e4a6a26d158acc77"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
