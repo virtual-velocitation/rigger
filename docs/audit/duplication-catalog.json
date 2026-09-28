@@ -258,6 +258,30 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-4e1d0e78e3c6",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "read_current_run",
+        "content_hash": "6ac20d1aa1621610"
+      },
+      {
+        "file": "crates/rigger-dash/src/mcpserver.rs",
+        "name": "read_current_run",
+        "content_hash": "ebcd85eeaa45588a"
+      },
+      {
+        "file": "crates/rigger-domain/src/run/read.rs",
+        "name": "read_current_run",
+        "content_hash": "cef1af7f34ba1d4e"
+      }
+    ],
+    "proposed_home": "one shared `read_current_run` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-f13596146362",
     "classification": "near",
     "sites": [
@@ -4548,13 +4572,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8a4b1bf83c41",
+    "id": "dup-17929143626a",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-dash/src/mcpserver.rs",
         "name": "current_run_id",
-        "content_hash": "a8af39b7a9614f5d"
+        "content_hash": "d407e14ac4cfd9a9"
       },
       {
         "file": "crates/rigger-domain/src/run.rs",

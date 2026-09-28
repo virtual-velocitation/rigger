@@ -895,11 +895,6 @@
     "reason": "Two levels of one rule, not two copies: `ReviewPanel::gating_agent_ids` names one panel's gating agents, and the config-level `gating_agent_ids` unions that method over the default panel and every stage's panel plus each stage's standalone adjudicator. The workspace split put the panel method in the domain crate and the Config-level fold beside `Config`, so the two same-named functions now sit in different files."
   },
   {
-    "id": "dup-8a4b1bf83c41",
-    "disposition": "not-a-duplicate",
-    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's run from its boundary, the on-disk run stream) and call it."
-  },
-  {
     "id": "dup-557d6899b868",
     "disposition": "not-a-duplicate",
     "reason": "Two different sums that share only the shape `a + b`: the metrics total of two token counts, and the one-shot fixture's read cost (the run's own events plus the carried-over events)."
@@ -928,5 +923,15 @@
     "id": "dup-c138bb72172b",
     "disposition": "not-a-duplicate",
     "reason": "Unit tests of different functions (module-of, district-purpose, short run id, spec stem, the per-run progress stream name, impl self-type, where-clause stripping, identifier kind) that share only the assert-equality shape."
+  },
+  {
+    "id": "dup-4e1d0e78e3c6",
+    "disposition": "not-a-duplicate",
+    "reason": "`run::read::read_current_run` is the one composition of the run read, its slice and its id; the conductor's `RunCtx` method and the MCP server method only bind their own store and stream to it and map its error into their own error type."
+  },
+  {
+    "id": "dup-17929143626a",
+    "disposition": "not-a-duplicate",
+    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's current run, the on-disk run stream) and take the id from it."
   }
 ]
