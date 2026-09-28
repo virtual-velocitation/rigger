@@ -1,201 +1,135 @@
 [
   {
-    "id": "dup-2a5626cb9627",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/agent.rs",
-        "name": "as_str",
-        "content_hash": "3824b17d87c85522"
-      },
-      {
-        "file": "crates/rigger-domain/src/spec.rs",
-        "name": "name",
-        "content_hash": "b28c09c7860480d4"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/agent.rs, crates/rigger-domain/src/spec.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-c3aadd27d8c7",
+    "id": "dup-78c48ff4c88e",
     "classification": "semantic",
     "sites": [
       {
-        "file": "crates/rigger-domain/src/agent.rs",
-        "name": "no_result_error",
-        "content_hash": "4a002dd947bf783c"
+        "file": "crates/rigger-config-files/src/config.rs",
+        "name": "gating_agent_ids",
+        "content_hash": "755fad111be87931"
       },
       {
-        "file": "crates/rigger-grounder/src/grounder/mod.rs",
-        "name": "retired_grounder_error",
-        "content_hash": "b0b4170272f04fb7"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "guard_review_round_tree_on_tier_err",
-        "content_hash": "1852f897b968d010"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-        "content_hash": "f49253da8951d862"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked",
-        "content_hash": "38d31a04aa0c3f29"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "revert_on_base_aborts_and_errors_on_a_conflicting_revert",
-        "content_hash": "9874f3396e9affbb"
-      },
-      {
-        "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "name": "a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh",
-        "content_hash": "2c71d911510e83eb"
-      },
-      {
-        "file": "tests/batched_fold_cadence.rs",
-        "name": "append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch",
-        "content_hash": "2253e80c6bfdb1aa"
-      },
-      {
-        "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
-        "name": "run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors",
-        "content_hash": "5cdbef81b464bcbf"
-      },
-      {
-        "file": "tests/grounder_name_contract.rs",
-        "name": "public_name_contract_predicate_error_and_resolver_agree",
-        "content_hash": "7a5f0a9cd4ee7866"
+        "file": "crates/rigger-domain/src/config.rs",
+        "name": "gating_agent_ids",
+        "content_hash": "cc89e0ac652d7025"
       }
     ],
-    "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 10 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "proposed_home": "one shared `gating_agent_ids` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f6925ead8f1a",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/canary.rs",
-        "name": "to_event",
-        "content_hash": "ffa534aaeabed675"
-      },
-      {
-        "file": "crates/rigger-domain/src/canary.rs",
-        "name": "to_event",
-        "content_hash": "227acb588bb48a39"
-      }
-    ],
-    "proposed_home": "canary::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-0a701eb6cf8d",
+    "id": "dup-3d575d71e10f",
     "classification": "exact",
     "sites": [
       {
-        "file": "crates/rigger-domain/src/community.rs",
-        "name": "len",
-        "content_hash": "101c4f39f5928941"
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "read_store_config",
+        "content_hash": "cdd864d97a4c53b7"
       },
       {
-        "file": "crates/rigger-domain/src/community.rs",
-        "name": "is_empty",
-        "content_hash": "101c4f39f5928941"
-      },
-      {
-        "file": "crates/rigger-domain/src/eventstore.rs",
-        "name": "handed",
-        "content_hash": "101c4f39f5928941"
-      },
-      {
-        "file": "crates/rigger-domain/src/failure.rs",
-        "name": "is_empty",
-        "content_hash": "101c4f39f5928941"
-      },
-      {
-        "file": "crates/rigger-domain/src/metrics.rs",
-        "name": "adversary_precision",
-        "content_hash": "101c4f39f5928941"
-      },
-      {
-        "file": "crates/rigger-driver/src/reaped_child.rs",
-        "name": "id",
-        "content_hash": "101c4f39f5928941"
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "read_scratch_defaults",
+        "content_hash": "cdd864d97a4c53b7"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-driver/src/reaped_child.rs)",
+    "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a9ed3e0e9d47",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/community.rs",
-        "name": "nodes",
-        "content_hash": "ff7d6483fdfaf6c6"
-      },
-      {
-        "file": "crates/rigger-domain/src/eventstore.rs",
-        "name": "types",
-        "content_hash": "ff7d6483fdfaf6c6"
-      },
-      {
-        "file": "crates/rigger-domain/src/failure.rs",
-        "name": "rules",
-        "content_hash": "ff7d6483fdfaf6c6"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-781b5348543b",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/concepts.rs",
-        "name": "is_intent_doc",
-        "content_hash": "e647e7c4790ca790"
-      },
-      {
-        "file": "crates/rigger-domain/src/concepts.rs",
-        "name": "is_label_doc",
-        "content_hash": "e647e7c4790ca790"
-      },
-      {
-        "file": "crates/rigger-domain/src/ingest.rs",
-        "name": "is_derived_index_type",
-        "content_hash": "5c594c241556f52a"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "is_keyword",
-        "content_hash": "e647e7c4790ca790"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/simplification_audit.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-1b43f290c1fa",
+    "id": "dup-f5eb77572753",
     "classification": "semantic",
     "sites": [
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger\"",
+        "content_hash": "c2dfa05b7c5ac948"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\"create .rigger/instructions\"",
+        "content_hash": "647e8aea340be175"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger\"",
+        "content_hash": "97a7314d6e3a1bc6"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger\"",
+        "content_hash": "b74b114165bb3dec"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\"../../examples/demo/.rigger\"",
+        "content_hash": "51aad6ca939a74a8"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger\"",
+        "content_hash": "d61ae8ace1b4d383"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger/agents/sdet-author.md\"",
+        "content_hash": "2283fd368139eaf1"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\"the shipped .rigger/agents/sdet-author.md must exist\"",
+        "content_hash": "6330b73a5a38c878"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger/agents/sdet.md\"",
+        "content_hash": "2283fd368139eaf1"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\"the shipped .rigger/agents/sdet.md must exist\"",
+        "content_hash": "6330b73a5a38c878"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\"create .rigger dir\"",
+        "content_hash": "647e8aea340be175"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\"create .rigger dir\"",
+        "content_hash": "647e8aea340be175"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\".rigger\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "\"create .rigger dir\"",
+        "content_hash": "647e8aea340be175"
+      },
       {
         "file": "crates/rigger-domain/src/config.rs",
         "name": "\".rigger\"",
         "content_hash": "bc20dd2902db1109"
+      },
+      {
+        "file": "crates/rigger-domain/src/instructions.rs",
+        "name": "\"\\nOperator (.rigger/instructions/*.md, filename order):\\n\"",
+        "content_hash": "d53ad2846f4ce5c6"
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -231,6 +165,51 @@
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
         "name": "\".rigger\"",
         "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
+        "name": "\".rigger\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
+        "name": "\"this project's own .rigger/workflow.yml must extract at least one event\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "\".rigger\"",
+        "content_hash": "97a7314d6e3a1bc6"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "\".rigger\"",
+        "content_hash": "8e22a9a1e9dec4d3"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "\"gw/.rigger/workflow.yml@\"",
+        "content_hash": "41018812bcde2138"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "\"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \\\n             must both advance the shared batch count; got {}\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "\".rigger\"",
+        "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "\".rigger\"",
+        "content_hash": "9c65c90cfff99300"
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
@@ -293,86 +272,6 @@
         "content_hash": "9806f7d6f730067c"
       },
       {
-        "file": "src/config_store.rs",
-        "name": "\".rigger\"",
-        "content_hash": "c2dfa05b7c5ac948"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\"create .rigger/instructions\"",
-        "content_hash": "647e8aea340be175"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\".rigger\"",
-        "content_hash": "97a7314d6e3a1bc6"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\".rigger\"",
-        "content_hash": "b74b114165bb3dec"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\"examples/demo/.rigger\"",
-        "content_hash": "51aad6ca939a74a8"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\".rigger/agents/sdet-author.md\"",
-        "content_hash": "2283fd368139eaf1"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\"the shipped .rigger/agents/sdet-author.md must exist\"",
-        "content_hash": "6330b73a5a38c878"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\".rigger/agents/sdet.md\"",
-        "content_hash": "2283fd368139eaf1"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\"the shipped .rigger/agents/sdet.md must exist\"",
-        "content_hash": "6330b73a5a38c878"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\".rigger\"",
-        "content_hash": "edbddea214457e40"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\"create .rigger dir\"",
-        "content_hash": "647e8aea340be175"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\".rigger\"",
-        "content_hash": "edbddea214457e40"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\"create .rigger dir\"",
-        "content_hash": "647e8aea340be175"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\".rigger\"",
-        "content_hash": "edbddea214457e40"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "\"create .rigger dir\"",
-        "content_hash": "647e8aea340be175"
-      },
-      {
         "file": "src/dash.rs",
         "name": "\"{root}/.rigger/events.db\"",
         "content_hash": "40c59d1ec0f87b43"
@@ -411,56 +310,6 @@
         "file": "src/docs.rs",
         "name": "\"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \\\n             the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \\\n             for an index that has drifted from files you just changed (a unit's own commit, a \\\n             rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \\\n             store from the structural context graph, so it costs only the named files, never a \\\n             walk of the whole tree.\\n\"",
         "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "\".rigger\"",
-        "content_hash": "edbddea214457e40"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "\"this project's own .rigger/workflow.yml must extract at least one event\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "\".rigger\"",
-        "content_hash": "97a7314d6e3a1bc6"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "\".rigger\"",
-        "content_hash": "8e22a9a1e9dec4d3"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "\"gw/.rigger/workflow.yml@\"",
-        "content_hash": "41018812bcde2138"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "\"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \\\n             must both advance the shared batch count; got {}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "\".rigger\"",
-        "content_hash": "090bbeba5641ea09"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "\".rigger\"",
-        "content_hash": "fab45089dfff5214"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "\".rigger\"",
-        "content_hash": "9c65c90cfff99300"
-      },
-      {
-        "file": "src/instructions.rs",
-        "name": "\"\\nOperator (.rigger/instructions/*.md, filename order):\\n\"",
-        "content_hash": "d53ad2846f4ce5c6"
       },
       {
         "file": "src/main.rs",
@@ -2629,7 +2478,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \\\n        `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \\\n        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \\\n        `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing {rigger_n} sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\"",
+        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \\\n        `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \\\n        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \\\n        `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing {rigger_n} sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -2893,6 +2742,267 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-6f0fcb54c987",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word",
+        "content_hash": "4152f3bfcdec673d"
+      },
+      {
+        "file": "src/main.rs",
+        "name": "is_uuid8_accepts_exactly_eight_hex_digits",
+        "content_hash": "782ae95725da8f3d"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring",
+        "content_hash": "a48961a3ea830eef"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-config-files/src/config_store.rs, src/main.rs, tests/simplification_audit.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-5c52773cc009",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "parses_agent_frontmatter_and_body",
+        "content_hash": "4992d41f1160c624"
+      },
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "model_ladder_parses_from_frontmatter",
+        "content_hash": "59ac3c73eac02e77"
+      }
+    ],
+    "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-2b2924a65629",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-config-files/src/config_store.rs",
+        "name": "rejects_missing_frontmatter",
+        "content_hash": "d66f264f46d94da4"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph/query.rs",
+        "name": "graph_load_rejects_malformed_json_without_panicking",
+        "content_hash": "d66f264f46d94da4"
+      },
+      {
+        "file": "crates/rigger-domain/src/spec.rs",
+        "name": "empty_when_no_criteria",
+        "content_hash": "d66f264f46d94da4"
+      },
+      {
+        "file": "src/main.rs",
+        "name": "dirty_tracked_paths_on_a_clean_tree_is_empty",
+        "content_hash": "d66f264f46d94da4"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-config-files/src/config_store.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/spec.rs, src/main.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-2a5626cb9627",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/agent.rs",
+        "name": "as_str",
+        "content_hash": "3824b17d87c85522"
+      },
+      {
+        "file": "crates/rigger-domain/src/spec.rs",
+        "name": "name",
+        "content_hash": "b28c09c7860480d4"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/agent.rs, crates/rigger-domain/src/spec.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-c3aadd27d8c7",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/agent.rs",
+        "name": "no_result_error",
+        "content_hash": "4a002dd947bf783c"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/mod.rs",
+        "name": "retired_grounder_error",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "guard_review_round_tree_on_tier_err",
+        "content_hash": "1852f897b968d010"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
+        "content_hash": "f49253da8951d862"
+      },
+      {
+        "file": "src/worktree.rs",
+        "name": "land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked",
+        "content_hash": "38d31a04aa0c3f29"
+      },
+      {
+        "file": "src/worktree.rs",
+        "name": "revert_on_base_aborts_and_errors_on_a_conflicting_revert",
+        "content_hash": "9874f3396e9affbb"
+      },
+      {
+        "file": "tests/adoption_keys_on_criterion_periphery.rs",
+        "name": "a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh",
+        "content_hash": "2c71d911510e83eb"
+      },
+      {
+        "file": "tests/batched_fold_cadence.rs",
+        "name": "append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch",
+        "content_hash": "2253e80c6bfdb1aa"
+      },
+      {
+        "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
+        "name": "run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors",
+        "content_hash": "5cdbef81b464bcbf"
+      },
+      {
+        "file": "tests/grounder_name_contract.rs",
+        "name": "public_name_contract_predicate_error_and_resolver_agree",
+        "content_hash": "7a5f0a9cd4ee7866"
+      }
+    ],
+    "proposed_home": "one error-shaping helper module",
+    "note": "mandatory sweep: error-shaping helper functions - 10 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-f6925ead8f1a",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/canary.rs",
+        "name": "to_event",
+        "content_hash": "ffa534aaeabed675"
+      },
+      {
+        "file": "crates/rigger-domain/src/canary.rs",
+        "name": "to_event",
+        "content_hash": "227acb588bb48a39"
+      }
+    ],
+    "proposed_home": "canary::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-0a701eb6cf8d",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/community.rs",
+        "name": "len",
+        "content_hash": "101c4f39f5928941"
+      },
+      {
+        "file": "crates/rigger-domain/src/community.rs",
+        "name": "is_empty",
+        "content_hash": "101c4f39f5928941"
+      },
+      {
+        "file": "crates/rigger-domain/src/eventstore.rs",
+        "name": "handed",
+        "content_hash": "101c4f39f5928941"
+      },
+      {
+        "file": "crates/rigger-domain/src/failure.rs",
+        "name": "is_empty",
+        "content_hash": "101c4f39f5928941"
+      },
+      {
+        "file": "crates/rigger-domain/src/metrics.rs",
+        "name": "adversary_precision",
+        "content_hash": "101c4f39f5928941"
+      },
+      {
+        "file": "crates/rigger-driver/src/reaped_child.rs",
+        "name": "id",
+        "content_hash": "101c4f39f5928941"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-driver/src/reaped_child.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-a9ed3e0e9d47",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/community.rs",
+        "name": "nodes",
+        "content_hash": "ff7d6483fdfaf6c6"
+      },
+      {
+        "file": "crates/rigger-domain/src/eventstore.rs",
+        "name": "types",
+        "content_hash": "ff7d6483fdfaf6c6"
+      },
+      {
+        "file": "crates/rigger-domain/src/failure.rs",
+        "name": "rules",
+        "content_hash": "ff7d6483fdfaf6c6"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-781b5348543b",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/concepts.rs",
+        "name": "is_intent_doc",
+        "content_hash": "e647e7c4790ca790"
+      },
+      {
+        "file": "crates/rigger-domain/src/concepts.rs",
+        "name": "is_label_doc",
+        "content_hash": "e647e7c4790ca790"
+      },
+      {
+        "file": "crates/rigger-domain/src/ingest.rs",
+        "name": "is_derived_index_type",
+        "content_hash": "5c594c241556f52a"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "is_keyword",
+        "content_hash": "e647e7c4790ca790"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/simplification_audit.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-1f030cd524f7",
     "classification": "near",
     "sites": [
@@ -2914,25 +3024,6 @@
     ],
     "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, crates/rigger-domain/src/failure.rs, src/main.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-16364017e547",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/config.rs",
-        "name": "gating_agent_ids",
-        "content_hash": "cc89e0ac652d7025"
-      },
-      {
-        "file": "src/config.rs",
-        "name": "gating_agent_ids",
-        "content_hash": "755fad111be87931"
-      }
-    ],
-    "proposed_home": "one shared `gating_agent_ids` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -2975,35 +3066,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/contextgraph/query.rs, src/conductor.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-7903ca87eb63",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/contextgraph/query.rs",
-        "name": "graph_load_rejects_malformed_json_without_panicking",
-        "content_hash": "d66f264f46d94da4"
-      },
-      {
-        "file": "crates/rigger-domain/src/spec.rs",
-        "name": "empty_when_no_criteria",
-        "content_hash": "d66f264f46d94da4"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "rejects_missing_frontmatter",
-        "content_hash": "d66f264f46d94da4"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "dirty_tracked_paths_on_a_clean_tree_is_empty",
-        "content_hash": "d66f264f46d94da4"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/spec.rs, src/config_store.rs, src/main.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -3448,7 +3510,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cbe8527c9623",
+    "id": "dup-2c72def49283",
     "classification": "near",
     "sites": [
       {
@@ -3465,6 +3527,21 @@
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
         "name": "retired_grounder_error",
         "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
+        "name": "stage_id",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
+        "name": "gate_id",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
+        "name": "agent_id",
+        "content_hash": "6fd90a8c2eed6379"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
@@ -3490,21 +3567,6 @@
         "file": "src/conductor.rs",
         "name": "review_protocol",
         "content_hash": "ad5fb8a54854c70a"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "stage_id",
-        "content_hash": "6fd90a8c2eed6379"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "gate_id",
-        "content_hash": "6fd90a8c2eed6379"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "agent_id",
-        "content_hash": "6fd90a8c2eed6379"
       },
       {
         "file": "src/main.rs",
@@ -3537,7 +3599,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 11 files: crates/rigger-domain/src/spawn.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/conductor.rs, src/grounder/workflowdef.rs, src/main.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 11 files: crates/rigger-domain/src/spawn.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/conductor.rs, src/main.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -4825,7 +4887,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a3035b401227",
+    "id": "dup-28bd24c1f93d",
     "classification": "semantic",
     "sites": [
       {
@@ -4839,7 +4901,7 @@
         "content_hash": "4499ea2368cf4384"
       },
       {
-        "file": "src/grounder/workflowdef.rs",
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
         "name": "project_batches",
         "content_hash": "753b4cc1b69015a5"
       }
@@ -4887,7 +4949,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f83d81bb94ee",
+    "id": "dup-c1d968c10781",
     "classification": "semantic",
     "sites": [
       {
@@ -4896,7 +4958,7 @@
         "content_hash": "3c3bfb09d86e247e"
       },
       {
-        "file": "src/grounder/workflowdef.rs",
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
         "name": "extract_events",
         "content_hash": "f568f3ce1045c031"
       }
@@ -5035,7 +5097,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ed93266f67c6",
+    "id": "dup-415d2df07b98",
     "classification": "near",
     "sites": [
       {
@@ -5044,12 +5106,88 @@
         "content_hash": "b2406461db19bf89"
       },
       {
-        "file": "src/grounder/workflowdef.rs",
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
         "name": "project_events_on_a_missing_workflow_yields_nothing_never_a_crash",
         "content_hash": "091dee4e354d9612"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/symbols/store.rs, src/grounder/workflowdef.rs)",
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/symbols/store.rs, crates/rigger-grounder/src/grounder/workflowdef.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-24db461612c2",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
+        "name": "light_reviewers_of",
+        "content_hash": "5e0f351f1b53fd1f"
+      },
+      {
+        "file": "src/dash.rs",
+        "name": "ids",
+        "content_hash": "d2c40ab3cd5448bf"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/workflowdef.rs, src/dash.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-03666ae1d685",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
+        "name": "project_events",
+        "content_hash": "70032edd64f8afaa"
+      },
+      {
+        "file": "tests/common/mod.rs",
+        "name": "project_events",
+        "content_hash": "5c45ecde7e8f2b77"
+      }
+    ],
+    "proposed_home": "one shared `project_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-c984f2da13bb",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "append_and_fold_batch",
+        "content_hash": "b1bd881f82349052"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "append_and_fold_batch",
+        "content_hash": "0421a01afe7f3842"
+      }
+    ],
+    "proposed_home": "one shared `append_and_fold_batch` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-6bdc4cb72e31",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "graph_index_lag",
+        "content_hash": "ac498e28b0b290f7"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "graph_index_lag_sample",
+        "content_hash": "c9fc228c1f412abe"
+      }
+    ],
+    "proposed_home": "ingest::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5514,6 +5652,44 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-4efef9d45e3e",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "scratch_root",
+        "content_hash": "0b84d59899eba70c"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "scratch_root_path",
+        "content_hash": "0b84d59899eba70c"
+      }
+    ],
+    "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-e08d5a3a5d94",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "scratch_root_from_env",
+        "content_hash": "806475ff8bfb181a"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "scratch_root_path_from_env",
+        "content_hash": "806475ff8bfb181a"
+      }
+    ],
+    "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-7dfa0dd1a6a8",
     "classification": "near",
     "sites": [
@@ -5530,25 +5706,6 @@
     ],
     "proposed_home": "blast_radius_eval::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-535941bb5619",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "append_and_fold_batch",
-        "content_hash": "0421a01afe7f3842"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "append_and_fold_batch",
-        "content_hash": "b1bd881f82349052"
-      }
-    ],
-    "proposed_home": "one shared `append_and_fold_batch` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5692,68 +5849,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, tests/replan_episode_identity.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-1772cddc48d8",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/config_store.rs",
-        "name": "read_store_config",
-        "content_hash": "cdd864d97a4c53b7"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "read_scratch_defaults",
-        "content_hash": "cdd864d97a4c53b7"
-      }
-    ],
-    "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-898fea4e5b39",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/config_store.rs",
-        "name": "literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word",
-        "content_hash": "4152f3bfcdec673d"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "is_uuid8_accepts_exactly_eight_hex_digits",
-        "content_hash": "782ae95725da8f3d"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring",
-        "content_hash": "a48961a3ea830eef"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: src/config_store.rs, src/main.rs, tests/simplification_audit.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-7da4ecc76203",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/config_store.rs",
-        "name": "parses_agent_frontmatter_and_body",
-        "content_hash": "4992d41f1160c624"
-      },
-      {
-        "file": "src/config_store.rs",
-        "name": "model_ladder_parses_from_frontmatter",
-        "content_hash": "59ac3c73eac02e77"
-      }
-    ],
-    "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5945,25 +6040,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6faa030a03b7",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/dash.rs",
-        "name": "ids",
-        "content_hash": "d2c40ab3cd5448bf"
-      },
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "light_reviewers_of",
-        "content_hash": "5e0f351f1b53fd1f"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/dash.rs, src/grounder/workflowdef.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-4d77d0fdce5a",
     "classification": "near",
     "sites": [
@@ -6118,44 +6194,6 @@
       }
     ],
     "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-2c59700de5eb",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "src/grounder/workflowdef.rs",
-        "name": "project_events",
-        "content_hash": "70032edd64f8afaa"
-      },
-      {
-        "file": "tests/common/mod.rs",
-        "name": "project_events",
-        "content_hash": "5c45ecde7e8f2b77"
-      }
-    ],
-    "proposed_home": "one shared `project_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-ca344cae18a6",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/ingest.rs",
-        "name": "graph_index_lag",
-        "content_hash": "ac498e28b0b290f7"
-      },
-      {
-        "file": "src/ingest.rs",
-        "name": "graph_index_lag_sample",
-        "content_hash": "c9fc228c1f412abe"
-      }
-    ],
-    "proposed_home": "ingest::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6427,44 +6465,6 @@
       }
     ],
     "proposed_home": "main::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-17993613795d",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "name": "scratch_root",
-        "content_hash": "0b84d59899eba70c"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "scratch_root_path",
-        "content_hash": "0b84d59899eba70c"
-      }
-    ],
-    "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-cda9c1a42625",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "name": "scratch_root_from_env",
-        "content_hash": "806475ff8bfb181a"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "scratch_root_path_from_env",
-        "content_hash": "806475ff8bfb181a"
-      }
-    ],
-    "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

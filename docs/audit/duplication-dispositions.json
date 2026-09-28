@@ -10,7 +10,7 @@
     "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
   },
   {
-    "id": "dup-6faa030a03b7",
+    "id": "dup-24db461612c2",
     "disposition": "not-a-duplicate",
     "reason": "`ids` lists a neighborhood view's node ids for a dash test while `light_reviewers_of` reads a review panel's light-tier roster; they share only the collect-into-a-Vec shape."
   },
@@ -40,12 +40,12 @@
     "reason": "Three test fixtures building three different event types with different payloads through the one shared `ev` helper."
   },
   {
-    "id": "dup-17993613795d",
+    "id": "dup-4efef9d45e3e",
     "disposition": "not-a-duplicate",
     "reason": "`scratch_root` creates and sweeps the scratch root while `scratch_root_path` only resolves it: thin env-injecting entry points to two different resolvers."
   },
   {
-    "id": "dup-cda9c1a42625",
+    "id": "dup-e08d5a3a5d94",
     "disposition": "not-a-duplicate",
     "reason": "The `*_from_env` pair feeds the `RIGGER_TMPDIR` override to two different resolvers (create versus locate-only); only the call shape is shared."
   },
@@ -75,7 +75,7 @@
     "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
   },
   {
-    "id": "dup-7903ca87eb63",
+    "id": "dup-2b2924a65629",
     "disposition": "not-a-duplicate",
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
@@ -170,12 +170,12 @@
     "reason": "One folds a whole run's mixed stream and pins every machinery arm dropped and every content arm kept, the other pins only the actor-metadata path (a decision-only actor, a finding whose actor differs from its `by`), both over the shared `apply_json_as` fold."
   },
   {
-    "id": "dup-7da4ecc76203",
+    "id": "dup-5c52773cc009",
     "disposition": "not-a-duplicate",
     "reason": "The two parse different agent frontmatter keys - `tools` plus the prompt body, versus the `model_ladder` list with an absent `model` - and share only the `parse_agent` call."
   },
   {
-    "id": "dup-1772cddc48d8",
+    "id": "dup-3d575d71e10f",
     "disposition": "not-a-duplicate",
     "reason": "Both are one-line public probes over the one shared `read_workflow_probe` read, each declaring the single workflow key its own caller needs (`store:` versus `defaults:`); the read itself is already one definition."
   },
@@ -365,17 +365,17 @@
     "reason": "Three durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips; the landed sha and pre-merge tip)."
   },
   {
-    "id": "dup-535941bb5619",
+    "id": "dup-c984f2da13bb",
     "disposition": "not-a-duplicate",
     "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and then delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, rather than re-implementing it."
   },
   {
-    "id": "dup-a3035b401227",
+    "id": "dup-28bd24c1f93d",
     "disposition": "not-a-duplicate",
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
   },
   {
-    "id": "dup-f83d81bb94ee",
+    "id": "dup-c1d968c10781",
     "disposition": "not-a-duplicate",
     "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
   },
@@ -390,7 +390,7 @@
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
-    "id": "dup-ca344cae18a6",
+    "id": "dup-6bdc4cb72e31",
     "disposition": "not-a-duplicate",
     "reason": "Two light-lane no-op stubs of two different functions (the full per-file lag check and its bounded sample), each returning an empty list because no extraction pass is compiled."
   },
@@ -435,7 +435,7 @@
     "reason": "The audit's `scan_file`/`tokenize` produce a normalized token stream and function spans over every Rust file for similarity shingling (and must run in every feature lane), while `extract` returns symbol definitions through the optional tree-sitter grammars; different outputs for different consumers."
   },
   {
-    "id": "dup-2c59700de5eb",
+    "id": "dup-03666ae1d685",
     "disposition": "not-a-duplicate",
     "reason": "`workflowdef::project_events` lowers `.rigger/workflow.yml` into definition events, while the test fixture flattens the symbols ingest's per-file batches for a whole project: different sources and different events."
   },
@@ -500,7 +500,7 @@
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
   {
-    "id": "dup-cbe8527c9623",
+    "id": "dup-2c72def49283",
     "disposition": "not-a-duplicate",
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
   },
@@ -555,7 +555,7 @@
     "reason": "Three word-character predicates with different domains: a byte-level config scanner, a char-level alphabetic-only kill-word audit, and a char-level identifier test that also admits digits."
   },
   {
-    "id": "dup-898fea4e5b39",
+    "id": "dup-6f0fcb54c987",
     "disposition": "not-a-duplicate",
     "reason": "Unit tests of three different parsers (emit-payload literal binding, uuid8 recognition, error-shaping detection) with their own inputs and expectations."
   },
@@ -640,7 +640,7 @@
     "reason": "Three predicates over different inputs (a markdown path extension, a spec element start, an error-shaping identifier)."
   },
   {
-    "id": "dup-ed93266f67c6",
+    "id": "dup-415d2df07b98",
     "disposition": "not-a-duplicate",
     "reason": "Two cold-start tests over different readers (the spec store load and the workflow-definition projection), each asserting its own empty result."
   },
@@ -905,7 +905,7 @@
     "reason": "Assertions over two different audit scanners in two suites (the OS-kill scan and the same-named-helper clustering), each with its own finding type and message."
   },
   {
-    "id": "dup-16364017e547",
+    "id": "dup-78c48ff4c88e",
     "disposition": "not-a-duplicate",
     "reason": "Two levels of one rule, not two copies: `ReviewPanel::gating_agent_ids` names one panel's gating agents, and the config-level `gating_agent_ids` unions that method over the default panel and every stage's panel plus each stage's standalone adjudicator. The workspace split put the panel method in the domain crate and the Config-level fold beside `Config`, so the two same-named functions now sit in different files."
   }

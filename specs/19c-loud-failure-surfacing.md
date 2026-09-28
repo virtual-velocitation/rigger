@@ -10,7 +10,7 @@ Workstream B of `docs/architecture-addendum-pit-of-success.md`.
 
 Builds on the native driver's done/halt handling (`workflows/rigger.js`), the conductor's
 step/done result and escalation (`UnitEscalated`, `src/conductor.rs`), the per-spawn
-wall-clock (`max_wall_clock` in `src/config.rs`), and `rigger validate` (`cmd_validate` in
+wall-clock (`max_wall_clock` in `crates/rigger-domain/src/config.rs`), and `rigger validate` (`cmd_validate` in
 `src/main.rs`).
 
 **Unit 1 - a wedged run surfaces as a loud error (touches `src/conductor.rs`,
@@ -33,7 +33,7 @@ so even an unbounded-config spawn is abandoned-and-surfaced after a bound rather
 forever.
 
 **Unit 3 - `rigger validate` warns on an unbounded default (touches `src/main.rs`,
-`src/config.rs`).** `rigger validate` warns when `defaults.max_wall_clock` is unbounded and
+`crates/rigger-config-files/src/config.rs`).** `rigger validate` warns when `defaults.max_wall_clock` is unbounded and
 no per-agent bound covers the gating roles ("a hung agent will never be swept; set
 defaults.max_wall_clock"), so the risk is visible at author time.
 

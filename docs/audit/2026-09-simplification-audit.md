@@ -1764,94 +1764,70 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1698 func
 - **Command::new call sites**: 83 site(s) - `dup-ec4c94d137e9`
 - **/proc-path string literals**: 48 site(s) - `dup-af816213608d`
 - **sqlite Connection::open call sites**: 34 site(s) - `dup-f4557659a212`
-- **.rigger-path string literals**: 539 site(s) - `dup-1b43f290c1fa`
+- **.rigger-path string literals**: 539 site(s) - `dup-f5eb77572753`
 - **error-shaping helper functions**: 10 site(s) - `dup-c3aadd27d8c7`
 
 ### Clusters (33 exact, 124 near, 25 semantic)
 
-#### `dup-2a5626cb9627` (near, 2 sites)
+#### `dup-78c48ff4c88e` (semantic, 2 sites)
 
-Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/src/agent.rs, crates/rigger-domain/src/spec.rs)`
+Proposed home: `one shared `gating_agent_ids` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-domain/src/agent.rs:235-250` `as_str`
-- `crates/rigger-domain/src/spec.rs:167-173` `name`
+- `crates/rigger-config-files/src/config.rs:21-38` `gating_agent_ids`
+- `crates/rigger-domain/src/config.rs:413-422` `gating_agent_ids`
 
-#### `dup-c3aadd27d8c7` (semantic, 10 sites)
+#### `dup-3d575d71e10f` (exact, 2 sites)
 
-Proposed home: `one error-shaping helper module`
-
-mandatory sweep: error-shaping helper functions - 10 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
-
-- `crates/rigger-domain/src/agent.rs:301-303` `no_result_error`
-- `crates/rigger-grounder/src/grounder/mod.rs:125-131` `retired_grounder_error`
-- `src/conductor.rs:4574-4592` `guard_review_round_tree_on_tier_err`
-- `src/conductor.rs:25876-25934` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
-- `src/worktree.rs:819-846` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
-- `src/worktree.rs:2158-2212` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
-- `tests/adoption_keys_on_criterion_periphery.rs:2004-2144` `a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh`
-- `tests/batched_fold_cadence.rs:174-252` `append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
-- `tests/canary_item_sharding_jobs_cap_periphery.rs:276-364` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
-- `tests/grounder_name_contract.rs:40-171` `public_name_contract_predicate_error_and_resolver_agree`
-
-#### `dup-f6925ead8f1a` (near, 2 sites)
-
-Proposed home: `canary::support (consolidate these 2 sites into one function in this file)`
+Proposed home: `config_store::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/canary.rs:104-119` `to_event`
-- `crates/rigger-domain/src/canary.rs:191-200` `to_event`
+- `crates/rigger-config-files/src/config_store.rs:181-189` `read_store_config`
+- `crates/rigger-config-files/src/config_store.rs:245-253` `read_scratch_defaults`
 
-#### `dup-0a701eb6cf8d` (exact, 6 sites)
-
-Proposed home: `a new shared module (sites span 5 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-driver/src/reaped_child.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `crates/rigger-domain/src/community.rs:243-245` `len`
-- `crates/rigger-domain/src/community.rs:262-264` `is_empty`
-- `crates/rigger-domain/src/eventstore.rs:218-220` `handed`
-- `crates/rigger-domain/src/failure.rs:225-227` `is_empty`
-- `crates/rigger-domain/src/metrics.rs:573-575` `adversary_precision`
-- `crates/rigger-driver/src/reaped_child.rs:44-46` `id`
-
-#### `dup-a9ed3e0e9d47` (exact, 3 sites)
-
-Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `crates/rigger-domain/src/community.rs:249-251` `nodes`
-- `crates/rigger-domain/src/eventstore.rs:355-357` `types`
-- `crates/rigger-domain/src/failure.rs:230-232` `rules`
-
-#### `dup-781b5348543b` (near, 4 sites)
-
-Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/simplification_audit.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `crates/rigger-domain/src/concepts.rs:74-76` `is_intent_doc`
-- `crates/rigger-domain/src/concepts.rs:80-82` `is_label_doc`
-- `crates/rigger-domain/src/ingest.rs:45-47` `is_derived_index_type`
-- `tests/simplification_audit.rs:2415-2417` `is_keyword`
-
-#### `dup-1b43f290c1fa` (semantic, 539 sites)
+#### `dup-f5eb77572753` (semantic, 539 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
 mandatory sweep: .rigger-path string literals - 539 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
+- `crates/rigger-config-files/src/config_store.rs:362-362` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:363-363` `"create .rigger/instructions"`
+- `crates/rigger-config-files/src/config_store.rs:416-416` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:417-417` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:441-441` `"../../examples/demo/.rigger"`
+- `crates/rigger-config-files/src/config_store.rs:442-442` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:1520-1520` `".rigger/agents/sdet-author.md"`
+- `crates/rigger-config-files/src/config_store.rs:1521-1521` `"the shipped .rigger/agents/sdet-author.md must exist"`
+- `crates/rigger-config-files/src/config_store.rs:1548-1548` `".rigger/agents/sdet.md"`
+- `crates/rigger-config-files/src/config_store.rs:1549-1549` `"the shipped .rigger/agents/sdet.md must exist"`
+- `crates/rigger-config-files/src/config_store.rs:2000-2000` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2001-2001` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2033-2033` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2034-2034` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2055-2055` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2056-2056` `"create .rigger dir"`
 - `crates/rigger-domain/src/config.rs:20-20` `".rigger"`
+- `crates/rigger-domain/src/instructions.rs:61-61` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `crates/rigger-gates-shell/src/gate.rs:319-319` `".rigger-cache-probe-{}"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4352-4352` `".rigger/workflow.yml"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4360-4360` `".rigger/workflow.yml"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4368-4368` `".rigger/workflow.yml"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4376-4376` `".rigger/workflow.yml"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4384-4384` `".rigger/workflow.yml"`
-- `crates/rigger-grounder/src/grounder/mod.rs:324-324` `".rigger"`
+- `crates/rigger-grounder/src/grounder/mod.rs:333-333` `".rigger"`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:481-481` `".rigger"`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:568-568` `"this project's own .rigger/workflow.yml must extract at least one event"`
+- `crates/rigger-grounder/src/ingest.rs:475-475` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:477-477` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:486-486` `"gw/.rigger/workflow.yml@"`
+- `crates/rigger-grounder/src/ingest.rs:504-504` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
+             must both advance the shared batch count; got {}"`
+- `crates/rigger-grounder/src/ingest.rs:533-533` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:535-535` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:569-569` `".rigger"`
 - `crates/rigger-process/src/reap.rs:731-731` `".rigger"`
 - `crates/rigger-process/src/reap.rs:1073-1073` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
              must still authorize the reap"`
@@ -1865,22 +1841,6 @@ mandatory sweep: .rigger-path string literals - 539 site(s), collected mechanica
 - `crates/rigger-store-sqlite/src/registry.rs:415-415` `"/home/dev/proj/.rigger/events.db"`
 - `crates/rigger-store-sqlite/src/registry.rs:433-433` `"/home/dev/proj/.rigger/events.db"`
 - `src/conductor.rs:17214-17214` `"the repo's own .rigger config must load"`
-- `src/config_store.rs:362-362` `".rigger"`
-- `src/config_store.rs:363-363` `"create .rigger/instructions"`
-- `src/config_store.rs:416-416` `".rigger"`
-- `src/config_store.rs:417-417` `".rigger"`
-- `src/config_store.rs:441-441` `"examples/demo/.rigger"`
-- `src/config_store.rs:442-442` `".rigger"`
-- `src/config_store.rs:1520-1520` `".rigger/agents/sdet-author.md"`
-- `src/config_store.rs:1521-1521` `"the shipped .rigger/agents/sdet-author.md must exist"`
-- `src/config_store.rs:1548-1548` `".rigger/agents/sdet.md"`
-- `src/config_store.rs:1549-1549` `"the shipped .rigger/agents/sdet.md must exist"`
-- `src/config_store.rs:2000-2000` `".rigger"`
-- `src/config_store.rs:2001-2001` `"create .rigger dir"`
-- `src/config_store.rs:2033-2033` `".rigger"`
-- `src/config_store.rs:2034-2034` `"create .rigger dir"`
-- `src/config_store.rs:2055-2055` `".rigger"`
-- `src/config_store.rs:2056-2056` `"create .rigger dir"`
 - `src/dash.rs:3810-3810` `"{root}/.rigger/events.db"`
 - `src/dash.rs:3859-3859` `"/.rigger/events.db"`
 - `src/docs.rs:220-220` `"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \
@@ -1955,17 +1915,6 @@ mandatory sweep: .rigger-path string literals - 539 site(s), collected mechanica
              rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
              store from the structural context graph, so it costs only the named files, never a \
              walk of the whole tree.\n"`
-- `src/grounder/workflowdef.rs:481-481` `".rigger"`
-- `src/grounder/workflowdef.rs:568-568` `"this project's own .rigger/workflow.yml must extract at least one event"`
-- `src/ingest.rs:475-475` `".rigger"`
-- `src/ingest.rs:477-477` `".rigger"`
-- `src/ingest.rs:486-486` `"gw/.rigger/workflow.yml@"`
-- `src/ingest.rs:504-504` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
-             must both advance the shared batch count; got {}"`
-- `src/ingest.rs:533-533` `".rigger"`
-- `src/ingest.rs:535-535` `".rigger"`
-- `src/ingest.rs:569-569` `".rigger"`
-- `src/instructions.rs:61-61` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `src/main.rs:600-600` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
          secret file"`
@@ -2480,16 +2429,16 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `src/main.rs:23569-23569` `"locate_shim must return the provisioned .rigger/shim/shim.mjs"`
 - `src/main.rs:24642-24642` `".rigger"`
 - `src/main.rs:24696-24696` `".rigger"`
-- `src/worktree.rs:2528-2528` `"{repo_path}/.rigger/tmp"`
-- `src/worktree.rs:2529-2529` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
-- `src/worktree.rs:2532-2532` `"/.rigger/"`
-- `src/worktree.rs:2532-2532` `"/.rigger"`
-- `src/worktree.rs:2533-2533` `"the default must never live under any .rigger: {dflt:?}"`
-- `src/worktree.rs:2552-2552` `"{repo_path}/.rigger/tmp"`
-- `src/worktree.rs:2576-2576` `"~/.rigger-scratch-test"`
-- `src/worktree.rs:2577-2577` `"{home}/.rigger-scratch-test"`
-- `src/worktree.rs:4149-4149` `"{base}..rigger-run"`
-- `src/worktree.rs:4183-4183` `".rigger"`
+- `src/worktree.rs:2331-2331` `"{repo_path}/.rigger/tmp"`
+- `src/worktree.rs:2332-2332` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
+- `src/worktree.rs:2335-2335` `"/.rigger/"`
+- `src/worktree.rs:2335-2335` `"/.rigger"`
+- `src/worktree.rs:2336-2336` `"the default must never live under any .rigger: {dflt:?}"`
+- `src/worktree.rs:2355-2355` `"{repo_path}/.rigger/tmp"`
+- `src/worktree.rs:2379-2379` `"~/.rigger-scratch-test"`
+- `src/worktree.rs:2380-2380` `"{home}/.rigger-scratch-test"`
+- `src/worktree.rs:3952-3952` `"{base}..rigger-run"`
+- `src/worktree.rs:3986-3986` `".rigger"`
 - `tests/architecture_current_surface.rs:93-93` `".rigger/store.conn"`
 - `tests/architecture_current_surface.rs:145-145` `"docs/architecture.md must describe the system that exists today (spec 56, \
          criterion 1): it must name the store-resolution and configuration surface (the \
@@ -2879,10 +2828,10 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/review_round_lenses_only_log_derived_resume_periphery.rs:144-144` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_no_adjudicator_residue_periphery.rs:93-93` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs:119-119` `"{repo_path}/.rigger-test-scratch"`
-- `tests/simplification_audit.rs:3105-3105` `".rigger-path string literals"`
-- `tests/simplification_audit.rs:3290-3290` `".rigger"`
-- `tests/simplification_audit.rs:3291-3291` `"one .rigger-relative path-composition helper"`
-- `tests/simplification_audit.rs:5415-5415` `"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \
+- `tests/simplification_audit.rs:3106-3106` `".rigger-path string literals"`
+- `tests/simplification_audit.rs:3291-3291` `".rigger"`
+- `tests/simplification_audit.rs:3292-3292` `"one .rigger-relative path-composition helper"`
+- `tests/simplification_audit.rs:5420-5420` `"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \
         each entry retires, highest first:\n\n\
         1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \
         wrong concretion, or two independent implementations of one concern can already \
@@ -2918,14 +2867,14 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
         merging it, not assume tier 5's blanket test-only treatment applies here too.\n\n\
         Within a tier, entries are ordered largest-first by the site or line count each \
         retires - the same rule the tiers themselves follow, applied one level down.\n\n"`
-- `tests/simplification_audit.rs:5711-5711` `"#### 10. Consolidate the {rigger_n} `.rigger`-path string-literal sites (`{rigger_id}`) - the \
+- `tests/simplification_audit.rs:5716-5716` `"#### 10. Consolidate the {rigger_n} `.rigger`-path string-literal sites (`{rigger_id}`) - the \
         single largest cluster in the entire catalog by site count\n\n"`
-- `tests/simplification_audit.rs:5715-5715` `"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
+- `tests/simplification_audit.rs:5720-5720` `"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
         `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \
         own literal.\n\
-        - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \
+        - Files: spans dozens of files including `src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \
         `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
-        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
+        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
         `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
@@ -2936,8 +2885,8 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
         full-suite green run, not hand-editing {rigger_n} sites.\n\
         - Unblocks: the biggest single site-count reduction available anywhere in the \
         duplication catalog.\n\n"`
-- `tests/simplification_audit.rs:8850-8850` `"fn a() {\n    let _ = \".rigger/tmp\";\n}\n"`
-- `tests/simplification_audit.rs:8852-8852` `".rigger"`
+- `tests/simplification_audit.rs:8855-8855` `"fn a() {\n    let _ = \".rigger/tmp\";\n}\n"`
+- `tests/simplification_audit.rs:8857-8857` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:59-59` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:222-222` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:233-233` `".rigger"`
@@ -2991,6 +2940,105 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/workflow_driver_resolved_model_periphery.rs:237-237` `".rigger"`
 - `tests/worktree_liveness_fence_periphery.rs:110-110` `".rigger"`
 
+#### `dup-6f0fcb54c987` (near, 3 sites)
+
+Proposed home: `a new shared module (sites span 3 files: crates/rigger-config-files/src/config_store.rs, src/main.rs, tests/simplification_audit.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-config-files/src/config_store.rs:739-772` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
+- `src/main.rs:17770-17776` `is_uuid8_accepts_exactly_eight_hex_digits`
+- `tests/simplification_audit.rs:8861-8869` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
+
+#### `dup-5c52773cc009` (near, 2 sites)
+
+Proposed home: `config_store::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-config-files/src/config_store.rs:934-941` `parses_agent_frontmatter_and_body`
+- `crates/rigger-config-files/src/config_store.rs:1289-1298` `model_ladder_parses_from_frontmatter`
+
+#### `dup-2b2924a65629` (exact, 4 sites)
+
+Proposed home: `a new shared module (sites span 4 files: crates/rigger-config-files/src/config_store.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/spec.rs, src/main.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-config-files/src/config_store.rs:944-946` `rejects_missing_frontmatter`
+- `crates/rigger-domain/src/contextgraph/query.rs:1937-1939` `graph_load_rejects_malformed_json_without_panicking`
+- `crates/rigger-domain/src/spec.rs:986-988` `empty_when_no_criteria`
+- `src/main.rs:17145-17147` `dirty_tracked_paths_on_a_clean_tree_is_empty`
+
+#### `dup-2a5626cb9627` (near, 2 sites)
+
+Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/src/agent.rs, crates/rigger-domain/src/spec.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/agent.rs:235-250` `as_str`
+- `crates/rigger-domain/src/spec.rs:167-173` `name`
+
+#### `dup-c3aadd27d8c7` (semantic, 10 sites)
+
+Proposed home: `one error-shaping helper module`
+
+mandatory sweep: error-shaping helper functions - 10 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+
+- `crates/rigger-domain/src/agent.rs:301-303` `no_result_error`
+- `crates/rigger-grounder/src/grounder/mod.rs:134-140` `retired_grounder_error`
+- `src/conductor.rs:4574-4592` `guard_review_round_tree_on_tier_err`
+- `src/conductor.rs:25876-25934` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
+- `src/worktree.rs:622-649` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
+- `src/worktree.rs:1961-2015` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
+- `tests/adoption_keys_on_criterion_periphery.rs:2004-2144` `a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh`
+- `tests/batched_fold_cadence.rs:174-252` `append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
+- `tests/canary_item_sharding_jobs_cap_periphery.rs:276-364` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
+- `tests/grounder_name_contract.rs:40-171` `public_name_contract_predicate_error_and_resolver_agree`
+
+#### `dup-f6925ead8f1a` (near, 2 sites)
+
+Proposed home: `canary::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/canary.rs:104-119` `to_event`
+- `crates/rigger-domain/src/canary.rs:191-200` `to_event`
+
+#### `dup-0a701eb6cf8d` (exact, 6 sites)
+
+Proposed home: `a new shared module (sites span 5 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs, crates/rigger-domain/src/metrics.rs, crates/rigger-driver/src/reaped_child.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/community.rs:243-245` `len`
+- `crates/rigger-domain/src/community.rs:262-264` `is_empty`
+- `crates/rigger-domain/src/eventstore.rs:218-220` `handed`
+- `crates/rigger-domain/src/failure.rs:225-227` `is_empty`
+- `crates/rigger-domain/src/metrics.rs:573-575` `adversary_precision`
+- `crates/rigger-driver/src/reaped_child.rs:44-46` `id`
+
+#### `dup-a9ed3e0e9d47` (exact, 3 sites)
+
+Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/src/community.rs, crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/failure.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/community.rs:249-251` `nodes`
+- `crates/rigger-domain/src/eventstore.rs:355-357` `types`
+- `crates/rigger-domain/src/failure.rs:230-232` `rules`
+
+#### `dup-781b5348543b` (near, 4 sites)
+
+Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/simplification_audit.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/concepts.rs:74-76` `is_intent_doc`
+- `crates/rigger-domain/src/concepts.rs:80-82` `is_label_doc`
+- `crates/rigger-domain/src/ingest.rs:45-47` `is_derived_index_type`
+- `tests/simplification_audit.rs:2416-2418` `is_keyword`
+
 #### `dup-1f030cd524f7` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, crates/rigger-domain/src/failure.rs, src/main.rs)`
@@ -3000,15 +3048,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/config.rs:375-377` `is_empty`
 - `crates/rigger-domain/src/failure.rs:168-170` `is_any`
 - `src/main.rs:10598-10603` `is_empty`
-
-#### `dup-16364017e547` (semantic, 2 sites)
-
-Proposed home: `one shared `gating_agent_ids` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
-
-mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
-
-- `crates/rigger-domain/src/config.rs:413-422` `gating_agent_ids`
-- `src/config.rs:21-38` `gating_agent_ids`
 
 #### `dup-619325cc4dc0` (near, 3 sites)
 
@@ -3028,17 +3067,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-domain/src/contextgraph/query.rs:456-458` `is_shared`
 - `src/conductor.rs:3444-3446` `spawn_is_recorded`
-
-#### `dup-7903ca87eb63` (exact, 4 sites)
-
-Proposed home: `a new shared module (sites span 4 files: crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/spec.rs, src/config_store.rs, src/main.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `crates/rigger-domain/src/contextgraph/query.rs:1937-1939` `graph_load_rejects_malformed_json_without_panicking`
-- `crates/rigger-domain/src/spec.rs:986-988` `empty_when_no_criteria`
-- `src/config_store.rs:944-946` `rejects_missing_frontmatter`
-- `src/main.rs:17145-17147` `dirty_tracked_paths_on_a_clean_tree_is_empty`
 
 #### `dup-bb7aa56f67d8` (exact, 2 sites)
 
@@ -3118,10 +3146,10 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/ledger.rs:884-899` `spec_stem_extracts_and_sanitizes_the_file_stem`
 - `src/console/map.rs:1250-1253` `module_of_a_leaf_src_file_is_its_stem_never_the_file_name`
 - `src/console/map.rs:1282-1286` `district_purpose_uses_the_curated_table_when_present`
-- `tests/simplification_audit.rs:7688-7699` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
-- `tests/simplification_audit.rs:7719-7730` `impl_self_type_strips_a_leading_dyn_token_on_the_self_type`
-- `tests/simplification_audit.rs:7742-7748` `strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match`
-- `tests/simplification_audit.rs:8307-8317` `ident_kind_marker_classifies_by_casing`
+- `tests/simplification_audit.rs:7693-7704` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
+- `tests/simplification_audit.rs:7724-7735` `impl_self_type_strips_a_leading_dyn_token_on_the_self_type`
+- `tests/simplification_audit.rs:7747-7753` `strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match`
+- `tests/simplification_audit.rs:8312-8322` `ident_kind_marker_classifies_by_casing`
 
 #### `dup-6ffa6e5d1f83` (exact, 7 sites)
 
@@ -3206,23 +3234,23 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `src/mcpserver.rs:532-538` `current_run_id`
 - `tests/halted_spawn_wip_recovery_periphery.rs:586-589` `current_run_id`
 
-#### `dup-cbe8527c9623` (near, 17 sites)
+#### `dup-2c72def49283` (near, 17 sites)
 
-Proposed home: `a new shared module (sites span 11 files: crates/rigger-domain/src/spawn.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/conductor.rs, src/grounder/workflowdef.rs, src/main.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)`
+Proposed home: `a new shared module (sites span 11 files: crates/rigger-domain/src/spawn.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/conductor.rs, src/main.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spawn.rs:93-95` `lens_role`
 - `crates/rigger-domain/src/spawn.rs:171-173` `speculation_group_id`
-- `crates/rigger-grounder/src/grounder/mod.rs:125-131` `retired_grounder_error`
+- `crates/rigger-grounder/src/grounder/mod.rs:134-140` `retired_grounder_error`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:32-34` `stage_id`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:36-38` `gate_id`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:40-42` `agent_id`
 - `crates/rigger-store-sqlite/src/eventstore/namespace.rs:69-71` `prefix_for`
-- `crates/rigger-worktree-git/src/worktree.rs:1617-1619` `shared_build_cache_guard_path`
+- `crates/rigger-worktree-git/src/worktree.rs:1618-1620` `shared_build_cache_guard_path`
 - `src/conductor.rs:538-540` `deferred_gate_verdict_key`
 - `src/conductor.rs:549-551` `deferred_gate_failed_key`
 - `src/conductor.rs:11433-11440` `review_protocol`
-- `src/grounder/workflowdef.rs:32-34` `stage_id`
-- `src/grounder/workflowdef.rs:36-38` `gate_id`
-- `src/grounder/workflowdef.rs:40-42` `agent_id`
 - `src/main.rs:12232-12234` `skill_source_rel`
 - `src/main.rs:13425-13431` `spec_lint_next_step`
 - `tests/canary_model_drift_periphery.rs:112-114` `prose_claiming`
@@ -3244,7 +3272,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/fixtures/graph.rs:152-154` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
-- `tests/simplification_audit.rs:5984-5986` `sample_key`
+- `tests/simplification_audit.rs:5989-5991` `sample_key`
 
 #### `dup-4819f408aeb3` (exact, 2 sites)
 
@@ -3272,7 +3300,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-domain/src/spec.rs:541-548` `starts_new_element`
 - `crates/rigger-grounder/src/grounder/design/extract.rs:433-436` `is_markdown`
-- `tests/simplification_audit.rs:3166-3173` `looks_error_shaping`
+- `tests/simplification_audit.rs:3167-3174` `looks_error_shaping`
 
 #### `dup-42b8a5023d8d` (near, 2 sites)
 
@@ -3291,7 +3319,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-domain/src/spec.rs:1854-1866` `disposition_check_fails_closed_after_a_stray_unmatched_quote_earlier_in_the_paragraph`
 - `crates/rigger-domain/src/spec.rs:2064-2073` `disposition_check_resumes_scanning_after_notes_ends`
-- `tests/simplification_audit.rs:7337-7341` `a_trait_method_signature_without_a_body_is_not_recorded`
+- `tests/simplification_audit.rs:7342-7346` `a_trait_method_signature_without_a_body_is_not_recorded`
 
 #### `dup-ee034ee789c2` (exact, 3 sites)
 
@@ -3424,7 +3452,7 @@ mandatory sweep: Command::new call sites - 83 site(s), collected mechanically re
 - `src/main.rs:22896-22896` `Command::new`
 - `src/main.rs:25286-25286` `Command::new`
 - `src/main.rs:25320-25320` `Command::new`
-- `src/worktree.rs:1119-1119` `Command::new`
+- `src/worktree.rs:922-922` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:2063-2063` `Command::new`
 - `tests/checkin_mutation_diff_base_periphery.rs:158-158` `Command::new`
@@ -3653,7 +3681,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-grounder/src/grounder/design/events.rs:20-37` `concept_events`
 - `crates/rigger-grounder/src/grounder/design/events.rs:45-62` `link_events`
 
-#### `dup-a3035b401227` (semantic, 3 sites)
+#### `dup-28bd24c1f93d` (semantic, 3 sites)
 
 Proposed home: `one shared `project_batches` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -3661,7 +3689,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 
 - `crates/rigger-grounder/src/grounder/design/events.rs:99-123` `project_batches`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:56-58` `project_batches`
-- `src/grounder/workflowdef.rs:224-231` `project_batches`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:224-231` `project_batches`
 
 #### `dup-7727a9cc5ba0` (exact, 2 sites)
 
@@ -3681,14 +3709,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-grounder/src/grounder/design/model.rs:30-37` `node_kind`
 - `crates/rigger-grounder/src/grounder/design/model.rs:81-89` `rel`
 
-#### `dup-f83d81bb94ee` (semantic, 2 sites)
+#### `dup-c1d968c10781` (semantic, 2 sites)
 
 Proposed home: `one shared `extract_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:171-267` `extract_events`
-- `src/grounder/workflowdef.rs:173-203` `extract_events`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:173-203` `extract_events`
 
 #### `dup-207b5aa153cb` (near, 3 sites)
 
@@ -3708,7 +3736,7 @@ mandatory sweep: bespoke source-text lexer/scanner functions duplicating the can
 
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:34-191` `extract`
 - `tests/simplification_audit.rs:209-211` `scan_file`
-- `tests/simplification_audit.rs:2462-2568` `tokenize`
+- `tests/simplification_audit.rs:2463-2569` `tokenize`
 
 #### `dup-6741e1f3023b` (semantic, 2 sites)
 
@@ -3717,7 +3745,7 @@ Proposed home: `one shared `changed_files` helper (e.g. relocated into `tests/co
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/symbols/grounder.rs:75-98` `changed_files`
-- `crates/rigger-worktree-git/src/worktree.rs:607-610` `changed_files`
+- `crates/rigger-worktree-git/src/worktree.rs:608-611` `changed_files`
 
 #### `dup-9408447d0007` (near, 2 sites)
 
@@ -3747,14 +3775,50 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1297-1323` `reindex_replaces_only_a_changed_files_symbols`
 - `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1622-1649` `reindex_over_a_deleted_file_stops_grounding_it`
 
-#### `dup-ed93266f67c6` (near, 2 sites)
+#### `dup-415d2df07b98` (near, 2 sites)
 
-Proposed home: `a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/symbols/store.rs, src/grounder/workflowdef.rs)`
+Proposed home: `a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/symbols/store.rs, crates/rigger-grounder/src/grounder/workflowdef.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-grounder/src/grounder/symbols/store.rs:253-257` `load_is_none_on_a_cold_start`
-- `src/grounder/workflowdef.rs:553-557` `project_events_on_a_missing_workflow_yields_nothing_never_a_crash`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:553-557` `project_events_on_a_missing_workflow_yields_nothing_never_a_crash`
+
+#### `dup-24db461612c2` (near, 2 sites)
+
+Proposed home: `a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/workflowdef.rs, src/dash.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:128-133` `light_reviewers_of`
+- `src/dash.rs:8789-8791` `ids`
+
+#### `dup-03666ae1d685` (semantic, 2 sites)
+
+Proposed home: `one shared `project_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
+
+mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:211-217` `project_events`
+- `tests/common/mod.rs:444-449` `project_events`
+
+#### `dup-c984f2da13bb` (semantic, 2 sites)
+
+Proposed home: `one shared `append_and_fold_batch` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
+
+mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+
+- `crates/rigger-grounder/src/ingest.rs:48-88` `append_and_fold_batch`
+- `src/conductor.rs:2816-2838` `append_and_fold_batch`
+
+#### `dup-6bdc4cb72e31` (near, 2 sites)
+
+Proposed home: `ingest::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-grounder/src/ingest.rs:288-290` `graph_index_lag`
+- `crates/rigger-grounder/src/ingest.rs:338-340` `graph_index_lag_sample`
 
 #### `dup-af816213608d` (semantic, 48 sites)
 
@@ -3793,17 +3857,17 @@ mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically
 - `tests/cli.rs:24735-24735` `"/proc"`
 - `tests/common/fixtures/host.rs:45-45` `"/proc/{pid}/stat has a pgrp field after comm"`
 - `tests/duplication_catalog_contract_periphery.rs:101-101` `"/proc-path string literals"`
-- `tests/simplification_audit.rs:3097-3097` `"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions"`
-- `tests/simplification_audit.rs:3103-3103` `"/proc-path string literals"`
-- `tests/simplification_audit.rs:3278-3278` `"/proc"`
-- `tests/simplification_audit.rs:3279-3279` `"crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already \
+- `tests/simplification_audit.rs:3098-3098` `"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions"`
+- `tests/simplification_audit.rs:3104-3104` `"/proc-path string literals"`
+- `tests/simplification_audit.rs:3279-3279` `"/proc"`
+- `tests/simplification_audit.rs:3280-3280` `"crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already \
              duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - \
              see the report's worked example)"`
-- `tests/simplification_audit.rs:3319-3319` `"/proc"`
-- `tests/simplification_audit.rs:3544-3544` `"crates/rigger-process/src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning \
+- `tests/simplification_audit.rs:3320-3320` `"/proc"`
+- `tests/simplification_audit.rs:3545-3545` `"crates/rigger-process/src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning \
              whichever field each caller needs, so dash.rs::process_state and \
              reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split"`
-- `tests/simplification_audit.rs:3963-3963` `"Two real recall gaps surfaced this way and were closed by widening the mechanical \
+- `tests/simplification_audit.rs:3964-3964` `"Two real recall gaps surfaced this way and were closed by widening the mechanical \
          sweep with a new generalizable detector each - not a one-off citation - so the fix \
          catches every present and future instance of its class, each pinned by a real-tree \
          regression test: `find_proc_stat_or_status_readers` (decision \
@@ -3838,7 +3902,7 @@ mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically
          Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \
          excluded this criterion's own citation-guard periphery file from the draw's population \
          (see this subsection's opening paragraph); that exclusion still applies unchanged."`
-- `tests/simplification_audit.rs:4398-4398` `"A second mutation authority for one domain: the one previously-known \
+- `tests/simplification_audit.rs:4403-4403` `"A second mutation authority for one domain: the one previously-known \
         instance in this codebase (`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s \
         `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \
         is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \
@@ -3864,7 +3928,7 @@ mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically
         second mutation authority found beyond the already-cited, \
         already-catalogued `/proc` case and this already-dispositioned \
         `materialize_config_at_rev` gap."`
-- `tests/simplification_audit.rs:5415-5415` `"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \
+- `tests/simplification_audit.rs:5420-5420` `"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \
         each entry retires, highest first:\n\n\
         1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \
         wrong concretion, or two independent implementations of one concern can already \
@@ -3900,8 +3964,8 @@ mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically
         merging it, not assume tier 5's blanket test-only treatment applies here too.\n\n\
         Within a tier, entries are ordered largest-first by the site or line count each \
         retires - the same rule the tiers themselves follow, applied one level down.\n\n"`
-- `tests/simplification_audit.rs:5529-5529` `"#### 3. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\n\n"`
-- `tests/simplification_audit.rs:5533-5533` `"- Scope: the production half is done - `src/dash.rs::process_state` and \
+- `tests/simplification_audit.rs:5534-5534` `"#### 3. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\n\n"`
+- `tests/simplification_audit.rs:5538-5538` `"- Scope: the production half is done - `src/dash.rs::process_state` and \
         `crates/rigger-process/src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through \
         `crates/rigger-process/src/reap.rs::stat_field_after_comm`, the one parser of the kernel's \
         `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What \
@@ -3918,15 +3982,15 @@ mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically
         - Unblocks: retires the last copies of the \"duplicate implementation reconciled \
         after the fact\" pattern the operator's strict-DRY rule targets - the concrete \
         precedent spec 85's own Goal cites.\n\n"`
-- `tests/simplification_audit.rs:8677-8677` `"fn state_of(pid: u32) -> Option<char> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\n}\n"`
-- `tests/simplification_audit.rs:8681-8681` `"fn starttime_of(pid: u32) -> Option<u64> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\n}\n"`
-- `tests/simplification_audit.rs:8685-8685` `"fn ppid_of(pid: u32) -> Option<u32> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\n}\n"`
-- `tests/simplification_audit.rs:8840-8840` `"fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n"`
-- `tests/simplification_audit.rs:8841-8841` `"/proc"`
-- `tests/simplification_audit.rs:8843-8843` `"/proc"`
-- `tests/simplification_audit.rs:8908-8908` `"fn state_of(pid: u32) -> Option<char> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    s.chars().next()\n}\nfn ppid_of(pid: u32) -> Option<u32> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/status\")).ok()?;\n    s.parse().ok()\n}\nfn unrelated() -> u32 {\n    1\n}\n"`
-- `tests/simplification_audit.rs:8930-8930` `"the /proc reader sweep is catalogued"`
-- `tests/simplification_audit.rs:8936-8936` `"the /proc reader sweep {:?} must carry the one stat parser and neither former \
+- `tests/simplification_audit.rs:8682-8682` `"fn state_of(pid: u32) -> Option<char> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\n}\n"`
+- `tests/simplification_audit.rs:8686-8686` `"fn starttime_of(pid: u32) -> Option<u64> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\n}\n"`
+- `tests/simplification_audit.rs:8690-8690` `"fn ppid_of(pid: u32) -> Option<u32> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\n}\n"`
+- `tests/simplification_audit.rs:8845-8845` `"fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n"`
+- `tests/simplification_audit.rs:8846-8846` `"/proc"`
+- `tests/simplification_audit.rs:8848-8848` `"/proc"`
+- `tests/simplification_audit.rs:8913-8913` `"fn state_of(pid: u32) -> Option<char> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    s.chars().next()\n}\nfn ppid_of(pid: u32) -> Option<u32> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/status\")).ok()?;\n    s.parse().ok()\n}\nfn unrelated() -> u32 {\n    1\n}\n"`
+- `tests/simplification_audit.rs:8935-8935` `"the /proc reader sweep is catalogued"`
+- `tests/simplification_audit.rs:8941-8941` `"the /proc reader sweep {:?} must carry the one stat parser and neither former \
              re-deriver, found: {names:?}"`
 
 #### `dup-004f71d209e8` (semantic, 9 sites)
@@ -3938,12 +4002,12 @@ mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functio
 - `crates/rigger-process/src/reap.rs:214-218` `stat_field_after_comm`
 - `crates/rigger-process/src/reap.rs:233-239` `read_ppid`
 - `tests/common/fixtures/host.rs:43-48` `pgid_of`
-- `tests/simplification_audit.rs:3268-3299` `build_sweep_clusters`
-- `tests/simplification_audit.rs:3539-3560` `build_extra_semantic_clusters`
-- `tests/simplification_audit.rs:3890-4007` `render_adversarial_sample`
-- `tests/simplification_audit.rs:5371-5940` `render_section_6`
-- `tests/simplification_audit.rs:8670-8693` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
-- `tests/simplification_audit.rs:8839-8844` `proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one`
+- `tests/simplification_audit.rs:3269-3300` `build_sweep_clusters`
+- `tests/simplification_audit.rs:3540-3561` `build_extra_semantic_clusters`
+- `tests/simplification_audit.rs:3891-4008` `render_adversarial_sample`
+- `tests/simplification_audit.rs:5376-5945` `render_section_6`
+- `tests/simplification_audit.rs:8675-8698` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
+- `tests/simplification_audit.rs:8844-8849` `proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one`
 
 #### `dup-abc5b2cd47c2` (exact, 2 sites)
 
@@ -4015,8 +4079,26 @@ Proposed home: `worktree::worktree`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-worktree-git/src/worktree.rs:631-633` `commit`
-- `crates/rigger-worktree-git/src/worktree.rs:649-651` `commit_checkpoint`
+- `crates/rigger-worktree-git/src/worktree.rs:632-634` `commit`
+- `crates/rigger-worktree-git/src/worktree.rs:650-652` `commit_checkpoint`
+
+#### `dup-4efef9d45e3e` (exact, 2 sites)
+
+Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-worktree-git/src/worktree.rs:2449-2457` `scratch_root`
+- `crates/rigger-worktree-git/src/worktree.rs:2548-2556` `scratch_root_path`
+
+#### `dup-e08d5a3a5d94` (exact, 2 sites)
+
+Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-worktree-git/src/worktree.rs:2623-2626` `scratch_root_from_env`
+- `crates/rigger-worktree-git/src/worktree.rs:2630-2633` `scratch_root_path_from_env`
 
 #### `dup-7dfa0dd1a6a8` (near, 2 sites)
 
@@ -4026,15 +4108,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/blast_radius_eval.rs:216-231` `width_threshold_is_the_tier_width_nearest_rank_percentile`
 - `src/blast_radius_eval.rs:234-242` `full_fraction_spans_all_light_to_collapse`
-
-#### `dup-535941bb5619` (semantic, 2 sites)
-
-Proposed home: `one shared `append_and_fold_batch` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
-
-mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
-
-- `src/conductor.rs:2816-2838` `append_and_fold_batch`
-- `src/ingest.rs:48-88` `append_and_fold_batch`
 
 #### `dup-21f642b8fe3c` (near, 3 sites)
 
@@ -4096,34 +4169,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:38459-38469` `critique_cfg`
 - `tests/replan_episode_identity.rs:273-283` `two_episode_cfg`
 
-#### `dup-1772cddc48d8` (exact, 2 sites)
-
-Proposed home: `config_store::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/config_store.rs:181-189` `read_store_config`
-- `src/config_store.rs:245-253` `read_scratch_defaults`
-
-#### `dup-898fea4e5b39` (near, 3 sites)
-
-Proposed home: `a new shared module (sites span 3 files: src/config_store.rs, src/main.rs, tests/simplification_audit.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/config_store.rs:739-772` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
-- `src/main.rs:17770-17776` `is_uuid8_accepts_exactly_eight_hex_digits`
-- `tests/simplification_audit.rs:8856-8864` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
-
-#### `dup-7da4ecc76203` (near, 2 sites)
-
-Proposed home: `config_store::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/config_store.rs:934-941` `parses_agent_frontmatter_and_body`
-- `src/config_store.rs:1289-1298` `model_ladder_parses_from_frontmatter`
-
 #### `dup-be97ce907814` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/console/map.rs, tests/simplification_audit.rs)`
@@ -4169,8 +4214,8 @@ Proposed home: `a new shared module (sites span 2 files: src/dash.rs, tests/simp
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/dash.rs:3933-3938` `console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm`
-- `tests/simplification_audit.rs:7390-7397` `a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test`
-- `tests/simplification_audit.rs:7517-7523` `a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword`
+- `tests/simplification_audit.rs:7395-7402` `a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test`
+- `tests/simplification_audit.rs:7522-7528` `a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword`
 
 #### `dup-3f680da704c9` (near, 6 sites)
 
@@ -4202,15 +4247,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/dash.rs:8786-8788` `layer_of`
 - `tests/common/fixtures/graph.rs:186-188` `call_layer`
-
-#### `dup-6faa030a03b7` (near, 2 sites)
-
-Proposed home: `a new shared module (sites span 2 files: src/dash.rs, src/grounder/workflowdef.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/dash.rs:8789-8791` `ids`
-- `src/grounder/workflowdef.rs:128-133` `light_reviewers_of`
 
 #### `dup-4d77d0fdce5a` (near, 3 sites)
 
@@ -4279,24 +4315,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/docs.rs:820-855` `render_handle_an_escalation_skill`
 - `src/docs.rs:1001-1050` `render_diagnose_churn_skill`
-
-#### `dup-2c59700de5eb` (semantic, 2 sites)
-
-Proposed home: `one shared `project_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
-
-mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
-
-- `src/grounder/workflowdef.rs:211-217` `project_events`
-- `tests/common/mod.rs:444-449` `project_events`
-
-#### `dup-ca344cae18a6` (near, 2 sites)
-
-Proposed home: `ingest::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/ingest.rs:288-290` `graph_index_lag`
-- `src/ingest.rs:338-340` `graph_index_lag_sample`
 
 #### `dup-ca8ccf1b9f66` (exact, 2 sites)
 
@@ -4425,32 +4443,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/main.rs:25748-25768` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
 - `src/main.rs:25800-25821` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
 
-#### `dup-17993613795d` (exact, 2 sites)
-
-Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/worktree.rs:17-25` `scratch_root`
-- `src/worktree.rs:116-124` `scratch_root_path`
-
-#### `dup-cda9c1a42625` (exact, 2 sites)
-
-Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/worktree.rs:191-194` `scratch_root_from_env`
-- `src/worktree.rs:198-201` `scratch_root_path_from_env`
-
 #### `dup-ad4ebfe4d855` (near, 2 sites)
 
 Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:383-403` `integrate_lands_work_in_the_repo`
-- `src/worktree.rs:2337-2360` `integrate_lands_a_pre_committed_artifact_unchanged`
+- `src/worktree.rs:186-206` `integrate_lands_work_in_the_repo`
+- `src/worktree.rs:2140-2163` `integrate_lands_a_pre_committed_artifact_unchanged`
 
 #### `dup-5f516fce9f0b` (near, 2 sites)
 
@@ -4883,7 +4883,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/no_os_kill_audit.
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/no_os_kill_audit.rs:374-377` `never_flagged`
-- `tests/simplification_audit.rs:9075-9081` `assert_no_same_named_helper_cluster`
+- `tests/simplification_audit.rs:9080-9086` `assert_no_same_named_helper_cluster`
 
 #### `dup-b39b9c66964a` (semantic, 2 sites)
 
@@ -4938,9 +4938,9 @@ Proposed home: `simplification_audit::support (consolidate these 3 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:3698-3701` `real_files`
-- `tests/simplification_audit.rs:5218-5221` `real_map`
-- `tests/simplification_audit.rs:7195-7198` `real_workspace_files`
+- `tests/simplification_audit.rs:3699-3702` `real_files`
+- `tests/simplification_audit.rs:5223-5226` `real_map`
+- `tests/simplification_audit.rs:7200-7203` `real_workspace_files`
 
 #### `dup-23cb89af01e7` (near, 4 sites)
 
@@ -4948,10 +4948,10 @@ Proposed home: `simplification_audit::support (consolidate these 4 sites into on
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/simplification_audit.rs:3756-3773` `dup_cluster_wire`
-- `tests/simplification_audit.rs:3775-3788` `dup_cluster_lines`
-- `tests/simplification_audit.rs:7148-7165` `dead_code_candidate_wire`
-- `tests/simplification_audit.rs:7167-7182` `dead_code_candidate_lines`
+- `tests/simplification_audit.rs:3757-3774` `dup_cluster_wire`
+- `tests/simplification_audit.rs:3776-3789` `dup_cluster_lines`
+- `tests/simplification_audit.rs:7153-7170` `dead_code_candidate_wire`
+- `tests/simplification_audit.rs:7172-7187` `dead_code_candidate_lines`
 
 #### `dup-adfce3b42b86` (near, 2 sites)
 
@@ -5025,15 +5025,16 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 6844 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
+- `crates/rigger-config-files/src/config_store.rs:2377-2398` `validate_rejects_a_named_wrapper_with_an_uncreatable_cache_dir` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/canary.rs:285-319` `latest_run_scopes_to_the_last_batch_marker` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/config.rs:375-377` `is_empty` - caught: `dup-1f030cd524f7`
 - `crates/rigger-domain/src/contextgraph/query.rs:2056-2060` `assert_sole_member_is_w` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/metrics.rs:1417-1424` `model_id_base` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:1953-1960` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-driver/src/driver/claude_code.rs:1472-1507` `launch_applies_opts_env_and_inherits_the_ambient_credential_untouched` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:535-547` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-grounder/src/ingest.rs:48-88` `append_and_fold_batch` - caught: `dup-c984f2da13bb`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:333-352` `placement_of_ack` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-worktree-git/src/worktree.rs:1719-1743` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-worktree-git/src/worktree.rs:1720-1744` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/canary_store.rs:822-824` `any_finding_is_critical` - caught: `dup-7727a9cc5ba0`
 - `src/canary_store.rs:1761-1777` `score_item_reports_no_resolved_model_for_a_tier_whose_driver_leaves_it_empty` - no duplicate found by reading
 - `src/conductor.rs:10350-10391` `land_refused` - no duplicate found by reading
@@ -5046,17 +5047,16 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `tests/cli.rs:10348-10372` `workflow_accepts_a_spec_and_a_base_flag` - no duplicate found by reading
 - `tests/cli.rs:11912-11927` `validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off` - duplicate found by reading and closed: it re-rolled `assert_validate_reports` inline; it now calls it, which returns the stdout for its extra no-cache-dir check
 - `tests/cli.rs:18712-18795` `setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger` - duplicate found by reading and closed: it re-rolled `fresh_committed_skill`, `committed_skill` and `commit_a_code_change` inline; it now calls them, with the commit half split out as `commit_staged`
-- `tests/cli.rs:25644-25664` `guard_write_under_a_root` - no duplicate found by reading
 - `tests/cli.rs:25791-25808` `guard_write_exits_the_blocking_code_on_every_transport_failure` - duplicate found by reading and closed: it and `guard_write_without_a_root_fails_loudly_rather_than_allowing_everything` re-rolled `run_hook_verb`'s piped-stdin spawn; all three now call `pipe_into_rigger`, the blocking checks through `assert_blocks`
 - `tests/common/audit_record.rs:8-13` `read_audit_record` - duplicate found by reading and closed: `tests/gitsemver_path_inclusion_accounting_periphery.rs` re-rolled it to read the stage1 record; it now includes and calls it
 - `tests/compiler_pass_stage1_audit.rs:50-104` `stage1_record_has_the_shape_every_consumer_relies_on` - no duplicate found by reading
 - `tests/concepts_labels_membership.rs:245-272` `label_of_the_documentless_hub` - no duplicate found by reading
 - `tests/reset_derived_compaction_periphery.rs:3681-3685` `a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten` - duplicate found by reading and closed: `the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count` repeated its settled-file fixture and skipped-rewrite assertions; both now call `settled_clean_store` and `assert_prune_skips_the_rewrite`
-- `tests/simplification_audit.rs:7427-7431` `a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod` - duplicate found by reading and closed: it and five sibling scanner tests re-rolled `scan_single`; all now call it or its name and span assertions
+- `tests/simplification_audit.rs:7432-7436` `a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod` - duplicate found by reading and closed: it and five sibling scanner tests re-rolled `scan_single`; all now call it or its name and span assertions
 - `tests/step_attention_periphery.rs:89-135` `hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary` - no duplicate found by reading
 - `tests/worker_persona_label_periphery.rs:222-243` `the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation` - duplicate found by reading and closed: it re-rolled `assert_worker_label` inline; it now calls it
 
-Reading pass 2026-09-27: 21 of the 30 drawn functions read by hand (a caught row too, to judge whether its duplicate reaches past the cluster); 27 duplicate(s) found by reading, each closed.
+Reading pass 2026-09-27: 20 of the 30 drawn functions read by hand (a caught row too, to judge whether its duplicate reaches past the cluster); 27 duplicate(s) found by reading, each closed.
 - closed before the redraw: `tests/kurrentdb_always_available.rs` `architecture_blueprint_has_no_retired_kurrentdb_feature_reference` re-rolled the manifest-relative read `common::repo::repo_text` owns, as did thirteen sibling reads across eleven suites; every one now calls `repo_text`
 - closed before the redraw: `tests/replan_episode_identity.rs` `serving` had two inline copies of its scan in its own file; both now call it
 - closed before the redraw: `src/conductor.rs` `integrate_and_emit` repeated `catch_up_owed_regeneration`'s regenerate/record/clear sequence twice; all three now call `regenerate_and_record`
@@ -5071,7 +5071,7 @@ Reading pass 2026-09-27: 21 of the 30 drawn functions read by hand (a caught row
 - closed before the redraw: `src/contextgraph/mod.rs` `is_false` re-implemented `std::ops::Not::not`, which the symbol model already uses; every flag now skips through `Not::not`
 - closed before the redraw: `src/eventstore/mod.rs` `one` was bypassed by the concurrent contract append's `.last().expect(..)`; it now calls `Appended::one`
 - closed before the redraw: `crates/rigger-store-sqlite/src/eventstore/sqlite.rs` `a_rerun_reclaims_the_space_a_failed_reclamation_left_behind` carried its own copies of the periphery suite's `plant_free_pages` and `pragma_i64`; both now live once in the shared store fixtures
-- closed before the redraw: `src/grounder/workflowdef.rs` `full_reviewers_of` repeated the head of `ReviewPanel::agent_ids`; both now call `ReviewPanel::full_roster`, and every adversary/adjudicator pair goes through `config::push_reviewers`
+- closed before the redraw: `crates/rigger-grounder/src/grounder/workflowdef.rs` `full_reviewers_of` repeated the head of `ReviewPanel::agent_ids`; both now call `ReviewPanel::full_roster`, and every adversary/adjudicator pair goes through `config::push_reviewers`
 - closed before the redraw: `tests/common/fixtures/graph.rs` `summarized_node` was re-rolled as an inline closure by `tests/rationale_overlay_data.rs`; it now calls it
 - closed before the redraw: `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` `tier_default_matches_the_extracted_const` was repeated inline by `tests/code_ingest_events.rs`; the one test now pins all three tier consts
 - closed before the redraw: `src/worktree.rs` `remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside` and `tests/reap_before_removal_periphery.rs` `reaps_before_removing` each re-rolled the spawn/wait/teardown/assert reap proof, as did five siblings in `src/main.rs`, `crates/rigger-process/src/reap.rs`, `src/worktree.rs` and the relocated-scratch periphery suite; all now call `assert_teardown_reaps_what_is_rooted_inside`
@@ -5088,9 +5088,9 @@ FOUND, two violations:
 
 Violation 1 (`AgentDriver`): `src/conductor.rs:8137-8144` (`reclaim_terminal_unit_mutation_scratch`, real production code - above the `#[cfg(test)] mod tests` boundary at `src/conductor.rs:13022`) calls `crate::driver::replay::cache_home_from` and `crate::driver::replay::reclaim_unit_mutation_scratch` directly by concrete module path. The port `conductor.rs` actually depends on for driving agents is `trait AgentDriver` (`crates/rigger-domain/src/agent.rs:150`) - one method, `spawn`. Neither called function is about driving an agent or replaying a recorded run (the concern `driver::replay` otherwise owns); both are pure, driver-instance-free scratch-lifecycle utilities that happen to live inside that one concrete adapter's module. The port that should have been used: none exists for this concern yet, which is itself the defect - `conductor.rs` (a use-case/orchestration file) should not need to know which concrete `AgentDriver` implementation happens to define its own mutation-scratch cache-home resolution. Fix direction for a follow-up spec: relocate `cache_home_from` and `reclaim_unit_mutation_scratch` out of `driver::replay` into a neutral, adapter-independent module (a `scratch` or `mutation` support module conductor.rs and every driver adapter can depend on alike), so no use-case file reaches into one specific adapter's internals for a concern that adapter does not conceptually own.
 
-Violation 2 (`Grounder`): `src/ingest.rs:157-193` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `src/conductor.rs:10230`, itself called from `src/conductor.rs:10221` above the `13022` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 167 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 173 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-a3035b401227`: `crates/rigger-grounder/src/grounder/design/events.rs:99-123`, `crates/rigger-grounder/src/grounder/symbols/events.rs:56-58`, and `src/grounder/workflowdef.rs:224-231` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`crates/rigger-domain/src/grounder.rs:64`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (167) and the concrete `design` module (173) directly. Same missing-port defect class as violation 1. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
+Violation 2 (`Grounder`): `crates/rigger-grounder/src/ingest.rs:157-193` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `src/conductor.rs:10230`, itself called from `src/conductor.rs:10221` above the `13022` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 167 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 173 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-28bd24c1f93d`: `crates/rigger-grounder/src/grounder/design/events.rs:99-123`, `crates/rigger-grounder/src/grounder/symbols/events.rs:56-58`, and `crates/rigger-grounder/src/grounder/workflowdef.rs:224-231` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`crates/rigger-domain/src/grounder.rs:64`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (167) and the concrete `design` module (173) directly. Same missing-port defect class as violation 1. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
 
-Also reaching `grounder::symbols::store::content_hash` from `src/ingest.rs:358` and `src/canary_store.rs:153`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`src/canary_store.rs:131`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:67`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
+Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-grounder/src/ingest.rs:358` and `src/canary_store.rs:153`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`src/canary_store.rs:131`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:67`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
 
 CHECKED AND CLEAN (three of five ports fully clean; the other two, `AgentDriver` and `Grounder`, are this section's two violations above - each search recorded so a clean result is not merely assumed):
 - `eventstore::EventStore` concretion reach (`rusqlite::Connection::open` outside the SQLite adapters and `crates/rigger-store-sqlite/src/sqlite.rs`, the one opener every store connection goes through): in production, only doc-comment mentions (`src/main.rs:3356,4967`); the one call is a deliberate, explicitly-commented test-only raw-connection bypass (`src/main.rs:26099`, inside `#[cfg(test)] mod tests` opened at `src/main.rs:14668`) that reproduces a pre-append-guard corruption shape `Store::append` itself refuses to construct - a documented test technique, not a boundary violation.
@@ -5229,13 +5229,13 @@ Within a tier, entries are ordered largest-first by the site or line count each 
 - Risk: low-medium. The reclaim path is covered by spec 83's worktree-lifetime-fenced-by-spawn-liveness contract tests; those tests move with the functions, not get rewritten.
 - Unblocks: retires the only `AgentDriver` port violation section 3 found.
 
-#### 2. Close the `Grounder` port gap for whole-project batch ingest (retires dup-a3035b401227 in the same motion)
+#### 2. Close the `Grounder` port gap for whole-project batch ingest (retires dup-28bd24c1f93d in the same motion)
 
-- Scope: section 3 violation 2 (`src/ingest.rs::walk_batches`, reaching `grounder::symbols::events::project_batches_paced` and `grounder::design::events::project_batches` by concrete module path) and duplication cluster `dup-a3035b401227` (3 modules' own twin `project_batches` functions, in `crates/rigger-grounder/src/grounder/design/events.rs`, `crates/rigger-grounder/src/grounder/symbols/events.rs`, `src/grounder/workflowdef.rs`) are one root cause, not two - fix once. 3 CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-a3035b401227`'s own mechanical `proposed_home` suggests relocating into `tests/common`, but every site is production code under `crates/rigger-grounder/src/grounder/` and `src/grounder/`, not a test helper - the mechanical heuristic has no "add a port method" category to route a production duplicate to, so it mis-fires here. This plan follows section 3's own reasoned disposition instead: add a `Grounder::project_batches` port method (or a standalone `SymbolProjector` trait) covering all 3 concrete modules, and point `ingest.rs` at it.
-- Files: `src/ingest.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/events.rs`, `crates/rigger-grounder/src/grounder/design/events.rs`, `src/grounder/workflowdef.rs`.
-- Expected line delta: roughly neutral - one new trait method plus 3 thin impls, minus the 3 duplicate bodies `dup-a3035b401227` catalogs.
+- Scope: section 3 violation 2 (`crates/rigger-grounder/src/ingest.rs::walk_batches`, reaching `grounder::symbols::events::project_batches_paced` and `grounder::design::events::project_batches` by concrete module path) and duplication cluster `dup-28bd24c1f93d` (3 modules' own twin `project_batches` functions, in `crates/rigger-grounder/src/grounder/design/events.rs`, `crates/rigger-grounder/src/grounder/symbols/events.rs`, `crates/rigger-grounder/src/grounder/workflowdef.rs`) are one root cause, not two - fix once. 3 CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-28bd24c1f93d`'s own mechanical `proposed_home` suggests relocating into `tests/common`, but every site is production code under `crates/rigger-grounder/src/grounder/` and `src/grounder/`, not a test helper - the mechanical heuristic has no "add a port method" category to route a production duplicate to, so it mis-fires here. This plan follows section 3's own reasoned disposition instead: add a `Grounder::project_batches` port method (or a standalone `SymbolProjector` trait) covering all 3 concrete modules, and point `ingest.rs` at it.
+- Files: `crates/rigger-grounder/src/ingest.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/events.rs`, `crates/rigger-grounder/src/grounder/design/events.rs`, `crates/rigger-grounder/src/grounder/workflowdef.rs`.
+- Expected line delta: roughly neutral - one new trait method plus 3 thin impls, minus the 3 duplicate bodies `dup-28bd24c1f93d` catalogs.
 - Risk: medium. `ingest.rs`'s own module doc calls it "the ONE walk-and-content-key authority" - a load-bearing path; needs the existing whole-project-ingest and reindex-freshening coverage to stay green, not just the duplicate sites' own tests.
-- Unblocks: retires the one `Grounder` port violation section 3 found and `dup-a3035b401227` together, rather than as two separately-tracked fixes.
+- Unblocks: retires the one `Grounder` port violation section 3 found and `dup-28bd24c1f93d` together, rather than as two separately-tracked fixes.
 
 #### 3. Retire the duplicate `/proc`-reading authority (`dup-af816213608d` + `dup-004f71d209e8`)
 
@@ -5306,10 +5306,10 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 Each entry is one of section 2's five named mandatory sweeps - collected mechanically regardless of the Jaccard pass, per spec 85's own Design.
 
-#### 10. Consolidate the 539 `.rigger`-path string-literal sites (`dup-1b43f290c1fa`) - the single largest cluster in the entire catalog by site count
+#### 10. Consolidate the 539 `.rigger`-path string-literal sites (`dup-f5eb77572753`) - the single largest cluster in the entire catalog by site count
 
 - Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 539 sites routes through instead of building its own literal.
-- Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-1b43f290c1fa` for the follow-up spec to consume directly, not re-enumerated here.
+- Files: spans dozens of files including `src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-f5eb77572753` for the follow-up spec to consume directly, not re-enumerated here.
 - Expected line delta: negative - 539 literal compositions collapse toward one helper's call sites; the helper itself is small.
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 539 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
@@ -5389,7 +5389,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 120 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 182 clusters, 55 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-ec4c94d137e9`, `dup-1b43f290c1fa`, `dup-f4557659a212`, `dup-af816213608d`, `dup-004f71d209e8`, `dup-a3035b401227`, `dup-c3aadd27d8c7`); the remaining 120 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-2a5626cb9627`, `dup-c3aadd27d8c7`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 182 clusters, 55 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-ec4c94d137e9`, `dup-f5eb77572753`, `dup-f4557659a212`, `dup-af816213608d`, `dup-004f71d209e8`, `dup-28bd24c1f93d`, `dup-c3aadd27d8c7`); the remaining 120 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-78c48ff4c88e`, `dup-3d575d71e10f`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.

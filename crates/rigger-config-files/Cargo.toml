@@ -1,0 +1,32 @@
+[package]
+name = "rigger-config-files"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's operator-tree adapter: the loaded harness configuration and the readers of the operator's .rigger/ tree (agent definitions, the workflow, the instruction layer and the lightweight workflow probes)."
+
+[lib]
+name = "rigger_config_files"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = ["rigger-domain/store", "rigger-gates-shell/store"]
+core = ["rigger-domain/core", "rigger-gates-shell/core"]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# `Config::validate`'s build-wrapper and mutation-binary probes (a same-ring edge).
+rigger-gates-shell = { path = "../rigger-gates-shell", default-features = false }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+# The tests parse workflow and agent fixtures straight through the YAML deserializer.
+serde_yaml = "0.9"
+
+[lints]
+workspace = true

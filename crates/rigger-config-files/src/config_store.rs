@@ -438,7 +438,7 @@ mod tests {
         }
         let tmp = tempfile::tempdir().expect("tempdir");
         copy_tree(
-            Path::new("examples/demo/.rigger"),
+            Path::new("../../examples/demo/.rigger"),
             &tmp.path().join(".rigger"),
         );
         std::fs::write(
@@ -1515,7 +1515,7 @@ mod tests {
         // DISTINCT from the read-only `sdet` review lens (which has neither Edit nor Write).
         // Proven over the REAL committed files (read from the crate manifest dir), so this
         // asserts the artifact the loop actually spawns, not a fixture.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let author = parse_agent(
             &std::fs::read(root.join(".rigger/agents/sdet-author.md"))
                 .expect("the shipped .rigger/agents/sdet-author.md must exist"),
@@ -2072,7 +2072,7 @@ agent: worker\n";
         // The worked example the architecture references (§10, §11) must load and
         // validate into a real DAG, so it never rots. The path is relative to the
         // crate root (cargo runs tests there).
-        let cfg = load("examples/demo").expect("the demo example must load and validate");
+        let cfg = load("../../examples/demo").expect("the demo example must load and validate");
         // The full agent roster still loads from the dir.
         assert_eq!(cfg.agents.len(), 7, "demo agent count");
         // Per-unit model: plan -> implement (each unit implements, three-tier-reviews

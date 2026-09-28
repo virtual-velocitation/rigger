@@ -2078,7 +2078,7 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 8] = [
+const SPLIT_CRATES: [&str; 9] = [
     "crates/rigger-domain",
     "crates/rigger-store-sqlite",
     "crates/rigger-graph-sqlite",
@@ -2087,6 +2087,7 @@ const SPLIT_CRATES: [&str; 8] = [
     "crates/rigger-gates-shell",
     "crates/rigger-driver",
     "crates/rigger-grounder",
+    "crates/rigger-config-files",
 ];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
@@ -2362,7 +2363,7 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
     "`crates/rigger-store-sqlite/src/eventstore/sqlite.rs` `a_rerun_reclaims_the_space_a_failed_reclamation_left_behind` \
      carried its own copies of the periphery suite's `plant_free_pages` and `pragma_i64`; both \
      now live once in the shared store fixtures",
-    "`src/grounder/workflowdef.rs` `full_reviewers_of` repeated the head of \
+    "`crates/rigger-grounder/src/grounder/workflowdef.rs` `full_reviewers_of` repeated the head of \
      `ReviewPanel::agent_ids`; both now call `ReviewPanel::full_roster`, and every \
      adversary/adjudicator pair goes through `config::push_reviewers`",
     "`tests/common/fixtures/graph.rs` `summarized_node` was re-rolled as an inline closure by \
@@ -4180,14 +4181,14 @@ fn joined(lines: &[usize]) -> String {
 }
 
 /// Section 3, BOUNDARY VIOLATIONS: two real findings (`src/conductor.rs`'s mutation-scratch
-/// reclaim reaching into the concrete `driver::replay` adapter, and `src/ingest.rs` reaching two
+/// reclaim reaching into the concrete `driver::replay` adapter, and `crates/rigger-grounder/src/ingest.rs` reaching two
 /// concrete grounder modules, each for a concern no port covers) plus the checked-and-clean
 /// port-concretion sweeps and the use-cases-importing-infrastructure / second-mutation-authority
 /// categories (decision `u85c3-boundary-violation-mutation-scratch-reach`). Every citation and
 /// figure is computed from `files` and the tree at render time.
 fn render_section_3(files: &[FileScan]) -> String {
     const CONDUCTOR: &str = "src/conductor.rs";
-    const INGEST: &str = "src/ingest.rs";
+    const INGEST: &str = "crates/rigger-grounder/src/ingest.rs";
     const MAIN: &str = "src/main.rs";
     const AGENT_PORT: &str = "crates/rigger-domain/src/agent.rs";
     let boundary = test_boundary(CONDUCTOR);
@@ -4276,7 +4277,11 @@ fn render_section_3(files: &[FileScan]) -> String {
             "crates/rigger-grounder/src/grounder/symbols/events.rs",
             "project_batches"
         ),
-        cite_fn(files, "src/grounder/workflowdef.rs", "project_batches"),
+        cite_fn(
+            files,
+            "crates/rigger-grounder/src/grounder/workflowdef.rs",
+            "project_batches"
+        ),
     );
     let _ = write!(
         out,
@@ -4692,7 +4697,7 @@ fn render_section_4() -> String {
 // the prose can never cite a stale count. Closing or changing a cited cluster makes the render
 // panic with the id, which is the prompt to re-cite that sentence.
 
-const PROJECT_BATCHES: &str = "dup-a3035b401227";
+const PROJECT_BATCHES: &str = "dup-28bd24c1f93d";
 
 /// The real catalog's cluster `id`, which the report's prose cites.
 fn cited(id: &str) -> &'static DupCluster {
@@ -5499,7 +5504,7 @@ fn render_section_6() -> String {
         {PROJECT_BATCHES} in the same motion)\n\n",
     ));
     out.push_str(&format!(
-        "- Scope: section 3 violation 2 (`src/ingest.rs::walk_batches`, reaching \
+        "- Scope: section 3 violation 2 (`crates/rigger-grounder/src/ingest.rs::walk_batches`, reaching \
         `grounder::symbols::events::project_batches_paced` and \
         `grounder::design::events::project_batches` by concrete module path) and \
         duplication cluster `{PROJECT_BATCHES}` ({batch_n} modules' own twin \
@@ -5512,8 +5517,8 @@ fn render_section_6() -> String {
         disposition instead: add a `Grounder::project_batches` port method (or a standalone \
         `SymbolProjector` trait) covering all {batch_n} concrete modules, and point `ingest.rs` \
         at it.\n\
-        - Files: `src/ingest.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/events.rs`, \
-        `crates/rigger-grounder/src/grounder/design/events.rs`, `src/grounder/workflowdef.rs`.\n\
+        - Files: `crates/rigger-grounder/src/ingest.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/events.rs`, \
+        `crates/rigger-grounder/src/grounder/design/events.rs`, `crates/rigger-grounder/src/grounder/workflowdef.rs`.\n\
         - Expected line delta: roughly neutral - one new trait method plus {batch_n} thin impls, \
         minus the {batch_n} duplicate bodies `{PROJECT_BATCHES}` catalogs.\n\
         - Risk: medium. `ingest.rs`'s own module doc calls it \"the ONE walk-and-content-key \
@@ -5715,9 +5720,9 @@ fn render_section_6() -> String {
         "- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
         `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \
         own literal.\n\
-        - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \
+        - Files: spans dozens of files including `src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \
         `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
-        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
+        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
         `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\

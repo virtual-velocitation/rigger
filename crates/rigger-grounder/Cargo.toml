@@ -3,7 +3,7 @@ name = "rigger-grounder"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's grounding adapters: the grounders behind the Grounder port (the structural symbols index, grep and nop), the shared scoped project walk and the code and design-intent emit passes."
+description = "Rigger's grounding adapters: the grounders behind the Grounder port (the structural symbols index, grep and nop), the shared scoped project walk, the code, design-intent and workflow-definition emit passes and the project-source ingest walk."
 
 [lib]
 name = "rigger_grounder"
@@ -15,8 +15,8 @@ path = "src/lib.rs"
 # gate here, and the root forwards all three features, so every lane compiles exactly the
 # surface it did before.
 default = ["symbols", "store"]
-store = ["rigger-domain/store", "rigger-process/store"]
-core = ["rigger-domain/core", "rigger-process/core"]
+store = ["rigger-domain/store", "rigger-process/store", "rigger-config-files/store"]
+core = ["rigger-domain/core", "rigger-process/core", "rigger-config-files/core"]
 symbols = [
     "dep:tree-sitter",
     "dep:tree-sitter-tags",
@@ -32,6 +32,9 @@ symbols = [
 rigger-domain = { path = "../rigger-domain", default-features = false }
 # The ordered parallel map the code ingest fans out over (a same-ring edge).
 rigger-process = { path = "../rigger-process", default-features = false }
+# The workflow-definition pass reads `.rigger/workflow.yml` through the operator-tree reader (a
+# same-ring edge).
+rigger-config-files = { path = "../rigger-config-files", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a

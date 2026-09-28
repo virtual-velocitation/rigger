@@ -9,7 +9,7 @@ added; the loop's bounded escalation is unchanged. This spec implements Workstre
 ## Design
 
 Builds on the existing config validation (`config::load`, `ReviewPanel::validate_depth`,
-`ReviewPanel::agent_ids` in `src/config.rs`), the `rigger validate` command
+`ReviewPanel::agent_ids` in `crates/rigger-domain/src/config.rs`), the `rigger validate` command
 (`cmd_validate`, `validate_advisories` in `src/main.rs`), the fail-closed integration
 gate (`verdict_approves`, `run_adjudicator`, `IntegrationApproval` in
 `src/conductor.rs`), the planner-to-baseline reconciliation (`harvest_proposed`,
@@ -17,7 +17,7 @@ gate (`verdict_approves`, `run_adjudicator`, `IntegrationApproval` in
 entry / anchoring (`cmd_workflow`, `parse_run_args`, `load_criteria` in `src/main.rs`;
 `Worktree::ensure_run_branch`, `ref_resolves` in `crates/rigger-worktree-git/src/worktree.rs`).
 
-**Unit 1 - gating-persona verdict-line static lint (touches `src/config.rs`,
+**Unit 1 - gating-persona verdict-line static lint (touches `crates/rigger-config-files/src/config.rs`,
 `src/main.rs`).** The integration gate reads a gating agent's RESULT output for a
 `{"verdict":...}` line; it never reads emitted events (this is deliberate - see the
 addendum's load-bearing decisions). A gating agent (a review adjudicator on any tier, or

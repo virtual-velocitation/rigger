@@ -14,13 +14,15 @@ path = "src/lib.rs"
 # `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
 # root forwards both features, so every lane compiles exactly the surface it did before.
 default = ["store"]
-store = ["rigger-domain/store", "rigger-process/store"]
-core = ["rigger-domain/core", "rigger-process/core"]
+store = ["rigger-domain/store", "rigger-process/store", "rigger-driver/store"]
+core = ["rigger-domain/core", "rigger-process/core", "rigger-driver/core"]
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
 # The process-spawn port and the reaper every removal goes through (a same-ring edge).
 rigger-process = { path = "../rigger-process", default-features = false }
+# The scratch-root resolvers' cache-home resolver and liveness marker encoding (a same-ring edge).
+rigger-driver = { path = "../rigger-driver", default-features = false }
 thiserror = "2"
 
 [lints]

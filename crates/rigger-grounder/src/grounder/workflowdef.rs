@@ -562,7 +562,7 @@ run: cargo fmt --check\n";
         // `.rigger/workflow.yml` (not a fixture) yields the Design text's own example triple.
         // `CARGO_MANIFEST_DIR` (not `.`), so this resolves the crate root regardless of the
         // process's own working directory.
-        let events = project_events(env!("CARGO_MANIFEST_DIR"));
+        let events = project_events(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         assert!(
             !events.is_empty(),
             "this project's own .rigger/workflow.yml must extract at least one event"

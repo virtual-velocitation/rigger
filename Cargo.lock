@@ -1884,6 +1884,7 @@ dependencies = [
  "fs2",
  "kurrentdb",
  "regex",
+ "rigger-config-files",
  "rigger-domain",
  "rigger-driver",
  "rigger-gates-shell",
@@ -1904,6 +1905,17 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "rigger-config-files"
+version = "0.1.0"
+dependencies = [
+ "rigger-domain",
+ "rigger-gates-shell",
+ "serde",
+ "serde_yaml",
+ "tempfile",
 ]
 
 [[package]]
@@ -1967,6 +1979,7 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "ignore",
+ "rigger-config-files",
  "rigger-domain",
  "rigger-graph-sqlite",
  "rigger-process",
@@ -2013,6 +2026,7 @@ name = "rigger-worktree-git"
 version = "0.1.0"
 dependencies = [
  "rigger-domain",
+ "rigger-driver",
  "rigger-process",
  "thiserror",
 ]

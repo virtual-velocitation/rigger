@@ -78,7 +78,7 @@ Some rules apply to every agent regardless of its role: how code is shaped, how 
 persona  +  built-in instructions  +  operator instructions  +  communication discipline
 ```
 
-**The built-in layer** ships inside the binary and reaches every agent Rigger spawns, including an agent with an empty body. It is the engineering law every change is held to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and BDD where a behavior is operator-facing, one pass by excellence, and the rule that a surviving mutant is always a failure. Its source is `src/instructions/engineering-principles.md`; no configuration removes it.
+**The built-in layer** ships inside the binary and reaches every agent Rigger spawns, including an agent with an empty body. It is the engineering law every change is held to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and BDD where a behavior is operator-facing, one pass by excellence, and the rule that a surviving mutant is always a failure. Its source is `crates/rigger-domain/src/instructions/engineering-principles.md`; no configuration removes it.
 
 **The operator layer** is every `*.md` file in `.rigger/instructions/`, appended in filename order after the built-ins, each under a `## <file stem>` heading. Use a numeric prefix (`10-house.md`, `20-team.md`) to control the order. `rigger init` scaffolds the directory with a `README.md` that explains it; the README itself is never injected. Put project-wide house rules here instead of into personas, and keep each persona about its role.
 

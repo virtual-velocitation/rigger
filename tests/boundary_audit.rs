@@ -47,6 +47,7 @@ const RINGS: &[(&str, u8)] = &[
     ("rigger-process", 3),
     ("rigger-gates-shell", 3),
     ("rigger-grounder", 3),
+    ("rigger-config-files", 3),
     ("rigger-dash", 4),
     ("rigger-console", 4),
     ("console-core", 4),
@@ -264,22 +265,22 @@ fn an_outward_edge_and_an_unknown_crate_are_reported() {
 /// adapter move that lets it join `rigger-domain`.
 const DEFERRED_DOMAIN_ITEMS: &[(&str, &str, &str)] = &[
     (
-        "src/config.rs",
+        "crates/rigger-config-files/src/config.rs",
         "Config",
         "lesson-split-domain-config-validate",
     ),
     (
-        "src/config.rs",
+        "crates/rigger-config-files/src/config.rs",
         "lint_gating_verdict_lines",
         "lesson-split-domain-config-validate",
     ),
     (
-        "src/config.rs",
+        "crates/rigger-config-files/src/config.rs",
         "unbounded_wall_clock_advisory",
         "lesson-split-domain-config-validate",
     ),
     (
-        "src/ingest.rs",
+        "crates/rigger-grounder/src/ingest.rs",
         "key_batch",
         "lesson-split-domain-ingest-key-batch",
     ),
@@ -469,6 +470,7 @@ const ADAPTER_SRCS: &[&str] = &[
     "crates/rigger-gates-shell/src",
     "crates/rigger-driver/src",
     "crates/rigger-grounder/src",
+    "crates/rigger-config-files/src",
 ];
 
 /// Items the workspace plan assigns to an adapter crate that still live in the root crate,
@@ -521,86 +523,6 @@ const DEFERRED_ADAPTER_ITEMS: &[(&str, &str, &str)] = &[
         "src/canary_store.rs",
         "default_jobs",
         "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/worktree.rs",
-        "scratch_root",
-        "lesson-split-worktree-scratch-root-reach",
-    ),
-    (
-        "src/worktree.rs",
-        "scratch_root_with",
-        "lesson-split-worktree-scratch-root-reach",
-    ),
-    (
-        "src/worktree.rs",
-        "sweep_orphan_scratch_roots",
-        "lesson-split-worktree-scratch-root-reach",
-    ),
-    (
-        "src/worktree.rs",
-        "scratch_root_path",
-        "lesson-split-worktree-scratch-root-reach",
-    ),
-    (
-        "src/worktree.rs",
-        "scratch_root_path_with",
-        "lesson-split-worktree-scratch-root-reach",
-    ),
-    (
-        "src/worktree.rs",
-        "cache_scratch_root_from",
-        "lesson-split-worktree-scratch-root-reach",
-    ),
-    (
-        "src/worktree.rs",
-        "scratch_root_from_env",
-        "lesson-split-worktree-scratch-root-reach",
-    ),
-    (
-        "src/worktree.rs",
-        "scratch_root_path_from_env",
-        "lesson-split-worktree-scratch-root-reach",
-    ),
-    (
-        "src/grounder/workflowdef.rs",
-        "workflow_doc",
-        "lesson-split-grounder-workflowdef-config-store",
-    ),
-    (
-        "src/grounder/workflowdef.rs",
-        "stage_id",
-        "lesson-split-grounder-workflowdef-config-store",
-    ),
-    (
-        "src/grounder/workflowdef.rs",
-        "gate_id",
-        "lesson-split-grounder-workflowdef-config-store",
-    ),
-    (
-        "src/grounder/workflowdef.rs",
-        "agent_id",
-        "lesson-split-grounder-workflowdef-config-store",
-    ),
-    (
-        "src/grounder/workflowdef.rs",
-        "ConceptTuple",
-        "lesson-split-grounder-workflowdef-config-store",
-    ),
-    (
-        "src/grounder/workflowdef.rs",
-        "LinkTuple",
-        "lesson-split-grounder-workflowdef-config-store",
-    ),
-    (
-        "src/grounder/workflowdef.rs",
-        "reviewers_of",
-        "lesson-split-grounder-workflowdef-config-store",
-    ),
-    (
-        "src/grounder/workflowdef.rs",
-        "light_reviewers_of",
-        "lesson-split-grounder-workflowdef-config-store",
     ),
 ];
 

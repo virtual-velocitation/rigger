@@ -7,7 +7,7 @@ perceived or how it spent a run. Measured on the 2026-09-26 store (2,497,006
 events, 609 MB payload, 1.4 GB file): 2,443,614 events (97.9%) are the derived index -
 `EdgeInferred` 2,101,788, `DocLinkExtracted` 206,363, `CodeEntityExtracted` 133,591,
 `DocConceptExtracted` 1,872 - re-derivable from the tree and already folded into `graph.db` at emit time
-(`ingest::append_and_fold_batch`, `src/ingest.rs:48`; `RunCtx::emit_keyed_batch`,
+(`ingest::append_and_fold_batch`, `crates/rigger-grounder/src/ingest.rs:48`; `RunCtx::emit_keyed_batch`,
 `src/conductor.rs:2954`), so the log's copy has no production reader: `graph.db` is a persisted
 incremental projection, no command rebuilds it from the log (only tests do,
 `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7177`), and `src/docs.rs:728` forbids deleting it. They are
@@ -45,7 +45,7 @@ EPISODIC is every other type. The three sets are code-owned constants beside
 seam loudly, so a future event type is classified the day it is added.
 
 **PERCEPTION IS A LEDGER ENTRY, NOT A PAYLOAD.** The two fold-at-emit seams,
-`ingest::append_and_fold_batch` (`src/ingest.rs:48`) and `RunCtx::emit_keyed_batch`
+`ingest::append_and_fold_batch` (`crates/rigger-grounder/src/ingest.rs:48`) and `RunCtx::emit_keyed_batch`
 (`src/conductor.rs:2954`), append ONE event per file generation,
 `GenerationIngested { prefix, file, blob, extractor }`, where `blob` is the git blob id of the
 content ingested and `extractor` the extraction version, and fold the extracted batch

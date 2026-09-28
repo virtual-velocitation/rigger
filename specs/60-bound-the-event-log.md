@@ -27,7 +27,7 @@ not change because a new run started.
   exactly as today. Key shape is read only AFTER the type says the event is derived, and then
   it is the WHOLE key that identifies the file and its generation
   (`<prefix>/<file>@<hash>#<i>`: the remainder must carry an `@` and a `#<digits>` tail), never
-  a sniff of the leading `gc/` / `gd/` segment - `src/ingest.rs::key_batch` takes its prefix
+  a sniff of the leading `gc/` / `gd/` segment - `crates/rigger-grounder/src/ingest.rs::key_batch` takes its prefix
   from the CALLER, so a prefix sniff rests on an unenforced cross-module naming habit and a
   unit or stage id equal to `gc` or `gd` would make its own lifecycle keys read as project
   facts. Type-first is what makes Global constraint 3 a property of the code rather than of a
@@ -60,7 +60,7 @@ not change because a new run started.
   derived types' replay keys, created lazily; the observable contract is the no-op, and a no-op
   must never cost more than an index seek on a log of any size. Because a suppressed append
   writes fewer events than it was handed, what the append REPORTS BACK has to say what it wrote:
-  the one shared append-and-fold authority (`src/ingest.rs::append_and_fold_batch`) derives each
+  the one shared append-and-fold authority (`crates/rigger-grounder/src/ingest.rs::append_and_fold_batch`) derives each
   event's fold position arithmetically as `base = last + 1 - n`, which is only true when all `n`
   events were written, so a short write must be observable at the port or every event in that
   batch folds at a position the store never issued. BACKEND SCOPE, decided here so no unit has
@@ -147,7 +147,7 @@ not change because a new run started.
   and is the larger of the two edits. It owns with them the type-first suppression predicate
   itself - the predicate IS the seeding fix, so writing it is this criterion's work and no
   reviewer may charge it to criterion 2. ONE predicate, written ONCE beside the key authority
-  `key_batch` in `src/ingest.rs` and called from both sinks, never copied into either caller,
+  `key_batch` in `crates/rigger-grounder/src/ingest.rs` and called from both sinks, never copied into either caller,
   because the `<prefix>/<file>@<hash>#<i>` format is built there and must not drift; adding it
   there touches no contract of `append_and_fold_batch`, which is criterion 4's and stays so.
   It is the AUTHORITATIVE layer:
@@ -179,11 +179,11 @@ not change because a new run started.
   event (e.g. `ReviewFinding`) still appends a new row. This criterion OWNS the store-layer
   defense, and with it the honesty of the shared append-and-fold authority under a partially
   suppressed append: what the append reports back must name what was written, so
-  `src/ingest.rs::append_and_fold_batch` never folds an event at a position the store did not
-  issue. WHAT THIS CRITERION OWNS IN `src/ingest.rs` IS THAT AUTHORITY, NOT THE FILE:
+  `crates/rigger-grounder/src/ingest.rs::append_and_fold_batch` never folds an event at a position the store did not
+  issue. WHAT THIS CRITERION OWNS IN `crates/rigger-grounder/src/ingest.rs` IS THAT AUTHORITY, NOT THE FILE:
   `append_and_fold_batch`'s contract, its signature, and its honesty under a partially suppressed
   append - and nothing else in that file. Criterion 1 MAY add the one shared type-first,
-  whole-key, latest-per-file predicate beside `key_batch` in `src/ingest.rs`, which is where it
+  whole-key, latest-per-file predicate beside `key_batch` in `crates/rigger-grounder/src/ingest.rs`, which is where it
   belongs (the `<prefix>/<file>@<hash>#<i>` format is BUILT by `key_batch` there, the module
   exports no parser for it, and the module doc says that key must never fork), and no reviewer
   may reject criterion 1 for adding it there: a sibling helper beside `key_batch` alters no

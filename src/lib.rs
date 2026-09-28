@@ -30,10 +30,9 @@ pub use rigger_domain::community;
 pub mod concepts;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod conductor;
-pub mod config;
-/// The write half of [`config`] (spec 93, criterion 1): see that module's own doc.
+pub use rigger_config_files::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod config_store;
+pub use rigger_config_files::config_store;
 /// The console's view models and ONE FOLD (spec 93, criterion 4): the pure
 /// reconstruction of unit statuses, current-blocker lines, the needs-you dock and
 /// the statusline from a recorded event stream, shared between `rigger status`
@@ -56,19 +55,14 @@ pub use rigger_domain::failure;
 pub use rigger_gates_shell::gate;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub use rigger_driver::hooks;
-/// Project-source ingest into the context graph (spec 45): the ONE walk-and-content-key
-/// authority both the live run and the standalone `rigger graph build` entry share, so the
-/// content key an event is deduped under can never drift between the two ingest entries.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod ingest;
-/// Instruction injection: the built-in engineering law and the operator's
-/// `.rigger/instructions/*.md` layered into every spawned agent's system prompt.
-pub mod instructions;
+pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_driver::hooks;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::liveness;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_grounder::ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod mcpserver;
 pub use rigger_domain::metrics;

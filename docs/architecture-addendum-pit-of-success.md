@@ -182,7 +182,7 @@ a reject and remediating. This is the diagnostic use of events from §2.3. It ba
 a persona that passed the static lint but still failed to return a verdict (e.g. the
 agent ignored its instructions).
 
-_Code:_ `config::load`, `ReviewPanel::validate_depth` (`src/config.rs`); `cmd_validate`
+_Code:_ `config::load`, `ReviewPanel::validate_depth` (`crates/rigger-config-files/src/config_store.rs`, `crates/rigger-domain/src/config.rs`); `cmd_validate`
 (`src/main.rs`); the gate site in `run_adjudicator` (`src/conductor.rs`).
 
 ### 3.2 Spec-shape lint
@@ -420,7 +420,7 @@ default is unbounded and no per-agent bound covers the gating roles. A hung agen
 within a bounded time.
 
 _Code:_ the driver heartbeat framing (`workflows/rigger.js`), the wall-clock default +
-validate (`src/config.rs`, `src/main.rs`).
+validate (`crates/rigger-config-files/src/config_store.rs`, `src/main.rs`).
 
 ---
 
