@@ -40,6 +40,25 @@ entry of each event's `meta` (`ingest::META_REPLAY_KEY`; the sqlite store holds 
 JSON column) grouped by file identity. An in-memory scan of every derived event to find the latest
 key per file is NOT an implementation of this design.
 
+**THE RUN SLICE EXCLUDES THE DERIVED TYPES, decided here.** Derived events appended during the
+run (a `rigger step` that reindexes a changed file) sit after the boundary, so class (i) and
+class (iii) meet there: the from-boundary read of class (i) excludes `ingest::DERIVED_INDEX_TYPES`
+at the store, never a read-everything-then-drop. The exclusion is carried by the same port method
+as class (ii): `read_stream_typed(stream, from, selection)` takes a `TypeSelection`, `Only(types)`
+for the carried-over knowledge and `Except(types)` for the run slice, both answered by the one type
+index. `Filter`, `read_stream` and `read_all` keep their current meaning. Criterion 2 OWNS this
+exclusion as part of the read position of every one-shot command; criterion 3 OWNS only the
+derived-generation query and relies on criterion 2's exclusion, never re-implementing it.
+
+**SHARED INSTRUMENTS HAVE ONE OWNER, decided here.** The counting store double (it records how
+many events each read materializes) is built ONCE by criterion 1's unit as shared test
+infrastructure under `tests/common/` and reused by criteria 2 and 3, which add no second double.
+The port method `EventStore::last_position` and its two adapters belong to criterion 1;
+`EventStore::read_stream_typed`, `TypeSelection` and the type index on both backends belong to
+criterion 2; the derived-generation store query over `meta`'s `replay_key` belongs to
+criterion 3. Criteria 2 and 3 depend on criterion 1's double and criterion 3 depends on
+criterion 2's typed read, so their units are ordered by need.
+
 **COMPACTION SHEDS SUPERSEDED GENERATIONS.** `rigger reset --derived` today keeps the latest
 recording per exact replay key (13 duplicates on this store) and leaves every superseded
 generation in place. It keeps, per `<prefix>/<file>` identity, only the recordings of the
