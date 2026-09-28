@@ -43,7 +43,7 @@ Never hardcode a model ID (`claude-sonnet-4-6`) in an agent file. The alias is t
 
 ## Fanning out: the lookup and verify helpers
 
-Two helper subagents live in `.claude/agents/`, where Claude Code discovers subagents; `rigger init` installs them in every project, and an existing copy is kept:
+Two helper subagents live in `.claude/agents/`, where Claude Code discovers subagents; `rigger init` installs them in every project, and an existing copy is kept. The headless host also hands both to every spawn it launches (see [How a headless spawn is configured](tools-and-context.md#how-a-headless-spawn-is-configured)), so a unit worktree needs no copy:
 
 - `lookup` (`haiku`) answers ONE question about ONE knowledge-graph node through the rigger graph tools. A persona dispatches one instance per graph node, in parallel, and never one per file: the graph is the lookup surface, and a per-file fan-out goes around it. A literal `Grep` is its last resort and is reported as a `GAP:` line so the graph gap gets fixed.
 - `verify` (`sonnet`) runs a build, the gate battery, a test run or a mutant reproduction and reports the exact result. A persona runs one at a time, because builds hold the machine-wide build slots.

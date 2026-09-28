@@ -96,4 +96,16 @@ Granting tools is half the surface; the other half is what the driver feeds the 
 
 The side-car keeps that slice *live* during long work: peer decisions land as they are emitted, so an agent mid-unit learns that a concurrent agent just made a governing decision without polling for it.
 
+### How a headless spawn is configured
+
+A headless Claude Code session reads its hooks, MCP servers and subagents from its working directory, and a unit worktree is a fresh checkout: `.claude/settings.json` is machine-local, and a project's `.gitignore` usually ignores `.claude`. So the headless host hands the whole configuration to each spawn on its command line, as inline JSON, and writes nothing into the worktree (whatever lands in a worktree is committed with the unit's work):
+
+| Flag | Carries | Built from |
+|---|---|---|
+| `--settings` | The spawn's own settings, with the SessionStart hook (`rigger prime`), the PreToolUse lookup guard (`rigger grep-guard` on `Grep\|Bash`) and the status line (`rigger status --line`) merged in | The same installers and commands `rigger setup` writes into `.claude/settings.json` |
+| `--mcp-config` + `--strict-mcp-config` | Exactly one MCP server, `rigger`, bound to this spawn (`rigger mcp --spawn <id>`), and no other | The same installer `rigger setup` writes `.mcp.json` with |
+| `--agents` | The `lookup` and `verify` fan-out helpers | The committed `.claude/agents/lookup.md` and `verify.md`, the same text `rigger init` scaffolds |
+
+Every value has one home in the binary, shared with `rigger setup`, so what an operator's session carries and what a spawn carries cannot drift, and the worktree needs nothing. The operator's own interactive session still reads `.claude/settings.json`; `rigger validate` warns when that file lacks the hooks, and `rigger setup` installs them.
+
 What this means for you as an author: you rarely need to stuff context into prompts. Put durable knowledge in events (lessons, decisions), keep prompts about *role and method*, and let grounding deliver the knowledge at the moment it is relevant. A prompt that hardcodes facts about the codebase goes stale; a graph that stores them gets superseded properly.
