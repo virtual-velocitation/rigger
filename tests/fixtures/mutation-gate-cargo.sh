@@ -11,7 +11,7 @@
 # a process ended by the kernel's OOM reaper reads in cargo-mutants 27.1's log (the shapes a
 # real sweep wrote on 2026-09-28): `test` - the test phase's own process ended by signal 9;
 # `build` - the build phase's own process ended; `rustc` - a compiler process under the build
-# ended, which cargo-mutants files as an unviable mutant.
+# ended, which cargo-mutants files as an unviable mutant. A real log opens with an empty line.
 : "${RIGGER_ARGV_CAPTURE:?the test names the argv capture file}"
 printf '%s ' "$@" >> "$RIGGER_ARGV_CAPTURE"
 echo >> "$RIGGER_ARGV_CAPTURE"
@@ -38,5 +38,5 @@ case "${RIGGER_FIXTURE_ENDED:-}" in
     *) exit 0 ;;
 esac
 mkdir -p "$out/mutants.out/log"
-printf '*** %s\n*** mutation diff:\n%b\n' "$name" "$body" > "$out/mutants.out/log/crates__alpha__src__lib.rs_line_2_col_5.log"
+printf '\n*** %s\n*** mutation diff:\n%b\n' "$name" "$body" > "$out/mutants.out/log/crates__alpha__src__lib.rs_line_2_col_5.log"
 exit 0

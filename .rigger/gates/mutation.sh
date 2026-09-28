@@ -19,6 +19,16 @@
 # multiple of the baseline says nothing about it (measured 2026-09-28: a rigger-domain-only
 # baseline took 0 s, and the auto-set 20 s bound then timed out both mutants of the smoke run
 # before their root-suite test run could report the catch). nextest ends any single hung test at 240 s (.config/nextest.toml).
+# A phase ENDED BY A SIGNAL (gap 100) is judged from the mutant's log, because cargo-mutants
+# 27.1 exits 0 over it (measured 2026-09-28 in a 1 GiB scope, a real reaper each time: a test
+# phase ended on signal 9 and a build phase ended on signal 9 both filed as "Failure" - the
+# unclassified outcome no .txt list carries - and a signal-ended rustc under the build filed
+# as "Unviable"; the sweep still exited 0). A TEST phase ended by a signal is a detection in
+# the sense a timeout is: the mutant made its tests grow until the reaper ended them (a
+# single test child ended the same way already fails nextest and reads as caught). A BUILD
+# phase ended by a signal - its own process, or a compiler under it - means the mutant was
+# never tested: the gate fails as an environment failure naming each such mutant and phase,
+# before the anchor state is promoted, so the next sweep examines them again.
 # The checkin stage's task text carries the survivor-closing protocol: read
 # mutants.out/outcomes.json, close each missed mutant with a test that fails on it or a
 # rewrite that removes the mutable site, commit, and record the accounting as a DecisionMade.
@@ -53,11 +63,35 @@
 # systemd scope, `MemoryMax` = half of `MemAvailable` at launch - the other half stays with
 # the step that launched the gate and with the desktop. Past the bound the kernel reclaims or
 # ends processes INSIDE the scope only; rigger itself signals nothing. Without a systemd user
-# manager (a CI container) the sweep runs unbounded and the gate says so. `-j` is sized from
-# the same bound: one job (a mutant copy's 8-way build plus its nextest run) is budgeted at
-# 6 GiB, so jobs = bound / 6 GiB, at least 1 and at most 3 (three copies already saturate the
-# 32 cores at 8 build jobs each). A bound too tight for the suite shows as a failing baseline
-# run below, never as a quietly "caught" mutant.
+# manager (a CI container) the sweep runs unbounded and the gate says so.
+#
+# THE REAPER ENDS A MUTANT, NEVER THE SWEEP (gap 100, 2026-09-28: a 208-mutant sweep at -j 3
+# in a 22 GB scope reached its bound seven minutes in; the reaper ended one process, and
+# systemd's default OOMPolicy=stop then stopped the whole scope - cargo-mutants took signal
+# 15 and the gate failed after 23 of 208 mutants). The scope carries `OOMPolicy=continue`: a
+# process the reaper ends is that mutant's outcome (see THE VERDICT) and the sweep goes on.
+#
+# THE SWEEP'S MEMORY SCALES WITH ITS TOTAL IN-FLIGHT TEST PROCESSES, not with its copy count
+# (measured 2026-09-28 on this 32-core box, root package: 2325 tests, each shape alone in a
+# transient scope, anonymous memory sampled from the scope's memory.stat every 0.5 s). A
+# healthy copy is small: its cold 8-job test build peaked at 1.3 GiB anonymous (memory.peak
+# 19.7 GiB, all but that the page cache of the artifacts it writes, which the kernel reclaims
+# at the bound rather than ending anything); its nextest run peaked at 3.0 GiB anonymous at 32
+# test threads (memory.peak 3.2 GiB, 43 s) and 1.5 GiB at 10 threads (memory.peak 2.3 GiB,
+# 95 s). A 2-copy sweep in a 30 GiB service showed MemoryPeak = its 30 GiB bound, reached by
+# page cache alone: 5547 reclaims at the bound, zero processes ended. What reaches the bound
+# is a RUNAWAY mutant: every in-flight test process of its copy runs the same mutated code
+# and may grow to the runner's 4 GiB cap (.cargo/pidns-runner.sh), so the exposure is the
+# number of test processes in flight across all copies - nextest's default one per core in
+# EACH copy made three copies 96 of them. So the total is held at the core count: each copy
+# runs cores / jobs nextest test threads (`-- --test-threads`, which cargo-mutants hands to
+# the test phase only - a real sweep's argv showed it absent from the `--no-run` build), and
+# the jobs come from the bound at 5 GiB per job, at least 1 and at most 3 (three copies
+# already saturate the cores at 8 build jobs each). 5 GiB is the measured healthy need
+# rounded up: a build (1.3 GiB) per copy plus one core-wide test fan-out (3.0 GiB) shared by
+# all copies, so jobs x 1.3 + 3.0 stays under jobs x 5 GiB for every jobs >= 1 - one figure,
+# no second constant, whatever -j the bound gives. A bound too tight for the suite shows as a
+# failing baseline run below, never as a quietly "caught" mutant.
 #
 # THE BASELINE STAYS ON. The checkin stage lists `test` before `mutation`, but the conductor
 # runs every listed gate whatever the earlier ones returned and exports no record of their
@@ -144,21 +178,24 @@ if test -n "$rerun"; then
     printf '%s\n' "$rerun" | sed -E 's/[][\\.*^$+?(){}|]/\\&/g; s/^([^:]+):[0-9]+:[0-9]+:/\1(:[0-9]+:[0-9]+)?:/; s/^/-F\n/' > "$MUTANTS/rerun.args" || exit 1
 fi
 
-# The memory bound and the job count, both from MemAvailable at launch (see THE SWEEP IS
-# BOUNDED AS A WHOLE above). RIGGER_MEMINFO names another meminfo file for the gate's tests.
+# The memory bound, the job count and each copy's test threads, from MemAvailable and the
+# core count at launch (see THE SWEEP IS BOUNDED AS A WHOLE and THE SWEEP'S MEMORY SCALES
+# above). RIGGER_MEMINFO names another meminfo file for the gate's tests.
 avail_kb="$(awk '/^MemAvailable:/ { print $2; exit }' "${RIGGER_MEMINFO:-/proc/meminfo}" 2>/dev/null)"
 avail_kb="${avail_kb:-0}"
 bound_kb=$((avail_kb / 2))
-jobs=$((bound_kb / (6 * 1024 * 1024)))
+jobs=$((bound_kb / (5 * 1024 * 1024)))
 test "$jobs" -ge 1 || jobs=1
 test "$jobs" -le 3 || jobs=3
+threads=$(($(nproc 2>/dev/null || echo 1) / jobs))
+test "$threads" -ge 1 || threads=1
 scope=""
 if test "$bound_kb" -gt 0 && command -v systemd-run > /dev/null 2>&1 &&
     systemd-run --user --scope --quiet -- true > /dev/null 2>&1; then
-    scope="systemd-run --user --scope --quiet -p MemoryMax=${bound_kb}K --"
-    echo "mutation gate: the sweep runs in its own scope, MemoryMax=${bound_kb}K (half of MemAvailable ${avail_kb}K), -j $jobs"
+    scope="systemd-run --user --scope --quiet -p OOMPolicy=continue -p MemoryMax=${bound_kb}K --"
+    echo "mutation gate: the sweep runs in its own scope, MemoryMax=${bound_kb}K (half of MemAvailable ${avail_kb}K), OOMPolicy=continue, -j $jobs x $threads test threads"
 else
-    echo "mutation gate: advisory - no systemd user scope here (systemd-run is absent, has no user manager, or MemAvailable is unreadable), so the sweep runs WITHOUT its own memory bound; -j $jobs"
+    echo "mutation gate: advisory - no systemd user scope here (systemd-run is absent, has no user manager, or MemAvailable is unreadable), so the sweep runs WITHOUT its own memory bound; -j $jobs x $threads test threads"
 fi
 
 # The `--test-package` arguments for the diff file $1: the package of every file it touches,
@@ -181,13 +218,15 @@ test_packages() {
 }
 
 # One cargo-mutants pass inside the scope; succeeds on exit 0 (all caught), 2 (misses, judged
-# below from missed.txt) and 3 (timeouts, which are detections).
+# below from missed.txt) and 3 (timeouts, which are detections). A mutant phase ended by a
+# signal leaves the exit code as it was (0 when nothing else happened), so it is judged from
+# the logs below, never from this code.
 sweep() {
     TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 $scope env -u CARGO_TARGET_DIR \
-        cargo mutants --workspace --test-tool nextest --cargo-arg=--target-dir=target --timeout 300 -j "$jobs" "$@"
+        cargo mutants --workspace --test-tool nextest --cargo-arg=--target-dir=target --timeout 300 -j "$jobs" "$@" -- --test-threads "$threads"
     rc=$?
     if test "$rc" -ge 128; then
-        echo "error[mutation]: the sweep ended on signal $((rc - 128)) - past its memory bound the kernel ends processes inside the sweep's scope; the step and the session are outside it"
+        echo "error[mutation]: environment failure - cargo-mutants itself ended on signal $((rc - 128)), so the sweep is incomplete; past its memory bound the kernel ends processes inside the sweep's scope, and the step and the session are outside it"
     fi
     test "$rc" -eq 0 -o "$rc" -eq 2 -o "$rc" -eq 3
 }
@@ -219,6 +258,24 @@ if test -s "$MUTANTS/rerun.args"; then
         test -s "$MUTANTS/rerun/mutants.out/outcomes.json" || exit 1
         cat "$MUTANTS/rerun/mutants.out/missed.txt" >> mutants.out/missed.txt 2>/dev/null
     fi
+fi
+
+# Every mutant phase ended by a signal, one line each: name, phase, signal (see THE VERDICT).
+# The build phase is the command carrying `--no-run`; a compiler it ran that ended on a signal
+# shows as cargo's "(signal: N" line, or rustc's "failed: signal: N" for its linker.
+for f in mutants.out/log/*.log "$MUTANTS"/rerun/mutants.out/log/*.log; do
+    test -f "$f" || continue
+    awk 'name == "" && /^\*\*\* / { sub(/^\*\*\* /, ""); name = $0; next }
+        /^\*\*\* / && !/^\*\*\* (result:|mutation diff:)/ { phase = index($0, " --no-run") ? "build" : "test"; next }
+        phase == "build" && match($0, /(\(|failed: )signal: [0-9]+/) { s = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", s); print name "\tbuild\t" s; exit }
+        /^\*\*\* result: Signalled\([0-9]+\)/ { s = $0; gsub(/[^0-9]/, "", s); print name "\t" phase "\t" s; exit }' "$f"
+done > mutants.out/ended.tsv || exit 1
+awk -F '\t' '$2 == "test" { print "mutation gate: " $1 " - its test phase ended on signal " $3 ": counted as a detection, like a timeout (the mutant made its tests grow until the reaper ended them)" }' mutants.out/ended.tsv
+awk -F '\t' '$2 != "test"' mutants.out/ended.tsv > mutants.out/environment.tsv
+if test -s mutants.out/environment.tsv; then
+    echo "error[mutation]: environment failure - $(wc -l < mutants.out/environment.tsv | tr -d ' ') mutants were never tested because a process of their build ended on a signal (past the sweep's memory bound the kernel's reaper ends processes inside its scope); they are neither caught nor missed, the anchor is not advanced, and the full list is mutants.out/environment.tsv in this worktree - rerun the gate"
+    awk -F '\t' '{ print "error[mutation]: ENDED " $1 " - its build phase ended on signal " $3 }' mutants.out/environment.tsv | head -n 3
+    exit 1
 fi
 
 git rev-parse HEAD > "$MUTANTS/last.new/tip" || exit 1
