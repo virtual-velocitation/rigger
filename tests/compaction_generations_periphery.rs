@@ -182,7 +182,8 @@ fn a_file_that_returns_to_an_earlier_content_keeps_that_generation_and_sheds_the
     // Design: h1@10 is an exact-key duplicate, h2@20 is superseded (2).
     let preview = backend
         .count_derived_duplicates(&prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     assert_eq!(
         preview,
         per_type(3, 0, 0, 2),
@@ -442,25 +443,120 @@ fn head(name: &str, line: u32, partial: bool) -> Vec<u8> {
     serde_json::to_vec(&v).unwrap()
 }
 
+/// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
+/// identity"): the pending proofs in staging order, the restorable attrs a retired node keeps, each
+/// identity's current generation, the node and edge assertions of live generations (edges by their
+/// columns, never their row ids), and the detached attachments a returning node revives. Everything
+/// else in the file is history a compacted log no longer replays.
+fn fold_state(graph_db: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(graph_db).unwrap();
+    [
+        "SELECT project, name, evidence FROM pending_proof ORDER BY id",
+        "SELECT project, id, attrs FROM retired_nodes WHERE attrs IS NOT NULL ORDER BY project, id",
+        "SELECT project, identity, generation FROM generations ORDER BY project, identity",
+        "SELECT project, identity, generation, node_id, kind, attrs FROM live_node_assertions
+          ORDER BY project, identity, node_id",
+        "SELECT a.project, a.identity, a.generation, e.from_id, e.to_id, e.rel, e.tier,
+                e.valid_from, e.valid_to, e.source
+           FROM live_edge_assertions a JOIN edges e ON e.id = a.edge_id
+          ORDER BY 1, 2, 3, 4, 5, 6, 7",
+        "SELECT d.project, d.node_id, e.to_id, e.rel, e.tier, e.valid_from, e.source
+           FROM detached_attachments d JOIN edges e ON e.id = d.edge_id
+          ORDER BY 1, 2, 3, 4",
+    ]
+    .into_iter()
+    .flat_map(|sql| {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let width = stmt.column_count();
+        stmt.query_map([], |r| {
+            Ok((0..width)
+                .map(|i| match r.get_ref(i).unwrap() {
+                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(" | "))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .map(|row| format!("{sql}: {row}"))
+        .collect::<Vec<_>>()
+    })
+    .collect()
+}
+
+/// The events folded into both rebuilds AFTER the comparison, so a divergence latent in the fold
+/// state surfaces: a later file defining every name the fixtures drop, and a decision naming the
+/// dropped entity, which brings a retired node - and whatever detached from it - back.
+fn later_events() -> Vec<Event> {
+    let mut events: Vec<Event> = ["gone", "alpha", "mid"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| {
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                def_in("src/late.rs", name, 1, i == 0),
+                &format!("gc/src/late.rs@z#{i}"),
+                90,
+            )
+        })
+        .collect();
+    events.push(
+        Event::new(
+            "DecisionMade",
+            serde_json::to_vec(&serde_json::json!({
+                "id": "d-late", "summary": "s", "governs": ["src/f.rs::gone"], "supersedes": "",
+            }))
+            .unwrap(),
+        )
+        .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(91)),
+    );
+    events
+        .into_iter()
+        .zip(1_000_000u64..)
+        .map(|(mut e, position)| {
+            e.position = position;
+            e
+        })
+        .collect()
+}
+
+/// The whole live projection and the [`fold_state`] of `graph_db`, as one comparable value.
+fn identity_of(graph_db: &Path) -> (String, Vec<String>) {
+    use rigger::contextgraph::sqlite::Projector;
+    let whole = Projector::open(graph_db.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .whole()
+        .unwrap();
+    (serde_json::to_string(&whole).unwrap(), fold_state(graph_db))
+}
+
 /// Fold `events` whole, compact the log with the shipped policy, fold it again, and require the
-/// two live projections to be identical and to hold exactly `nodes` as `(id, kind)`. The live
-/// `graph.db` a run keeps is folded incrementally - one event per batch, the projector reopened
-/// between them - and must be that same projection before the log is compacted. Returns that
-/// projection so a case can pin a node's attrs too.
+/// two rebuilds to be identical - the live projection AND the fold state that decides future folds
+/// ([`fold_state`]) - both as compared and again after [`later_events`] fold into each, and to hold
+/// exactly `nodes` as `(id, kind)`. The live `graph.db` a run keeps is folded incrementally - one
+/// event per batch, the projector reopened between them - and must be that same state before the
+/// log is compacted. Returns the whole log's projection so a case can pin attrs and tiers too.
 fn compaction_rebuilds_the_whole_logs_graph(
     events: Vec<Event>,
     nodes: &[(&str, &str)],
 ) -> rigger::contextgraph::Graph {
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
-    let before = rebuilt_whole(&backend, &dir.path().join("before.db"));
+    let (before_db, live_db, after_db) = (
+        dir.path().join("before.db"),
+        dir.path().join("live.db"),
+        dir.path().join("after.db"),
+    );
+    let before = rebuilt_whole(&backend, &before_db);
     let one_by_one: Vec<Vec<Event>> = run_events(&backend, PROJECT)
         .into_iter()
         .map(|e| vec![e])
         .collect();
+    fold_in_batches(&live_db, PROJECT, &one_by_one);
     assert_eq!(
-        fold_in_batches(&dir.path().join("live.db"), PROJECT, &one_by_one),
-        before,
+        identity_of(&live_db),
+        identity_of(&before_db),
         "the graph folded event by event across reopens must be the whole log's"
     );
     backend
@@ -469,10 +565,19 @@ fn compaction_rebuilds_the_whole_logs_graph(
             &rigger::ingest::derived_index_identity(),
         )
         .unwrap();
-    let after = rebuilt_whole(&backend, &dir.path().join("after.db"));
+    rebuilt_whole(&backend, &after_db);
     assert_eq!(
-        after, before,
-        "the graph rebuilt from the compacted log must be the whole log's"
+        identity_of(&after_db),
+        identity_of(&before_db),
+        "the graph rebuilt from the compacted log must be the whole log's, fold state included"
+    );
+    for db in [&before_db, &after_db] {
+        fold_in_batches(db, PROJECT, &[later_events()]);
+    }
+    assert_eq!(
+        identity_of(&after_db),
+        identity_of(&before_db),
+        "both rebuilds must fold a later event to the same state"
     );
     let graph: rigger::contextgraph::Graph = serde_json::from_str(&before).unwrap();
     let held: Vec<(&str, &str)> = graph
@@ -482,6 +587,90 @@ fn compaction_rebuilds_the_whole_logs_graph(
         .collect();
     assert_eq!(held, nodes, "the whole log's live nodes; graph: {before}");
     graph
+}
+
+/// A `CodeEntityExtracted` payload defining `name` at `line` in `file`, heading its batch when
+/// `fresh`.
+fn def_in(file: &str, name: &str, line: u32, fresh: bool) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
+        "fresh": fresh,
+    }))
+    .unwrap()
+}
+
+/// An `EdgeInferred` payload: `caller` in `file` references `name`.
+fn call_in(file: &str, caller: &str, name: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "file": file, "name": name, "lang": "rust", "caller": caller,
+    }))
+    .unwrap()
+}
+
+/// `src/g.rs` defines `user`, which calls `gone`: a cross-file reference and its `CALLS` twin.
+fn g_calls_gone(secs: u64) -> Vec<Event> {
+    vec![
+        keyed(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            def_in("src/g.rs", "user", 1, true),
+            "gc/src/g.rs@k1#0",
+            secs,
+        ),
+        keyed(
+            TYPE_EDGE_INFERRED,
+            call_in("src/g.rs", "user", "gone"),
+            "gc/src/g.rs@k1#1",
+            secs,
+        ),
+    ]
+}
+
+/// The live `(from, to, rel, tier)` of every edge `graph` holds into `to`.
+fn tiers_into<'g>(
+    graph: &'g rigger::contextgraph::Graph,
+    to: &str,
+) -> Vec<(&'g str, &'g str, &'g str)> {
+    graph
+        .edges
+        .iter()
+        .filter(|e| e.to == to)
+        .map(|e| (e.from.as_str(), e.rel.as_str(), e.tier.as_str()))
+        .collect()
+}
+
+/// A graph-derived attachment payload: `node` in `community` (`CommunityAssigned`), heading the
+/// pass.
+fn community_of(node: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "node": node, "community": "community/1/c0", "resolution": 1.0, "hash": "h",
+        "fresh": true,
+    }))
+    .unwrap()
+}
+
+/// A concept pass: the concept `concept/1/k0` (`ConceptDerived`) and `node` realizing it
+/// (`ConceptRealized`), valid from `secs`.
+fn concept_of(node: &str, secs: u64) -> Vec<Event> {
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+    vec![
+        Event::new(
+            rigger::contextgraph::TYPE_CONCEPT_DERIVED,
+            serde_json::to_vec(&serde_json::json!({
+                "concept": "concept/1/k0", "label": "K", "resolution": 1.0, "hash": "h",
+                "fresh": true,
+            }))
+            .unwrap(),
+        )
+        .with_valid_from(at),
+        Event::new(
+            rigger::contextgraph::TYPE_CONCEPT_REALIZED,
+            serde_json::to_vec(&serde_json::json!({
+                "node": node, "concept": "concept/1/k0", "resolution": 1.0, "hash": "h",
+            }))
+            .unwrap(),
+        )
+        .with_valid_from(at),
+    ]
 }
 
 rigger::test_cases! {
@@ -658,6 +847,398 @@ rigger::test_cases! {
             ("src/f.rs", "file"),
             ("src/f.rs::alpha", "code-entity"),
             ("src/g.rs", "artifact"),
+        ],
+    );
+}
+
+/// `src/f.rs` defines `alpha` and `gone` at h1 and only `alpha` at h2.
+fn f_drops_gone() -> (Vec<Event>, Event) {
+    (
+        vec![
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                head("alpha", 1, false),
+                "gc/src/f.rs@h1#0",
+                10,
+            ),
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                entity("gone", 9),
+                "gc/src/f.rs@h1#1",
+                10,
+            ),
+        ],
+        keyed(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            head("alpha", 2, false),
+            "gc/src/f.rs@h2#0",
+            20,
+        ),
+    )
+}
+
+/// A cross-file reference (and its `CALLS` twin) to a name only a later-dropped definition defined
+/// is INFERRED while that definition lives and AMBIGUOUS again once it retires - whether the
+/// reference folded before the definition or after it - exactly what the compacted log folds,
+/// where the definition never existed.
+fn a_dropped_definitions_cross_file_callers_fall_back_to_ambiguous(reference_first: bool) {
+    let (h1, h2) = f_drops_gone();
+    let events: Vec<Event> = if reference_first {
+        [g_calls_gone(5), h1, vec![h2]].concat()
+    } else {
+        [h1, g_calls_gone(12), vec![h2]].concat()
+    };
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        events,
+        &[
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/g.rs", "file"),
+            ("src/g.rs::gone", "code-entity"),
+            ("src/g.rs::user", "code-entity"),
+        ],
+    );
+    assert_eq!(
+        tiers_into(&graph, "src/g.rs::gone"),
+        vec![
+            ("src/g.rs", "REFERENCES", "ambiguous"),
+            ("src/g.rs::user", "CALLS", "ambiguous"),
+        ],
+        "no definition of `gone` is left, so neither edge may claim one"
+    );
+}
+
+rigger::test_cases! {
+    /// The reference folds after the definition it resolved against.
+    a_reference_after_its_definition_is_ambiguous_once_the_definition_drops:
+        a_dropped_definitions_cross_file_callers_fall_back_to_ambiguous(false);
+    /// The reference folds before the definition that promoted it.
+    a_reference_before_its_definition_is_ambiguous_once_the_definition_drops:
+        a_dropped_definitions_cross_file_callers_fall_back_to_ambiguous(true);
+}
+
+/// A cross-file reference to a name that ANOTHER live definition still defines stays INFERRED
+/// when one of its definitions drops.
+#[test]
+fn a_reference_keeps_its_inferred_tier_while_another_definition_of_its_name_lives() {
+    let (h1, h2) = f_drops_gone();
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        [
+            h1,
+            vec![keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                def_in("src/h.rs", "gone", 4, true),
+                "gc/src/h.rs@j1#0",
+                11,
+            )],
+            g_calls_gone(12),
+            vec![h2],
+        ]
+        .concat(),
+        &[
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/g.rs", "file"),
+            ("src/g.rs::gone", "code-entity"),
+            ("src/g.rs::user", "code-entity"),
+            ("src/h.rs", "file"),
+            ("src/h.rs::gone", "code-entity"),
+        ],
+    );
+    assert_eq!(
+        tiers_into(&graph, "src/g.rs::gone"),
+        vec![
+            ("src/g.rs", "REFERENCES", "inferred"),
+            ("src/g.rs::user", "CALLS", "inferred"),
+        ],
+        "`src/h.rs` still defines `gone`"
+    );
+}
+
+/// A test's proof that landed on a definition a later generation drops goes back to waiting, so
+/// the next definition of the name receives it - as it does in the compacted log, where the
+/// dropped definition never existed and the proof waited from the start.
+#[test]
+fn a_proof_on_a_dropped_definition_lands_on_the_next_definition_of_its_name() {
+    let (h1, h2) = f_drops_gone();
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        [
+            h1,
+            vec![
+                keyed(
+                    TYPE_EDGE_INFERRED,
+                    proof("gone", 3),
+                    "gc/tests/t.rs@k1#0",
+                    12,
+                ),
+                h2,
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    def_in("src/h.rs", "gone", 4, true),
+                    "gc/src/h.rs@j1#0",
+                    30,
+                ),
+            ],
+        ]
+        .concat(),
+        &[
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/h.rs", "file"),
+            ("src/h.rs::gone", "code-entity"),
+        ],
+    );
+    let gone = graph
+        .nodes
+        .iter()
+        .find(|n| n.id == "src/h.rs::gone")
+        .unwrap();
+    let proof: Vec<(&str, &str)> = gone
+        .attrs
+        .iter()
+        .filter(|(k, _)| k.starts_with("pro"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(
+        proof,
+        vec![
+            ("proof_evidence", r#"["tests/t.rs:3"]"#),
+            ("proven_by", "1")
+        ],
+        "the proof the dropped definition held belongs to the definition that replaced it"
+    );
+}
+
+/// A design link an UNKEYED recording asserts (one written before replay keys, which the
+/// compaction never selects) outlives a keyed generation that drops it: the unkeyed recording is
+/// an asserter of its own, so both rebuilds hold it live from its first date.
+#[test]
+fn a_link_an_unkeyed_recording_asserts_outlives_the_keyed_generation_that_drops_it() {
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            Event::new(TYPE_DOC_LINK_EXTRACTED, link("src/old.rs"))
+                .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(5)),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/old.rs"),
+                "gd/docs/f.md@h1#0",
+                10,
+            ),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/a.rs"),
+                "gd/docs/f.md@h2#0",
+                20,
+            ),
+        ],
+        &[
+            ("docs/f.md", "artifact"),
+            ("src/a.rs", "artifact"),
+            ("src/old.rs", "artifact"),
+        ],
+    );
+    let edges: Vec<(&str, i64)> = graph
+        .edges
+        .iter()
+        .map(|e| (e.to.as_str(), e.valid_from))
+        .collect();
+    assert_eq!(
+        edges,
+        vec![("src/a.rs", nanos(20)), ("src/old.rs", nanos(5))],
+        "the unkeyed link holds from its own date; the keyed h2 link from h2's"
+    );
+}
+
+/// Graph-derived attachments never hold a node: a community assignment and a concept realization
+/// on an entity a later generation drops retire with it, while a decision still names another
+/// dropped entity, which stays as the decision's artifact. No live edge dangles in either rebuild.
+#[test]
+fn attachments_on_a_dropped_entity_retire_with_it_while_knowledge_holds_its_sibling() {
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(11);
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        [
+            vec![
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    head("alpha", 1, false),
+                    "gc/src/f.rs@h1#0",
+                    10,
+                ),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    entity("gone", 9),
+                    "gc/src/f.rs@h1#1",
+                    10,
+                ),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    entity("other", 5),
+                    "gc/src/f.rs@h1#2",
+                    10,
+                ),
+                Event::new(
+                    rigger::contextgraph::TYPE_COMMUNITY_ASSIGNED,
+                    community_of("src/f.rs::gone"),
+                )
+                .with_valid_from(at),
+            ],
+            concept_of("src/f.rs::gone", 11),
+            vec![
+                governs("src/f.rs::other", 12),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    head("alpha", 2, false),
+                    "gc/src/f.rs@h2#0",
+                    20,
+                ),
+            ],
+        ]
+        .concat(),
+        &[
+            ("community/1/c0", "community"),
+            ("concept/1/k0", "concept"),
+            ("d1", "decision"),
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::other", "artifact"),
+        ],
+    );
+    let ids: std::collections::BTreeSet<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
+    let dangling: Vec<(&str, &str)> = graph
+        .edges
+        .iter()
+        .filter(|e| !ids.contains(e.from.as_str()) || !ids.contains(e.to.as_str()))
+        .map(|e| (e.from.as_str(), e.rel.as_str()))
+        .collect();
+    assert_eq!(
+        dangling,
+        Vec::<(&str, &str)>::new(),
+        "no live edge may dangle"
+    );
+}
+
+/// An attachment on an entity every generation keeps is live in both rebuilds - whether it folded
+/// before the entity's latest generation (the compacted log replays it onto a node not held yet)
+/// or after it.
+#[test]
+fn an_attachment_on_an_entity_every_generation_keeps_stays_live() {
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(11);
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                head("alpha", 1, false),
+                "gc/src/f.rs@h1#0",
+                10,
+            ),
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                entity("keep", 9),
+                "gc/src/f.rs@h1#1",
+                10,
+            ),
+            Event::new(
+                rigger::contextgraph::TYPE_COMMUNITY_ASSIGNED,
+                community_of("src/f.rs::keep"),
+            )
+            .with_valid_from(at),
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                head("alpha", 2, false),
+                "gc/src/f.rs@h2#0",
+                20,
+            ),
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                entity("keep", 8),
+                "gc/src/f.rs@h2#1",
+                20,
+            ),
+        ],
+        &[
+            ("community/1/c0", "community"),
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::keep", "code-entity"),
+        ],
+    );
+    assert_eq!(
+        tiers_into(&graph, "community/1/c0"),
+        vec![("src/f.rs::keep", "IN_COMMUNITY", "inferred")],
+        "the kept entity's membership is live"
+    );
+}
+
+/// A `SPECIFIES` link from `docs/f.md` to `to`, spelled with its keys in `rel`, `to`, `from` order
+/// - the order the other ingest sink writes - and, when `extra`, carrying a field the fold ignores.
+fn link_respelled(to: &str, extra: bool) -> Vec<u8> {
+    let tail = if extra { r#","note":"x""# } else { "" };
+    format!(r#"{{"rel":"SPECIFIES","to":"{to}","from":"docs/f.md"{tail}}}"#).into_bytes()
+}
+
+/// One design fact recorded under both sinks' spellings keeps its earliest date: across
+/// generations the fact is the parsed payload, never its bytes, and within one key every earlier
+/// recording counts however its payload is spelled - and the compacted log rebuilds the whole
+/// log's graph.
+#[test]
+fn a_fact_recorded_in_both_sinks_spellings_keeps_its_earliest_date() {
+    let events = || {
+        vec![
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/a.rs"),
+                "gd/docs/f.md@h1#0",
+                10,
+            ),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link_respelled("src/a.rs", false),
+                "gd/docs/f.md@h2#0",
+                20,
+            ),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link_respelled("src/b.rs", true),
+                "gd/docs/f.md@h2#1",
+                25,
+            ),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/a.rs"),
+                "gd/docs/f.md@h2#0",
+                30,
+            ),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/b.rs"),
+                "gd/docs/f.md@h2#1",
+                35,
+            ),
+        ]
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, db) = store_with(dir.path(), &[(rigger::conductor::STREAM, events())]);
+    backend
+        .prune_derived_index(
+            &Namespaced::prefix_for(PROJECT),
+            &rigger::ingest::derived_index_identity(),
+        )
+        .unwrap();
+    let kept: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
+    assert_eq!(
+        kept,
+        vec![
+            ("gd/docs/f.md@h2#0".to_string(), nanos(10)),
+            ("gd/docs/f.md@h2#1".to_string(), nanos(25)),
+        ],
+        "`a` holds since h1 in either spelling; `b`'s key holds since its first recording"
+    );
+    compaction_rebuilds_the_whole_logs_graph(
+        events(),
+        &[
+            ("docs/f.md", "artifact"),
+            ("src/a.rs", "artifact"),
+            ("src/b.rs", "artifact"),
         ],
     );
 }
@@ -897,7 +1478,8 @@ fn a_key_with_no_parsed_generation_is_only_deduplicated_and_never_shed_as_supers
         assert_eq!(
             backend
                 .count_derived_duplicates(&prefix, &identity)
-                .unwrap(),
+                .unwrap()
+                .removed,
             per_type(removed, 0, 0, 0),
             "the preview must count exactly what the prune removes"
         );
@@ -940,7 +1522,8 @@ fn the_store_sheds_by_whatever_key_parser_the_policy_declares() {
     assert_eq!(
         backend
             .count_derived_duplicates(&prefix, &identity)
-            .unwrap(),
+            .unwrap()
+            .removed,
         per_type(1, 1, 0, 0)
     );
     let pruned = backend.prune_derived_index(&prefix, &identity).unwrap();
@@ -1007,8 +1590,12 @@ fn bare_reset_previews_superseded_generations_and_the_real_prune_removes_exactly
     let (menu, err, ok) = run_rigger(root, &["reset"]);
     assert!(ok, "a bare `rigger reset` must exit 0; stderr: {err}");
     assert!(
-        menu.contains("--derived: 4 duplicate event(s)"),
-        "the menu must count both superseded generations' four recordings; got: {menu:?}"
+        menu.contains(
+            "--derived: 4 redundant derived-index event(s) prunable from the event log across 4 \
+             derived type(s), 4 of them recordings of a superseded generation"
+        ),
+        "the menu must count both superseded generations' four recordings, as superseded; got: \
+         {menu:?}"
     );
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
@@ -1185,5 +1772,296 @@ fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
         ids(&b_alone),
         vec!["src/f.rs", "src/f.rs::beta", "src/f.rs::kept"],
         "B's h9 holds `beta` and `kept`"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 6. A graph.db folded before the generation rule is rebuilt once
+// ---------------------------------------------------------------------------------------
+
+/// `src/f.rs` drops `gone` and `docs/f.md` drops its link to `src/old.rs` between h1 and h2: the
+/// facts a graph folded before the generation rule keeps and a rebuild does not.
+fn two_generations_dropping_facts() -> Vec<Event> {
+    vec![
+        keyed(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            head("alpha", 1, false),
+            "gc/src/f.rs@h1#0",
+            10,
+        ),
+        keyed(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            entity("gone", 9),
+            "gc/src/f.rs@h1#1",
+            10,
+        ),
+        keyed(
+            TYPE_DOC_LINK_EXTRACTED,
+            link("src/old.rs"),
+            "gd/docs/f.md@h1#0",
+            10,
+        ),
+        keyed(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            head("alpha", 2, false),
+            "gc/src/f.rs@h2#0",
+            20,
+        ),
+        keyed(
+            TYPE_DOC_LINK_EXTRACTED,
+            link("src/a.rs"),
+            "gd/docs/f.md@h2#0",
+            20,
+        ),
+    ]
+}
+
+/// A `graph.db` at `db` holding `events` folded and then put in the shape a file folded before the
+/// generation rule has: `ledgers` (SQL) rewrites its generation ledgers and its projection version
+/// is cleared.
+fn a_pre_rule_graph_db(db: &Path, events: &[Event], ledgers: &str) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    Projector::open(db.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .apply_batch(events)
+        .unwrap();
+    let conn = rusqlite::Connection::open(db).unwrap();
+    conn.execute_batch(&format!(
+        "DROP VIEW live_node_assertions; DROP VIEW live_edge_assertions;
+         DROP TABLE generations; DROP TABLE node_assertions; DROP TABLE edge_assertions;
+         DROP TABLE retired_nodes; DROP TABLE detached_attachments; DROP TABLE relabel_owed;
+         {ledgers}
+         PRAGMA user_version = 0;"
+    ))
+    .unwrap();
+}
+
+/// A `graph.db` folded before the generation rule - with no ledgers at all, or with them in an
+/// older shape - is rebuilt cold from the log on its next open: nothing folds into it until then,
+/// the rebuild reaches exactly what a fresh fold of the log reaches, and it happens once.
+fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let log = run_events(&backend, PROJECT);
+    let (old_db, fresh_db) = (dir.path().join("old.db"), dir.path().join("fresh.db"));
+    a_pre_rule_graph_db(&old_db, &log[..3], ledgers);
+
+    let graph = Projector::open(old_db.to_str().unwrap(), PROJECT).unwrap();
+    assert!(graph.rebuild_owed(), "a pre-rule graph.db owes a rebuild");
+    assert_eq!(
+        graph.apply_batch(&log[3..]).unwrap_err().0,
+        "graph.db was folded under an older fold rule and must be rebuilt from the log before \
+         anything folds into it (rigger graph build rebuilds it)",
+        "nothing folds incrementally into a pre-rule graph.db"
+    );
+    graph.rebuild(&log).unwrap();
+    assert!(!graph.rebuild_owed(), "the rebuild is recorded");
+    drop(graph);
+
+    fold_in_batches(&fresh_db, PROJECT, &[log]);
+    assert_eq!(
+        identity_of(&old_db),
+        identity_of(&fresh_db),
+        "the rebuilt graph.db is the log's, fold state included"
+    );
+    let reopened = Projector::open(old_db.to_str().unwrap(), PROJECT).unwrap();
+    assert!(!reopened.rebuild_owed(), "the rebuild happens once");
+    reopened.apply_batch(&later_events()).unwrap();
+}
+
+rigger::test_cases! {
+    /// Folded before the ledgers existed at all.
+    a_graph_db_without_ledgers_is_rebuilt_from_the_log_once:
+        a_pre_rule_graph_db_is_rebuilt_from_the_log_once("");
+    /// Folded with the ledgers in an older shape.
+    a_graph_db_with_older_ledgers_is_rebuilt_from_the_log_once:
+        a_pre_rule_graph_db_is_rebuilt_from_the_log_once(
+            "CREATE TABLE generations (project TEXT, identity TEXT, generation TEXT, prior TEXT);
+             CREATE TABLE edge_assertions (
+               project TEXT, identity TEXT, generation TEXT, edge_id INTEGER);",
+        );
+}
+
+/// A cold rebuild folds the log one event at a time, as the live fold does: an event whose fold
+/// fails (a malformed payload the log holds) is skipped, never failing the rebuild, and leaves the
+/// rest of the log folded exactly as without it.
+#[test]
+fn a_rebuild_skips_an_event_whose_fold_fails() {
+    use rigger::contextgraph::sqlite::Projector;
+    let malformed = Event::new(
+        "DecisionMade",
+        br#"{"id":"bad","summary":"s","governs":"src/f.rs","supersedes":""}"#.to_vec(),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let mut events = two_generations_dropping_facts();
+    events.insert(3, malformed);
+    let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
+    let log = run_events(&backend, PROJECT);
+    let (rebuilt, clean) = (dir.path().join("rebuilt.db"), dir.path().join("clean.db"));
+    Projector::open(rebuilt.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .rebuild(&log)
+        .unwrap();
+    let without: Vec<Event> = log
+        .iter()
+        .filter(|e| e.position != log[3].position)
+        .cloned()
+        .collect();
+    fold_in_batches(&clean, PROJECT, &[without]);
+    assert_eq!(
+        identity_of(&rebuilt),
+        identity_of(&clean),
+        "the malformed event is skipped and every other event folds"
+    );
+}
+
+/// `rigger reset --derived` refuses to compact while the project's `graph.db` still owes its
+/// rebuild, and says how to pay it; `rigger graph build` rebuilds it from the log, after which the
+/// compaction runs.
+#[test]
+fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    {
+        let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+        let store = Namespaced::new(&backend, &run_stream_identity(root));
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &two_generations_dropping_facts(),
+            )
+            .unwrap();
+        let graph_db = rigger_file(root, "graph.db");
+        let log = store
+            .read_stream(
+                rigger::conductor::STREAM,
+                0,
+                rigger::eventstore::Direction::Forward,
+            )
+            .unwrap();
+        use rigger::contextgraph::sqlite::Projector;
+        use rigger::contextgraph::Projection;
+        Projector::open(graph_db.to_str().unwrap(), &run_stream_identity(root))
+            .unwrap()
+            .apply_batch(&log[..3])
+            .unwrap();
+        rusqlite::Connection::open(&graph_db)
+            .unwrap()
+            .execute_batch("PRAGMA user_version = 0;")
+            .unwrap();
+    }
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(!ok, "reset --derived must refuse; stdout: {out}");
+    let graph_db = rigger_file(root, "graph.db");
+    assert!(
+        err.contains(&format!(
+            "reset --derived: {} was folded under an older fold rule and must be rebuilt from \
+             the whole event log once before the log is compacted - run `rigger graph build`",
+            graph_db.to_str().unwrap()
+        )),
+        "the refusal names the file and the command that rebuilds it; stderr: {err}"
+    );
+    let (_, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(ok, "graph build must rebuild the graph; stderr: {err}");
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(
+        ok,
+        "reset --derived must run once the graph is rebuilt; stderr: {err}"
+    );
+    assert!(
+        out.contains("pruned 3 redundant derived-index event(s)")
+            && out.contains("3 of them recordings of a superseded generation"),
+        "h1's three recordings are shed as superseded; got: {out}"
+    );
+}
+
+/// Pruning superseded edges (`rigger reset --runs`) keeps what the fold may still bring back: an
+/// attachment detached from a retired node and a design link its identity's prior generation
+/// asserted. Only history nothing will revive is reclaimed, and the preview counts exactly that.
+#[test]
+fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    let dir = tempfile::tempdir().unwrap();
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(11);
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(
+            rigger::conductor::STREAM,
+            vec![
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    head("alpha", 1, false),
+                    "gc/src/f.rs@h1#0",
+                    10,
+                ),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    entity("gone", 9),
+                    "gc/src/f.rs@h1#1",
+                    10,
+                ),
+                keyed(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    link("src/old.rs"),
+                    "gd/docs/f.md@h1#0",
+                    10,
+                ),
+                Event::new(
+                    rigger::contextgraph::TYPE_COMMUNITY_ASSIGNED,
+                    community_of("src/f.rs::gone"),
+                )
+                .with_valid_from(at),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    head("alpha", 2, false),
+                    "gc/src/f.rs@h2#0",
+                    20,
+                ),
+                keyed(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    link("src/a.rs"),
+                    "gd/docs/f.md@h2#0",
+                    20,
+                ),
+            ],
+        )],
+    );
+    let db = dir.path().join("graph.db");
+    fold_in_batches(&db, PROJECT, &[run_events(&backend, PROJECT)]);
+    let graph = Projector::open(db.to_str().unwrap(), PROJECT).unwrap();
+    let boundary = Some(nanos(100));
+    let preview = graph.count_prunable(&[], boundary).unwrap();
+    let pruned = graph.prune(&[], boundary).unwrap();
+    assert_eq!(
+        (preview.superseded_edges, pruned.superseded_edges),
+        (2, 2),
+        "only the retired CONTAINS edges of h1 (alpha's and gone's) are reclaimable"
+    );
+    graph.apply_batch(&later_events()).unwrap();
+    assert_eq!(
+        tiers_into(&graph.whole().unwrap(), "community/1/c0"),
+        vec![("src/f.rs::gone", "IN_COMMUNITY", "inferred")],
+        "the detached membership survives the prune and revives when its node returns"
+    );
+    let edge_rows: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE to_id = 'src/old.rs'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        edge_rows, 1,
+        "the prior generation's retired link stays revivable"
     );
 }

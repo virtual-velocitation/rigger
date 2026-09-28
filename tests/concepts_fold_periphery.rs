@@ -34,7 +34,7 @@ use rigger::contextgraph::{
 };
 
 mod common;
-use common::fixtures::{apply_json, live_node_ids, live_targets};
+use common::fixtures::{apply_json, hold, live_node_ids, live_targets};
 
 /// Fold one `ConceptDerived` (the concept super-node) at `pos`.
 fn derived(p: &Projector, pos: u64, concept: &str, res: f64, fresh: bool) {
@@ -50,6 +50,7 @@ fn derived(p: &Projector, pos: u64, concept: &str, res: f64, fresh: bool) {
 
 /// Fold one `ConceptRealized` (a `<node> --REALIZES--> <concept>` membership) at `pos`.
 fn realized(p: &Projector, pos: u64, node: &str, concept: &str, res: f64) {
+    hold(p, pos + 1_000_000, &[node]);
     apply_json(
         p,
         pos,
@@ -65,6 +66,7 @@ fn a_minimal_concept_realized_event_folds_a_live_membership_edge_backcompat() {
     // must still fold a live `REALIZES` edge; the inside-out `events()` helper always supplies them,
     // so these default arms are untested by it. A rebuild that replays a pre-field log must not error.
     let p = Projector::open(":memory:", "test").unwrap();
+    hold(&p, 1_000_000, &["docs/a.md"]);
     apply_json(
         &p,
         1,
@@ -193,6 +195,7 @@ fn a_concept_derived_event_without_a_fresh_key_is_a_non_boundary_and_never_super
     // anything (the pass-boundary supersession is opt-in, gated on the emitter setting `fresh`).
     let p = Projector::open(":memory:", "test").unwrap();
     // First membership of node `x`, established WITHOUT a `fresh` key (the pre-field on-log form).
+    hold(&p, 1_000_000, &["x"]);
     apply_json(
         &p,
         1,
@@ -245,6 +248,7 @@ fn the_concept_layer_serialized_literals_are_stable_and_the_fold_matches_the_on_
     // strings, not renamed consts - and must store the literal `concept` kind / `REALIZES` rel a
     // later read expects.
     let p = Projector::open(":memory:", "test").unwrap();
+    hold(&p, 1_000_000, &["docs/a.md"]);
     apply_json(
         &p,
         1,

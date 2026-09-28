@@ -55,7 +55,7 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY};
 
 mod common;
-use common::fixtures::{live_node_ids, seed_two_subsystems};
+use common::fixtures::{hold, live_node_ids, seed_two_subsystems};
 
 /// The coupling graph of the seeded projection (over the public `whole()` read).
 fn coupling(p: &Projector) -> Coupling {
@@ -103,6 +103,8 @@ fn record_assignment(
 /// `fresh` boundary rides its FIRST event exactly as a real pass records it) into `p` starting at
 /// `next_pos`, one event at a time (the rebuild-replay order). Returns the next free position.
 fn fold_assignment(p: &Projector, assignment: &Assignment, next_pos: u64) -> u64 {
+    let members: Vec<&str> = assignment.members.iter().map(|(n, _)| n.as_str()).collect();
+    hold(p, next_pos + 10_000_000, &members);
     let mut events = community::events(assignment);
     for (i, e) in events.iter_mut().enumerate() {
         e.position = next_pos + i as u64;

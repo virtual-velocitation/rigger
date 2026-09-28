@@ -201,6 +201,13 @@ pub fn apply_decision(
 /// Fold a decision `id` GOVERNS `path` at `pos`, valid from `secs` past the epoch. GOVERNS is the
 /// surviving content edge the spec-40 upsert-live dedup is demonstrated over: `secs` lets a test
 /// assert the collapsed edge keeps the EARLIEST assertion time, and `pos` becomes the edge's
+/// Hold `nodes` in `p`'s graph at `pos`: a decision naming them, so a graph-derived attachment (a
+/// community or concept membership) folded onto them is live (spec 101: an attachment on a node the
+/// graph does not hold is not).
+pub fn hold(p: &Projector, pos: u64, nodes: &[&str]) {
+    apply_decision(p, pos, &format!("hold@{pos}"), "held", nodes, "");
+}
+
 /// `source`, so the LATEST assertion wins.
 pub fn apply_governs_at(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
     apply_json_at(

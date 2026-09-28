@@ -664,7 +664,9 @@ fn reset_composes_derived_with_runs_bare_reset_previews_it_and_an_unknown_mode_s
     );
     let total_duplicates = REMOVED_CODE_ENTITIES + REMOVED_EDGES + REMOVED_DOC_LINKS;
     assert!(
-        menu.contains(&format!("{total_duplicates} duplicate event(s)")),
+        menu.contains(&format!(
+            "{total_duplicates} redundant derived-index event(s)"
+        )),
         "the bare menu's --derived line must preview the same total the real prune below \
          removes ({total_duplicates}); got: {menu:?}"
     );

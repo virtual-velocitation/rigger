@@ -225,7 +225,8 @@ fn count_derived_duplicates_matches_prune_derived_indexs_per_type_report_in_decl
 
     let preview = backend
         .count_derived_duplicates(&prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     assert_eq!(
         preview, expected,
         "count_derived_duplicates must report every declared type, in declared order, zeros \
@@ -233,7 +234,8 @@ fn count_derived_duplicates_matches_prune_derived_indexs_per_type_report_in_decl
     );
     let preview_again = backend
         .count_derived_duplicates(&prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     assert_eq!(
         preview_again, preview,
         "a read-only preview must report the same counts on repeat asks"
@@ -248,7 +250,8 @@ fn count_derived_duplicates_matches_prune_derived_indexs_per_type_report_in_decl
 
     let after = backend
         .count_derived_duplicates(&prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     assert!(
         after.iter().all(|(_, n)| *n == 0),
         "after a real prune, count_derived_duplicates must find nothing left duplicated; got {after:?}"
@@ -294,7 +297,8 @@ fn count_derived_duplicates_needs_no_reasserting_declaration_unlike_the_prune_it
     // answer.
     let preview = backend
         .count_derived_duplicates(&prefix, &undeclared)
-        .expect("count_derived_duplicates must succeed against an undeclared partition");
+        .expect("count_derived_duplicates must succeed against an undeclared partition")
+        .removed;
     let code_dupes = preview
         .iter()
         .find(|(t, _)| t == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
@@ -350,7 +354,8 @@ fn count_derived_duplicates_matches_its_namespace_prefix_literally_not_as_a_wild
     let target_prefix = Namespaced::prefix_for(TARGET);
     let preview = backend
         .count_derived_duplicates(&target_prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     let code_dupes = preview
         .iter()
         .find(|(t, _)| t == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
@@ -369,7 +374,8 @@ fn count_derived_duplicates_matches_its_namespace_prefix_literally_not_as_a_wild
     let neighbour_prefix = Namespaced::prefix_for(WILDCARD_NEIGHBOUR);
     let neighbour_after = backend
         .count_derived_duplicates(&neighbour_prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     let neighbour_code = neighbour_after
         .iter()
         .find(|(t, _)| t == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)

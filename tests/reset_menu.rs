@@ -90,7 +90,7 @@ fn bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable() {
         "the --runs line must report zero prunable on an empty store; got: {out:?}"
     );
     assert!(
-        out.contains("--derived: 0 duplicate event(s)"),
+        out.contains("--derived: 0 redundant derived-index event(s)"),
         "the --derived line must report zero prunable on an empty store; got: {out:?}"
     );
 }
@@ -115,7 +115,10 @@ fn bare_reset_on_a_populated_store_reports_measured_counts_matching_a_real_prune
         "the --runs line must report the one dead-run node the fixture seeds; got: {out:?}"
     );
     assert!(
-        out.contains(&format!("--derived: {} duplicate event(s)", DUP_ROUNDS - 1)),
+        out.contains(&format!(
+            "--derived: {} redundant derived-index event(s)",
+            DUP_ROUNDS - 1
+        )),
         "the --derived line must report the {} prunable duplicates the fixture seeds; got: {out:?}",
         DUP_ROUNDS - 1
     );
