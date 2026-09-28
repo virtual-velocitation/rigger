@@ -118,11 +118,11 @@ The task and any later operator note travel as user messages on the input stream
 
 | Stream message | The host |
 |---|---|
-| `system/init` | records the resolved model, tools and MCP status; a `rigger` server that failed to connect fails the launch as infra |
+| `system/init` | records the resolved model, tools and MCP status; a `rigger` server whose status is not `connected` stops the session and fails the launch as a fault of class `unknown` |
 | any line | touches the spawn's liveness marker - the host proves life, the agent is never asked to |
 | `assistant`, `user` | appends transcript turns and running usage |
 | `system/api_retry` | records a waiting line (category, attempt, delay); hands the category to the hold controller (5) |
-| `system/permission_denied` | records the denied call; the count rides on the result |
+| `system/permission_denied` | records a progress line; the denial count is the `result` message's own `permission_denials` list, which also carries hook-blocked calls that emit no event |
 | `result` | records `SpawnResult`: output or `structured_output`, usage, cost, turns, session id |
 | exit without `result` | ends the launch as `interrupted` or `fault` by the last category seen (5.1); `unknown` when none |
 
