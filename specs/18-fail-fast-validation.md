@@ -15,7 +15,7 @@ gate (`verdict_approves`, `run_adjudicator`, `IntegrationApproval` in
 `src/conductor.rs`), the planner-to-baseline reconciliation (`harvest_proposed`,
 `normalize_ws`, `baseline_units`, `PLAN_PROTOCOL` in `src/conductor.rs`), and the run
 entry / anchoring (`cmd_workflow`, `parse_run_args`, `load_criteria` in `src/main.rs`;
-`Worktree::ensure_run_branch`, `ref_resolves` in `src/worktree.rs`).
+`Worktree::ensure_run_branch`, `ref_resolves` in `crates/rigger-worktree-git/src/worktree.rs`).
 
 **Unit 1 - gating-persona verdict-line static lint (touches `src/config.rs`,
 `src/main.rs`).** The integration gate reads a gating agent's RESULT output for a
@@ -67,7 +67,7 @@ surface (no new event type) so the extra unit is legible. A proposal mapping to 
 baseline id already claimed is merged, never double-run.
 
 **Unit 6 - `--base` reachability + missing-files refusal (touches `src/main.rs`,
-`src/worktree.rs`).** The default base `origin/main` is correct and stays, but is
+`crates/rigger-worktree-git/src/worktree.rs`).** The default base `origin/main` is correct and stays, but is
 unreachable-to-override on the commands an operator uses: `rigger workflow <spec> --base`
 errors "expected at most one spec path" and `rigger run --base` errors "unknown flag".
 Accept `--base <ref>` on both `cmd_workflow` and `parse_run_args` and thread it to the run

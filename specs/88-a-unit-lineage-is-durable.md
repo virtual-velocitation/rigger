@@ -8,7 +8,7 @@ alone and was then rejected for a defect its abandoned lineage had already fixed
 (adj-u86c3-r4-out-of-line-exclusion-still-unmigrated). (2) A fresh run adopts a prior unit's
 durable branch only when the planner reproduces the same slug; the planner named criterion 1
 `u86-c1-exclusion` where the escalated run had `u86c1-tests-not-nodes`, so `Worktree::create`
-(src/worktree.rs:131) would have branched from base and dropped six reviewed rounds; the operator
+(crates/rigger-worktree-git/src/worktree.rs:130) would have branched from base and dropped six reviewed rounds; the operator
 pre-created the branch by hand. (3) `UnitEscalated` is final for a run and the reaper removes the
 worktree, so a human who wants one more attempt must replan the whole spec. (4) The plan and
 plan-critique stages integrate nothing (`REVIEW_ONLY_NO_ARTIFACT`, src/conductor.rs:502); the

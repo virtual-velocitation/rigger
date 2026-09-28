@@ -82,7 +82,7 @@ construction:
   (`src/main.rs`) and `reclaim_unit_mutation_scratch` (`src/driver/replay.rs`) now thread an
   `authorized_root` through to `reap_processes_rooted_under`, resolved from the SAME context
   each already had (the run's resolved scratch root, or the registered mutation-scratch root
-  under `cache_home`); `Worktree::remove` (`src/worktree.rs`) calls `reap::reap_authorized`
+  under `cache_home`); `Worktree::remove` (`crates/rigger-worktree-git/src/worktree.rs`) calls `reap::reap_authorized`
   directly after its own `worktree_on_branch` check; the read-only users of
   `processes_rooted_under` are unaffected (that primitive's own single-argument signature is
   unchanged).

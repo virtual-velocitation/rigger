@@ -32,7 +32,7 @@ agents into inventing private CARGO_TARGET_DIR workarounds against the shared-ta
   spawn self-heals in the binary rather than in an agent's opening minutes. Agents stop
   needing their improvised `git worktree add` recovery; the persona guidance that grew around
   the failure can retire once this lands.
-- **Crash reclamation learns liveness** (`src/worktree.rs::sweep_terminal` + its caller): the
+- **Crash reclamation learns liveness** (`crates/rigger-worktree-git/src/worktree.rs::sweep_terminal` + its caller): the
   step-start sweep remains the reaper for worktrees a crashed process leaked, but its
   merged-only ancestry rule is NOT sufficient alone: a parked unit whose attempt produced an
   EMPTY diff has a branch tip that IS an ancestor of the run branch while the unit is live in

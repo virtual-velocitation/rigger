@@ -380,7 +380,7 @@
     "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
   },
   {
-    "id": "dup-c1bdf6ee7cd2",
+    "id": "dup-cdcd442232af",
     "disposition": "not-a-duplicate",
     "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
   },
@@ -395,7 +395,7 @@
     "reason": "Two light-lane no-op stubs of two different functions (the full per-file lag check and its bounded sample), each returning an empty list because no extraction pass is compiled."
   },
   {
-    "id": "dup-fbb2e2648317",
+    "id": "dup-90067fabd6a8",
     "disposition": "not-a-duplicate",
     "reason": "`commit` and `commit_checkpoint` are the two named entry points to the one `commit_with`, differing in whether the repository's hooks run (agent commits) or are bypassed (machine bookkeeping)."
   },
@@ -500,7 +500,7 @@
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
   {
-    "id": "dup-1d4ac4370fe6",
+    "id": "dup-d507d0e6cd18",
     "disposition": "not-a-duplicate",
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
   },

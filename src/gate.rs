@@ -670,13 +670,7 @@ pub fn mutation_gate_binary_on_path() -> Result<(), MutationBinaryUnavailable> {
 /// once, for every current and future courier-spawning call site.
 pub const STORE_FENCE_ENV: &str = "RIGGER_STORE_FENCE_DIR";
 
-/// The scratch-dir naming suffix [`ExecRunner::run`] appends to `target_dir` to derive the
-/// store fence's own sibling scratch dir (`{target_dir}{STORE_FENCE_SUFFIX}`). Shared with
-/// `worktree::reclaim_cache_sibling` (the ONE reclaim authority for a unit's
-/// `cargo-target-<slug>` cache sibling) so it reclaims the fence's sibling by the exact
-/// same name it was created under, rather than a second, independently-spelled copy that
-/// could drift from this one.
-pub const STORE_FENCE_SUFFIX: &str = "-store-fence";
+pub use rigger_domain::gate::STORE_FENCE_SUFFIX;
 
 /// ExecRunner runs a gate as a shell command, reducing output to compact evidence.
 pub struct ExecRunner;

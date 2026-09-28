@@ -18,12 +18,12 @@ later. The teardown of the creating context IS the reap point.
 
 ## Design
 
-Builds on the worktree teardown (`Worktree::remove`, `src/worktree.rs:472`) and the per-step
+Builds on the worktree teardown (`Worktree::remove`, `crates/rigger-worktree-git/src/worktree.rs:471`) and the per-step
 scratch sweep (`cmd_step` / Gap 14, `src/main.rs:1306`), and the `rigger validate` residue
 scan (`residue_advisories`, `src/main.rs:4356`) that already surfaces leftover worktrees and
 caches as warning-only advisories.
 
-**Unit 1 - reap processes rooted in a removed dir (touches `src/worktree.rs`,
+**Unit 1 - reap processes rooted in a removed dir (touches `crates/rigger-worktree-git/src/worktree.rs`,
 `src/main.rs`).** Before rigger removes a worktree or scratch dir it owns, it finds every
 process whose resolved cwd is INSIDE that dir and reaps it - SIGTERM, then SIGKILL after a
 short grace - so the dir can be removed cleanly and nothing outlives it. Detection is

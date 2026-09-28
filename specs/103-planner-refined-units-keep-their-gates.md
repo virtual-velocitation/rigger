@@ -17,8 +17,8 @@ branch's newer tree) replayed the unit's own pre-merge green and emitted `UnitIn
 (position 3401888) without a gate run.
 
 Four more seams of the loop's own machinery fail under load. `Worktree::create` heals
-"corrupt" worktree admin entries before every add (`src/worktree.rs:2203`), and
-`worktree_admin_is_corrupt` (`src/worktree.rs:2231`) flags an entry whose `commondir` or
+"corrupt" worktree admin entries before every add (`crates/rigger-worktree-git/src/worktree.rs:2009`), and
+`worktree_admin_is_corrupt` (`crates/rigger-worktree-git/src/worktree.rs:2037`) flags an entry whose `commondir` or
 `gitdir` is missing; git writes an entry as mkdir, `locked`, `gitdir`, `HEAD`, `commondir`, so
 a batch-mate's add on a concurrent thread (`run_batch`, `src/conductor.rs:3785`) is deleted
 mid-write and fails with `failed to read .git/worktrees/<name>/commondir`. `run_single_stage`
@@ -122,7 +122,7 @@ way; the lesson carries both shas.
   younger than the grace period, survives the heal though its `commondir` is missing, an old
   unlocked corrupt entry is healed, and two threads creating worktrees in one repository both
   succeed across 50 rounds. This criterion OWNS the heal predicate and the serialization of
-  `Worktree::create`; nothing else in this spec touches `src/worktree.rs`'s heal.
+  `Worktree::create`; nothing else in this spec touches `crates/rigger-worktree-git/src/worktree.rs`'s heal.
 - [ ] a test proves THE CHECKPOINT FIRES ONLY FOR A HALTED SPAWN: a dirty unit worktree is
   committed as the halted-spawn checkpoint only when the named spawn has no real result and
   no spawn of the unit has a fresh liveness marker; otherwise the tree and the branch are left

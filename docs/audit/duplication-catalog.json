@@ -3207,7 +3207,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-1d4ac4370fe6",
+    "id": "dup-d507d0e6cd18",
     "classification": "near",
     "sites": [
       {
@@ -3223,6 +3223,11 @@
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
         "name": "prefix_for",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "shared_build_cache_guard_path",
         "content_hash": "b0b4170272f04fb7"
       },
       {
@@ -3271,11 +3276,6 @@
         "content_hash": "6fd90a8c2eed6379"
       },
       {
-        "file": "src/worktree.rs",
-        "name": "shared_build_cache_guard_path",
-        "content_hash": "b0b4170272f04fb7"
-      },
-      {
         "file": "tests/canary_model_drift_periphery.rs",
         "name": "prose_claiming",
         "content_hash": "6fd90a8c2eed6379"
@@ -3296,7 +3296,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 11 files: crates/rigger-domain/src/spawn.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, src/conductor.rs, src/grounder/mod.rs, src/grounder/workflowdef.rs, src/main.rs, src/worktree.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 11 files: crates/rigger-domain/src/spawn.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/conductor.rs, src/grounder/mod.rs, src/grounder/workflowdef.rs, src/main.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -4583,7 +4583,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"A second mutation authority for one domain: the one previously-known \\\n        instance in this codebase (`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s \\\n        `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \\\n        is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \\\n        is section 2's finding (`u85c2-proc-stat-worked-example`, \\\n        `find_proc_stat_or_status_readers`), not re-counted here to avoid \\\n        double-charging one defect to two sections. Checked process spawning as the \\\n        one other plausible second-authority candidate: production code constructs \\\n        every process through the one process-spawn port (`{PROCESS_SPAWN_PORT}`), so \\\n        production `conductor.rs` never builds a git command of its own. \\\n        `src/worktree.rs` is the sole git-worktree-mutation authority OUTSIDE the \\\n        composition root. Inside it, `{MAIN}` (exempt from the port-concretion-reach \\\n        check above, not from this one) holds two more git-worktree-mutation sites: \\\n        `reap_then_remove_worktree` (`{}`), the sanctioned worktree half of the \\\n        spec-34/spec-79 orphan-sweep and extensively reviewed across those specs - a \\\n        deliberate design choice, not a gap; and `materialize_config_at_rev` (`{}`), \\\n        a real, already-known, non-blocking gap \\\n        (`arch-u13-config-checkout-bypasses-worktree-authority` / \\\n        `arch-u2r-config-checkout-shells-git` / \\\n        `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the \\\n        `Worktree` API is branch-creating and exposes no detach-at-rev checkout, so \\\n        this is a gap in that authority rather than a competing abstraction). No \\\n        second mutation authority found beyond the already-cited, \\\n        already-catalogued `/proc` case and this already-dispositioned \\\n        `materialize_config_at_rev` gap.\"",
+        "name": "\"A second mutation authority for one domain: the one previously-known \\\n        instance in this codebase (`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s \\\n        `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \\\n        is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \\\n        is section 2's finding (`u85c2-proc-stat-worked-example`, \\\n        `find_proc_stat_or_status_readers`), not re-counted here to avoid \\\n        double-charging one defect to two sections. Checked process spawning as the \\\n        one other plausible second-authority candidate: production code constructs \\\n        every process through the one process-spawn port (`{PROCESS_SPAWN_PORT}`), so \\\n        production `conductor.rs` never builds a git command of its own. \\\n        `crates/rigger-worktree-git/src/worktree.rs` is the sole git-worktree-mutation \\\n        authority OUTSIDE the \\\n        composition root. Inside it, `{MAIN}` (exempt from the port-concretion-reach \\\n        check above, not from this one) holds two more git-worktree-mutation sites: \\\n        `reap_then_remove_worktree` (`{}`), the sanctioned worktree half of the \\\n        spec-34/spec-79 orphan-sweep and extensively reviewed across those specs - a \\\n        deliberate design choice, not a gap; and `materialize_config_at_rev` (`{}`), \\\n        a real, already-known, non-blocking gap \\\n        (`arch-u13-config-checkout-bypasses-worktree-authority` / \\\n        `arch-u2r-config-checkout-shells-git` / \\\n        `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the \\\n        `Worktree` API is branch-creating and exposes no detach-at-rev checkout, so \\\n        this is a gap in that authority rather than a competing abstraction). No \\\n        second mutation authority found beyond the already-cited, \\\n        already-catalogued `/proc` case and this already-dispositioned \\\n        `materialize_config_at_rev` gap.\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -4883,6 +4883,44 @@
       }
     ],
     "proposed_home": "run_store::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-cdcd442232af",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "changed_files",
+        "content_hash": "f015a84399a6f2d4"
+      },
+      {
+        "file": "src/grounder/symbols/grounder.rs",
+        "name": "changed_files",
+        "content_hash": "93ca262f6550fdfe"
+      }
+    ],
+    "proposed_home": "one shared `changed_files` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-90067fabd6a8",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "commit",
+        "content_hash": "c579032eddaa6801"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "commit_checkpoint",
+        "content_hash": "8be4bae12c7dad4e"
+      }
+    ],
+    "proposed_home": "worktree::worktree",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5840,25 +5878,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c1bdf6ee7cd2",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "src/grounder/symbols/grounder.rs",
-        "name": "changed_files",
-        "content_hash": "93ca262f6550fdfe"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "changed_files",
-        "content_hash": "f015a84399a6f2d4"
-      }
-    ],
-    "proposed_home": "one shared `changed_files` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-2aabb2b82325",
     "classification": "near",
     "sites": [
@@ -6408,25 +6427,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/sidecar.rs, tests/store_content_identity_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-fbb2e2648317",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "name": "commit",
-        "content_hash": "c579032eddaa6801"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "commit_checkpoint",
-        "content_hash": "8be4bae12c7dad4e"
-      }
-    ],
-    "proposed_home": "worktree::worktree",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

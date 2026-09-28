@@ -1889,6 +1889,7 @@ dependencies = [
  "rigger-graph-sqlite",
  "rigger-process",
  "rigger-store-sqlite",
+ "rigger-worktree-git",
  "rusqlite",
  "rustix 1.1.4",
  "serde",
@@ -1960,6 +1961,15 @@ dependencies = [
  "testcontainers",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "rigger-worktree-git"
+version = "0.1.0"
+dependencies = [
+ "rigger-domain",
+ "rigger-process",
+ "thiserror",
 ]
 
 [[package]]

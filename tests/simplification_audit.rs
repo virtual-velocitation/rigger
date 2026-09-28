@@ -2078,11 +2078,12 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 4] = [
+const SPLIT_CRATES: [&str; 5] = [
     "crates/rigger-domain",
     "crates/rigger-store-sqlite",
     "crates/rigger-graph-sqlite",
     "crates/rigger-process",
+    "crates/rigger-worktree-git",
 ];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
@@ -4391,7 +4392,8 @@ fn render_section_3(files: &[FileScan]) -> String {
         one other plausible second-authority candidate: production code constructs \
         every process through the one process-spawn port (`{PROCESS_SPAWN_PORT}`), so \
         production `conductor.rs` never builds a git command of its own. \
-        `src/worktree.rs` is the sole git-worktree-mutation authority OUTSIDE the \
+        `crates/rigger-worktree-git/src/worktree.rs` is the sole git-worktree-mutation \
+        authority OUTSIDE the \
         composition root. Inside it, `{MAIN}` (exempt from the port-concretion-reach \
         check above, not from this one) holds two more git-worktree-mutation sites: \
         `reap_then_remove_worktree` (`{}`), the sanctioned worktree half of the \

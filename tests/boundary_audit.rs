@@ -460,6 +460,8 @@ fn a_domain_allowlist_entry_that_moved_or_vanished_is_reported() {
 const ADAPTER_SRCS: &[&str] = &[
     "crates/rigger-store-sqlite/src",
     "crates/rigger-graph-sqlite/src",
+    "crates/rigger-process/src",
+    "crates/rigger-worktree-git/src",
 ];
 
 /// Items the workspace plan assigns to an adapter crate that still live in the root crate,
@@ -512,6 +514,46 @@ const DEFERRED_ADAPTER_ITEMS: &[(&str, &str, &str)] = &[
         "src/canary_store.rs",
         "default_jobs",
         "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/worktree.rs",
+        "scratch_root",
+        "lesson-split-worktree-scratch-root-reach",
+    ),
+    (
+        "src/worktree.rs",
+        "scratch_root_with",
+        "lesson-split-worktree-scratch-root-reach",
+    ),
+    (
+        "src/worktree.rs",
+        "sweep_orphan_scratch_roots",
+        "lesson-split-worktree-scratch-root-reach",
+    ),
+    (
+        "src/worktree.rs",
+        "scratch_root_path",
+        "lesson-split-worktree-scratch-root-reach",
+    ),
+    (
+        "src/worktree.rs",
+        "scratch_root_path_with",
+        "lesson-split-worktree-scratch-root-reach",
+    ),
+    (
+        "src/worktree.rs",
+        "cache_scratch_root_from",
+        "lesson-split-worktree-scratch-root-reach",
+    ),
+    (
+        "src/worktree.rs",
+        "scratch_root_from_env",
+        "lesson-split-worktree-scratch-root-reach",
+    ),
+    (
+        "src/worktree.rs",
+        "scratch_root_path_from_env",
+        "lesson-split-worktree-scratch-root-reach",
     ),
 ];
 

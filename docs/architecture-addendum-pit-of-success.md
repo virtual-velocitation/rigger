@@ -84,7 +84,7 @@ feature-branch case is not to change the default but to make an explicit base
 (§3.4).
 
 _Code:_ `DEFAULT_BASE_REF` (`src/main.rs`), `parse_step_args`, `Worktree::ensure_run_branch`
-(`src/worktree.rs`).
+(`crates/rigger-worktree-git/src/worktree.rs`).
 
 ### 2.2 The context graph spans runs
 
@@ -261,7 +261,7 @@ a run anchored on the wrong ref produces doomed units instead of a refusal.
    warns.
 
 _Code:_ `cmd_workflow`, `parse_run_args`, `load_criteria` (`src/main.rs`);
-`Worktree::ensure_run_branch` / `ref_resolves` (`src/worktree.rs`).
+`Worktree::ensure_run_branch` / `ref_resolves` (`crates/rigger-worktree-git/src/worktree.rs`).
 
 ### 3.5 Version + build provenance an agent can self-serve
 

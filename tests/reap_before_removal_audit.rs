@@ -1,6 +1,6 @@
 //! Spec 79 criterion 2, THE BARE-REMOVAL AUDIT: the whole-tree companion to criterion 1's
 //! reap-before-removal rewiring (`sweep_terminal`, `clear_worktree_dir`, `reclaim_cache_sibling`,
-//! `reclaim_worktree_on_branch`, `Worktree::discard`, `Worktree::remove` - src/worktree.rs, and
+//! `reclaim_worktree_on_branch`, `Worktree::discard`, `Worktree::remove` - crates/rigger-worktree-git/src/worktree.rs, and
 //! `reclaim_unit_mutation_scratch` - src/driver/replay.rs). This test walks every `.rs` file
 //! under `src/` and fails, naming file and line, on any `fs::remove_dir_all(...)` or
 //! `git worktree remove` call site that is NEITHER routed through a reap-then-remove path NOR
@@ -72,7 +72,8 @@
 //!   the same kind of correlation the module doc's reap-vs-removal limit above already
 //!   discloses as not safely bridgeable by a plain text scan.
 //!
-//! SCOPE: `src/` only, recursively (`src/driver/replay.rs` included) - never `tests/`. Spec
+//! SCOPE: `src/` and each member crate's `crates/<name>/src/` only, recursively
+//! (`src/driver/replay.rs` included) - never `tests/`. Spec
 //! 79's Done-when line is literally "walks `src/`", and its Notes name why: "the pid-namespace
 //! test runner already contains TEST-spawned orphans; this spec is about the OPERATOR-side
 //! runtime paths, which run in no namespace." A test fixture's own tempdir teardown (e.g.
@@ -497,7 +498,7 @@ fn comment_text(line: &str) -> Option<&str> {
 ///
 /// Deliberately NARROWER than the sibling [`exemption_window`] bound used for the
 /// EXEMPTION_MARKER check just above, which ALSO resets on a preceding [`worktree_remove_shape`]
-/// line: this codebase's own real routed sites (`clear_worktree_dir` in `src/worktree.rs`,
+/// line: this codebase's own real routed sites (`clear_worktree_dir` in `crates/rigger-worktree-git/src/worktree.rs`,
 /// `reap_then_remove_worktree` in `src/main.rs`) reap ONCE, then attempt a `git worktree
 /// remove`, falling back to a bare `fs::remove_dir_all` of the SAME directory only when that
 /// attempt fails - an ALTERNATE textual form of the one removal the single preceding reap call
@@ -507,7 +508,7 @@ fn comment_text(line: &str) -> Option<&str> {
 /// spuriously flag both real sites. A preceding BARE `fs::remove_dir_all`, by contrast,
 /// unconditionally and terminally removes its own target; a second one later in the same
 /// function is - verified against every real multi-removal site in this tree today
-/// (`reclaim_cache_sibling` in `src/worktree.rs`, whose three sibling removals each carry their
+/// (`reclaim_cache_sibling` in `crates/rigger-worktree-git/src/worktree.rs`, whose three sibling removals each carry their
 /// OWN immediately-preceding dedicated reap call, and remain correctly, individually covered
 /// under this narrower bound) - removing a DIFFERENT directory, so it is a real boundary
 /// between two independently-reaped resources. See the module doc's own DISCLOSED LIMITS entry
@@ -617,11 +618,27 @@ fn remove_dir_all_shape(line: &str) -> Option<&'static str> {
     None
 }
 
-/// Scan every `.rs` file under `root/src`, recursively, for a bare-removal finding (spec 79
-/// criterion 2's audit) - deterministically ordered by (file, line).
+/// Every `.rs` file under `root/src` and each member crate's `root/crates/<name>/src`,
+/// recursively, in sorted order: the operator-side runtime sources this audit walks.
+fn collect_production_rs_files(root: &Path, files: &mut Vec<PathBuf>) {
+    collect_rs_files(&root.join("src"), files);
+    let mut crates: Vec<PathBuf> = fs::read_dir(root.join("crates"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    crates.sort();
+    for krate in crates {
+        collect_rs_files(&krate.join("src"), files);
+    }
+}
+
+/// Scan every production `.rs` file ([`collect_production_rs_files`]) for a bare-removal
+/// finding (spec 79 criterion 2's audit) - deterministically ordered by (file, line).
 fn scan_tree(root: &Path) -> Vec<Finding> {
     let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
+    collect_production_rs_files(root, &mut files);
     let mut findings = Vec::new();
     for path in &files {
         let rel = path
@@ -657,12 +674,12 @@ fn scan_tree(root: &Path) -> Vec<Finding> {
     findings
 }
 
-/// Every `(file, 1-based line)` in `root/src` that carries the claimed-exemption marker (spec
+/// Every `(file, 1-based line)` in the production sources ([`collect_production_rs_files`]) that carries the claimed-exemption marker (spec
 /// 79's Design: "the exemption is claimed in a code comment at the site" - this is the audit
 /// LISTING those claims, not merely accepting them silently), deterministically ordered.
 fn find_exemption_markers(root: &Path) -> Vec<(String, usize)> {
     let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
+    collect_production_rs_files(root, &mut files);
     let mut hits = Vec::new();
     for path in &files {
         let rel = path
@@ -926,7 +943,7 @@ fn f(dir_a: &str, dir_b: &str) {
 
         /// ROUND-5 FIX regression guard: the windowing fix above must NOT sever a real,
         /// already-shipped idiom this exact tree uses twice (`reap_then_remove_worktree` in
-        /// `src/main.rs`, `clear_worktree_dir` in `src/worktree.rs`) - reap once, attempt a `git
+        /// `src/main.rs`, `clear_worktree_dir` in `crates/rigger-worktree-git/src/worktree.rs`) - reap once, attempt a `git
         /// worktree remove`, and fall back to a bare `fs::remove_dir_all` of the SAME directory
         /// only when that attempt fails. The one preceding reap call must still cover the bare
         /// fallback even though a [`worktree_remove_shape`] line (itself also a removal-shaped scan
@@ -1175,7 +1192,7 @@ fn f(dir_a: &str, dir_b: &str) {
         );
 
         /// ROUND-2 FIX (upholding `adv-u79c2-authorized-root-value-blind-textual-match`):
-        /// `reap_dir_before_removal(dir, "")` is src/worktree.rs's own sanctioned no-op form
+        /// `reap_dir_before_removal(dir, "")` is crates/rigger-worktree-git/src/worktree.rs's own sanctioned no-op form
         /// (its doc comment: "Pass `""` when the caller has no such root... the reap becomes
         /// a no-op") - a GUARANTEED no-op at runtime, textually indistinguishable from a
         /// genuinely-effective call under a name-only substring match. It must never cover.
@@ -1326,7 +1343,10 @@ fn g(dir: &str) {
             "{hits:?}"
         );
         assert_eq!(
-            files.iter().filter(|f| **f == "src/worktree.rs").count(),
+            files
+                .iter()
+                .filter(|f| **f == "crates/rigger-worktree-git/src/worktree.rs")
+                .count(),
             1,
             "{hits:?}"
         );

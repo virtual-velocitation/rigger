@@ -13,6 +13,9 @@ pub mod config;
 pub mod contextgraph;
 pub mod eventstore;
 pub mod failure;
+/// The gate vocabulary the gate runner and the worktree reclaimer share.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod gate;
 /// The ingest fold rules (spec 45): the replay-key vocabulary and the project-scoped suppression
 /// predicate the live run and the standalone `rigger graph build` both seed from.
 #[cfg(any(feature = "store", not(feature = "core")))]

@@ -1,0 +1,27 @@
+[package]
+name = "rigger-worktree-git"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's git worktree adapter: the per-unit worktree, its landing onto the run branch and the reclaim of the scratch it leaves."
+
+[lib]
+name = "rigger_worktree_git"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = ["rigger-domain/store", "rigger-process/store"]
+core = ["rigger-domain/core", "rigger-process/core"]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# The process-spawn port and the reaper every removal goes through (a same-ring edge).
+rigger-process = { path = "../rigger-process", default-features = false }
+thiserror = "2"
+
+[lints]
+workspace = true
