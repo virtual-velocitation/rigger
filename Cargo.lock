@@ -1886,6 +1886,7 @@ dependencies = [
  "kurrentdb",
  "regex",
  "rigger-domain",
+ "rigger-gates-shell",
  "rigger-graph-sqlite",
  "rigger-process",
  "rigger-store-sqlite",
@@ -1923,6 +1924,18 @@ dependencies = [
  "serde_yaml",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "rigger-gates-shell"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "rigger-domain",
+ "rigger-process",
+ "rigger-store-sqlite",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

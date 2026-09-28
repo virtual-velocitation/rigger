@@ -101,7 +101,7 @@ impl CanaryOutcome {
     /// carrying the score in its data, tagged with the batch id in metadata so the fold
     /// can scope to one run.
     #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
-    pub(crate) fn to_event(&self, batch: &str) -> Event {
+    pub fn to_event(&self, batch: &str) -> Event {
         let data = json!({
             "id": self.id,
             "status": STATUS_CANARY,
@@ -188,7 +188,7 @@ impl CanaryHeader {
     /// [`STATUS_CANARY_HEADER`] token), tagged with the batch id like every other canary
     /// event so `stats --canary`'s scoped read finds it alongside the outcomes it describes.
     #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
-    pub(crate) fn to_event(&self, batch: &str) -> Event {
+    pub fn to_event(&self, batch: &str) -> Event {
         let data = json!({
             "id": batch,
             "status": STATUS_CANARY_HEADER,
@@ -237,7 +237,7 @@ pub fn latest_run(events: &[Event]) -> &[Event] {
     }
 }
 
-pub(crate) fn is_batch_marker(e: &Event) -> bool {
+pub fn is_batch_marker(e: &Event) -> bool {
     if e.type_ != TYPE_UNIT_STATUS {
         return false;
     }

@@ -1,0 +1,37 @@
+[package]
+name = "rigger-gates-shell"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's gate adapter: the shell runner that executes a gate under the resolved build environment, build slot and store fence, reducing its output to compact evidence."
+
+[lib]
+name = "rigger_gates_shell"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = ["rigger-domain/store", "rigger-process/store", "rigger-store-sqlite/store"]
+core = ["rigger-domain/core", "rigger-process/core", "rigger-store-sqlite/core"]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# The build-slot budget and the process-spawn port (a same-ring edge).
+rigger-process = { path = "../rigger-process", default-features = false }
+# The registry's pure state-home resolver the default build cache nests under (a same-ring edge).
+rigger-store-sqlite = { path = "../rigger-store-sqlite", default-features = false }
+thiserror = "2"
+
+# Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The shared build-cache guard's advisory lock (`flock` under the hood).
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -862,3 +862,7 @@ pub fn prompt_for(events: &[Event], id: &str) -> Result<Option<String>, serde_js
         }
     }))
 }
+
+/// A minimal request for the crate's unit tests, defined once with the shared fixtures.
+#[cfg(test)]
+pub(crate) use crate::test_support::test_request;

@@ -98,8 +98,8 @@
 //! `src/config.rs`'s `to_rule` (UFCS value, `.map(FailureRuleDef::to_rule)` at
 //! `src/config.rs:766`) are the 11 the operator's ruling explicitly named. `is_grep_fallback`
 //! (`src/progress.rs`, UFCS value `.filter(crate::progress::AgentProgress::is_grep_fallback)` at
-//! `src/metrics.rs:1066`) and `is_snapshot_drift` (`src/metrics.rs`, UFCS value
-//! `.all(ModelChange::is_snapshot_drift)` at `src/metrics.rs:1333`) are two MORE real,
+//! `crates/rigger-domain/src/metrics.rs:1066`) and `is_snapshot_drift` (`crates/rigger-domain/src/metrics.rs`, UFCS value
+//! `.all(ModelChange::is_snapshot_drift)` at `crates/rigger-domain/src/metrics.rs:1333`) are two MORE real,
 //! previously-unreported instances of the identical Method-category UFCS-value class - genuine
 //! evidence the round-3 fix closes the CLASS, not merely the two reported occurrences.
 //!
@@ -107,8 +107,8 @@
 //! variable or struct field sharing a fn's bare name now keeps that fn looking alive too - a
 //! false negative, never a false positive"): `placements` (`src/eventstore/mod.rs`, kept alive by
 //! its own struct's same-named field, e.g. `self.placements` at `src/eventstore/mod.rs:173`),
-//! `written` (`src/watch.rs`, kept alive by the `written` binding in the `matches!` pattern at
-//! `src/watch.rs:528`), and `rules` (`src/failure.rs`, kept alive by `Taxonomy`'s own `rules`
+//! `written` (`crates/rigger-domain/src/watch.rs`, kept alive by the `written` binding in the `matches!` pattern at
+//! `crates/rigger-domain/src/watch.rs:528`), and `rules` (`src/failure.rs`, kept alive by `Taxonomy`'s own `rules`
 //! field, e.g. `self.rules.iter()` at `src/failure.rs:238`) each verified by hand to have NO
 //! genuine call-shaped production reference of their own - each is provably dead by spec 87's own
 //! definition, kept off this round's dead-code list only by the accepted trade.
@@ -524,8 +524,8 @@ rigger::test_cases! {
     /// real, previously-UNREPORTED instances of the exact same `DispatchCategory::Method`
     /// UFCS-value-to-a-combinator class `to_rule` was the one reported instance of
     /// (`sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites`) -
-    /// `src/metrics.rs:1066`'s `.filter(crate::progress::AgentProgress::is_grep_fallback)` and
-    /// `src/metrics.rs:1333`'s `.all(ModelChange::is_snapshot_drift)`, verified by hand against the
+    /// `crates/rigger-domain/src/metrics.rs:1066`'s `.filter(crate::progress::AgentProgress::is_grep_fallback)` and
+    /// `crates/rigger-domain/src/metrics.rs:1333`'s `.all(ModelChange::is_snapshot_drift)`, verified by hand against the
     /// real tree, neither cited in the operator's round-3 ruling or the round-2 upheld findings.
     /// Their absence here is independent proof the round-3 fix closes the CLASS ("no code decides
     /// whether an occurrence looks like a call" - `op-u87c2-round-3-a-reference-is-any-token-not-a-
@@ -534,7 +534,7 @@ rigger::test_cases! {
         assert_absent_from_dead_code(
             &[
                 ("is_grep_fallback", Some("crates/rigger-domain/src/progress.rs")),
-                ("is_snapshot_drift", Some("src/metrics.rs")),
+                ("is_snapshot_drift", Some("crates/rigger-domain/src/metrics.rs")),
             ],
             "this is a real, previously-unreported instance of the same Method-category \
              UFCS-value class the round-3 fix was supposed to close generally, not merely the one \
@@ -544,7 +544,7 @@ rigger::test_cases! {
     /// or struct field sharing a fn's bare name now keeps that fn looking alive too - a false
     /// negative, never a false positive"): `placements` (kept alive by `Appended`'s own
     /// `self.placements` field access, e.g. `crates/rigger-domain/src/eventstore.rs:201`), `written` (kept alive by
-    /// the `written` binding in a `matches!` pattern at `src/watch.rs:528`), and `rules` (kept alive
+    /// the `written` binding in a `matches!` pattern at `crates/rigger-domain/src/watch.rs:528`), and `rules` (kept alive
     /// by `Taxonomy`'s own `self.rules` field access, e.g. `src/failure.rs:238`) each have NO
     /// call-shaped production reference of their own - verified by hand, each is provably dead by
     /// spec 87's own definition, kept off the committed list only by the accepted trade. This test
@@ -557,7 +557,7 @@ rigger::test_cases! {
         assert_absent_from_dead_code(
             &[
                 ("placements", Some("crates/rigger-domain/src/eventstore.rs")),
-                ("written", Some("src/watch.rs")),
+                ("written", Some("crates/rigger-domain/src/watch.rs")),
                 ("rules", Some("src/failure.rs")),
             ],
             "the accepted same-named-field/local false-negative trade \

@@ -299,6 +299,11 @@ const DEFERRED_DOMAIN_ITEMS: &[(&str, &str, &str)] = &[
         "assert_no_ungated_fanout_unit",
         "lesson-split-domain-conductor-error",
     ),
+    (
+        "crates/rigger-gates-shell/src/gate.rs",
+        "Runner",
+        "lesson-split-domain-gate-runner-port",
+    ),
 ];
 
 /// The domain crate's sources.
@@ -462,6 +467,7 @@ const ADAPTER_SRCS: &[&str] = &[
     "crates/rigger-graph-sqlite/src",
     "crates/rigger-process/src",
     "crates/rigger-worktree-git/src",
+    "crates/rigger-gates-shell/src",
 ];
 
 /// Items the workspace plan assigns to an adapter crate that still live in the root crate,

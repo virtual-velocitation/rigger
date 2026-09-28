@@ -12,7 +12,7 @@ thin replay driver do not yet carry it (see Design and Notes).
 
 ## Design
 
-- **One build-environment authority** (`src/gate.rs` env seam + the agent spawn env): a single
+- **One build-environment authority** (`crates/rigger-gates-shell/src/gate.rs` env seam + the agent spawn env): a single
   resolver derives the build environment from config and applies it to the two paths wired
   today - inline/deferred gate builds (`gate::ExecRunner::run`) and the blocking CLI agent
   driver (`driver/cli.rs`) - so a gate build and that driver's agent `cargo test` hit the same

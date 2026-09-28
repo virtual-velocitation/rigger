@@ -30,12 +30,12 @@
     "reason": "Two one-line unit tests over two different functions (`order_signature_advisories` staying silent on an empty list, `parse_guard_write_roots` refusing one)."
   },
   {
-    "id": "dup-fb8e130faaf9",
+    "id": "dup-6ffa6e5d1f83",
     "disposition": "not-a-duplicate",
     "reason": "Seven metric accessors, each naming a different ratio over different fields through the one shared `ratio` helper, so the shared logic already lives once."
   },
   {
-    "id": "dup-0a954d1e88d1",
+    "id": "dup-e7182e4e126f",
     "disposition": "not-a-duplicate",
     "reason": "Three test fixtures building three different event types with different payloads through the one shared `ev` helper."
   },
@@ -60,7 +60,7 @@
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
   {
-    "id": "dup-4911d89b3d03",
+    "id": "dup-3dc6b7903687",
     "disposition": "not-a-duplicate",
     "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
   },
@@ -90,7 +90,7 @@
     "reason": "Two regression tests pinning the empty-scratch-root guard at two different call sites (`spawn_scratch_path` and `marker_path`), each deliberately tested where callers reach it."
   },
   {
-    "id": "dup-03445327d61d",
+    "id": "dup-7329c003ba55",
     "disposition": "not-a-duplicate",
     "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
   },
@@ -100,12 +100,12 @@
     "reason": "Two builder setters on two different types setting different fields (`valid_from` on an event, `meta` on a spawn result)."
   },
   {
-    "id": "dup-2586d99fb4f1",
+    "id": "dup-e7252bf71441",
     "disposition": "not-a-duplicate",
     "reason": "`factor` and `cost_per_upheld` are different ratios over different fields with different zero-denominator answers (1.0 versus 0.0)."
   },
   {
-    "id": "dup-c71a16708556",
+    "id": "dup-3b3a41e03376",
     "disposition": "not-a-duplicate",
     "reason": "Three predicates over two different enums, each excluding a different variant (`Product`, `Infra`, `Deferred`) for a different policy."
   },
@@ -120,7 +120,7 @@
     "reason": "Two platform-tolerance tests over two different functions (`leaked_process_advisories` and `processes_rooted_under`) on an absent directory."
   },
   {
-    "id": "dup-46c8a0b0a101",
+    "id": "dup-c16dbfd88b00",
     "disposition": "not-a-duplicate",
     "reason": "`changed` and `is_error` test emptiness of two different fields on two different types for two different questions."
   },
@@ -135,7 +135,7 @@
     "reason": "Unit tests of two different functions, `width_threshold`'s nearest-rank split point over a width distribution and `full_fraction`'s strictly-greater share over a threshold; only the assert_eq shape is shared."
   },
   {
-    "id": "dup-fda029aaf8ec",
+    "id": "dup-f6925ead8f1a",
     "disposition": "not-a-duplicate",
     "reason": "The outcome and the header serialize different payloads (one item's score versus the batch's build, corpus and resolved models) through the one shared `canary_event` constructor, so only the json! literal shape is shared."
   },
@@ -350,12 +350,12 @@
     "reason": "Two per-operation skill renders passing their own content, each interpolating a different code-derived fact (`max_retries` versus the reject-recurrence diagnose threshold), to the one shared `render_operation_skill` skeleton."
   },
   {
-    "id": "dup-576605ec7eeb",
+    "id": "dup-d07779dc106d",
     "disposition": "not-a-duplicate",
     "reason": "One pins per-actor finding survival (`finding_survival` raised/upheld) and the other per-tier review cost (`tier_cost` spawns/upheld): different metrics of the fold that only share the courier fixture builders."
   },
   {
-    "id": "dup-3de871af68c4",
+    "id": "dup-6a304442d31e",
     "disposition": "not-a-duplicate",
     "reason": "One pins the unattributed-correct-reject count over planted items and the other the control and control-false-positive counts over known-good items: different canary metrics that only share the `canary_outcome` fixture."
   },
@@ -630,7 +630,7 @@
     "reason": "Three enum-to-string mappings over different enums (edge direction to SQL, entity kind, language)."
   },
   {
-    "id": "dup-474b79b66e9e",
+    "id": "dup-cab8f470b99c",
     "disposition": "not-a-duplicate",
     "reason": "`as_str`/`response` map four different enums (failure cause, gate outcome, ledger status, watch response) to their own strings."
   },
@@ -665,7 +665,7 @@
     "reason": "`dir_size_bytes` is the production measure while the periphery `dir_bytes` is the test's independent oracle with its own symlink handling."
   },
   {
-    "id": "dup-d02cffac777c",
+    "id": "dup-df893b1b93d7",
     "disposition": "not-a-duplicate",
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
   },

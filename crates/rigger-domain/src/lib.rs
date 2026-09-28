@@ -3,6 +3,7 @@
 //! `rigger` crate re-exports every module under its historical path.
 
 pub mod blocker;
+pub mod canary;
 /// Deterministic coupling-community detection (spec 53, the CODE lens): the offline pass that
 /// groups code entities and files by how densely they call and reference one another, regardless of
 /// directory, and records the result as `CommunityAssigned` events the always-compiled fold turns
@@ -21,6 +22,7 @@ pub mod gate;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
 pub mod ledger;
+pub mod metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
 pub mod progress;
@@ -32,13 +34,15 @@ pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod spec;
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub mod watch;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod wave;
 
 /// Parameterised tests: one shared case helper, one generated `#[test]` per named case.
 mod test_cases;
 
-/// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests: the event and
-/// graph fixtures of `tests/common/fixtures/`, compiled here from the same files. They name the
+/// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests: the event,
+/// graph and spawn fixtures of `tests/common/fixtures/`, compiled here from the same files. They name the
 /// crate as `rigger::...`, which `extern crate self as rigger` makes resolve to this crate, whose
 /// modules sit at the same paths the root facade re-exports them under.
 #[cfg(test)]
@@ -52,7 +56,12 @@ mod event_fixtures;
 #[path = "../../../tests/common/fixtures/graph.rs"]
 mod graph_fixtures;
 #[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/spawn.rs"]
+mod spawn_fixtures;
+#[cfg(test)]
 mod test_support {
     pub use crate::event_fixtures::*;
     pub use crate::graph_fixtures::*;
+    pub use crate::spawn_fixtures::*;
 }

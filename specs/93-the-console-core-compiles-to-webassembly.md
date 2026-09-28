@@ -1,7 +1,7 @@
 # 93 - The console core compiles to WebAssembly
 
 **Goal:** the projection code the conductor runs is already pure Rust - `crates/rigger-domain/src/ledger.rs`,
-`src/metrics.rs`, `crates/rigger-domain/src/progress.rs`, `crates/rigger-domain/src/blocker.rs`, `crates/rigger-domain/src/run.rs`, `crates/rigger-domain/src/community.rs`,
+`crates/rigger-domain/src/metrics.rs`, `crates/rigger-domain/src/progress.rs`, `crates/rigger-domain/src/blocker.rs`, `crates/rigger-domain/src/run.rs`, `crates/rigger-domain/src/community.rs`,
 `crates/rigger-domain/src/concepts.rs`, `crates/rigger-domain/src/contextgraph.rs` and the fold half of `crates/rigger-domain/src/spawn.rs` import no
 `rusqlite`, `tokio`, `std::fs`, `std::process` or `std::net` - yet the library cannot be built
 without its I/O dependencies, because every one of them (`rusqlite`, `kurrentdb`, `tokio`,

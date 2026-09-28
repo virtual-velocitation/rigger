@@ -16,13 +16,13 @@
 // half moved to its own `_store` file (`spawn_store`, `run_store`, `progress_store`).
 
 pub use rigger_domain::blocker;
+pub use rigger_domain::canary;
 /// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
 /// caps how many actual compiler invocations run at once, across every rigger process on
 /// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
 /// slots bound builds, never agents.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::budget;
-pub mod canary;
 /// The write half of [`canary`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod canary_store;
@@ -53,7 +53,7 @@ pub mod driver;
 pub mod eventstore;
 pub use rigger_domain::failure;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod gate;
+pub use rigger_gates_shell::gate;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -71,7 +71,7 @@ pub use rigger_domain::ledger;
 pub mod liveness;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod mcpserver;
-pub mod metrics;
+pub use rigger_domain::metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -97,6 +97,8 @@ pub mod sidecar;
 pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_domain::spec;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_domain::watch;
 /// The driver-independent watchdog (spec 69, criterion 2): `rigger watch`'s pure
 /// domain core - the five `rigger-watch-a-run` signals plus a store-integrity check,
 /// folded from already-gathered inputs into one line per anomaly, with in-process
@@ -109,8 +111,6 @@ pub use rigger_store_sqlite::spawn_store;
 /// The one opener every SQLite store connection goes through: see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_store_sqlite::sqlite;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod watch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod worktree;
 

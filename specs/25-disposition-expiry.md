@@ -19,7 +19,7 @@ mechanism for findings.
 A finding becomes a `KIND_FINDING` node with a `REL_RAISED` edge (from the raiser) and one
 `REL_ABOUT` edge per touched file, created in the `TYPE_REVIEW_FINDING` fold arm
 (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`). There is NO dedicated disposition event; a finding's disposition
-is the join of its attribution (`by`) with the adjudicator's result, exactly as `src/metrics.rs`
+is the join of its attribution (`by`) with the adjudicator's result, exactly as `crates/rigger-domain/src/metrics.rs`
 (`ReviewQuality`, `survival()`, `upheld_unattributed`) computes it:
 
 - **Discarded** = raised in a review whose adjudicator `SpawnResult` (`TYPE_SPAWN_RESULT`, the

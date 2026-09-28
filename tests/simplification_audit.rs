@@ -2078,12 +2078,13 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 5] = [
+const SPLIT_CRATES: [&str; 6] = [
     "crates/rigger-domain",
     "crates/rigger-store-sqlite",
     "crates/rigger-graph-sqlite",
     "crates/rigger-process",
     "crates/rigger-worktree-git",
+    "crates/rigger-gates-shell",
 ];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
@@ -2158,7 +2159,7 @@ enum SampleVerdict {
 /// The latest reading pass's verdict per drawn function, keyed `(file, name)`.
 const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
     (
-        "src/canary.rs",
+        "crates/rigger-domain/src/canary.rs",
         "from_event",
         SampleVerdict::NoDuplicate,
     ),
@@ -2225,7 +2226,7 @@ const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/metrics.rs",
+        "crates/rigger-domain/src/metrics.rs",
         "artifact_verdict",
         SampleVerdict::NoDuplicate,
     ),
@@ -4360,7 +4361,7 @@ fn render_section_3(files: &[FileScan]) -> String {
         CONDUCTOR,
         "crates/rigger-domain/src/blocker.rs",
         "crates/rigger-domain/src/spec.rs",
-        "src/watch.rs",
+        "crates/rigger-domain/src/watch.rs",
         "crates/rigger-domain/src/community.rs",
     ];
     let infra = ["rusqlite", "reqwest", "tonic", "tokio", "kurrentdb"];
@@ -5703,7 +5704,7 @@ fn render_section_6() -> String {
         `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \
-        `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
+        `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `src/grounder/mod.rs`, \
         `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
         `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \
