@@ -240,6 +240,8 @@ type CallLog = std::sync::Arc<std::sync::Mutex<Vec<CountedRead>>>;
 pub struct ReadCountingStore<'a> {
     inner: &'a dyn EventStore,
     reads: CallLog,
+    /// A write waiting to land in `inner` when a given call returns ([`Self::interleaving`]).
+    interleaved: std::sync::Mutex<Option<(usize, String, Vec<Event>)>>,
 }
 
 impl<'a> ReadCountingStore<'a> {
@@ -248,7 +250,16 @@ impl<'a> ReadCountingStore<'a> {
         ReadCountingStore {
             inner,
             reads: CallLog::default(),
+            interleaved: std::sync::Mutex::default(),
         }
+    }
+
+    /// This double with a concurrent writer: `events` land on `stream` of the inner store the
+    /// moment the read at index `after` of the call log (0-based, in call order) returns, so a
+    /// test places an append exactly between two reads of one command.
+    pub fn interleaving(self, after: usize, stream: &str, events: Vec<Event>) -> Self {
+        *self.interleaved.lock().unwrap() = Some((after, stream.to_string(), events));
+        self
     }
 
     /// Every read forwarded so far, in call order.
@@ -271,7 +282,19 @@ impl<'a> ReadCountingStore<'a> {
     /// Count the `events` call `at` handed back, then hand them on.
     fn handed_back(&self, at: usize, events: Vec<Event>) -> Vec<Event> {
         self.reads.lock().unwrap()[at].add(events.len());
+        self.land_interleaved(at);
         events
+    }
+
+    /// Append the interleaved write when it waits on call `at`, once.
+    fn land_interleaved(&self, at: usize) {
+        let mut pending = self.interleaved.lock().unwrap();
+        if pending.as_ref().is_some_and(|(after, ..)| *after == at) {
+            let (_, stream, events) = pending.take().unwrap();
+            self.inner
+                .append(&stream, ExpectedRevision::Any, &events)
+                .expect("the interleaved write appends");
+        }
     }
 
     /// `sub` relayed so each event it delivers is counted into call `at` before it is handed on.
@@ -381,8 +404,8 @@ pub const ONE_SHOT_DERIVED_TYPES: [&str; 4] = [
 pub struct OneShotFixture {
     /// The per-stream revision of the current run's `RunStarted`.
     pub boundary: Revision,
-    /// The current run's own events a one-shot read hands back: its `RunStarted` and its two
-    /// notes (never the derived events appended during it, never its carried-over events).
+    /// The current run's own events a one-shot read hands back: its `RunStarted`, its decision,
+    /// its finding and its two notes (never the derived events appended during it).
     pub run_events: usize,
     /// The `DecisionMade`, `LessonLearned` and `ReviewFinding` events of every run.
     pub carry_over: usize,
@@ -396,7 +419,7 @@ impl OneShotFixture {
 
     /// The three calls ONE read of the run on `stream` makes, as the counting double records
     /// them: the boundary lookup, the carried-over knowledge by type over the whole stream, and
-    /// the run slice from the boundary with the derived and carried-over types refused.
+    /// the run slice from the boundary with the derived types refused.
     pub fn read(&self, stream: &str) -> Vec<CountedRead> {
         let carry = ["DecisionMade", "LessonLearned", "ReviewFinding"];
         let names = |types: &[&str]| types.iter().map(|t| t.to_string()).collect::<Vec<_>>();
@@ -416,7 +439,7 @@ impl OneShotFixture {
                 stream: stream.to_string(),
                 from: self.boundary,
                 only: false,
-                types: names(&[&ONE_SHOT_DERIVED_TYPES[..], &carry[..]].concat()),
+                types: names(&ONE_SHOT_DERIVED_TYPES),
                 materialized: self.run_events,
             },
         ]
@@ -452,7 +475,8 @@ fn derived_events(n: usize) -> Vec<Event> {
 /// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 derived index
 /// events before the current run's boundary, then the current run (started over `criteria`) with
 /// derived events of its own appended during it. Each prior run left a decision, a lesson or a
-/// finding the current run carries over; the current run holds two of its own plus two notes.
+/// finding the current run carries over, and a note of its own no one-shot read carries; the
+/// current run holds a decision and a finding of its own plus two notes.
 pub fn seed_one_shot_fixture(
     store: &dyn EventStore,
     stream: &str,
@@ -477,6 +501,7 @@ pub fn seed_one_shot_fixture(
             "LessonLearned",
             r#"{"id":"l-a","summary":"learned a","about":["a.rs"]}"#,
         ),
+        ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
         append(&derived_events(10_000));
@@ -488,6 +513,7 @@ pub fn seed_one_shot_fixture(
             "ReviewFinding",
             r#"{"id":"f-b","by":"lens","summary":"found b","about":["b.rs"]}"#,
         ),
+        ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
         append(&derived_events(10_000));
@@ -509,7 +535,7 @@ pub fn seed_one_shot_fixture(
     append(&derived_events(50));
     OneShotFixture {
         boundary,
-        run_events: 3,
+        run_events: 5,
         carry_over: 5,
     }
 }

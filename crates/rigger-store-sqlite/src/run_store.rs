@@ -284,6 +284,84 @@ mod tests {
         assert_eq!(current_run_id(&events).as_deref(), Some("run-c"));
     }
 
+    /// A READ OF THE RUN IS A LOG PREFIX (spec 101): a writer that appends a decision and then a
+    /// spawn result between the read's two typed reads leaves the read holding both (the
+    /// decision is never missing beside the later result), and one that appends after the read's
+    /// last call leaves it holding neither - either way the read is every non-derived event of the
+    /// run up to one head, in log order.
+    #[test]
+    fn read_run_is_a_log_prefix_whatever_a_concurrent_writer_appends_between_its_reads() {
+        let late = || {
+            vec![
+                ev("DecisionMade", r#"{"id":"d-late"}"#),
+                ev("SpawnResult", r#"{"id":"s-late"}"#),
+            ]
+        };
+        let read_with_writer_after = |call: usize| -> Vec<String> {
+            let inner = Store::open(":memory:").unwrap();
+            seed_one_shot_fixture(&inner, STREAM, &[]);
+            let store = ReadCountingStore::new(&inner).interleaving(call, STREAM, late());
+            let events = read_run(&store, STREAM).unwrap();
+            let positions: Vec<u64> = events.iter().map(|e| e.position).collect();
+            let mut ordered = positions.clone();
+            ordered.sort_unstable();
+            ordered.dedup();
+            assert_eq!(positions, ordered, "each event once, in log order");
+            events.into_iter().map(|e| e.type_).collect()
+        };
+        let before = [
+            "DecisionMade",
+            "LessonLearned",
+            "ReviewFinding",
+            "RunStarted",
+            "RunNote",
+            "DecisionMade",
+            "ReviewFinding",
+            "RunNote",
+        ];
+        assert_eq!(
+            read_with_writer_after(1),
+            [&before[..], &["DecisionMade", "SpawnResult"]].concat(),
+            "a write between the two typed reads is read whole"
+        );
+        assert_eq!(
+            read_with_writer_after(2),
+            before,
+            "a write after the last read is not read at all"
+        );
+    }
+
+    /// THE CURRENT RUN IN ONE READ (spec 101): [`read_current_run`] hands back the current run's
+    /// slice and its id from exactly one read of the run - the boundary lookup, the carried-over
+    /// knowledge by type and the slice - never a prior run's carried-over events.
+    #[test]
+    fn read_current_run_is_the_current_run_and_its_id_from_one_read() {
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, STREAM, &[]);
+        let store = ReadCountingStore::new(&inner);
+        let (events, run_id) = crate::run::read::read_current_run(&store, STREAM).unwrap();
+        assert_eq!(store.reads(), fixture.read(STREAM));
+        assert_eq!(run_id, "run-c");
+        assert_eq!(
+            events.iter().map(|e| e.type_.as_str()).collect::<Vec<_>>(),
+            [
+                "RunStarted",
+                "RunNote",
+                "DecisionMade",
+                "ReviewFinding",
+                "RunNote"
+            ]
+        );
+
+        let empty = Store::open(":memory:").unwrap();
+        empty
+            .append(STREAM, ExpectedRevision::NoStream, &[ev("UnitStarted", "{}")])
+            .unwrap();
+        let (events, run_id) = crate::run::read::read_current_run(&empty, STREAM).unwrap();
+        assert_eq!(run_id, "", "no run started names no run");
+        assert_eq!(events.len(), 1, "with no run started the whole stream is the run");
+    }
+
     /// With no run started the whole stream is the run: one typed read from revision 0 refusing
     /// only the derived types, after the boundary lookup found nothing.
     #[test]

@@ -620,7 +620,6 @@ mod tests {
     fn empty_inputs<'a>(events: &'a [Event], ages: &'a BTreeMap<String, u64>) -> WatchInputs<'a> {
         WatchInputs {
             run_events: events,
-            full_events: events,
             now: SystemTime::now(),
             last_event_at: None,
             step_lock_free: true,
@@ -807,7 +806,6 @@ mod tests {
             .collect();
         let inputs = WatchInputs {
             run_events: &events,
-            full_events: &events,
             now,
             last_event_at: Some(now - Duration::from_secs(4000)),
             step_lock_free: true,
@@ -829,7 +827,6 @@ mod tests {
         let now = SystemTime::now();
         let inputs = WatchInputs {
             run_events: &events,
-            full_events: &events,
             now,
             last_event_at: Some(now - Duration::from_secs(4000)),
             // A step IS running - not dead, just slow.
@@ -899,7 +896,6 @@ mod tests {
         let now = SystemTime::now();
         let inputs = WatchInputs {
             run_events: &events,
-            full_events: &events,
             now,
             last_event_at: Some(now - Duration::from_secs(999_999)),
             step_lock_free: true,
@@ -927,7 +923,6 @@ mod tests {
         ]);
         let inputs = WatchInputs {
             run_events: &events,
-            full_events: &events,
             now: SystemTime::now(),
             last_event_at: None,
             step_lock_free: true,
@@ -1070,7 +1065,6 @@ mod tests {
     fn assert_dash_probe_is_not_an_anomaly(dash: DashProbe) {
         let inputs = WatchInputs {
             run_events: &[],
-            full_events: &[],
             now: SystemTime::now(),
             last_event_at: None,
             step_lock_free: true,
@@ -1100,7 +1094,6 @@ mod tests {
         let now = SystemTime::now();
         let inputs = WatchInputs {
             run_events: &[],
-            full_events: &[],
             now,
             last_event_at: None,
             step_lock_free: true,
@@ -1149,7 +1142,6 @@ mod tests {
         ] {
             let inputs = WatchInputs {
                 run_events: &[],
-                full_events: &[],
                 now,
                 last_event_at: None,
                 step_lock_free: true,
@@ -1246,8 +1238,7 @@ mod tests {
         events[1].revision = 3;
         events[2].revision = 1;
         let inputs = WatchInputs {
-            run_events: &[],
-            full_events: &events,
+            run_events: &events,
             now: SystemTime::now(),
             last_event_at: None,
             step_lock_free: true,
@@ -1278,8 +1269,7 @@ mod tests {
             e.revision = i as Revision;
         }
         let inputs = WatchInputs {
-            run_events: &[],
-            full_events: &events,
+            run_events: &events,
             now: SystemTime::now(),
             last_event_at: None,
             step_lock_free: true,
@@ -1328,21 +1318,20 @@ mod tests {
                 r#"{"id":"u-stall/implementer#0"}"#,
             ),
         ]);
-        // An out-of-order tail on a DIFFERENT stream in the full log.
+        // An out-of-order tail in the run itself: rows a stale writer reissued at revisions
+        // behind the run's head.
         let mut ooo = vec![ev("E", "{}"), ev("E", "{}"), ev("E", "{}")];
         for (i, e) in ooo.iter_mut().enumerate() {
-            e.stream = "other".to_string();
+            e.stream = "run".to_string();
             e.position = (100 + i) as u64;
         }
-        ooo[0].revision = 0;
-        ooo[1].revision = 5;
-        ooo[2].revision = 2;
-        let mut full_events = run_events.clone();
-        full_events.extend(ooo);
+        ooo[0].revision = 100;
+        ooo[1].revision = 105;
+        ooo[2].revision = 102;
+        run_events.extend(ooo);
 
         let inputs = WatchInputs {
             run_events: &run_events,
-            full_events: &full_events,
             now: SystemTime::now(),
             last_event_at: run_events.last().map(|e| e.recorded_at),
             step_lock_free: true,

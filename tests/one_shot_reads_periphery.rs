@@ -41,6 +41,19 @@ use serde_json::{json, Value};
 /// The carried-over types, spelled out: a run read hands back every one of them from every run.
 const CARRY_OVER: [&str; 3] = ["DecisionMade", "LessonLearned", "ReviewFinding"];
 
+/// What a repo step that starts a criterion unit reads of a superseded run, spelled out: the
+/// carried-over types and the criterion-adoption lifecycle types.
+const CARRY_OVER_AND_ADOPTION: [&str; 8] = [
+    "DecisionMade",
+    "LessonLearned",
+    "ReviewFinding",
+    "RunStarted",
+    "UnitStarted",
+    "UnitIntegrated",
+    "UnitFailed",
+    "UnitStatus",
+];
+
 /// Each event's type, in the order the read handed them back.
 fn types(events: &[Event]) -> Vec<&str> {
     events.iter().map(|e| e.type_.as_str()).collect()
@@ -217,6 +230,7 @@ fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
         )
         .unwrap();
     let after = OneShotFixture {
+        run_events: fixture.run_events + 1,
         carry_over: fixture.carry_over + 1,
         ..fixture
     };
@@ -347,9 +361,15 @@ fn mcp_peers(root: &Path) -> Value {
 
 /// Seed `root`'s `events.db` with the one-shot fixture under the project's namespace, then
 /// `current` (the current run's further events, appended through the same namespace), and make
-/// every derived event and every superseded run's own event undecodable - so a command that
-/// materializes even one of them fails.
-fn seed_poisoned_project(root: &Path, criteria: &[&str], current: impl FnOnce(&dyn EventStore)) {
+/// every derived event and every superseded run's event outside the `read` types undecodable -
+/// so a command that materializes even one of them fails. Returns how many superseded events it
+/// poisoned.
+fn seed_poisoned_project(
+    root: &Path,
+    criteria: &[&str],
+    read: &[&str],
+    current: impl FnOnce(&dyn EventStore),
+) -> usize {
     let fixture = {
         let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
         let store = Namespaced::new(&backend, &run_stream_identity(root));
@@ -369,19 +389,15 @@ fn seed_poisoned_project(root: &Path, criteria: &[&str], current: impl FnOnce(&d
         &format!("type IN ({})", quoted(&ONE_SHOT_DERIVED_TYPES)),
     );
     assert_eq!(derived, 200_100, "every derived event is poisoned");
-    let superseded = poison(
+    poison(
         root,
         &format!(
             "revision < {} AND type NOT IN ({}, {})",
             fixture.boundary,
-            quoted(&CARRY_OVER),
+            quoted(read),
             quoted(&ONE_SHOT_DERIVED_TYPES)
         ),
-    );
-    assert_eq!(
-        superseded, 4,
-        "both superseded runs' RunStarted and UnitStarted are poisoned"
-    );
+    )
 }
 
 /// Given a project whose `events.db` holds two superseded runs and 200,000 derived events before
@@ -394,7 +410,11 @@ fn seed_poisoned_project(root: &Path, criteria: &[&str], current: impl FnOnce(&d
 fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_superseded_event() {
     let dir = temp_store_project();
     let root = dir.path();
-    seed_poisoned_project(root, &["the current campaign"], |_| {});
+    assert_eq!(
+        seed_poisoned_project(root, &["the current campaign"], &CARRY_OVER, |_| {}),
+        6,
+        "both superseded runs' RunStarted, UnitStarted and note are poisoned"
+    );
 
     // `rigger peers`: every run's decisions, lessons and findings, the current run's LIVE.
     assert_eq!(
@@ -425,6 +445,16 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
                 {"id": "f-c", "by": "lens", "summary": "found c", "about": ["c.rs"]},
             ],
         })
+    );
+
+    // `rigger prime`: every run's decisions by type, newest first, after its instructions line.
+    assert_eq!(
+        rigger_ok(root, &["prime"]).lines().skip(1).collect::<Vec<_>>(),
+        [
+            "# Rigger: recent decisions",
+            "- d-c: chose d-c",
+            "- d-a: chose d-a"
+        ]
     );
 
     // `rigger status`: the current run, by its id.
@@ -474,7 +504,7 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
     let (_out, _err, ok) = run_rigger(root, &["peers"]);
     assert!(!ok, "a command that materializes a poisoned event fails");
     // ... and poisoned events of the run's own fail `rigger status`.
-    assert_eq!(poison(root, "type = 'RunNote'"), 2);
+    assert_eq!(poison(root, "type = 'RunNote' AND meta != X'ff'"), 2);
     let (_out, _err, ok) = run_rigger(root, &["status"]);
     assert!(
         !ok,
@@ -492,7 +522,7 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
     let dir = temp_store_project();
     let root = dir.path();
     let spawn = "u/implementer#0";
-    seed_poisoned_project(root, &["the current campaign"], |store| {
+    seed_poisoned_project(root, &["the current campaign"], &CARRY_OVER, |store| {
         rigger::spawn_store::park_in_run(
             store,
             &rigger::spawn::SpawnRequest {
@@ -581,7 +611,7 @@ fn a_step_that_does_not_ingest_advances_the_run_without_materializing_a_derived_
     common::cli::seed_store(root);
     common::cli::write_workflow(root, "");
     // Started over no criteria, as a step given no spec starts one, so the step adopts it.
-    seed_poisoned_project(root, &[], |_| {});
+    seed_poisoned_project(root, &[], &CARRY_OVER, |_| {});
 
     assert_eq!(
         rigger_ok(root, &["step"]),
@@ -611,10 +641,120 @@ fn a_step_that_does_not_ingest_advances_the_run_without_materializing_a_derived_
 
     // Control: the step does materialize the run's own events, so poisoning one fails it - the
     // poison is live for the step, not inert.
-    assert_eq!(poison(root, "type = 'RunNote'"), 2);
+    assert_eq!(poison(root, "type = 'RunNote' AND meta != X'ff'"), 2);
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(
         !ok,
         "a step that materializes a poisoned run event fails: {err}"
+    );
+}
+
+/// Given a git repo whose `events.db` holds two superseded runs and 200,000 derived events before
+/// the current run's boundary, with every derived event and every superseded run's event outside
+/// the carried-over and criterion-adoption types made undecodable, when the operator runs `rigger
+/// step --spec` over the current run's criterion, then the step starts the criterion's unit and
+/// parks its spawn in the current run - it read the superseded runs' lifecycle events for
+/// adoption, by type, and nothing else of theirs. A control then poisons the superseded runs'
+/// `RunStarted` and a fresh step's adoption read fails on it: the adoption read is live.
+///
+/// The light lane only: in the default lane a repo step folds the tree into the graph and its
+/// latest-generation seed is criterion 3's, not this criterion's.
+#[cfg(not(feature = "symbols"))]
+#[test]
+fn a_repo_step_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_and_adoption_by_type(
+) {
+    let criterion = "alpha lands cleanly";
+    let scaffold = |root: &Path| {
+        common::cli::seed_store(root);
+        common::cli::write_scaffold(
+            root,
+            &[("worker", common::cli::UNISOLATED_WORKER)],
+            "defaults:\n  grounder: nop\n  budget: 60\n\
+             stages:\n  implement:\n    agent: worker\n    strategy: fan-out\n    on_pass: none\n",
+        );
+        std::fs::write(
+            root.join("spec.md"),
+            format!("# Spec\n\n## Done when\n\n- [ ] {criterion}\n"),
+        )
+        .unwrap();
+    };
+    let dir = common::git::temp_git_project_with_commit();
+    let root = dir.path();
+    scaffold(root);
+    assert_eq!(
+        seed_poisoned_project(root, &[criterion], &CARRY_OVER_AND_ADOPTION, |_| {}),
+        2,
+        "both superseded runs' notes are poisoned"
+    );
+
+    let step = rigger_ok(root, &["step", "--spec", "spec.md"]);
+    assert!(
+        step.contains(r#""id":"unit-1-alpha-lands-cleanly/implementer#0""#)
+            && step.contains(r#""done":false"#),
+        "the step parks the criterion unit's spawn: {step}"
+    );
+    assert_eq!(
+        rigger_ok(root, &["status"]).lines().next(),
+        Some("run run-c"),
+        "the step advanced the run it adopted"
+    );
+
+    // Control: a fresh step over the same log with the superseded runs' `RunStarted` poisoned too.
+    let control = common::git::temp_git_project_with_commit();
+    scaffold(control.path());
+    seed_poisoned_project(control.path(), &[criterion], &CARRY_OVER_AND_ADOPTION, |_| {});
+    assert_eq!(
+        poison(
+            control.path(),
+            r#"type = 'RunStarted' AND (meta LIKE '%"run-a"%' OR meta LIKE '%"run-b"%')"#
+        ),
+        2
+    );
+    let (_out, err, ok) = run_rigger(control.path(), &["step", "--spec", "spec.md"]);
+    assert!(!ok, "a step whose adoption read meets a poisoned event fails: {err}");
+}
+
+/// Given a live run whose earlier progress reports a binary predating the per-run progress
+/// streams wrote to the one shared `progress` stream, when the binary is refreshed and the run
+/// reads its progress, then those earlier reports are not read (the run's own stream holds none
+/// of them) while the next report is - and the handbook tells the operator so.
+#[test]
+fn a_refresh_to_per_run_progress_streams_drops_a_live_runs_earlier_reports_and_the_handbook_says_so(
+) {
+    let store = Store::open(":memory:").unwrap();
+    let body = json!({"id": "u/implementer#0", "activity": "before the refresh"});
+    store
+        .append(
+            "progress",
+            ExpectedRevision::Any,
+            &[
+                Event::new("AgentProgress", serde_json::to_vec(&body).unwrap())
+                    .with_meta("run_id", "run-c"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(rigger::progress::read_run(&store, "run-c").unwrap().len(), 0);
+
+    rigger::progress_store::record(&store, "run-c", "u/implementer#0", "after the refresh")
+        .unwrap();
+    let reports = rigger::progress::read_run(&store, "run-c").unwrap();
+    assert_eq!(
+        reports
+            .iter()
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["activity"].clone())
+            .collect::<Vec<_>>(),
+        [json!("after the refresh")]
+    );
+
+    let handbook = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/handbook/tools-and-context.md"),
+    )
+    .unwrap();
+    assert!(
+        handbook.contains(
+            "Refreshing the binary to one with per-run progress streams in the middle of a run \
+             drops that run's earlier reports from these views"
+        ),
+        "the handbook names the refresh drop"
     );
 }
