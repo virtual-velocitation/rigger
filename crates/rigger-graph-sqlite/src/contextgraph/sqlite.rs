@@ -8724,6 +8724,9 @@ mod tests {
         use super::*;
         use std::time::Duration;
 
+        /// A live edge as `(from, to, rel, valid-from, source)`.
+        type LiveEdge = (String, String, String, i64, Position);
+
         /// Fold one derived event stamped with replay key `key`, valid from `secs`, at `pos`.
         fn apply_keyed(
             p: &Projector,
@@ -8740,10 +8743,6 @@ mod tests {
             p.apply(&e).unwrap();
         }
 
-        fn link(to: &str) -> serde_json::Value {
-            serde_json::json!({ "from": "docs/f.md", "to": to, "rel": REL_SPECIFIES })
-        }
-
         fn def(name: &str, line: u64, fresh: bool) -> serde_json::Value {
             serde_json::json!({
                 "file": "src/f.rs", "name": name, "kind": "function", "line": line,
@@ -8751,16 +8750,11 @@ mod tests {
             })
         }
 
-        fn ns(secs: u64) -> i64 {
-            Duration::from_secs(secs).as_nanos() as i64
-        }
-
         fn node_ids(p: &Projector) -> Vec<String> {
             p.whole().unwrap().nodes.into_iter().map(|n| n.id).collect()
         }
 
-        /// `(from, to, rel, valid_from, source)` of every live edge, in `whole()`'s order.
-        fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, Position)> {
+        fn live_edges(p: &Projector) -> Vec<LiveEdge> {
             p.whole()
                 .unwrap()
                 .edges
@@ -8769,262 +8763,128 @@ mod tests {
                 .collect()
         }
 
-        fn edge(
-            from: &str,
-            to: &str,
-            rel: &str,
-            secs: u64,
-            source: Position,
-        ) -> (String, String, String, i64, Position) {
-            (from.into(), to.into(), rel.into(), ns(secs), source)
+        fn edge(from: &str, to: &str, rel: &str, secs: u64, source: Position) -> LiveEdge {
+            let at = to_nanos(UNIX_EPOCH + Duration::from_secs(secs));
+            (from.into(), to.into(), rel.into(), at, source)
         }
 
-        #[test]
-        fn a_design_generation_that_drops_a_link_retires_it_and_the_target_only_it_reached() {
+        /// Fold `links` - `(from, to, key, secs)` `SPECIFIES` links, at positions 1, 2, ... - and
+        /// require exactly `edges` live and exactly `nodes` held.
+        fn links_fold_to(links: &[(&str, &str, &str, u64)], edges: &[LiveEdge], nodes: &[&str]) {
             let p = Projector::open(":memory:", "test").unwrap();
-            apply_keyed(
-                &p,
-                1,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/a.rs"),
-                "gd/docs/f.md@h1#0",
-                10,
-            );
-            apply_keyed(
-                &p,
-                2,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/b.rs"),
-                "gd/docs/f.md@h1#1",
-                10,
-            );
-            apply_keyed(
-                &p,
-                3,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/a.rs"),
-                "gd/docs/f.md@h2#0",
-                20,
-            );
-            assert_eq!(
-                live_edges(&p),
-                vec![edge("docs/f.md", "src/a.rs", REL_SPECIFIES, 10, 3)],
-                "the re-asserted link keeps its first date and its newest provenance; the dropped \
-                 one is retired"
-            );
-            assert_eq!(node_ids(&p), vec!["docs/f.md", "src/a.rs"]);
+            for (i, (from, to, key, secs)) in links.iter().enumerate() {
+                let link = serde_json::json!({ "from": from, "to": to, "rel": REL_SPECIFIES });
+                apply_keyed(&p, i as u64 + 1, TYPE_DOC_LINK_EXTRACTED, link, key, *secs);
+            }
+            assert_eq!(live_edges(&p), edges);
+            assert_eq!(node_ids(&p), nodes);
         }
 
-        #[test]
-        fn a_link_every_generation_reasserts_holds_from_its_first_generation() {
+        /// Fold `defs` - `(name, line, fresh, key, secs)` definitions of `src/f.rs`, at positions
+        /// 1, 2, ... - and require exactly `edges` live, exactly `nodes` held, and `retired`
+        /// retired code entities.
+        fn defs_fold_to(
+            defs: &[(&str, u64, bool, &str, u64)],
+            edges: &[LiveEdge],
+            nodes: &[&str],
+            retired: usize,
+        ) {
             let p = Projector::open(":memory:", "test").unwrap();
-            for (pos, (generation, secs)) in
-                [("h1", 10), ("h2", 20), ("h3", 30)].into_iter().enumerate()
-            {
+            for (i, (name, line, fresh, key, secs)) in defs.iter().enumerate() {
+                let json = def(name, *line, *fresh);
                 apply_keyed(
                     &p,
-                    pos as u64 + 1,
-                    TYPE_DOC_LINK_EXTRACTED,
-                    link("src/a.rs"),
-                    &format!("gd/docs/f.md@{generation}#0"),
-                    secs,
+                    i as u64 + 1,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    json,
+                    key,
+                    *secs,
                 );
             }
-            assert_eq!(
-                live_edges(&p),
-                vec![edge("docs/f.md", "src/a.rs", REL_SPECIFIES, 10, 3)]
-            );
+            assert_eq!(live_edges(&p), edges);
+            assert_eq!(node_ids(&p), nodes);
+            assert_eq!(p.retired_code_entity_count().unwrap(), retired);
         }
 
-        #[test]
-        fn a_link_that_returns_after_a_generation_dropped_it_holds_from_its_return() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_keyed(
-                &p,
-                1,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/a.rs"),
-                "gd/docs/f.md@h1#0",
-                10,
-            );
-            apply_keyed(
-                &p,
-                2,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/b.rs"),
-                "gd/docs/f.md@h2#0",
-                20,
-            );
-            apply_keyed(
-                &p,
-                3,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/a.rs"),
-                "gd/docs/f.md@h1#0",
-                30,
-            );
-            assert_eq!(
-                live_edges(&p),
-                vec![edge("docs/f.md", "src/a.rs", REL_SPECIFIES, 30, 3)],
-                "h2 retired the link, so its return is a new fact, and h2's own link is retired"
-            );
-            assert_eq!(node_ids(&p), vec!["docs/f.md", "src/a.rs"]);
-        }
+        const F: &str = "docs/f.md";
 
-        #[test]
-        fn a_link_that_returned_revives_from_its_return_not_from_its_first_run() {
-            // h1 asserts `a`, h2 drops it, h1 returns (a new row from 30s), and h4 keeps it: the
-            // row h4 revives is the one the return asserted, never the one h2 retired.
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_keyed(
-                &p,
-                1,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/a.rs"),
-                "gd/docs/f.md@h1#0",
-                10,
+        crate::test_cases! {
+            /// The re-asserted link keeps its first date and its newest provenance; the dropped
+            /// one is retired with the target only it reached.
+            a_design_generation_that_drops_a_link_retires_it_and_the_target_only_it_reached:
+                links_fold_to(
+                    &[
+                        (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
+                        (F, "src/b.rs", "gd/docs/f.md@h1#1", 10),
+                        (F, "src/a.rs", "gd/docs/f.md@h2#0", 20),
+                    ],
+                    &[edge(F, "src/a.rs", REL_SPECIFIES, 10, 3)],
+                    &[F, "src/a.rs"],
+                );
+            a_link_every_generation_reasserts_holds_from_its_first_generation: links_fold_to(
+                &[
+                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
+                    (F, "src/a.rs", "gd/docs/f.md@h2#0", 20),
+                    (F, "src/a.rs", "gd/docs/f.md@h3#0", 30),
+                ],
+                &[edge(F, "src/a.rs", REL_SPECIFIES, 10, 3)],
+                &[F, "src/a.rs"],
             );
-            apply_keyed(
-                &p,
-                2,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/b.rs"),
-                "gd/docs/f.md@h2#0",
-                20,
+            /// h2 retired the link, so its return is a new fact, and h2's own link is retired.
+            a_link_that_returns_after_a_generation_dropped_it_holds_from_its_return: links_fold_to(
+                &[
+                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
+                    (F, "src/b.rs", "gd/docs/f.md@h2#0", 20),
+                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 30),
+                ],
+                &[edge(F, "src/a.rs", REL_SPECIFIES, 30, 3)],
+                &[F, "src/a.rs"],
             );
-            apply_keyed(
-                &p,
-                3,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/a.rs"),
-                "gd/docs/f.md@h1#0",
-                30,
+            /// h1 asserts `a`, h2 drops it, h1 returns (a new row from 30s), and h4 keeps it: the
+            /// row h4 revives is the one the return asserted, never the one h2 retired.
+            a_link_that_returned_revives_from_its_return_not_from_its_first_run: links_fold_to(
+                &[
+                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
+                    (F, "src/b.rs", "gd/docs/f.md@h2#0", 20),
+                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 30),
+                    (F, "src/a.rs", "gd/docs/f.md@h4#0", 40),
+                ],
+                &[edge(F, "src/a.rs", REL_SPECIFIES, 30, 4)],
+                &[F, "src/a.rs"],
             );
-            apply_keyed(
-                &p,
-                4,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/a.rs"),
-                "gd/docs/f.md@h4#0",
-                40,
-            );
-            assert_eq!(
-                live_edges(&p),
-                vec![edge("docs/f.md", "src/a.rs", REL_SPECIFIES, 30, 4)]
-            );
-        }
-
-        #[test]
-        fn a_generation_of_one_file_never_retires_another_files_facts() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_keyed(
-                &p,
-                1,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/a.rs"),
-                "gd/docs/f.md@h1#0",
-                10,
-            );
-            apply_keyed(
-                &p,
-                2,
-                TYPE_DOC_LINK_EXTRACTED,
-                serde_json::json!({ "from": "docs/g.md", "to": "src/b.rs", "rel": REL_SPECIFIES }),
-                "gd/docs/g.md@k1#0",
-                20,
-            );
-            apply_keyed(
-                &p,
-                3,
-                TYPE_DOC_LINK_EXTRACTED,
-                link("src/c.rs"),
-                "gd/docs/f.md@h2#0",
-                30,
-            );
-            assert_eq!(
-                live_edges(&p),
-                vec![
-                    edge("docs/f.md", "src/c.rs", REL_SPECIFIES, 30, 3),
+            a_generation_of_one_file_never_retires_another_files_facts: links_fold_to(
+                &[
+                    (F, "src/a.rs", "gd/docs/f.md@h1#0", 10),
+                    ("docs/g.md", "src/b.rs", "gd/docs/g.md@k1#0", 20),
+                    (F, "src/c.rs", "gd/docs/f.md@h2#0", 30),
+                ],
+                &[
+                    edge(F, "src/c.rs", REL_SPECIFIES, 30, 3),
                     edge("docs/g.md", "src/b.rs", REL_SPECIFIES, 20, 2),
-                ]
+                ],
+                &[F, "docs/g.md", "src/b.rs", "src/c.rs"],
             );
-            assert_eq!(
-                node_ids(&p),
-                vec!["docs/f.md", "docs/g.md", "src/b.rs", "src/c.rs"]
-            );
-        }
-
-        #[test]
-        fn a_code_generation_that_drops_an_entity_retires_its_node() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_keyed(
-                &p,
+            /// The dropped definition is retired, and counted as a retired code entity.
+            a_code_generation_that_drops_an_entity_retires_its_node: defs_fold_to(
+                &[
+                    ("alpha", 1, true, "gc/src/f.rs@h1#0", 10),
+                    ("gone", 9, false, "gc/src/f.rs@h1#1", 10),
+                    ("alpha", 2, true, "gc/src/f.rs@h2#0", 20),
+                ],
+                &[edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 20, 3)],
+                &["src/f.rs", "src/f.rs::alpha"],
                 1,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("alpha", 1, true),
-                "gc/src/f.rs@h1#0",
-                10,
             );
-            apply_keyed(
-                &p,
-                2,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("gone", 9, false),
-                "gc/src/f.rs@h1#1",
-                10,
-            );
-            apply_keyed(
-                &p,
-                3,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("alpha", 2, true),
-                "gc/src/f.rs@h2#0",
-                20,
-            );
-            assert_eq!(node_ids(&p), vec!["src/f.rs", "src/f.rs::alpha"]);
-            assert_eq!(
-                live_edges(&p),
-                vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 20, 3)]
-            );
-            assert_eq!(
-                p.retired_code_entity_count().unwrap(),
+            /// `gone` returns with h1, and `alpha`, which only h2 defined, is the retired one.
+            an_entity_that_returns_after_a_generation_dropped_it_is_live_again: defs_fold_to(
+                &[
+                    ("gone", 9, true, "gc/src/f.rs@h1#0", 10),
+                    ("alpha", 1, true, "gc/src/f.rs@h2#0", 20),
+                    ("gone", 9, true, "gc/src/f.rs@h1#0", 30),
+                ],
+                &[edge("src/f.rs", "src/f.rs::gone", REL_CONTAINS, 30, 3)],
+                &["src/f.rs", "src/f.rs::gone"],
                 1,
-                "the dropped definition is a retired code entity"
-            );
-        }
-
-        #[test]
-        fn an_entity_that_returns_after_a_generation_dropped_it_is_live_again() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            apply_keyed(
-                &p,
-                1,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("gone", 9, true),
-                "gc/src/f.rs@h1#0",
-                10,
-            );
-            apply_keyed(
-                &p,
-                2,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("alpha", 1, true),
-                "gc/src/f.rs@h2#0",
-                20,
-            );
-            apply_keyed(
-                &p,
-                3,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("gone", 9, true),
-                "gc/src/f.rs@h1#0",
-                30,
-            );
-            assert_eq!(node_ids(&p), vec!["src/f.rs", "src/f.rs::gone"]);
-            assert_eq!(
-                p.retired_code_entity_count().unwrap(),
-                1,
-                "alpha is the retired one now"
             );
         }
 
