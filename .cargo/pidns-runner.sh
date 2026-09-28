@@ -91,11 +91,25 @@ export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT
 # all exec in place, so it is the same pid cargo waits on) to receive SIGKILL the moment its
 # parent exits; `--kill-child` then takes the test binary with it. The plain path gets the
 # same mark so a CI container cannot hang a sweep either.
+#
+# Memory bound (2026-09-02; resized for a sweep's concurrency 2026-09-28, gap 92): cap each test
+# process's address space. A cargo-mutants mutant of a loop allocated ~32G on 2026-09-02 and the
+# kernel OOM killer's collateral ended the operator's session, so a cap went in at 24G - sized
+# for ONE runaway. A mutation sweep is never one process: `cargo mutants -j 3` runs three copies
+# of the suite, each with nextest's one-process-per-test fan-out (32 at once on this box), so a
+# runaway mutant is up to ~100 identical runaways. On 2026-09-24 eight concurrent children of one
+# loop mutant each grew to ~5.5G inside 15 s - every one under 24G - and the global OOM killer
+# took the check-in step itself. 4 GiB is the cap: it is past the whole suite's largest
+# legitimate test (the suite passes under it), and a runaway child fails its own allocation at
+# 4G instead of growing until the machine does. The WHOLE sweep is bounded separately by the
+# mutation gate's own memory scope (.rigger/gates/mutation.sh); this cap bounds each process.
+# RIGGER_TEST_AS_BYTES overrides it for one invocation.
+as_bytes="${RIGGER_TEST_AS_BYTES:-4294967296}"
 if [ "${RIGGER_PIDNS:-on}" = "off" ]; then
   # TERM here, not KILL: `timeout` forwards a TERM it receives to the test binary and exits;
   # a KILL would end only `timeout` and orphan the binary. The cap below still bounds a
   # binary that ignores TERM.
-  exec nice -n 10 setpriv --pdeathsig=TERM timeout -s KILL "${RIGGER_TEST_MAX_SECS:-3600}" "$@"
+  exec nice -n 10 setpriv --pdeathsig=TERM timeout -s KILL "${RIGGER_TEST_MAX_SECS:-3600}" prlimit --as="$as_bytes" -- "$@"
 fi
 if [ -n "${RIGGER_PIDNS_TRACE:-}" ]; then
   echo "pidns-runner: $1" >&2
@@ -105,14 +119,10 @@ if ! unshare --user --map-current-user --pid --fork --mount-proc true 2>/dev/nul
   echo "pidns-runner: set RIGGER_PIDNS=off only in a throwaway environment (never on a workstation)." >&2
   exit 1
 fi
-# Memory bound (2026-09-02): cap each test binary's address space (default 24G,
-# RIGGER_TEST_AS_BYTES to tune). A cargo-mutants mutant of a loop allocated ~32G on
-# 2026-09-02 02:18; the kernel OOM killer took the test, and systemd then stopped the
-# whole terminal scope as oom-kill collateral, ending the operator's session. With the
-# cap, a runaway mutant fails its allocation and the test - the box never feels it.
+# The memory bound is `as_bytes` above (one home for both paths).
 # Lifetime bound (2026-09-12): inside the namespace, `timeout` (pid 1 in there) owns the test
 # binary and ends it after RIGGER_TEST_MAX_SECS (default one hour - no single test binary of
 # this crate runs that long even under a load of 200). A mutant that turns a loop infinite,
 # or a binary whose launcher is already gone, can burn cores for at most that long instead of
 # for days (one did: eight days at 17 cores, 2026-09-03 .. 09-11). Exit status 137 = capped.
-exec nice -n 10 setpriv --pdeathsig=KILL unshare --user --map-current-user --pid --fork --mount-proc --kill-child -- timeout -s KILL "${RIGGER_TEST_MAX_SECS:-3600}" prlimit --as="${RIGGER_TEST_AS_BYTES:-25769803776}" -- "$@"
+exec nice -n 10 setpriv --pdeathsig=KILL unshare --user --map-current-user --pid --fork --mount-proc --kill-child -- timeout -s KILL "${RIGGER_TEST_MAX_SECS:-3600}" prlimit --as="$as_bytes" -- "$@"

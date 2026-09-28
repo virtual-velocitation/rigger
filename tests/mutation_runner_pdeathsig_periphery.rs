@@ -206,8 +206,9 @@ fn the_runner_caps_each_test_process_address_space_at_4_gib_on_both_paths() {
         "the plain path (a CI container) caps each test process the same way"
     );
     assert_eq!(
-        applied_address_space_cap(&[("RIGGER_TEST_AS_BYTES", "8589934592")]),
-        "8589934592",
-        "an explicit cap still overrides the default"
+        applied_address_space_cap(&[("RIGGER_TEST_AS_BYTES", "2147483648")]),
+        "2147483648",
+        "an explicit cap still overrides the default (lower here: this test process already \
+         runs under the 4 GiB hard limit, which no child can raise)"
     );
 }
