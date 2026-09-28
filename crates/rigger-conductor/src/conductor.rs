@@ -17465,6 +17465,146 @@ mod tests {
     }
 
     #[test]
+    fn every_unit_prompt_leads_with_its_name_and_verbatim_criterion() {
+        // A worker's whole assignment is its prompt: the unit it owns and the acceptance
+        // criterion the reviewer will judge it against must be IN that prompt, verbatim, not left
+        // for the worker to recover from the event log. The block follows the prior-failure block
+        // on a retry (which must lead) and precedes the code neighborhood; the review tiers get the
+        // same block; the producer/planner, whose refine protocol already lists every criterion,
+        // gets none.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "  modifier: `rigger reset --derived` drops every superseded generation  ";
+        // The criterion text appears in the file, so the literal-match grounder seeds the traversal
+        // on it and the prompt renders a real code neighborhood to order the task block against.
+        std::fs::write(
+            dir.path().join("modifier.rs"),
+            format!("//{criterion}\nfn modifier() {{}}\n"),
+        )
+        .unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut e = Event::new(
+            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            serde_json::to_vec(&json!({
+                "file": "modifier.rs", "name": "modifier", "kind": "function", "line": 1,
+                "lang": "rust", "fresh": true,
+            }))
+            .unwrap(),
+        );
+        e.position = 1;
+        graph.apply(&e).unwrap();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        let unit = Stage {
+            name: "u-compaction".into(),
+            agent: "a".into(),
+            coverage: criterion.into(),
+            ..Default::default()
+        };
+        let planner = Stage {
+            name: "plan".into(),
+            agent: "a".into(),
+            coverage: criterion.into(),
+            produces: "dag".into(),
+            ..Default::default()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: vec![criterion.trim().to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let verbatim = criterion.trim();
+        let header = "UNIT: u-compaction\n";
+
+        // (a)+(b) First attempt: the prompt OPENS with the unit's name and its verbatim criterion,
+        // ahead of the code neighborhood.
+        let first = ctx.build_prompt_with_failure(
+            &unit,
+            &PriorFailure::default(),
+            GroundingSlice::Implement,
+        );
+        assert!(
+            first.starts_with(header),
+            "the implement prompt must open by naming its unit; prompt was:\n{first}"
+        );
+        let crit_at = first
+            .find(verbatim)
+            .unwrap_or_else(|| panic!("the prompt must carry the criterion verbatim:\n{first}"));
+        let nbhd = first
+            .find("Code neighborhood")
+            .unwrap_or_else(|| panic!("the fixture must render a code neighborhood:\n{first}"));
+        assert!(
+            crit_at < nbhd,
+            "the task block must precede the code neighborhood; prompt was:\n{first}"
+        );
+
+        // (c) Retry: the prior-failure block still leads, the task block follows it.
+        let prior = PriorFailure {
+            gate_evidence: vec!["FAIL\nGATE_EVIDENCE_x".into()],
+            ..Default::default()
+        };
+        let retry = ctx.build_prompt_with_failure(&unit, &prior, GroundingSlice::Implement);
+        let lead = prior.block();
+        assert!(
+            retry.starts_with(&lead),
+            "the prior-failure block must lead a retry prompt; prompt was:\n{retry}"
+        );
+        assert!(
+            retry[lead.len()..].starts_with(header),
+            "the task block must directly follow the prior-failure block; prompt was:\n{retry}"
+        );
+        let retry_crit = retry
+            .find(verbatim)
+            .unwrap_or_else(|| panic!("the retry prompt lost the criterion:\n{retry}"));
+        let retry_nbhd = retry
+            .find("Code neighborhood")
+            .unwrap_or_else(|| panic!("the retry must render a code neighborhood:\n{retry}"));
+        assert!(
+            retry_crit < retry_nbhd,
+            "the task block must precede the code neighborhood on a retry; prompt was:\n{retry}"
+        );
+
+        // Review tiers judge against the same criterion text.
+        let review = ctx.build_review_prompt(&unit, "lens");
+        assert!(
+            review.starts_with(header) && review.contains(verbatim),
+            "a review prompt must carry the unit's task block; prompt was:\n{review}"
+        );
+
+        // (d) The producer/planner gets no task block.
+        let plan = ctx.build_prompt(&planner);
+        assert!(
+            !plan.contains("UNIT: ") && !plan.contains("ACCEPTANCE CRITERION"),
+            "the planner prompt must carry no per-unit task block; prompt was:\n{plan}"
+        );
+
+        // A stage with no criterion (a gate or conflict spawn) is unchanged.
+        let bare = Stage {
+            name: "gate".into(),
+            agent: "a".into(),
+            ..Default::default()
+        };
+        let bare_prompt = ctx.build_prompt_with_failure(
+            &bare,
+            &PriorFailure::default(),
+            GroundingSlice::Implement,
+        );
+        assert!(
+            !bare_prompt.contains("UNIT: "),
+            "a stage without a criterion gets no task block; prompt was:\n{bare_prompt}"
+        );
+    }
+
+    #[test]
     fn lookup_pointer_names_all_three_verbs_on_every_slice() {
         // Spec 58 c3 (the habit half): the grounding tool pointer names the THREE lookup verbs
         // with their one-line jobs - `rigger graph --around` (structure), `rigger graph --show`
