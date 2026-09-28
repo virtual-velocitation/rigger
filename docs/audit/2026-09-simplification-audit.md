@@ -1691,15 +1691,14 @@ mandatory sweep: .rigger-path string literals - 550 site(s), collected mechanica
          deletes every superseded generation and re-recording, and compacts the file so \
          events.db shrinks on disk. Every other event survives byte-for-byte - lessons, \
          decisions, findings, gate verdicts, and the whole run history `rigger stats` and replay \
-         read. The live edges a rebuild folds are unchanged: the generation after a shed one \
-         already retired its structural edges, nothing reads a shed recording again (a file that \
-         returns to an earlier content re-emits its batch), and the prune carries a design \
-         fact's EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps \
-         the date it first became true rather than being re-dated to whichever recording \
-         survived. The one thing a rebuild of the compacted log does not re-create is a node \
-         only a shed generation defined, which the whole log keeps as an orphan no live edge \
-         reaches. WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at \
-         all: it never sheds the index itself. The latest generation of every file stays, so on \
+         read. The live graph a rebuild folds is unchanged: a newer generation of a file \
+         retires every fact the one before it asserted and it does not, so the whole log \
+         already folds to each file's latest generation; nothing reads a shed recording again \
+         (a file that returns to an earlier content re-emits its batch); and the prune carries \
+         a design fact's EARLIEST valid-time within its unbroken run of generations onto the \
+         recording it keeps, so a design fact keeps the date it first became true rather than \
+         being re-dated to whichever recording survived. WHAT IT CANNOT RECLAIM, because \
+         this decides whether it is worth running at all: it never sheds the index itself. The latest generation of every file stays, so on \
          a log that holds each file once, at one recording per key, `rigger reset --derived` \
          deletes ZERO rows from it and reports so - that is the expected report on a clean log, \
          not a failure, and the derived index remains the bulk of the log by design because it \
@@ -1735,24 +1734,24 @@ mandatory sweep: .rigger-path string literals - 550 site(s), collected mechanica
          driver registration for this store is still live, naming what it found. `--force-live` \
          overrides the refusal for an operator certain no writer is using the store; it checks \
          nothing.\n"`
-- `crates/rigger-domain/src/docs.rs:667-667` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
+- `crates/rigger-domain/src/docs.rs:666-666` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
          the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
          Read this before running `rigger reset` or touching any store file by hand."`
-- `crates/rigger-domain/src/docs.rs:671-671` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
+- `crates/rigger-domain/src/docs.rs:670-670` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
              durable:\n"`
-- `crates/rigger-domain/src/docs.rs:733-733` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
+- `crates/rigger-domain/src/docs.rs:732-732` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
              no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n"`
-- `crates/rigger-domain/src/docs.rs:743-743` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
+- `crates/rigger-domain/src/docs.rs:742-742` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
          truth that no rebuild can get back, and deleting only the graph is unnecessary work \
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n"`
-- `crates/rigger-domain/src/docs.rs:767-767` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+- `crates/rigger-domain/src/docs.rs:766-766` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
              the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
              for an index that has drifted from files you just changed (a unit's own commit, a \
              rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
@@ -3331,8 +3330,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:452-454` `render_planning_a_spec_skill`
-- `crates/rigger-domain/src/docs.rs:623-625` `render_planning_field_guide`
+- `crates/rigger-domain/src/docs.rs:451-453` `render_planning_a_spec_skill`
+- `crates/rigger-domain/src/docs.rs:622-624` `render_planning_field_guide`
 
 #### `dup-c5777007a33f` (near, 4 sites)
 
@@ -3340,10 +3339,10 @@ Proposed home: `docs::support (consolidate these 4 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:725-753` `render_build_graph_skill`
-- `crates/rigger-domain/src/docs.rs:758-785` `render_reindex_skill`
-- `crates/rigger-domain/src/docs.rs:790-824` `render_resume_a_run_skill`
-- `crates/rigger-domain/src/docs.rs:953-1003` `render_restore_the_dash_skill`
+- `crates/rigger-domain/src/docs.rs:724-752` `render_build_graph_skill`
+- `crates/rigger-domain/src/docs.rs:757-784` `render_reindex_skill`
+- `crates/rigger-domain/src/docs.rs:789-823` `render_resume_a_run_skill`
+- `crates/rigger-domain/src/docs.rs:952-1002` `render_restore_the_dash_skill`
 
 #### `dup-3d5ea11431d3` (near, 2 sites)
 
@@ -3351,8 +3350,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:831-866` `render_handle_an_escalation_skill`
-- `crates/rigger-domain/src/docs.rs:1012-1061` `render_diagnose_churn_skill`
+- `crates/rigger-domain/src/docs.rs:830-865` `render_handle_an_escalation_skill`
+- `crates/rigger-domain/src/docs.rs:1011-1060` `render_diagnose_churn_skill`
 
 #### `dup-bb7aa56f67d8` (exact, 2 sites)
 
