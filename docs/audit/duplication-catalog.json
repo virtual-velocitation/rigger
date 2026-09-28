@@ -427,7 +427,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f5ed8c200bec",
+    "id": "dup-ebee743f02de",
     "classification": "near",
     "sites": [
       {
@@ -491,12 +491,17 @@
         "content_hash": "2bbc16e151a26b32"
       },
       {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "reads",
+        "content_hash": "2bbc16e151a26b32"
+      },
+      {
         "file": "tests/common/real_driver_spy.rs",
         "name": "outputs",
         "content_hash": "2bbc16e151a26b32"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/eventstore.rs, tests/common/real_driver_spy.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/eventstore.rs, tests/common/fixtures/events.rs, tests/common/real_driver_spy.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

@@ -329,8 +329,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 718,
-        "end_line": 720
+        "start_line": 724,
+        "end_line": 726
       }
     ]
   },
@@ -375,7 +375,7 @@
     ]
   },
   {
-    "id": "dup-f5ed8c200bec",
+    "id": "dup-ebee743f02de",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -436,6 +436,11 @@
         "file": "crates/rigger-domain/src/eventstore.rs",
         "start_line": 468,
         "end_line": 470
+      },
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "start_line": 198,
+        "end_line": 200
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -3454,18 +3459,18 @@
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 628,
-        "end_line": 628
+        "start_line": 635,
+        "end_line": 635
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 629,
-        "end_line": 629
+        "start_line": 636,
+        "end_line": 636
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "start_line": 675,
-        "end_line": 675
+        "start_line": 682,
+        "end_line": 682
       },
       {
         "file": "tests/store_precedence.rs",
@@ -4724,8 +4729,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 503,
-        "end_line": 509
+        "start_line": 509,
+        "end_line": 515
       }
     ]
   },
@@ -5229,13 +5234,13 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1459,
-        "end_line": 1459
+        "start_line": 1493,
+        "end_line": 1493
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1706,
-        "end_line": 1706
+        "start_line": 1740,
+        "end_line": 1740
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -5514,8 +5519,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1022,
-        "end_line": 1027
+        "start_line": 1035,
+        "end_line": 1040
       }
     ]
   },
@@ -5719,18 +5724,18 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 172,
-        "end_line": 192
+        "start_line": 254,
+        "end_line": 274
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 301,
-        "end_line": 346
+        "start_line": 383,
+        "end_line": 428
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 350,
-        "end_line": 375
+        "start_line": 432,
+        "end_line": 457
       }
     ]
   },
@@ -5739,13 +5744,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1537,
-        "end_line": 1562
+        "start_line": 1571,
+        "end_line": 1596
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1565,
-        "end_line": 1616
+        "start_line": 1599,
+        "end_line": 1650
       }
     ]
   },
