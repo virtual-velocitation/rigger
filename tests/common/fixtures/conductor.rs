@@ -6,7 +6,7 @@ use rigger::conductor::{AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_W
 use rigger::config::{AgentDef, Config, ReviewPanel, Stage};
 use rigger::eventstore::{Event, EventStore};
 use rigger::gate;
-use rigger::ledger::TYPE_UNIT_STATUS;
+use rigger::ledger::{RunState, TYPE_UNIT_STATUS};
 
 use super::{agent, gate_def, gate_def_inputs};
 
@@ -291,6 +291,22 @@ impl AgentDriver for FifoAtLandingDriver {
         }
         Ok(review_or_adjudicate(opts))
     }
+}
+
+/// [`rigger::conductor::run`] with a repo-less run's scratch root pinned under a temporary
+/// directory that lives for the call. Without a repo the scratch root (and the shared gate
+/// build-cache lock inside it) resolves relative to the current directory, and the test runner
+/// runs a package's tests from that package's source directory, so an unpinned run writes
+/// `.rigger/tmp` into the source tree. A run over a repo already resolves its scratch root from
+/// the repo and runs unchanged.
+pub fn run_isolated(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
+    if !deps.repo.is_empty() {
+        return rigger::conductor::run(cfg, deps);
+    }
+    let scratch = tempfile::tempdir().unwrap();
+    let mut cfg = cfg.clone();
+    cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
+    rigger::conductor::run(&cfg, deps)
 }
 
 /// The conductor's ports for one run over `repo`: no grounder, no graph and no criteria.

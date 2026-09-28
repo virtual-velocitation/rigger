@@ -13039,6 +13039,7 @@ mod tests {
     use crate::test_support::has_status_marker as has_status;
     use crate::test_support::one_gated_stage_cfg;
     use crate::test_support::run_git;
+    use crate::test_support::run_isolated;
     use crate::test_support::temp_git_project_with_commit;
     use crate::test_support::trimmed_stdout;
     use crate::test_support::{
@@ -13088,7 +13089,7 @@ mod tests {
         pub(super) fn run_logged(cfg: &Config, driver: &dyn AgentDriver) -> (RunState, Vec<Event>) {
             let st = Store::open(":memory:").unwrap();
             let deps = stub_deps(&st, driver, Vec::new());
-            let rs = run(cfg, &deps).unwrap();
+            let rs = run_isolated(cfg, &deps).unwrap();
             let events = st
                 .read_all(0, Direction::Forward, &Filter::default())
                 .unwrap();
@@ -13850,7 +13851,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["new-slug"].status,
@@ -13930,7 +13931,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(rs.units["new-slug"].status, ledger::Status::Integrated);
         assert!(
@@ -14026,7 +14027,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["u-halt"].status, ledger::Status::Verified);
 
         // The unit's durable branch (still live: `on_pass: none` never merges or
@@ -14133,7 +14134,7 @@ mod tests {
             repo: repo.to_string(),
             ..stub_deps(store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units[unit].status, ledger::Status::Verified);
 
         let log = run_git(repo, &["log", "--pretty=%s", &unit_branch(unit)]);
@@ -14760,7 +14761,7 @@ mod tests {
             &driver,
             criteria.iter().map(|c| c.to_string()).collect(),
         );
-        assert!(run(&cfg, &deps).is_err(), "{why}");
+        assert!(run_isolated(&cfg, &deps).is_err(), "{why}");
         st.read_all(0, Direction::Forward, &Filter::default())
             .unwrap()
     }
@@ -14863,7 +14864,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["impl"].status, ledger::Status::Integrated);
     }
 
@@ -14916,7 +14917,7 @@ mod tests {
                 "the feature is implemented".into(),
             ],
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["impl-feature"].status,
             ledger::Status::Integrated,
@@ -14972,7 +14973,7 @@ mod tests {
             &driver,
             criteria.iter().map(|c| c.to_string()).collect(),
         );
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The bare template was NOT run as its own unit - the per-criterion units
         // replaced it.
@@ -15067,7 +15068,7 @@ mod tests {
             &driver,
             criteria.iter().map(|c| c.to_string()).collect(),
         );
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             !rs.units.contains_key("implement"),
@@ -15185,7 +15186,7 @@ mod tests {
             graph: Some(&graph),
             criteria: vec![criterion.to_string()],
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         let prompts = driver.prompts_for("planner");
         assert!(!prompts.is_empty(), "the planner must have been spawned");
@@ -15275,7 +15276,7 @@ mod tests {
         // The planner proposes nothing this run; the baseline covers criterion A.
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
-        let state = run(&cfg, &deps).unwrap();
+        let state = run_isolated(&cfg, &deps).unwrap();
         assert!(
             !state.units.contains_key("u-zombie-mod"),
             "a pre-boundary proposal must not enter the run: {:?}",
@@ -15315,7 +15316,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The planner's unit for A ran and integrated, carrying criterion A.
         assert_eq!(
@@ -15414,7 +15415,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The supersede happened exactly as `planner_unit_supersedes_the_matching_
         // baseline` already proves: criterion A's baseline is gone, the planner's unit
@@ -15457,7 +15458,7 @@ mod tests {
         // The planner proposes nothing (no emits) - pure baseline decomposition.
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         for (ordinal, crit) in [(1, crit_a), (2, crit_b)] {
             let id = baseline_id(ordinal, crit);
@@ -15513,7 +15514,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         // Both split units were harvested, ran, and integrated.
         for id in ["refine-part-1", "refine-part-2"] {
             assert_eq!(
@@ -16860,7 +16861,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units[id].status,
@@ -16987,7 +16988,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The genuinely-new unit ran and integrated (it is not refused).
         assert_eq!(
@@ -17056,7 +17057,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["new-subunit"].status,
             ledger::Status::Integrated,
@@ -17125,7 +17126,7 @@ mod tests {
         // before the first wave.
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // Criterion A's BASELINE is superseded before it could be scheduled: it never
         // started its implementer (no UnitStarted for it). Asserted on the raw log so a
@@ -17235,7 +17236,8 @@ mod tests {
         // conductor's, not the agents'.
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, criteria.clone());
-        run(&cfg, &deps).expect("the real spec must decompose and run without a coverage gap");
+        run_isolated(&cfg, &deps)
+            .expect("the real spec must decompose and run without a coverage gap");
 
         // One UnitStarted per real criterion, carrying the REAL criterion as
         // spec_criterion - the proof the loop now decomposes the spec.
@@ -17294,7 +17296,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
@@ -17337,7 +17339,7 @@ mod tests {
             let st = Store::open(":memory:").unwrap();
             let driver = Stub::new();
             let deps = stub_deps(&st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
             st.read_all(0, Direction::Forward, &Filter::default())
                 .unwrap()
                 .iter()
@@ -17388,7 +17390,7 @@ mod tests {
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
@@ -19044,7 +19046,7 @@ mod tests {
             graph: Some(&graph),
             criteria: vec!["first criterion".into()],
         };
-        run(&cfg1, &deps1).unwrap();
+        run_isolated(&cfg1, &deps1).unwrap();
 
         let after_one = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
@@ -19073,7 +19075,7 @@ mod tests {
             graph: Some(&graph),
             criteria: vec!["second criterion".into()],
         };
-        run(&cfg2, &deps2).unwrap();
+        run_isolated(&cfg2, &deps2).unwrap();
 
         let after_two = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
@@ -19278,7 +19280,7 @@ mod tests {
         };
 
         // Run one records generation A of both files and the design doc.
-        run(
+        run_isolated(
             &campaign("s1", "first criterion"),
             &deps_for("first criterion"),
         )
@@ -19305,7 +19307,7 @@ mod tests {
         .unwrap();
 
         // Run two: a FRESH `RunStarted`, so its ingest keys come from the log, not from this run.
-        run(
+        run_isolated(
             &campaign("s2", "second criterion"),
             &deps_for("second criterion"),
         )
@@ -19457,7 +19459,7 @@ mod tests {
         let mut run_over_the_tree = |criterion: &'static str| {
             campaigns += 1;
             let unit = format!("s{campaigns}");
-            run(&campaign(&unit, criterion), &deps_for(criterion)).unwrap();
+            run_isolated(&campaign(&unit, criterion), &deps_for(criterion)).unwrap();
             st.read_stream(STREAM, 0, Direction::Forward).unwrap()
         };
 
@@ -19606,7 +19608,7 @@ mod tests {
                 },
             );
             let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-            run(&cfg, &deps).unwrap()
+            run_isolated(&cfg, &deps).unwrap()
         };
         let keyed = |events: &[Event], key: &str, type_: &str| -> usize {
             events
@@ -20460,8 +20462,8 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
-        run(&cfg, &deps).unwrap(); // resume on the same store
+        run_isolated(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap(); // resume on the same store
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
@@ -20645,7 +20647,7 @@ mod tests {
             repo: repo_path,
             ..stub_deps(&st, driver, Vec::new())
         };
-        let rs = run(&reviewed_merge_cfg(with_adversary), &deps).unwrap();
+        let rs = run_isolated(&reviewed_merge_cfg(with_adversary), &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
         assert!(
             repo.path().join("feature.rs").exists(),
@@ -20843,7 +20845,7 @@ mod tests {
             repo: repo.to_string(),
             ..stub_deps(st, &driver, Vec::new())
         };
-        run(&Config::default(), &deps).unwrap()
+        run_isolated(&Config::default(), &deps).unwrap()
     }
 
     /// Drive `gc_integrated_branches_logged` directly (the DI seam) in `repo` over `events`'
@@ -20965,7 +20967,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(rs.units["relic"].status, ledger::Status::Integrated);
         assert_eq!(rs.units["relic"].branch, recorded);
@@ -21093,7 +21095,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(rs.units["landed"].status, ledger::Status::Integrated);
         // BOTH must be reclaimed. The branch being gone PROVES the worktree was removed
@@ -21114,7 +21116,7 @@ mod tests {
 
         // Idempotent on a further resume-by-replay: the branch and worktree are already
         // gone, so re-reaching the reclaim is a no-op, never an error.
-        let rs2 = run(&cfg, &deps).unwrap();
+        let rs2 = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs2.units["landed"].status, ledger::Status::Integrated);
         assert!(!branch_present(&repo_path, &unit_branch("landed")));
         assert!(!Path::new(&wt_dir).exists());
@@ -21378,7 +21380,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let sha_of = |status: &str| -> Option<String> {
@@ -21430,7 +21432,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let reject_with_sha = events.iter().find(|e| {
@@ -21481,7 +21483,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_ne!(
             rs.units["s"].status,
@@ -21565,7 +21567,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let status_meta = |want: &str, key: &str| -> Option<String> {
@@ -21661,7 +21663,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).expect("a substantive retry folds the review normally");
+        run_isolated(&cfg, &deps).expect("a substantive retry folds the review normally");
 
         // The adjudicator was spawned exactly twice: the degenerate original + one retry.
         assert_eq!(
@@ -21726,7 +21728,8 @@ mod tests {
                 criteria: Vec::new(),
             };
             // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
-            run(&cfg, &deps).expect("a review-error re-park is a clean unwind, never a run failure")
+            run_isolated(&cfg, &deps)
+                .expect("a review-error re-park is a clean unwind, never a run failure")
         };
 
         let impl0 = spawn_id("u", ROLE_IMPLEMENTER, 0);
@@ -21842,7 +21845,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).map(|_| ())
+            run_isolated(&cfg, &deps).map(|_| ())
         };
 
         let impl0 = spawn_id("u", ROLE_IMPLEMENTER, 0);
@@ -21988,7 +21991,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
-        let err = match run(&cfg, &deps) {
+        let err = match run_isolated(&cfg, &deps) {
             Ok(_) => panic!(
                 "a gating spawn that emits approve but returns no verdict line must HARD-ERROR"
             ),
@@ -22057,7 +22060,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).expect(why);
+        run_isolated(&cfg, &deps).expect(why);
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
             events
@@ -22226,7 +22229,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).expect("the review proceeds once the degenerate lens recovers");
+        run_isolated(&cfg, &deps).expect("the review proceeds once the degenerate lens recovers");
 
         assert_eq!(
             occurrences(&driver.call_order, "sdet"),
@@ -22274,7 +22277,8 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).expect("a finding-emitting lens with empty stdout is not degenerate");
+        run_isolated(&cfg, &deps)
+            .expect("a finding-emitting lens with empty stdout is not degenerate");
 
         // The lens was spawned EXACTLY ONCE - its empty stdout was not misread as degenerate
         // (no respawn), because it emitted a ReviewFinding.
@@ -22321,7 +22325,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
-        let err = match run(&cfg, &deps) {
+        let err = match run_isolated(&cfg, &deps) {
             Ok(_) => panic!("an all-degenerate reviewer must halt the run"),
             Err(e) => e,
         };
@@ -22474,7 +22478,7 @@ mod tests {
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&reviewed_merge_cfg(false), &deps).unwrap();
+        let rs = run_isolated(&reviewed_merge_cfg(false), &deps).unwrap();
 
         // The unit RAN on resume - it was not skipped as terminal. A Failed unit's
         // recorded status falls to the Fresh resume-phase, so it re-implements (the
@@ -22557,7 +22561,7 @@ mod tests {
         // and with attempts already at 2, that next failure must escalate.
         let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The unit escalated this window (not churned, not skipped).
         assert_eq!(
@@ -22658,7 +22662,7 @@ mod tests {
 
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             !driver.spawned("worker"),
@@ -22726,7 +22730,7 @@ mod tests {
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             driver.spawned("worker"),
@@ -22764,7 +22768,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
         assert!(
             g.nodes.iter().any(|n| n.id == "d1"),
@@ -22815,7 +22819,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, vec!["crit".into()]);
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
@@ -22873,7 +22877,7 @@ mod tests {
             grounder,
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(cfg, &deps).unwrap();
+        let rs = run_isolated(cfg, &deps).unwrap();
         drop(deps);
         (rs, driver, st)
     }
@@ -22960,7 +22964,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["review"].status,
             ledger::Status::Escalated,
@@ -23263,7 +23267,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         // The caller asserts on the recorded run state + the store (the routing marker and
         // the folded evidence); the tests that need the exact spawn set inline this setup so
         // they keep the `driver` handle in scope.
@@ -23536,7 +23540,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
             ledger::Status::Integrated,
@@ -23644,7 +23648,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         // The canonical repo root, so a worktree dir under it is still rejected if it
         // resolves to the root (it never should - worktrees live in temp_dir()).
@@ -23727,7 +23731,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -23818,7 +23822,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
+        run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
 
         assert_eq!(
             occurrences(&driver.call_order, "worker"),
@@ -23850,7 +23854,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
         assert_eq!(
             occurrences(&driver.call_order, "worker"),
@@ -23891,7 +23895,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&cfg, &deps).expect("a parked candidate frontier is not a run failure");
+        run_isolated(&cfg, &deps).expect("a parked candidate frontier is not a run failure");
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
@@ -23933,7 +23937,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).expect("a parked frontier is not a run failure")
+            run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
         let has_status = |status: &str| {
             store
@@ -24085,7 +24089,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -24196,7 +24200,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -24277,7 +24281,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         // The fold-neutral reject marker must NOT disturb the unit's real terminal state:
         // the winner still integrates (the marker is not a `ledger::Status` variant).
         assert_eq!(
@@ -24323,7 +24327,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Escalated,
@@ -24392,7 +24396,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -24458,7 +24462,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Escalated,
@@ -24531,7 +24535,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).expect("a parked frontier is not a run failure")
+            run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
 
         // Drive the full park -> replay -> evaluate loop across separate step processes, recording
@@ -24763,7 +24767,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["p"].status,
@@ -24943,7 +24947,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         // Every agent the conductor spawned received a system prompt that contains
         // BOTH its OWN persona AND the rigger-authored communication discipline - the
@@ -25001,7 +25005,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         let sys = driver.system_prompt_for("a").expect("agent a was spawned");
         // The persona is present.
@@ -25043,7 +25047,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         // An agent with no persona body still receives the rigger communication
         // discipline (every agent gets it), but no fabricated persona text - the
         // system prompt is exactly the empty persona + RIGGER_COMMUNICATION.
@@ -25104,7 +25108,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         for (id, persona) in [
             ("worker", "You are the rust engineer."),
@@ -25175,7 +25179,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["impl-unit"].status,
             ledger::Status::Integrated,
@@ -25241,7 +25245,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The producer reached the DAG-terminal Integrated TRUTHFULLY - with the
         // no-code-artifact marker, not a fabricated code commit.
@@ -25330,7 +25334,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["plan"].status,
@@ -25389,7 +25393,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["plan"].status,
@@ -25488,7 +25492,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["plan"].status,
@@ -25568,7 +25572,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["plan"].status,
@@ -25975,7 +25979,7 @@ mod tests {
             ..stub_deps(&store, &driver, Vec::new())
         };
 
-        let err = match run(&cfg, &deps) {
+        let err = match run_isolated(&cfg, &deps) {
             Ok(_) => panic!("a plan-landing infra fault must halt the run, not succeed"),
             Err(e) => e,
         };
@@ -26112,7 +26116,7 @@ mod tests {
         let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         // The run RETURNS (Ok) - it does not loop forever.
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
             ledger::Status::Escalated,
@@ -26266,7 +26270,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::answering(r#"{"verdict":"reject","issues":[]}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         let order = driver.call_order.lock().unwrap().clone();
         let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
         assert_eq!(
@@ -26318,7 +26322,7 @@ mod tests {
         let deps = stub_deps(&st, &driver, Vec::new());
 
         // First window: escalates after exactly the configured 2 attempts.
-        let rs1 = run(&cfg, &deps).unwrap();
+        let rs1 = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs1.units["implement"].status, ledger::Status::Escalated);
         assert_eq!(rs1.units["implement"].attempts, 2);
 
@@ -26342,7 +26346,7 @@ mod tests {
         // re-enter remediation and get EXACTLY 2 more attempts (4 total) before it
         // escalates a second time - not 0 (re-escalating immediately on the stale
         // global bound) and not unbounded.
-        let rs2 = run(&cfg, &deps).unwrap();
+        let rs2 = run_isolated(&cfg, &deps).unwrap();
         let order = driver.call_order.lock().unwrap().clone();
         let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
         assert_eq!(
@@ -26605,7 +26609,7 @@ mod tests {
         // exactly once (rung 0 -> rung 1).
         let driver = AdjApprovesOnAttempt::new("adj", 1);
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
             ledger::Status::Integrated,
@@ -26881,7 +26885,7 @@ mod tests {
     fn replay_step(cfg: &Config, st: &Store) -> RunState {
         let driver = crate::driver::replay::ReplayDriver::new(st);
         let deps = stub_deps(st, &driver, Vec::new());
-        run(cfg, &deps).unwrap()
+        run_isolated(cfg, &deps).unwrap()
     }
 
     /// Record a failed result for unit `unit`'s implementer attempt `attempt`.
@@ -27452,7 +27456,8 @@ mod tests {
         let deps = stub_deps(&st, &driver, Vec::new());
 
         // The run HALTS cleanly - the review-tier refusal must not surface as a run error.
-        run(&cfg, &deps).expect("a review-tier budget refusal halts the run, it does not error");
+        run_isolated(&cfg, &deps)
+            .expect("a review-tier budget refusal halts the run, it does not error");
 
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
@@ -27783,7 +27788,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         drop(deps);
         driver
     }
@@ -27873,7 +27878,7 @@ mod tests {
         let driver = approving_panel_stub(&reviewers);
         let store = Store::open(":memory:").unwrap();
         let deps = stub_deps(&store, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         drop(deps);
         driver
     }
@@ -28005,7 +28010,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         assert!(
             !driver.spawned("lensB") && !driver.spawned("adversary"),
             "a light-routed unit must spawn neither the full-only lens nor the adversary"
@@ -28157,7 +28162,7 @@ mod tests {
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_ne!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -28231,7 +28236,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
         (repo, runner, scratch)
     }
@@ -28355,7 +28360,7 @@ mod tests {
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_ne!(
             rs.units["implement-like"].status,
             ledger::Status::Escalated,
@@ -28440,7 +28445,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
             // "solo"'s own per-unit CARGO_TARGET_DIR (spec 77 c1): the SAME single-source
             // derivation `run_gates`/`unit_cache_sibling` uses, so this test can never
             // silently drift from the real one `spawn_env` must match.
@@ -28615,7 +28620,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
         let worktree = unit_worktree_dir(&scratch, "solo");
@@ -28679,7 +28684,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -28752,7 +28757,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Escalated,
@@ -28881,7 +28886,7 @@ mod tests {
         };
         // The park propagates out of `run` as a clean step-end (matches every other
         // parked-driver test in this module), not an error.
-        run(&judged_unit_cfg("solo", &["lens"], ""), &deps).unwrap();
+        run_isolated(&judged_unit_cfg("solo", &["lens"], ""), &deps).unwrap();
 
         assert!(
             driver.spawned("judge"),
@@ -28931,7 +28936,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&judged_unit_cfg("solo", &[], ""), &deps).unwrap();
+        run_isolated(&judged_unit_cfg("solo", &[], ""), &deps).unwrap();
 
         assert!(
             driver.spawned("judge"),
@@ -28978,7 +28983,7 @@ mod tests {
             ..stub_deps(&store, &driver, Vec::new())
         };
         // FIRST process: the adjudicator parks.
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
         let worktree = unit_worktree_dir(&scratch, "solo");
         assert!(
@@ -29001,7 +29006,7 @@ mod tests {
         // re-asserts the worktree via the SAME deterministic adopt-or-create machinery
         // BEFORE reaching the (still-parking) adjudicator spawn again. The restored worktree
         // is checked out at the SAME tip the first process handed out.
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         assert_unit_worktree_at(
             &repo_path,
             "solo",
@@ -29062,7 +29067,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             runner.calls(),
@@ -29163,7 +29168,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             driver.spawned("lens") && driver.spawned("adversary") && driver.spawned("judge"),
@@ -29240,7 +29245,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             driver.spawned("judge"),
@@ -29319,7 +29324,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(cfg, &deps).unwrap();
+        run_isolated(cfg, &deps).unwrap();
         assert!(
             driver.spawned("judge"),
             "premise: the adjudicator must have run, or this test proves nothing"
@@ -29412,7 +29417,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&judged_unit_cfg("solo", &[], ""), &deps).unwrap();
+        run_isolated(&judged_unit_cfg("solo", &[], ""), &deps).unwrap();
         assert!(
             driver.spawned("judge"),
             "premise: the adjudicator must have run, or this test proves nothing"
@@ -29555,7 +29560,7 @@ mod tests {
             ..stub_deps(&store, &driver, Vec::new())
         };
 
-        let err = match run(&cfg, &deps) {
+        let err = match run_isolated(&cfg, &deps) {
             Ok(_) => panic!(
                 "the adversary's genuine crash must still halt the run loudly (spec 19c), \
                  not be swallowed by the new guard-on-error path"
@@ -29657,7 +29662,7 @@ mod tests {
                 repo: repo.to_string(),
                 ..stub_deps(&store, driver, Vec::new())
             };
-            run(cfg, &deps).unwrap()
+            run_isolated(cfg, &deps).unwrap()
         };
         window(first);
         let residue_tip = unit_branch_tip(repo, unit);
@@ -29973,7 +29978,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         // The FIRST UnitFailed for "s" is the resumed exhaustive re-assert failing on
         // this exact gate - read the raw event rather than the folded final cause, since
@@ -30096,7 +30101,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
@@ -30218,7 +30223,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
@@ -30403,7 +30408,7 @@ mod tests {
         // marker-laden worktree before the `ResumePhase::Reviewed` branch below ever runs,
         // and `commit`'s own conflict-marker refusal (correct for an ORDINARY abandoned edit)
         // turns this into a hard `Err` here - never reaching `merge_into_worktree` at all.
-        let rs = run(&cfg, &deps).expect(
+        let rs = run_isolated(&cfg, &deps).expect(
             "a resumed unit's own already-in-progress merge conflict must reach the idempotent \
              merge_into_worktree/merge_in_progress path, never trip the halted-commit capture's \
              conflict-marker refusal first",
@@ -30540,7 +30545,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             runner.calls(),
@@ -30622,7 +30627,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let result = run(&cfg, &deps);
+        let result = run_isolated(&cfg, &deps);
         assert!(
             result.is_ok(),
             "two concurrently-spawned lenses re-asserting the SAME gate-deleted speculation \
@@ -30756,7 +30761,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             driver.spawned("worker") && driver.spawned("judge"),
@@ -30849,7 +30854,7 @@ mod tests {
         };
         // Requirement (1): "b"'s genuine crash still halts the run loudly - it must NOT be
         // masked by "a"'s park in the same concurrent chunk.
-        let err = match run(&cfg, &deps) {
+        let err = match run_isolated(&cfg, &deps) {
             Ok(_) => panic!(
                 "\"b\"'s genuine terminal crash must still halt the run loudly, not be masked \
                  by \"a\"'s park in the same concurrent chunk"
@@ -30937,7 +30942,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             runner.targets(),
             vec![String::new()],
@@ -30985,6 +30990,9 @@ mod tests {
         // three successive calls, modeling "this step's wave or a later one".
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_parallel_units = 1;
+        // Repo-less, so pin the scratch root (see `run_isolated`) rather than the current dir.
+        let scratch = tempfile::tempdir().unwrap();
+        cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
         let names = ["s0", "s1", "s2"];
@@ -31114,7 +31122,7 @@ mod tests {
             ..Stub::new()
         };
         let deps1 = stub_deps(&store, &driver1, Vec::new());
-        let rs1 = run(&cfg, &deps1).unwrap();
+        let rs1 = run_isolated(&cfg, &deps1).unwrap();
         assert_ne!(
             rs1.units["z-hung"].status,
             ledger::Status::Integrated,
@@ -31137,7 +31145,7 @@ mod tests {
         );
         let driver2 = Stub::new(); // z-hung's re-attempt now resolves normally (no park).
         let deps2 = stub_deps(&store, &driver2, Vec::new());
-        let rs2 = run(&cfg, &deps2).unwrap();
+        let rs2 = run_isolated(&cfg, &deps2).unwrap();
         let spawned = driver2.spawn_ids();
         let z_pos = spawned.iter().position(|id| id.starts_with("z-hung/"));
         let a_pos = spawned.iter().position(|id| id.starts_with("a-new/"));
@@ -31179,7 +31187,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         let g = graph
             .subgraph(&["touched.rs".to_string(), "ok".to_string()], 2)
             .unwrap();
@@ -31297,7 +31305,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
 
         let targets = runner.targets();
@@ -31409,7 +31417,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, driver, Vec::new())
         };
-        let outcome = run(&cfg, &deps);
+        let outcome = run_isolated(&cfg, &deps);
         drop(deps);
         (outcome, repo, store)
     }
@@ -31813,7 +31821,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["s1", "s2", "s3"] {
             assert_eq!(
                 rs.units[name].status,
@@ -31931,7 +31939,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
 
         // The finding reached the adversary and the adjudicator THROUGH THE GRAPH:
@@ -31994,7 +32002,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         let lens_prompt = driver.prompts_for("lens").pop().unwrap();
         assert!(
             lens_prompt.contains("ReviewFinding"),
@@ -32093,7 +32101,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -32149,7 +32157,7 @@ mod tests {
             gates: gate,
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         drop(deps);
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         (rs, driver, events)
@@ -32322,7 +32330,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         // A persistently failing gate never integrates (an infra HOLD still charges a
         // remediation attempt - it just must not demote the ratchet).
         assert_ne!(
@@ -32401,7 +32409,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
             let runs = always_fail.runs.load(Ordering::SeqCst);
             let demoted = st
                 .read_stream(STREAM, 0, Direction::Forward)
@@ -32506,7 +32514,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["implement"].status,
             ledger::Status::Escalated,
@@ -32565,7 +32573,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         let (isolation, _parallel) = driver
             .opts_by_agent
@@ -32617,7 +32625,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         // The stage reached its DAG-terminal state with the EXPLICIT no-artifact
         // marker, not an empty (dropped-looking) commit hash.
         assert_eq!(
@@ -32671,7 +32679,7 @@ mod tests {
         let deps = stub_deps(&st, &driver, Vec::new());
         // The wave returns the first error (run halts), but BOTH stages must have left
         // a record before the collapse.
-        let _ = run(&cfg, &deps);
+        let _ = run_isolated(&cfg, &deps);
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
@@ -32718,7 +32726,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         let integrated = ["w1", "w2", "w3"]
             .iter()
             .filter(|n| {
@@ -33052,7 +33060,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let v0 = gate_verdict_event(&events, "s", 0).clone();
@@ -33126,7 +33134,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
         assert_eq!(
             runner.calls().iter().filter(|c| c.as_str() == "g").count(),
@@ -33340,7 +33348,7 @@ mod tests {
             grounder: Some(&grounder),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -33418,7 +33426,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let audits = blast_radius_audits(&events);
         assert_eq!(
@@ -33464,7 +33472,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
             blast_radius_audits(&events).is_empty(),
@@ -34285,7 +34293,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["alpha", "beta", "gamma"] {
             assert_eq!(
                 rs.units[name].status,
@@ -34457,7 +34465,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -34614,7 +34622,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // (1) THE MERGE IS BLOCKED: the exhaustive integrate door went red, so the unit never
         // integrates - it exhausts its retries and escalates. A mutation that integrated on a
@@ -34818,7 +34826,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // CONVERGENCE: unit-a re-integrated after its rollback; unit-b integrated.
         assert_eq!(
@@ -35276,7 +35284,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["unit-a"].status,
@@ -35521,7 +35529,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The resume re-drove the rollback: unit-a re-implemented and re-integrated.
         assert_eq!(
@@ -35628,7 +35636,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // Exactly one unit integrated; the other was BLOCKED by the post-merge re-gate and
         // escalated (it re-breaks the merge every attempt). Order between them is a lock race,
@@ -35903,7 +35911,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         for u in ["unit-a", "unit-b"] {
             assert_eq!(
                 rs.units[u].status,
@@ -36062,7 +36070,7 @@ mod tests {
         let scratch = crate::worktree::scratch_root_from_env(repo, "");
         let (pm_dir, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
         prepare(&pm_dir);
-        assert!(run(&cfg, &deps).is_err(), "{why}");
+        assert!(run_isolated(&cfg, &deps).is_err(), "{why}");
         let branches = run_git(repo, &["branch", "--list", &pm_branch]);
         assert!(
             String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
@@ -36337,7 +36345,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         for unit in ["unit-a", "unit-b"] {
             assert_eq!(
                 rs.units[unit].status,
@@ -36450,7 +36458,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // Exactly one of the two batch-mates loses the integrate-lock race and hits the
         // never-resolving conflict; the other (never conflicting) integrates normally.
@@ -36631,7 +36639,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let err = match run(&cfg, &deps) {
+        let err = match run_isolated(&cfg, &deps) {
             Ok(_) => panic!(
                 "the modify/delete conflict on the regenerable path must make \
                  accept_incoming fail for real - there is no \"theirs\" version to check out"
@@ -36694,7 +36702,7 @@ mod tests {
             gates: runner,
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
@@ -36884,7 +36892,7 @@ mod tests {
                 gates: &runner,
                 ..stub_deps(&st, &driver, Vec::new())
             };
-            run(cfg, &deps).unwrap();
+            run_isolated(cfg, &deps).unwrap();
         }
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         (runner, events)
@@ -37042,7 +37050,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
         assert_eq!(
             runner
@@ -37089,7 +37097,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
         assert_eq!(
             runner
@@ -37119,7 +37127,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
         assert_eq!(
             runner
@@ -37188,7 +37196,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_ne!(
             rs.units["m"].status,
@@ -37295,7 +37303,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["s"].status,
@@ -37335,7 +37343,7 @@ mod tests {
         // and nothing is transiently pending - so the tree is still final. The recorded
         // deferred verdict REPLAYS: the command never re-runs and no duplicate verdict is
         // appended (spec 04, criterion 4 - replay is idempotent).
-        let rs2 = run(&cfg, &deps).unwrap();
+        let rs2 = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs2.units["s"].status,
             ledger::Status::Escalated,
@@ -37429,7 +37437,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap()
+            run_isolated(&cfg, &deps).unwrap()
         };
 
         assert!(
@@ -37465,7 +37473,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
         assert_eq!(
             count_failed(),
@@ -37535,7 +37543,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
 
         assert_eq!(
@@ -37595,7 +37603,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_ne!(
             rs.units["rev"].status,
@@ -37698,7 +37706,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert!(
             !runner.saw_dirty.load(Ordering::SeqCst),
             "the gate must run against a COMMITTED (clean) tree - the conductor commits before gating"
@@ -37765,7 +37773,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -37892,7 +37900,7 @@ mod tests {
         };
         // The run completes (Ok): a spent budget halts the run with a BudgetExhausted
         // record, never a raw error.
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         // The implementer WAS admitted - it reserved the one budget slot and ran - so
         // control reached the sdet spawn seam that follows it. Without this the sdet refusal
@@ -37983,7 +37991,7 @@ mod tests {
         };
         // A parked wave unwinds cleanly (no UnitFailed, no error propagated out of `run`): the
         // step ends and a later step replays the recorded result.
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // ANCHOR (the seam IS reached): the implementer was admitted and ran, so control
         // reached the sdet seam that follows its green status. Without this the park assertion
@@ -38061,7 +38069,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
@@ -38173,7 +38181,7 @@ mod tests {
         };
         // A parked wave unwinds cleanly (no error propagated out of `run`): the step ends and a
         // later step replays the recorded result.
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // ANCHOR (the seam IS reached): the implementer candidates ran, so control reached the sdet
         // seam that follows each candidate's diff. Without this the park assertion is vacuous.
@@ -38269,7 +38277,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(driver.spawned(ROLE_SDET_AUTHOR), with_sdet, "{spawn_why}");
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
     }
@@ -38404,7 +38412,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // (c) The unit reaches the terminal ESCALATED state - the review refused it to
         // the bound and it was handed to a human.
@@ -38622,7 +38630,7 @@ mod tests {
             graph: None,
             criteria: vec![criterion.to_string()],
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The gate APPROVED despite the shared blast radius (overlap is not a defect).
         assert_eq!(
@@ -38680,7 +38688,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
             driver.reviews_for("adversary"),
             Some(Vec::new()),
@@ -38720,7 +38728,7 @@ mod tests {
             graph: None,
             criteria: vec![crit.to_string()],
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The reject fed back to the planner (re-plan), then the revised DAG approved.
         assert!(
@@ -38763,7 +38771,7 @@ mod tests {
             graph: None,
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The gate approved (one adjudicator pass, no re-plan) and integrated.
         assert_eq!(
@@ -38851,7 +38859,7 @@ mod tests {
             graph: None,
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The gate APPROVED (integrated, review-only) rather than escalating on a false
         // integrated-vs-pending duplicate.
@@ -38893,7 +38901,7 @@ mod tests {
             graph: None,
             criteria: vec![criterion.to_string()],
         };
-        let _ = run(&cfg, &deps).unwrap();
+        let _ = run_isolated(&cfg, &deps).unwrap();
 
         let prompts = driver.adj_prompts.lock().unwrap();
         let prompt = prompts
@@ -39196,7 +39204,7 @@ mod tests {
             graph: None,
             criteria: vec![crit.to_string()],
         };
-        let rs1 = run(&cfg, &deps1).unwrap();
+        let rs1 = run_isolated(&cfg, &deps1).unwrap();
         assert_eq!(
             rs1.units["plan-critique"].status,
             ledger::Status::Integrated
@@ -39217,7 +39225,7 @@ mod tests {
             graph: None,
             criteria: vec![crit.to_string()],
         };
-        let rs2 = run(&cfg, &deps2).unwrap();
+        let rs2 = run_isolated(&cfg, &deps2).unwrap();
         assert_eq!(
             occurrences(&d2.calls, "judge"),
             0,
@@ -39281,7 +39289,7 @@ mod tests {
             grounder: Some(&grep),
             ..stub_deps(st, driver, vec![WIDGET_CRITERION.to_string()])
         };
-        run(&critique_cfg(), &deps).unwrap()
+        run_isolated(&critique_cfg(), &deps).unwrap()
     }
 
     #[test]
@@ -39380,7 +39388,7 @@ mod tests {
             graph: None,
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
         };
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(
             rs.units["plan-critique"].status,
@@ -39441,7 +39449,7 @@ mod tests {
             graph: None,
             criteria: vec![criterion.to_string()],
         };
-        let _ = run(&cfg, &deps).unwrap();
+        let _ = run_isolated(&cfg, &deps).unwrap();
 
         // The reject drove a re-plan: the planner ran twice (initial + re-emit).
         assert_eq!(
@@ -39585,7 +39593,7 @@ mod tests {
             graph: None,
             criteria: vec![criterion.to_string()],
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             occurrences(&driver.calls, "adversary") >= 1,
@@ -39626,7 +39634,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
-        run(&cfg, &deps)
+        run_isolated(&cfg, &deps)
             .expect("a plan-critique-gate budget refusal halts the run cleanly, it does not error");
 
         assert!(

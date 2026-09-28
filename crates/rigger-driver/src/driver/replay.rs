@@ -373,12 +373,12 @@ impl AgentDriver for ReplayDriver<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conductor::{is_parked, run, Deps};
+    use crate::conductor::{is_parked, Deps};
     use crate::config::{Config, Stage};
     use crate::eventstore::sqlite::Store;
     use crate::gate::ExecRunner;
     use crate::spawn::{lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_IMPLEMENTER};
-    use crate::test_support::no_emit;
+    use crate::test_support::{no_emit, run_isolated};
 
     /// An agent `id` on `sonnet` granted `tools`.
     fn sonnet_agent(id: &str, tools: &[&str]) -> AgentDef {
@@ -1139,7 +1139,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -1207,7 +1207,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
+        run_isolated(&cfg, &deps).unwrap();
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let status = |want: &str| {
@@ -1296,7 +1296,7 @@ mod tests {
             criteria: Vec::new(),
         };
 
-        let rs = run(&cfg, &deps).expect("a parked frontier is not a run failure");
+        let rs = run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure");
 
         // The unit's implementer spawn was parked under its deterministic id, carrying
         // the labels the conductor threaded through SpawnOpts.
@@ -1328,7 +1328,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
         assert!(spawn::is_recorded(
@@ -1352,7 +1352,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -1390,7 +1390,7 @@ mod tests {
             criteria: Vec::new(),
         };
 
-        run(&cfg, &deps).expect("parking a whole wave is not a run failure");
+        run_isolated(&cfg, &deps).expect("parking a whole wave is not a run failure");
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(spawn::is_recorded(
@@ -1441,7 +1441,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
+        run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
@@ -1491,7 +1491,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
+            run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
         }
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -1551,7 +1551,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
         assert!(
@@ -1578,7 +1578,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -1648,7 +1648,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             };
-            run(&cfg, &deps).unwrap();
+            run_isolated(&cfg, &deps).unwrap();
         }
         let impl_id = spawn_id("u", ROLE_IMPLEMENTER, 0);
         assert!(
@@ -1676,7 +1676,7 @@ mod tests {
                 criteria: Vec::new(),
             };
             // The run HALTS cleanly - the review-tier refusal is not a run error.
-            run(&cfg, &deps)
+            run_isolated(&cfg, &deps)
                 .expect("a review-tier budget refusal halts the run, it does not error");
         }
 
@@ -1755,7 +1755,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        run(cfg, &deps).map(|_| ())
+        run_isolated(cfg, &deps).map(|_| ())
     }
 
     /// A courier answering a parked spawn: record its result. An empty `output` is the
