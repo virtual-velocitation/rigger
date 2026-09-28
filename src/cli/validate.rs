@@ -394,7 +394,8 @@ fn build_environment_report(
 
 /// The non-fatal `rigger validate` advisories (spec 05:55), in report order:
 ///   (a) the installed `/rigger` workflow has drifted from this binary's embedded copy;
-///   (b) tracked `.rigger/` files carry uncommitted modifications.
+///   (b) tracked `.rigger/` files carry uncommitted modifications;
+///   (c) the checkout's `.claude/settings.json` lacks rigger's session hooks.
 /// Both are warnings only - they are collected here and printed to stderr by the caller
 /// without affecting the exit status. Rooted at `root` so the seam is testable against a
 /// temp dir without mutating the process-wide current directory.
@@ -422,6 +423,9 @@ fn validate_advisories(root: &Path) -> Vec<String> {
     }
     if let Some(dirty) = uncommitted_rigger_advisory(root) {
         advisories.push(dirty);
+    }
+    if let Some(advisory) = session_hooks_advisory(root) {
+        advisories.push(advisory);
     }
     // Spec 74, criterion 2: the missing-go-gitsemver-binary advisory (fires whenever
     // THIS binary's own embedded version carries the `+unversioned` marker, regardless
@@ -800,6 +804,23 @@ fn workflow_drift_advisory(
 /// git is unavailable - in which case there is nothing to flag). Runs `git status
 /// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
 /// [`dirty_tracked_paths`] seam.
+/// Warn when the checkout's `.claude/settings.json` lacks any of the session settings
+/// `rigger setup` installs (the prime hook, the grep-guard, the status line): a headless spawn
+/// gets them from the host, but the operator's own interactive session reads them from here.
+fn session_hooks_advisory(root: &Path) -> Option<String> {
+    let settings = std::fs::read(root.join(".claude").join("settings.json")).unwrap_or_default();
+    if rigger::hooks::carries_session_settings(&settings) {
+        return None;
+    }
+    Some(
+        "warning: .claude/settings.json does not carry rigger's session hooks (the SessionStart \
+         prime hook, the PreToolUse grep-guard and the status line), so an interactive session \
+         in this checkout starts unprimed and without the graph-first lookup guard. Run \
+         `rigger setup` to install them."
+            .to_string(),
+    )
+}
+
 fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
     let out = subprocess::command("git")
         .args(["status", "--porcelain", "--", RIGGER_DIR])

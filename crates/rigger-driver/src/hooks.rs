@@ -57,6 +57,17 @@ pub fn install_session_settings(existing: &[u8]) -> Result<Vec<u8>, Error> {
     install_status_line(&guarded, STATUS_LINE_COMMAND)
 }
 
+/// Whether the settings JSON `existing` already carries every session setting
+/// [`install_session_settings`] installs: installing them again would change nothing. Empty or
+/// unparseable settings carry none.
+pub fn carries_session_settings(existing: &[u8]) -> bool {
+    let parse = |bytes: &[u8]| serde_json::from_slice::<Value>(bytes).ok();
+    match (parse(existing), install_session_settings(existing)) {
+        (Some(current), Ok(merged)) => parse(&merged) == Some(current),
+        _ => false,
+    }
+}
+
 /// The [`HELPER_AGENTS`] as the JSON object Claude Code's `--agents` flag takes:
 /// `{name: {description, model, tools: [..], prompt}}`, each field read from the helper's own
 /// frontmatter and the prompt its body, verbatim.
