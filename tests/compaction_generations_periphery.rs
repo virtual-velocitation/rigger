@@ -19,6 +19,10 @@
 //!      never a key shape of its own.
 //!   4. **Preview parity.** `Store::count_derived_duplicates` and the bare `rigger reset` menu
 //!      count exactly the rows a real prune removes, superseded generations included.
+//!   5. **The fold's generation rule at its seams.** `ingest::derived_generation` names a
+//!      generation only for a keyed derived-index event; the live `graph.db` a run folds event by
+//!      event, reopened between batches, is the projection a whole-log rebuild and a compacted
+//!      rebuild fold; and one project's generations never supersede another's in a shared file.
 
 mod common;
 
@@ -298,18 +302,30 @@ fn a_carried_valid_time_is_the_earliest_recording_of_the_same_fact_in_the_same_i
 /// The whole live projection - every node, every live edge, every column - of a graph folded from
 /// `store`'s run stream, in its public wire form.
 fn rebuilt_whole(store: &Store, graph_db: &Path) -> String {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
-    let events = Namespaced::new(store, PROJECT)
+    fold_in_batches(graph_db, PROJECT, &[run_events(store, PROJECT)])
+}
+
+/// `project`'s run stream in `store`, as recorded (positions included).
+fn run_events(store: &Store, project: &str) -> Vec<Event> {
+    Namespaced::new(store, project)
         .read_stream(
             rigger::conductor::STREAM,
             0,
             rigger::eventstore::Direction::Forward,
         )
-        .unwrap();
-    let p = Projector::open(graph_db.to_str().unwrap(), PROJECT).unwrap();
-    p.apply_batch(&events).unwrap();
-    serde_json::to_string(&p.whole().unwrap()).unwrap()
+        .unwrap()
+}
+
+/// Fold `batches` into `graph_db` for `project`, REOPENING the projector for every batch (the way
+/// successive runs fold one live `graph.db`), and return the whole live projection's wire form.
+fn fold_in_batches(graph_db: &Path, project: &str, batches: &[Vec<Event>]) -> String {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    let open = || Projector::open(graph_db.to_str().unwrap(), project).unwrap();
+    for batch in batches {
+        open().apply_batch(batch).unwrap();
+    }
+    serde_json::to_string(&open().whole().unwrap()).unwrap()
 }
 
 /// A fact a generation DROPS and a later generation asserts again is live again from its RETURN,
@@ -427,11 +443,22 @@ fn head(name: &str, line: u32, partial: bool) -> Vec<u8> {
 }
 
 /// Fold `events` whole, compact the log with the shipped policy, fold it again, and require the
-/// two live projections to be identical and to hold exactly `nodes` as `(id, kind)`.
+/// two live projections to be identical and to hold exactly `nodes` as `(id, kind)`. The live
+/// `graph.db` a run keeps is folded incrementally - one event per batch, the projector reopened
+/// between them - and must be that same projection before the log is compacted.
 fn compaction_rebuilds_the_whole_logs_graph(events: Vec<Event>, nodes: &[(&str, &str)]) {
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
     let before = rebuilt_whole(&backend, &dir.path().join("before.db"));
+    let one_by_one: Vec<Vec<Event>> = run_events(&backend, PROJECT)
+        .into_iter()
+        .map(|e| vec![e])
+        .collect();
+    assert_eq!(
+        fold_in_batches(&dir.path().join("live.db"), PROJECT, &one_by_one),
+        before,
+        "the graph folded event by event across reopens must be the whole log's"
+    );
     backend
         .prune_derived_index(
             &Namespaced::prefix_for(PROJECT),
@@ -571,6 +598,45 @@ rigger::test_cases! {
             keyed(TYPE_DOC_LINK_EXTRACTED, link("src/a.rs"), "gd/docs/f.md@h2#0", 20),
         ],
         &[("docs/f.md", "artifact"), ("src/a.rs", "artifact")],
+    );
+    /// A decision that names a definition only AFTER the generation that dropped it: the node
+    /// comes back as the decision's artifact, never as the definition the shed generation made.
+    a_decision_naming_an_already_dropped_entity_names_an_artifact: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 10),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("gone", 9), "gc/src/f.rs@h1#1", 10),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 2, false), "gc/src/f.rs@h2#0", 20),
+            governs("src/f.rs::gone", 25),
+        ],
+        &[
+            ("d1", "decision"),
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::gone", "artifact"),
+        ],
+    );
+    /// Three generations of one file's code and design batches, each dropping or adding a fact:
+    /// only what the third asserts (and what a decision holds) is live.
+    three_generations_fold_to_the_latest_ones_facts: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 10),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("gone", 9), "gc/src/f.rs@h1#1", 10),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/a.rs"), "gd/docs/f.md@h1#0", 10),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/old.rs"), "gd/docs/f.md@h1#1", 10),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 2, false), "gc/src/f.rs@h2#0", 20),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("mid", 5), "gc/src/f.rs@h2#1", 20),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/a.rs"), "gd/docs/f.md@h2#0", 20),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 3, false), "gc/src/f.rs@h3#0", 30),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/a.rs"), "gd/docs/f.md@h3#0", 30),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/g.rs"), "gd/docs/f.md@h3#1", 30),
+        ],
+        &[
+            ("docs/f.md", "artifact"),
+            ("src/a.rs", "artifact"),
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/g.rs", "artifact"),
+        ],
     );
 }
 
@@ -846,5 +912,171 @@ fn bare_reset_previews_superseded_generations_and_the_real_prune_removes_exactly
             && out.contains("4 of them recordings of a superseded generation"),
         "the real prune must remove exactly what the menu previewed, all of it superseded; got: \
          {out:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 5. The fold's generation rule at its seams
+// ---------------------------------------------------------------------------------------
+
+/// A `(batch identity, generation)` pair as the key parser answers it.
+type Parts<'k> = (&'k str, &'k str);
+
+/// `ingest::derived_generation` is the one place the fold learns who asserted a fact: the
+/// `(<prefix>/<file>, generation)` of a derived-index event's replay key, and nothing for any other
+/// event, for a derived event with no key, or for a key that is not the derived shape.
+#[test]
+fn derived_generation_names_only_a_keyed_derived_events_identity_and_generation() {
+    let cases: Vec<(Event, Option<Parts>, &str)> = vec![
+        (
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                entity("a", 1),
+                "gc/src/f.rs@h1#0",
+                1,
+            ),
+            Some(("gc/src/f.rs", "h1")),
+            "a code entity",
+        ),
+        (
+            keyed(TYPE_EDGE_INFERRED, entity("a", 1), "gc/src/f.rs@h2#3", 1),
+            Some(("gc/src/f.rs", "h2")),
+            "an inferred edge",
+        ),
+        (
+            keyed(
+                TYPE_DOC_CONCEPT_EXTRACTED,
+                link("x"),
+                "gd/docs/f.md@h3#0",
+                1,
+            ),
+            Some(("gd/docs/f.md", "h3")),
+            "a doc concept",
+        ),
+        (
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("x"),
+                "gd/docs/a@b#c.md@h4#12",
+                1,
+            ),
+            Some(("gd/docs/a@b#c.md", "h4")),
+            "a doc link whose file holds `@` and `#`",
+        ),
+        (
+            keyed("DecisionMade", link("x"), "gc/src/f.rs@h1#0", 1),
+            None,
+            "a non-derived event carrying a derived-shaped key",
+        ),
+        (
+            Event::new(TYPE_CODE_ENTITY_EXTRACTED, entity("a", 1)),
+            None,
+            "a derived event with no replay key",
+        ),
+        (
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                entity("a", 1),
+                "gc/src/f.rs@h1",
+                1,
+            ),
+            None,
+            "a derived event whose key has no `#<index>` tail",
+        ),
+    ];
+    for (event, expected, what) in &cases {
+        assert_eq!(
+            rigger::ingest::derived_generation(event),
+            *expected,
+            "derived_generation of {what}"
+        );
+    }
+}
+
+/// Two projects share one `graph.db`: each one's generations supersede only its own. Folded
+/// interleaved - A's h1, B's h1, B's h9, A's h2 - each project's projection is exactly the one it
+/// folds alone, so A's h2 retires A's `gone` and B's h9 never touched A.
+#[test]
+fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
+    const OTHER: &str = "proj-gen-other";
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(
+            rigger::conductor::STREAM,
+            vec![
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    head("alpha", 1, false),
+                    "gc/src/f.rs@h1#0",
+                    10,
+                ),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    entity("gone", 9),
+                    "gc/src/f.rs@h1#1",
+                    10,
+                ),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    head("alpha", 2, false),
+                    "gc/src/f.rs@h2#0",
+                    20,
+                ),
+            ],
+        )],
+    );
+    Namespaced::new(&backend, OTHER)
+        .append(
+            rigger::conductor::STREAM,
+            ExpectedRevision::Any,
+            &[
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    head("beta", 1, false),
+                    "gc/src/f.rs@h1#0",
+                    11,
+                ),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    entity("kept", 3),
+                    "gc/src/f.rs@h9#1",
+                    12,
+                ),
+                keyed(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    head("beta", 2, false),
+                    "gc/src/f.rs@h9#0",
+                    12,
+                ),
+            ],
+        )
+        .unwrap();
+    let a = run_events(&backend, PROJECT);
+    let b = run_events(&backend, OTHER);
+    let a_alone = fold_in_batches(&dir.path().join("a.db"), PROJECT, std::slice::from_ref(&a));
+    let b_alone = fold_in_batches(&dir.path().join("b.db"), OTHER, std::slice::from_ref(&b));
+
+    let shared = dir.path().join("shared.db");
+    fold_in_batches(&shared, PROJECT, &[a[..2].to_vec()]);
+    fold_in_batches(&shared, OTHER, &[b[..1].to_vec(), b[1..].to_vec()]);
+    let a_shared = fold_in_batches(&shared, PROJECT, &[a[2..].to_vec()]);
+    let b_shared = fold_in_batches(&shared, OTHER, &[]);
+
+    assert_eq!(a_shared, a_alone, "A's projection is the one A folds alone");
+    assert_eq!(b_shared, b_alone, "B's projection is the one B folds alone");
+    let ids = |json: &str| -> Vec<String> {
+        let graph: rigger::contextgraph::Graph = serde_json::from_str(json).unwrap();
+        graph.nodes.into_iter().map(|n| n.id).collect()
+    };
+    assert_eq!(
+        ids(&a_alone),
+        vec!["src/f.rs", "src/f.rs::alpha"],
+        "A's h2 retired the `gone` its h1 defined"
+    );
+    assert_eq!(
+        ids(&b_alone),
+        vec!["src/f.rs", "src/f.rs::beta", "src/f.rs::kept"],
+        "B's h9 holds `beta` and `kept`"
     );
 }
