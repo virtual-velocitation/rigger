@@ -549,32 +549,43 @@ impl EventStore for Store {
 
     /// A backward read from the stream's end that stops at the first event of `event_type`:
     /// the server has no index over event types, so the bound is that first match, and only
-    /// the events after it are ever read.
+    /// the events after it are ever read. Each record is pulled from the server only when
+    /// [`newest_of_type`] asks for it, so the read ends where the scan does.
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
         let opts = ReadStreamOptions::default()
             .position(StreamPosition::End)
             .backwards();
-        self.rt.block_on(async {
-            let mut rs = match self.client.read_stream(stream, &opts).await {
-                Ok(rs) => rs,
-                Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
-                Err(e) => return Err(Error::Backend(format!("kurrentdb: last position: {e}"))),
-            };
-            loop {
-                match rs.next().await {
-                    Ok(Some(ev)) => {
-                        if let Some(rec) = original(&ev) {
-                            if rec.event_type == event_type {
-                                return Ok(Some(rec.revision as Revision));
-                            }
-                        }
-                    }
-                    Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
-                    Err(e) => return Err(Error::Backend(format!("kurrentdb: last position: {e}"))),
-                }
+        match self.rt.block_on(self.client.read_stream(stream, &opts)) {
+            Err(e) => newest_of_type([Err(e)], event_type),
+            Ok(mut rs) => {
+                let records = std::iter::from_fn(|| self.rt.block_on(rs.next()).transpose())
+                    .filter_map(|pulled| {
+                        pulled
+                            .map(|ev| original(&ev).map(|r| (r.event_type.clone(), r.revision)))
+                            .transpose()
+                    });
+                newest_of_type(records, event_type)
             }
-        })
+        }
     }
+}
+
+/// The boundary scan over a newest-first read's `(event type, revision)` records: the revision
+/// of the FIRST record of `event_type`, pulling nothing past it. A stream the server does not
+/// know - at the open or mid-read - has no boundary; any other server failure is an error.
+fn newest_of_type<I>(records: I, event_type: &str) -> Result<Option<Revision>, Error>
+where
+    I: IntoIterator<Item = Result<(String, u64), kurrentdb::Error>>,
+{
+    for record in records {
+        match record {
+            Ok((t, revision)) if t == event_type => return Ok(Some(revision as Revision)),
+            Ok(_) => {}
+            Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
+            Err(e) => return Err(Error::Backend(format!("kurrentdb: last position: {e}"))),
+        }
+    }
+    Ok(None)
 }
 
 fn current_thread_rt(err: &Arc<Mutex<Option<String>>>) -> Option<tokio::runtime::Runtime> {
@@ -820,7 +831,8 @@ mod tests {
     /// answers it is an error naming the lookup, never a fabricated `None` or revision.
     #[test]
     fn the_boundary_lookup_reports_an_unreachable_server_as_an_error() {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        // One thread, not a worker per core: the test runner caps the address space.
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();

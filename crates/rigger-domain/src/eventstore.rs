@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
@@ -467,6 +467,40 @@ impl Subscription {
     /// The terminal error, if the feeding thread ended in one.
     pub fn err(&self) -> Option<String> {
         self.err.lock().unwrap().clone()
+    }
+
+    /// This subscription's events, each passed through `f` in delivery order, as a new
+    /// subscription: the one relay a decorator reshapes or observes a backend's deliveries
+    /// through. The relay owns this subscription, so dropping the result stops both; this
+    /// subscription's terminal error carries over once its events are relayed.
+    pub fn map<F>(self, mut f: F) -> Subscription
+    where
+        F: FnMut(Event) -> Event + Send + 'static,
+    {
+        let (tx, rx) = channel();
+        let err = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_relay = Arc::clone(&stop);
+        let err_relay = Arc::clone(&err);
+        let handle = std::thread::spawn(move || {
+            while !stop_relay.load(Ordering::Relaxed) {
+                match self.recv_timeout(Duration::from_millis(50)) {
+                    Some(e) => {
+                        if tx.send(f(e)).is_err() {
+                            return;
+                        }
+                    }
+                    None => {
+                        if let Some(msg) = self.err() {
+                            *err_relay.lock().unwrap() = Some(msg);
+                            return;
+                        }
+                        // a quiet timeout: the inner is still live; re-check stop
+                    }
+                }
+            }
+        });
+        Subscription::new(rx, err, stop, handle)
     }
 }
 

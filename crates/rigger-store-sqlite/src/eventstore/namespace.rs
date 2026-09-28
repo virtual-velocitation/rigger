@@ -7,11 +7,6 @@
 //! Because it depends only on the port, it is written once and wraps every
 //! backend - dependency inversion buying the single implementation.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use super::{
     Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
     Subscription,
@@ -143,34 +138,12 @@ impl EventStore for Namespaced<'_> {
 /// Wrap a subscription so each delivered event has the namespace prefix stripped
 /// from its stream. Owns the inner subscription; dropping the wrapper stops both.
 fn strip_subscription(inner: Subscription, prefix: String) -> Subscription {
-    let (tx, rx) = channel();
-    let err = Arc::new(Mutex::new(None));
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_thread = Arc::clone(&stop);
-    let err_thread = Arc::clone(&err);
-    let handle = std::thread::spawn(move || {
-        // The inner subscription is owned here; it stops when this thread ends.
-        while !stop_thread.load(Ordering::Relaxed) {
-            match inner.recv_timeout(Duration::from_millis(50)) {
-                Some(mut e) => {
-                    if let Some(rest) = e.stream.strip_prefix(&prefix) {
-                        e.stream = rest.to_string();
-                    }
-                    if tx.send(e).is_err() {
-                        return;
-                    }
-                }
-                None => {
-                    if let Some(msg) = inner.err() {
-                        *err_thread.lock().unwrap() = Some(msg);
-                        return;
-                    }
-                    // a quiet timeout: the inner is still live; re-check stop
-                }
-            }
+    inner.map(move |mut e| {
+        if let Some(rest) = e.stream.strip_prefix(&prefix) {
+            e.stream = rest.to_string();
         }
-    });
-    Subscription::new(rx, err, stop, handle)
+        e
+    })
 }
 
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))] // Namespaced's own tests need a real EventStore backend (sqlite); the wrapper itself stays pure/ungated above
