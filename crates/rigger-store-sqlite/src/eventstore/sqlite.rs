@@ -122,25 +122,21 @@ impl Store {
     ///
     /// Four properties, each load-bearing:
     ///
-    /// 1. **Per KEY, not per subject.** A content key names a file AND its content generation, so
-    ///    a superseded generation is a DISTINCT key whose latest recording survives. The
-    ///    justification is not that some reader re-reads superseded generations - the sink rule
-    ///    deliberately seeds from the LATEST generation only, and says so. It is that per-key is
-    ///    the FAIL-SAFE direction, stated as three properties rather than as a belief about a
-    ///    consumer: it deletes a strict SUBSET of what a per-subject rule would delete; it leaves
-    ///    the per-key `MAX(position)` byte-identical, because only recordings BEHIND a key's
-    ///    survivor are eligible; and its unit of redundancy is exactly the ingest dedup's - the
-    ///    whole `<prefix>/<file>@<hash>#<i>` key - so the prune can never call redundant anything
-    ///    the layer above it would have re-emitted. A per-subject rule would have to decide which
-    ///    of a subject's generations is dead, which is a judgement this store has no standing to
-    ///    make; per-key makes none.
-    /// 2. **A RE-ASSERTED key's valid-time is CARRIED, not dropped.** A projection that
+    /// 1. **Latest generation per identity, then latest recording per key.** A content key
+    ///    names a batch identity AND its content generation ([`ContentIdentity::key_parts`]), so
+    ///    every recording of a generation that is not its identity's LATEST is shed, and of the
+    ///    latest generation only each key's last recording survives. Nothing shed is ever read
+    ///    again: the ingest sinks seed from the latest generation only, and a file that returns
+    ///    to an earlier content re-emits its batch. A key the policy cannot parse (or a policy
+    ///    that declares no parser) keeps exact-key semantics: its latest recording survives.
+    ///    The selection is [`plan_derived_prune`], shared with the read-only preview.
+    /// 2. **A RE-ASSERTED fact's valid-time is CARRIED, not dropped.** A projection that
     ///    re-asserts a fact in place keeps its EARLIEST valid-time ("it has held since it first
     ///    became true"), so deleting that key's earliest recording would silently re-date the
     ///    fact to whichever recording survived - and for the design-intent edge class the date IS
     ///    the value. The policy's own declaration ([`ContentIdentity::reasserts`]) names the types
-    ///    this is true of; each of their surviving rows takes its group's `MIN(valid_from)` before
-    ///    the deletes run. Because a minimum is
+    ///    this is true of; each of their surviving rows takes the `MIN(valid_from)` of every
+    ///    recording of its identity with the same payload before the deletes run. Because a minimum is
     ///    associative and every deleted row's valid-time is at or above the minimum retained on
     ///    its survivor, the compacted log then yields exactly the valid-times the whole log
     ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
@@ -189,10 +185,10 @@ impl Store {
     }
 
     /// A read-only PREVIEW of what [`prune_derived_index`] would delete (spec 68, "the reset
-    /// surface"): for each type `identity` covers, the count of every recording of a covered key
-    /// EXCEPT the latest one in its stream - the exact `rn > 1` predicate the delete's window
-    /// function selects, run as `SELECT COUNT(*)` instead of `DELETE`. No row is touched, no
-    /// valid-time carried, no `VACUUM` run.
+    /// surface"): for each type `identity` covers, the count of rows the prune's own selection
+    /// ([`plan_derived_prune`]) marks for deletion - every recording of a superseded generation
+    /// and every earlier recording of a surviving key. No row is touched, no valid-time carried,
+    /// no `VACUUM` run.
     ///
     /// Unlike [`prune_derived_index`] this needs no [`ContentIdentity::reasserting`] declaration:
     /// that check exists because a DELETE has to know whether a surviving row's valid-time must be
@@ -200,34 +196,15 @@ impl Store {
     /// getting wrong is not read here at all.
     ///
     /// `rigger reset`'s bare-menu preview reads this so its printed count can never drift from
-    /// what a real `--derived` removes - both count the identical rows.
+    /// what a real `--derived` removes - both come from the one selection.
     pub fn count_derived_duplicates(
         &self,
         stream_prefix: &str,
         identity: &ContentIdentity,
     ) -> Result<Vec<(String, usize)>, Error> {
-        let key = key_expr(identity.meta_key());
-        let sql = format!(
-            "SELECT COUNT(*) FROM (
-               SELECT position, ROW_NUMBER() OVER (
-                        PARTITION BY stream, {key} ORDER BY position DESC) AS rn
-               FROM events
-               WHERE type = ?1
-                 AND substr(stream, 1, length(?2)) = ?2
-                 AND {key} IS NOT NULL
-             ) WHERE rn > 1"
-        );
-        let types = identity.types();
         let guard = self.conn.lock().unwrap();
-        let mut stmt = guard.prepare(&sql).map_err(be)?;
-        let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
-        for t in types {
-            let n: i64 = stmt
-                .query_row(params![t.as_str(), stream_prefix], |r| r.get(0))
-                .map_err(be)?;
-            removed.push((t.clone(), n.max(0) as usize));
-        }
-        Ok(removed)
+        let plan = plan_derived_prune(&guard, stream_prefix, identity, &[])?;
+        Ok(plan.removed_per_type(identity.types()))
     }
 
     /// [`Store::prune_derived_index`] with its post-commit space reclamation INJECTED.
@@ -268,48 +245,6 @@ impl Store {
             )));
         }
 
-        let key = key_expr(identity.meta_key());
-        // Property 2: the survivor of every DUPLICATED key inherits its group's EARLIEST
-        // valid-time, so the fact keeps the date it first became true. Runs BEFORE the delete,
-        // while the group is still whole.
-        //
-        // ONE set-based pass, deliberately: the group's minimum and its survivor come from a
-        // SINGLE grouped scan of the type's rows (`HAVING COUNT(*) > 1` is what keeps a key
-        // recorded once from ever being rewritten, and the survivor is that group's
-        // `MAX(position)` - the same row `ROW_NUMBER() ... ORDER BY position DESC` calls `rn = 1`
-        // below). Written as a correlated `MIN()` subquery per survivor instead, this re-scans the
-        // type's rows once PER CARRIED ROW: on a real pre-dedup log with no index on the key
-        // expression that is hours of held write lock for a prune whose deletes take seconds, and
-        // the cost grows with the square of the log it exists to shrink.
-        let carry = format!(
-            "UPDATE events
-                SET valid_from = g.earliest
-               FROM (SELECT MIN(valid_from)  AS earliest,
-                            MAX(position)    AS survivor
-                       FROM events
-                      WHERE type = ?1
-                        AND substr(stream, 1, length(?2)) = ?2
-                        AND {key} IS NOT NULL
-                      GROUP BY stream, {key}
-                     HAVING COUNT(*) > 1) AS g
-              WHERE events.position = g.survivor"
-        );
-        // Every recording of a covered key EXCEPT the last one in its stream. `ROW_NUMBER` ranks a
-        // key's recordings newest-first, so `rn = 1` is the surviving one and everything beyond it
-        // is a superseded duplicate.
-        let sql = format!(
-            "DELETE FROM events WHERE position IN (
-               SELECT position FROM (
-                 SELECT position, ROW_NUMBER() OVER (
-                          PARTITION BY stream, {key} ORDER BY position DESC) AS rn
-                 FROM events
-                 WHERE type = ?1
-                   AND substr(stream, 1, length(?2)) = ?2
-                   AND {key} IS NOT NULL
-               ) WHERE rn > 1
-             )"
-        );
-
         let mut guard = self.conn.lock().unwrap();
         // THE OPERATOR'S BEFORE, taken before a single row is deleted. What the reclamation is
         // reported as is the space the LOG LOST ON DISK across the whole command, so it is
@@ -328,7 +263,8 @@ impl Store {
             .map(|p| p.to_string());
         let on_disk_before = db_file.as_deref().map(bytes_on_disk);
         let types = identity.types();
-        let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
+        let removed: Vec<(String, usize)>;
+        let superseded_generations: usize;
         {
             // ONE transaction for the whole prune: a partial compaction is not a state an operator
             // can reason about. The carry-forward shares it, so a log can never be left with its
@@ -347,23 +283,34 @@ impl Store {
             let tx = guard
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(be)?;
+            // The selection is read INSIDE the write transaction, so what it decided is exactly
+            // what the deletes below act on: no append can land between the two.
+            // `Some(_)` throughout: the undeclared case returned above, so every covered type
+            // has an answer and none is defaulted.
+            let reasserting: Vec<String> = types
+                .iter()
+                .filter(|t| identity.reasserts(t) == Some(true))
+                .cloned()
+                .collect();
+            let plan = plan_derived_prune(&tx, stream_prefix, identity, &reasserting)?;
             {
-                let mut carry_stmt = tx.prepare(&carry).map_err(be)?;
-                let mut stmt = tx.prepare(&sql).map_err(be)?;
-                for t in types {
-                    // `Some(_)` throughout: the undeclared case returned above, so every covered
-                    // type here has an answer and none is defaulted.
-                    if identity.reasserts(t) == Some(true) {
-                        carry_stmt
-                            .execute(params![t.as_str(), stream_prefix])
-                            .map_err(be)?;
-                    }
-                    let n = stmt
-                        .execute(params![t.as_str(), stream_prefix])
-                        .map_err(be)?;
-                    removed.push((t.clone(), n));
+                // Property 2: a surviving re-asserting row takes its fact's EARLIEST valid-time,
+                // decided while every recording was still in the log.
+                let mut carry = tx
+                    .prepare("UPDATE events SET valid_from = ?2 WHERE position = ?1")
+                    .map_err(be)?;
+                for (position, earliest) in &plan.carries {
+                    carry.execute(params![position, earliest]).map_err(be)?;
+                }
+                let mut delete = tx
+                    .prepare("DELETE FROM events WHERE position = ?1")
+                    .map_err(be)?;
+                for (_, position) in &plan.deletes {
+                    delete.execute(params![position]).map_err(be)?;
                 }
             }
+            removed = plan.removed_per_type(types);
+            superseded_generations = plan.superseded;
             tx.commit().map_err(be)?;
         }
 
@@ -393,6 +340,7 @@ impl Store {
             // unmeasured is the honest report there, exactly as on the pending path below.
             Ok(Compaction::Skipped) => Ok(PrunedDerived {
                 removed,
+                superseded_generations,
                 reclaimed_bytes: db_file.as_deref().map(|_| 0),
                 compaction_ran: false,
                 on_disk_measured: db_file.is_some(),
@@ -402,6 +350,7 @@ impl Store {
             // after taken here bracket the whole command: their difference is what the log lost.
             Ok(Compaction::Landed) => Ok(PrunedDerived {
                 removed,
+                superseded_generations,
                 reclaimed_bytes: db_file
                     .as_deref()
                     .zip(on_disk_before)
@@ -415,6 +364,7 @@ impl Store {
             // that has not finished. Unmeasured is the honest report.
             Ok(Compaction::Pending) => Ok(PrunedDerived {
                 removed,
+                superseded_generations,
                 reclaimed_bytes: None,
                 compaction_ran: true,
                 on_disk_measured: db_file.is_some(),
@@ -422,6 +372,7 @@ impl Store {
             }),
             Err(e) => Ok(PrunedDerived {
                 removed,
+                superseded_generations,
                 reclaimed_bytes: None,
                 compaction_ran: true,
                 on_disk_measured: db_file.is_some(),
@@ -483,6 +434,128 @@ impl Store {
             distinct_keys: distinct_keys.max(0) as usize,
         })
     }
+}
+
+/// What one derived-index compaction deletes and re-dates, decided by [`plan_derived_prune`].
+struct DerivedPrunePlan {
+    /// `(index into the policy's types, position)` of every row to delete.
+    deletes: Vec<(usize, i64)>,
+    /// `(position, earliest valid-time)` of every surviving re-asserting row whose fact was
+    /// first recorded earlier than its own valid-time.
+    carries: Vec<(i64, i64)>,
+    /// How many of `deletes` record a superseded generation.
+    superseded: usize,
+}
+
+impl DerivedPrunePlan {
+    /// The deletes counted per type, in the order `types` names them, zeros included.
+    fn removed_per_type(&self, types: &[String]) -> Vec<(String, usize)> {
+        let mut counts = vec![0usize; types.len()];
+        for (t, _) in &self.deletes {
+            counts[*t] += 1;
+        }
+        types.iter().cloned().zip(counts).collect()
+    }
+}
+
+/// The ONE selection of a derived-index compaction, shared by the prune and its read-only
+/// preview: which rows go, and which surviving rows take an earlier valid-time.
+///
+/// One pass over the covered, keyed rows under `stream_prefix`, NEWEST FIRST, so the first row
+/// met for a `(stream, batch identity)` names that identity's LATEST recorded generation
+/// ([`ContentIdentity::key_parts`]) and the first row met for a `(stream, type, key)` is that
+/// key's latest recording. A row is deleted when its generation is not its identity's latest
+/// (a superseded generation: a file that later returns to that content re-emits its batch, so
+/// the recording is never needed again), or when a later recording of its exact key exists (the
+/// exact-key dedup). A key the policy cannot parse is its own identity, so it is only ever
+/// deduplicated, never shed as superseded.
+///
+/// For the `reasserting` types the fold keeps the EARLIEST valid-time a fact was asserted at, so
+/// every surviving row takes the minimum valid-time over all recordings of the same identity
+/// with the byte-identical payload - the same fact - including the ones being deleted. Grouping
+/// by payload rather than by key is what carries a fact re-asserted by every generation back to
+/// the generation that first asserted it, and within one key the payload is one value, so it
+/// subsumes the per-key carry.
+fn plan_derived_prune(
+    conn: &Connection,
+    stream_prefix: &str,
+    identity: &ContentIdentity,
+    reasserting: &[String],
+) -> Result<DerivedPrunePlan, Error> {
+    use std::collections::{HashMap, HashSet};
+    let key = key_expr(identity.meta_key());
+    let types = identity.types();
+    let sql = format!(
+        "SELECT position, stream, type, {key}, valid_from,
+                CASE WHEN type IN ({reasserting}) THEN data END
+           FROM events
+          WHERE type IN ({covered})
+            AND substr(stream, 1, length(?1)) = ?1
+            AND {key} IS NOT NULL
+          ORDER BY position DESC",
+        reasserting = type_list(reasserting),
+        covered = type_list(types),
+    );
+    let mut stmt = conn.prepare(&sql).map_err(be)?;
+    let mut rows = stmt.query(params![stream_prefix]).map_err(be)?;
+    let mut latest: HashMap<(String, String), String> = HashMap::new();
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
+    // (stream, type, identity, payload) -> (earliest valid-time, survivors as (position, own)).
+    type Fact = (String, String, String, Vec<u8>);
+    let mut facts: HashMap<Fact, (i64, Vec<(i64, i64)>)> = HashMap::new();
+    let mut plan = DerivedPrunePlan {
+        deletes: Vec::new(),
+        carries: Vec::new(),
+        superseded: 0,
+    };
+    while let Some(row) = rows.next().map_err(be)? {
+        let position: i64 = row.get(0).map_err(be)?;
+        let stream: String = row.get(1).map_err(be)?;
+        let type_: String = row.get(2).map_err(be)?;
+        let content_key: String = row.get(3).map_err(be)?;
+        let valid_from: i64 = row.get(4).map_err(be)?;
+        let payload: Option<Vec<u8>> = row.get(5).map_err(be)?;
+        let Some(type_index) = types.iter().position(|t| *t == type_) else {
+            continue;
+        };
+        let parts = identity.key_parts(&content_key);
+        let batch = parts
+            .map_or(content_key.as_str(), |(batch, _)| batch)
+            .to_string();
+        let superseded = parts.is_some_and(|(_, generation)| {
+            latest
+                .entry((stream.clone(), batch.clone()))
+                .or_insert_with(|| generation.to_string())
+                != generation
+        });
+        let survives = !superseded && seen.insert((stream.clone(), type_.clone(), content_key));
+        if !survives {
+            plan.deletes.push((type_index, position));
+        }
+        if superseded {
+            plan.superseded += 1;
+        }
+        if let Some(payload) = payload {
+            let fact = facts
+                .entry((stream, type_, batch, payload))
+                .or_insert((valid_from, Vec::new()));
+            fact.0 = fact.0.min(valid_from);
+            if survives {
+                fact.1.push((position, valid_from));
+            }
+        }
+    }
+    for (earliest, survivors) in facts.into_values() {
+        for (position, own) in survivors {
+            // `earliest` is a minimum over a set holding `own`, so inequality is the one case
+            // with an earlier date to carry.
+            if earliest != own {
+                plan.carries.push((position, earliest));
+            }
+        }
+    }
+    plan.carries.sort_unstable();
+    Ok(plan)
 }
 
 /// What [`Store::measure_derived_duplication`] found: how many rows carry a covered derived-
@@ -616,6 +689,10 @@ const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::fr
 pub struct PrunedDerived {
     /// `(type, rows deleted)`, in the order the caller named the types.
     pub removed: Vec<(String, usize)>,
+    /// How many of the deleted rows recorded a SUPERSEDED generation of their batch identity
+    /// (one that is not the latest the log records for it), as opposed to an earlier recording
+    /// of a key that survives.
+    pub superseded_generations: usize,
     /// Bytes the LOG LOST ON DISK across this whole call, or `None` when that could not be
     /// measured because a concurrent reader still held a write-ahead-log snapshot when the
     /// truncating checkpoint ran, because the reclamation itself failed (see

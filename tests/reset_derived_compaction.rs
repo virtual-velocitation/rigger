@@ -51,8 +51,8 @@ use std::time::{Duration, UNIX_EPOCH};
 const ROUNDS: usize = 500;
 
 /// The replay keys the seed records, in the `<prefix>/<file>@<hash>#<i>` form `ingest::key_batch`
-/// builds. `src/b.rs` is recorded at TWO content generations, so the prune is proven to keep the
-/// latest recording of EVERY key rather than the latest key per file.
+/// builds. `src/b.rs` is recorded at TWO content generations, so the prune is proven to shed the
+/// superseded one whole and keep only the latest generation's recording.
 const KEY_A_DEF: &str = "gc/src/a.rs@h1#0";
 const KEY_A_REF: &str = "gc/src/a.rs@h1#1";
 const KEY_B_GEN1: &str = "gc/src/b.rs@h1#0";
@@ -130,8 +130,7 @@ fn doc_link(from: &str, to: &str, rel: &str) -> Vec<u8> {
 ///     FIRST, so a non-derived event is ineligible however its key is spelled.
 ///   - two derived events carrying NO replay key: a key is what names a content generation, so an
 ///     event without one is never provably redundant and appends through (the fail-safe direction).
-///   - `src/b.rs` at two content generations: a superseded generation's key is still a DISTINCT
-///     key, so its latest recording survives the prune.
+///   - `src/b.rs` at two content generations: every recording of the superseded one is shed.
 fn seed_bloated_log(root: &Path) {
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
@@ -232,8 +231,9 @@ fn seed_bloated_log(root: &Path) {
 }
 
 /// How many rows the prune must remove per derived type, given the seed above: every recording of
-/// a key except its latest.
-const REMOVED_CODE_ENTITIES: usize = 3 * (ROUNDS - 1);
+/// a superseded generation (`src/b.rs`'s first, all `ROUNDS` of it), and every recording of a
+/// surviving key except its latest.
+const REMOVED_CODE_ENTITIES: usize = 3 * ROUNDS - 2;
 const REMOVED_EDGES: usize = ROUNDS - 1;
 const REMOVED_DOC_LINKS: usize = ROUNDS - 1;
 
@@ -252,9 +252,9 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
     let after = rows(&rigger_file(root, "events.db"));
 
-    // For every derived replay key, exactly ONE row survives, and it is the row the log recorded
-    // LAST - the file's current recording, never a superseded one.
-    for key in [KEY_A_DEF, KEY_A_REF, KEY_B_GEN1, KEY_B_GEN2, KEY_D_SPEC] {
+    // For every replay key of each file's LATEST generation, exactly ONE row survives, and it is
+    // the row the log recorded LAST - the file's current recording.
+    for key in [KEY_A_DEF, KEY_A_REF, KEY_B_GEN2, KEY_D_SPEC] {
         let kept: Vec<&Row> = after
             .iter()
             .filter(|r| derived(r) && meta_replay_key(&r.5).as_deref() == Some(key))
@@ -277,8 +277,8 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
         );
     }
 
-    // A superseded content generation is still a DISTINCT key, so `src/b.rs` keeps one recording
-    // of EACH generation: the prune is per key, never per file.
+    // A superseded content generation is shed whole (spec 101, criterion 4): `src/b.rs` keeps
+    // only its latest generation's recording.
     let b_rows: Vec<String> = after
         .iter()
         .filter(|r| derived(r))
@@ -286,9 +286,9 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
         .filter(|k| k.starts_with("gc/src/b.rs@"))
         .collect();
     assert_eq!(
-        b_rows.len(),
-        2,
-        "both of src/b.rs's recorded generations must keep their latest recording; got {b_rows:?}"
+        b_rows,
+        vec![KEY_B_GEN2.to_string()],
+        "only src/b.rs's latest generation may keep a recording; got {b_rows:?}"
     );
 }
 
@@ -572,9 +572,37 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
         &id,
         &scratch.path().join("after.db"),
     );
+    // The one node the whole log folds and the compacted log does not is `src/b.rs::gen_one`: the
+    // definition only the SHED generation held. The fold never deletes a node, so a full-log
+    // rebuild keeps it as an orphan no live edge reaches (the live edges below are identical);
+    // every other node is the same row.
+    let orphan = before_graph
+        .0
+        .iter()
+        .filter(|n| n.starts_with("src/b.rs::gen_one|"))
+        .cloned()
+        .collect::<Vec<_>>();
     assert_eq!(
-        after_graph.0, before_graph.0,
-        "the compacted log must fold to the same nodes"
+        orphan.len(),
+        1,
+        "the seed must fold the superseded definition"
+    );
+    let expected_nodes: Vec<String> = before_graph
+        .0
+        .iter()
+        .filter(|n| !orphan.contains(n))
+        .cloned()
+        .collect();
+    assert_eq!(
+        after_graph.0, expected_nodes,
+        "the compacted log must fold to the same nodes, less the shed generation's orphan"
+    );
+    assert!(
+        !before_graph
+            .1
+            .iter()
+            .any(|e| e.contains("src/b.rs::gen_one|")),
+        "the shed generation's definition must have no live edge in the whole-log fold"
     );
     assert_eq!(
         after_graph.1, before_graph.1,
@@ -894,7 +922,9 @@ fn reset_derived_sheds_every_superseded_generation_and_the_rebuilt_graph_is_byte
     // generations 1 and 2 are 2 recordings x 3 events each = 12 rows, the latest generation's
     // exact-key duplicates are 4 more.
     assert!(
-        out.contains("(CodeEntityExtracted 5, EdgeInferred 5, DocConceptExtracted 0, DocLinkExtracted 6)"),
+        out.contains(
+            "(CodeEntityExtracted 5, EdgeInferred 5, DocConceptExtracted 0, DocLinkExtracted 6)"
+        ),
         "the report must name the rows shed per type; got: {out:?}"
     );
     assert!(

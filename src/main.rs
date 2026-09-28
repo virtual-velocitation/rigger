@@ -290,11 +290,12 @@ DecisionMade before either mode prunes. When no driver is\n                     
 alive, it also closes the current run's units whose branch\n                              \
 work is landed on rigger-run, appending the UnitIntegrated\n                              \
 a hand landing never recorded\n  \
-rigger reset --derived      compact the EVENT LOG: keep the latest event per\n                              \
-replay key of each derived index type, delete the\n                              \
-superseded re-recordings, and vacuum so the file shrinks\n                              \
-on disk. Every other event survives. Sheds the\n                              \
-duplication a log accreted before the ingest dedup;\n                              \
+rigger reset --derived      compact the EVENT LOG: keep only each file's latest\n                              \
+generation of the derived index, at the latest event per\n                              \
+replay key, delete the superseded generations and\n                              \
+re-recordings, and vacuum so the file shrinks on disk.\n                              \
+Every other event survives. Sheds what edits and the\n                              \
+pre-dedup ingest accreted;\n                              \
 composes with --runs (each prunes its own accumulation).\n                              \
 Refuses while run machinery looks live (a held step\n                              \
 lock, a non-terminal unit, an in-flight spawn, or a live\n                              \

@@ -109,6 +109,7 @@ pub fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
 pub fn derived_index_identity() -> crate::eventstore::ContentIdentity {
     crate::eventstore::ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES)
         .with_reasserting_types(reasserted_derived_types())
+        .with_key_parts(derived_key_parts)
 }
 
 /// The derived index types whose recordings RE-ASSERT a fact that was already true, rather than

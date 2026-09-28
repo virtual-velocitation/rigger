@@ -288,7 +288,15 @@ pub struct ContentIdentity {
     /// different states on purpose, because a compaction cannot act correctly on the
     /// first and must say so rather than guess (see [`reasserts`](Self::reasserts)).
     reasserting: Option<Vec<String>>,
+    /// The parser that cuts a content key into `(batch identity, content generation)`, or
+    /// `None` when this policy's keys carry no generation (see
+    /// [`with_key_parts`](Self::with_key_parts)).
+    key_parts: Option<KeyParts>,
 }
+
+/// A content-key parser: `(the batch identity the key belongs to, that batch's content
+/// generation)`, or `None` for a key that is not the policy's shape.
+pub type KeyParts = fn(&str) -> Option<(&str, &str)>;
 
 impl ContentIdentity {
     /// Build the policy. `meta_key` is the metadata key an identified event carries
@@ -302,7 +310,25 @@ impl ContentIdentity {
             meta_key: meta_key.into(),
             types: types.into_iter().map(Into::into).collect(),
             reasserting: None,
+            key_parts: None,
         }
+    }
+
+    /// Declare how a content key names its batch identity and content generation, so a
+    /// compaction can shed every recording of a SUPERSEDED generation - one that is not the
+    /// latest recorded for its identity - rather than only the earlier recordings of one exact
+    /// key. The parser is the layer that builds the keys; the store only calls it. A policy
+    /// that never declared one keeps exact-key semantics, and a key the parser rejects is
+    /// treated as its own identity (the fail-safe direction: it is never shed as superseded).
+    pub fn with_key_parts(mut self, key_parts: KeyParts) -> Self {
+        self.key_parts = Some(key_parts);
+        self
+    }
+
+    /// `(batch identity, content generation)` of `key`, or `None` when the policy declared
+    /// no parser or the key is not its shape.
+    pub fn key_parts<'k>(&self, key: &'k str) -> Option<(&'k str, &'k str)> {
+        self.key_parts.and_then(|parse| parse(key))
     }
 
     /// Declare the VALID-TIME PARTITION over this policy's covered types: `reasserting`

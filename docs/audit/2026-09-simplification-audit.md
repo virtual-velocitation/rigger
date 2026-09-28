@@ -1512,7 +1512,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:12264-12266` `unit_branch`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:718-720` `key_expr`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:795-797` `key_expr`
 
 #### `dup-c6dfc41a628c` (exact, 2 sites)
 
@@ -1549,9 +1549,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:32991-32993` `build_cache_dirs`
 - `crates/rigger-conductor/src/conductor.rs:33113-33115` `calls`
 - `crates/rigger-domain/src/eventstore.rs:230-232` `last`
-- `crates/rigger-domain/src/eventstore.rs:453-455` `recv`
-- `crates/rigger-domain/src/eventstore.rs:463-465` `try_recv`
-- `crates/rigger-domain/src/eventstore.rs:468-470` `err`
+- `crates/rigger-domain/src/eventstore.rs:479-481` `recv`
+- `crates/rigger-domain/src/eventstore.rs:489-491` `try_recv`
+- `crates/rigger-domain/src/eventstore.rs:494-496` `err`
 - `tests/common/real_driver_spy.rs:35-37` `outputs`
 
 #### `dup-60da41568392` (near, 2 sites)
@@ -1561,7 +1561,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:14578-14584` `spawned`
-- `crates/rigger-domain/src/eventstore.rs:361-363` `covers`
+- `crates/rigger-domain/src/eventstore.rs:387-389` `covers`
 
 #### `dup-a74a72df63e6` (semantic, 85 sites)
 
@@ -1686,27 +1686,32 @@ mandatory sweep: .rigger-path string literals - 550 site(s), collected mechanica
          the code entities, inferred edges, design links, and doc concepts folded from your \
          sources - and a log written before that pass deduplicated across runs holds the WHOLE \
          index once per run, which is re-derivable duplication rather than history. `rigger reset \
-         --derived` keeps the LATEST event per replay key of each derived index type, deletes the \
-         superseded re-recordings, and compacts the file so events.db shrinks on disk. Every \
-         other event survives byte-for-byte - lessons, decisions, findings, gate verdicts, and \
-         the whole run history `rigger stats` and replay read. The live graph is unchanged: every \
-         recording of one key folds to the same rows, and the prune carries a pruned key's \
-         EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps the \
-         date it first became true rather than being re-dated to whichever recording survived. \
-         WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at all: it only \
-         ever sheds DUPLICATE recordings of one key, never the index itself. The last recording \
-         of every key stays, so on a log that holds no key twice `rigger reset --derived` deletes \
-         ZERO rows from it and reports so - that is the expected report on a clean log, not a \
-         failure, and the derived index remains the bulk of the log by design because it is what \
-         the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, because \
-         a non-zero prune is otherwise read as a broken dedup: a log written since the dedup \
-         existed holds one recording per distinct fact EXCEPT where a file's content has \
-         RETURNED to a generation the log had already recorded - a revert, a branch switch, a \
-         checkout back - which re-records that file's whole batch by design, since a dedup that \
-         suppressed an already-recorded key would strand the graph on the version the file has \
-         since moved past. A prune that sheds rows on such a log is shedding that duplication, \
-         not covering for a defect; a log written BEFORE the dedup sheds the whole accumulated \
-         pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \
+         --derived` keeps, for each file, only the recordings of its LATEST generation - the \
+         content the log last recorded for it - and of those the LATEST event per replay key, \
+         deletes every superseded generation and re-recording, and compacts the file so \
+         events.db shrinks on disk. Every other event survives byte-for-byte - lessons, \
+         decisions, findings, gate verdicts, and the whole run history `rigger stats` and replay \
+         read. The live edges a rebuild folds are unchanged: the generation after a shed one \
+         already retired its structural edges, nothing reads a shed recording again (a file that \
+         returns to an earlier content re-emits its batch), and the prune carries a design \
+         fact's EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps \
+         the date it first became true rather than being re-dated to whichever recording \
+         survived. The one thing a rebuild of the compacted log does not re-create is a node \
+         only a shed generation defined, which the whole log keeps as an orphan no live edge \
+         reaches. WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at \
+         all: it never sheds the index itself. The latest generation of every file stays, so on \
+         a log that holds each file once, at one recording per key, `rigger reset --derived` \
+         deletes ZERO rows from it and reports so - that is the expected report on a clean log, \
+         not a failure, and the derived index remains the bulk of the log by design because it \
+         is what the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, \
+         because a non-zero prune is otherwise read as a broken dedup: every edit to a file \
+         records a new generation of its batch and leaves the one before it superseded, and a \
+         file whose content has RETURNED to a generation the log had already recorded - a \
+         revert, a branch switch, a checkout back - re-records that file's whole batch by \
+         design, since a dedup that suppressed an already-recorded key would strand the graph \
+         on the version the file has since moved past. A prune that sheds rows on such a log is \
+         shedding exactly that, not covering for a defect; a log written BEFORE the dedup sheds \
+         the whole accumulated pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \
          a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \
          space it needs is on whichever filesystem that resolves to rather than on the partition \
          holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \
@@ -1730,24 +1735,24 @@ mandatory sweep: .rigger-path string literals - 550 site(s), collected mechanica
          driver registration for this store is still live, naming what it found. `--force-live` \
          overrides the refusal for an operator certain no writer is using the store; it checks \
          nothing.\n"`
-- `crates/rigger-domain/src/docs.rs:662-662` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
+- `crates/rigger-domain/src/docs.rs:667-667` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
          the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
          Read this before running `rigger reset` or touching any store file by hand."`
-- `crates/rigger-domain/src/docs.rs:666-666` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
+- `crates/rigger-domain/src/docs.rs:671-671` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
              durable:\n"`
-- `crates/rigger-domain/src/docs.rs:728-728` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
+- `crates/rigger-domain/src/docs.rs:733-733` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
              no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n"`
-- `crates/rigger-domain/src/docs.rs:738-738` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
+- `crates/rigger-domain/src/docs.rs:743-743` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
          truth that no rebuild can get back, and deleting only the graph is unnecessary work \
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n"`
-- `crates/rigger-domain/src/docs.rs:762-762` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+- `crates/rigger-domain/src/docs.rs:767-767` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
              the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
              for an index that has drifted from files you just changed (a unit's own commit, a \
              rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
@@ -1793,7 +1798,7 @@ mandatory sweep: .rigger-path string literals - 550 site(s), collected mechanica
 - `crates/rigger-worktree-git/src/worktree.rs:5009-5009` `"{home}/.rigger-scratch-test"`
 - `crates/rigger-worktree-git/src/worktree.rs:6581-6581` `"{base}..rigger-run"`
 - `crates/rigger-worktree-git/src/worktree.rs:6615-6615` `".rigger"`
-- `src/cli/hygiene.rs:532-532` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
+- `src/cli/hygiene.rs:536-536` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
 - `src/cli/mod.rs:540-540` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
          secret file"`
@@ -2249,11 +2254,12 @@ DecisionMade before either mode prunes. When no driver is\n                     
 alive, it also closes the current run's units whose branch\n                              \
 work is landed on rigger-run, appending the UnitIntegrated\n                              \
 a hand landing never recorded\n  \
-rigger reset --derived      compact the EVENT LOG: keep the latest event per\n                              \
-replay key of each derived index type, delete the\n                              \
-superseded re-recordings, and vacuum so the file shrinks\n                              \
-on disk. Every other event survives. Sheds the\n                              \
-duplication a log accreted before the ingest dedup;\n                              \
+rigger reset --derived      compact the EVENT LOG: keep only each file's latest\n                              \
+generation of the derived index, at the latest event per\n                              \
+replay key, delete the superseded generations and\n                              \
+re-recordings, and vacuum so the file shrinks on disk.\n                              \
+Every other event survives. Sheds what edits and the\n                              \
+pre-dedup ingest accreted;\n                              \
 composes with --runs (each prunes its own accumulation).\n                              \
 Refuses while run machinery looks live (a held step\n                              \
 lock, a non-terminal unit, an in-flight spawn, or a live\n                              \
@@ -3276,7 +3282,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/community.rs:249-251` `nodes`
-- `crates/rigger-domain/src/eventstore.rs:355-357` `types`
+- `crates/rigger-domain/src/eventstore.rs:381-383` `types`
 - `crates/rigger-domain/src/failure.rs:230-232` `rules`
 
 #### `dup-781b5348543b` (near, 4 sites)
@@ -3325,8 +3331,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:447-449` `render_planning_a_spec_skill`
-- `crates/rigger-domain/src/docs.rs:618-620` `render_planning_field_guide`
+- `crates/rigger-domain/src/docs.rs:452-454` `render_planning_a_spec_skill`
+- `crates/rigger-domain/src/docs.rs:623-625` `render_planning_field_guide`
 
 #### `dup-c5777007a33f` (near, 4 sites)
 
@@ -3334,10 +3340,10 @@ Proposed home: `docs::support (consolidate these 4 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:720-748` `render_build_graph_skill`
-- `crates/rigger-domain/src/docs.rs:753-780` `render_reindex_skill`
-- `crates/rigger-domain/src/docs.rs:785-819` `render_resume_a_run_skill`
-- `crates/rigger-domain/src/docs.rs:948-998` `render_restore_the_dash_skill`
+- `crates/rigger-domain/src/docs.rs:725-753` `render_build_graph_skill`
+- `crates/rigger-domain/src/docs.rs:758-785` `render_reindex_skill`
+- `crates/rigger-domain/src/docs.rs:790-824` `render_resume_a_run_skill`
+- `crates/rigger-domain/src/docs.rs:953-1003` `render_restore_the_dash_skill`
 
 #### `dup-3d5ea11431d3` (near, 2 sites)
 
@@ -3345,8 +3351,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:826-861` `render_handle_an_escalation_skill`
-- `crates/rigger-domain/src/docs.rs:1007-1056` `render_diagnose_churn_skill`
+- `crates/rigger-domain/src/docs.rs:831-866` `render_handle_an_escalation_skill`
+- `crates/rigger-domain/src/docs.rs:1012-1061` `render_diagnose_churn_skill`
 
 #### `dup-bb7aa56f67d8` (exact, 2 sites)
 
@@ -3408,7 +3414,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/metrics.rs:494-500` `cost_per_upheld`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:503-509` `factor`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:576-582` `factor`
 
 #### `dup-c16dbfd88b00` (exact, 2 sites)
 
@@ -3677,8 +3683,8 @@ mandatory sweep: sqlite Connection::open call sites - 34 site(s), collected mech
 
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6699-6699` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7469-7469` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1459-1459` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1706-1706` `Connection::open_with_flags`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1536-1536` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1783-1783` `Connection::open_with_flags`
 - `crates/rigger-store-sqlite/src/sqlite.rs:13-13` `Connection::open`
 - `src/cli/mod.rs:11557-11557` `Connection::open`
 - `tests/cli.rs:638-638` `Connection::open`
@@ -3694,7 +3700,7 @@ mandatory sweep: sqlite Connection::open call sites - 34 site(s), collected mech
 - `tests/graph_additive_indexes_persist.rs:189-189` `Connection::open`
 - `tests/heartbeat_write_read_agree_periphery.rs:137-137` `Connection::open`
 - `tests/reset_derived_compaction.rs:73-73` `Connection::open`
-- `tests/reset_derived_compaction.rs:229-229` `Connection::open`
+- `tests/reset_derived_compaction.rs:228-228` `Connection::open`
 - `tests/reset_derived_compaction.rs:494-494` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:113-113` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:543-543` `Connection::open`
@@ -3782,7 +3788,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:739-750` `kind_str`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:754-763` `lang_str`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1022-1027` `direction_sql`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1099-1104` `direction_sql`
 
 #### `dup-9b727c38b8a1` (semantic, 3 sites)
 
@@ -3899,8 +3905,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1537-1562` `measure_derived_duplication_on_a_clean_log_reports_no_duplication`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1565-1616` `measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1614-1639` `measure_derived_duplication_on_a_clean_log_reports_no_duplication`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1642-1693` `measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects`
 
 #### `dup-09fd5c38b65b` (near, 2 sites)
 
@@ -3980,8 +3986,8 @@ Proposed home: `hygiene::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:1674-1694` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
-- `src/cli/hygiene.rs:1726-1747` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
+- `src/cli/hygiene.rs:1679-1699` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
+- `src/cli/hygiene.rs:1731-1752` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
 
 #### `dup-e9f78fd7efcc` (exact, 2 sites)
 
@@ -4063,7 +4069,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/setup.rs, src/m
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/setup.rs:271-278` `print_scaffold_pointer`
-- `src/main.rs:363-365` `usage`
+- `src/main.rs:364-366` `usage`
 
 #### `dup-dc79af9af1c6` (near, 2 sites)
 
@@ -4654,7 +4660,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 6935 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 6942 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13759-13781` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17732-17785` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

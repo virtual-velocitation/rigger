@@ -222,27 +222,32 @@ fn discipline_body(ctx: &DocsContext) -> String {
          the code entities, inferred edges, design links, and doc concepts folded from your \
          sources - and a log written before that pass deduplicated across runs holds the WHOLE \
          index once per run, which is re-derivable duplication rather than history. `rigger reset \
-         --derived` keeps the LATEST event per replay key of each derived index type, deletes the \
-         superseded re-recordings, and compacts the file so events.db shrinks on disk. Every \
-         other event survives byte-for-byte - lessons, decisions, findings, gate verdicts, and \
-         the whole run history `rigger stats` and replay read. The live graph is unchanged: every \
-         recording of one key folds to the same rows, and the prune carries a pruned key's \
-         EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps the \
-         date it first became true rather than being re-dated to whichever recording survived. \
-         WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at all: it only \
-         ever sheds DUPLICATE recordings of one key, never the index itself. The last recording \
-         of every key stays, so on a log that holds no key twice `rigger reset --derived` deletes \
-         ZERO rows from it and reports so - that is the expected report on a clean log, not a \
-         failure, and the derived index remains the bulk of the log by design because it is what \
-         the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, because \
-         a non-zero prune is otherwise read as a broken dedup: a log written since the dedup \
-         existed holds one recording per distinct fact EXCEPT where a file's content has \
-         RETURNED to a generation the log had already recorded - a revert, a branch switch, a \
-         checkout back - which re-records that file's whole batch by design, since a dedup that \
-         suppressed an already-recorded key would strand the graph on the version the file has \
-         since moved past. A prune that sheds rows on such a log is shedding that duplication, \
-         not covering for a defect; a log written BEFORE the dedup sheds the whole accumulated \
-         pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \
+         --derived` keeps, for each file, only the recordings of its LATEST generation - the \
+         content the log last recorded for it - and of those the LATEST event per replay key, \
+         deletes every superseded generation and re-recording, and compacts the file so \
+         events.db shrinks on disk. Every other event survives byte-for-byte - lessons, \
+         decisions, findings, gate verdicts, and the whole run history `rigger stats` and replay \
+         read. The live edges a rebuild folds are unchanged: the generation after a shed one \
+         already retired its structural edges, nothing reads a shed recording again (a file that \
+         returns to an earlier content re-emits its batch), and the prune carries a design \
+         fact's EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps \
+         the date it first became true rather than being re-dated to whichever recording \
+         survived. The one thing a rebuild of the compacted log does not re-create is a node \
+         only a shed generation defined, which the whole log keeps as an orphan no live edge \
+         reaches. WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at \
+         all: it never sheds the index itself. The latest generation of every file stays, so on \
+         a log that holds each file once, at one recording per key, `rigger reset --derived` \
+         deletes ZERO rows from it and reports so - that is the expected report on a clean log, \
+         not a failure, and the derived index remains the bulk of the log by design because it \
+         is what the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, \
+         because a non-zero prune is otherwise read as a broken dedup: every edit to a file \
+         records a new generation of its batch and leaves the one before it superseded, and a \
+         file whose content has RETURNED to a generation the log had already recorded - a \
+         revert, a branch switch, a checkout back - re-records that file's whole batch by \
+         design, since a dedup that suppressed an already-recorded key would strand the graph \
+         on the version the file has since moved past. A prune that sheds rows on such a log is \
+         shedding exactly that, not covering for a defect; a log written BEFORE the dedup sheds \
+         the whole accumulated pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \
          a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \
          space it needs is on whichever filesystem that resolves to rather than on the partition \
          holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \
@@ -1381,8 +1386,8 @@ mod tests {
     /// is no longer rendered as THE prune command while a second one exists.
     ///
     /// It pins the four things an operator must know before running a command that deletes from
-    /// an append-only log: WHAT IT KEEPS (the latest event per replay key of each derived index
-    /// type), WHAT IT COSTS (nothing else - every other event survives byte-for-byte, so lessons,
+    /// an append-only log: WHAT IT KEEPS (each file's latest generation, at the latest event per
+    /// replay key), WHAT IT COSTS (nothing else - every other event survives byte-for-byte, so lessons,
     /// decisions, findings and the run history `stats` and replay read are untouched), that the
     /// FILE actually shrinks, and that the two flags COMPOSE rather than one superseding the
     /// other. Both shipped outputs render from `discipline_body`, so the skill and the handbook

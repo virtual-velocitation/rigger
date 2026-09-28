@@ -365,10 +365,11 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// `rigger reset --derived` (spec 60, criterion 5) - SUPPORTED COMPACTION of an event log that
 /// accumulated derived-index duplication before the project-scoped ingest dedup existed.
 ///
-/// For each of the four derived index types it keeps the LATEST event per distinct replay key,
-/// deletes every earlier recording of that key, and vacuums so the file shrinks on disk. Every
-/// non-derived event survives byte-for-byte; the graph projection stays consistent, because it is
-/// an upsert projection in which all recordings of a key fold to the same rows.
+/// Per `<prefix>/<file>` identity it keeps only the recordings of the LATEST generation (spec
+/// 101, criterion 4), of those only the latest recording per replay key, carries a re-asserted
+/// fact's earliest valid-time onto the recording it keeps, and vacuums so the file shrinks on
+/// disk. Every non-derived event survives byte-for-byte, and the live projection rebuilt from the
+/// compacted log is the one the whole log rebuilds.
 ///
 /// It is orchestration over ONE store-mutation primitive
 /// ([`rigger::eventstore::sqlite::Store::prune_derived_index`]), handed the ONE derived-index
@@ -481,20 +482,23 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
     // operator who has just been told zero is normal will otherwise read a non-zero prune as the
     // dedup having failed.
     let what_the_count_means = if pruned.total_removed() == 0 {
-        " - a log whose derived index already holds one recording per distinct key has no \
+        " - a log whose derived index already holds each file's latest generation once has no \
          redundancy to shed, so this is the expected report on such a log, not a failed prune"
     } else {
-        " - a non-zero count is not a sign the ingest dedup is broken: a file whose content \
-         RETURNS to a generation the log already recorded (a revert, a branch switch, a checkout \
-         back) re-records its whole batch by design, because a dedup that suppressed it would \
-         strand the graph on the version the file has since moved past, and this is that \
-         duplication being shed"
+        " - a non-zero count is not a sign the ingest dedup is broken: every edit to a file \
+         supersedes the generation it recorded before, and a file whose content RETURNS to a \
+         generation the log already recorded (a revert, a branch switch, a checkout back) \
+         re-records its whole batch by design, because a dedup that suppressed it would strand \
+         the graph on the version the file has since moved past, and this is that accumulation \
+         being shed"
     };
     format!(
         "reset --derived: pruned {} redundant derived-index event(s) from the event log \
-         ({per_type}), {compaction} - every non-derived event and the latest recording of every \
-         content key are preserved{what_the_count_means}",
+         ({per_type}), {} of them recordings of a superseded generation, {compaction} - every \
+         non-derived event and the latest recording of every content key of each file's latest \
+         generation are preserved{what_the_count_means}",
         pruned.total_removed(),
+        pruned.superseded_generations,
     )
 }
 
@@ -567,7 +571,7 @@ fn live_writer_reasons(
 fn live_writer_refusal(reasons: &[String]) -> String {
     format!(
         "reset --derived: refusing to compact the event log while run machinery looks live - {}. \
-         Compaction keeps only the latest event per replay key, which leaves REVISION GAPS by \
+         Compaction deletes superseded derived-index recordings, which leaves REVISION GAPS by \
          design; a writer whose append cursor was built before this compaction ran can reissue \
          one of those gap revisions, and every later event then sorts BELOW it in revision order \
          - the incident this guard exists to prevent, and the corruption forcing past a genuinely \
@@ -1324,6 +1328,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, t)| (t.to_string(), if i == 0 { removed } else { 0 }))
                 .collect(),
+            superseded_generations: 0,
             reclaimed_bytes: reclaimed,
             compaction_ran,
             on_disk_measured,

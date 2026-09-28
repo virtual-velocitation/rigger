@@ -329,8 +329,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 718,
-        "end_line": 720
+        "start_line": 795,
+        "end_line": 797
       }
     ]
   },
@@ -424,18 +424,18 @@
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
-        "start_line": 453,
-        "end_line": 455
+        "start_line": 479,
+        "end_line": 481
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
-        "start_line": 463,
-        "end_line": 465
+        "start_line": 489,
+        "end_line": 491
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
-        "start_line": 468,
-        "end_line": 470
+        "start_line": 494,
+        "end_line": 496
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -454,8 +454,8 @@
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
-        "start_line": 361,
-        "end_line": 363
+        "start_line": 387,
+        "end_line": 389
       }
     ]
   },
@@ -999,28 +999,28 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 662,
-        "end_line": 662
+        "start_line": 667,
+        "end_line": 667
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 666,
-        "end_line": 666
+        "start_line": 671,
+        "end_line": 671
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 728,
-        "end_line": 728
+        "start_line": 733,
+        "end_line": 733
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 738,
-        "end_line": 738
+        "start_line": 743,
+        "end_line": 743
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 762,
-        "end_line": 762
+        "start_line": 767,
+        "end_line": 767
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
@@ -1214,8 +1214,8 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 532,
-        "end_line": 532
+        "start_line": 536,
+        "end_line": 536
       },
       {
         "file": "src/cli/mod.rs",
@@ -4454,8 +4454,8 @@
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
-        "start_line": 355,
-        "end_line": 357
+        "start_line": 381,
+        "end_line": 383
       },
       {
         "file": "crates/rigger-domain/src/failure.rs",
@@ -4549,13 +4549,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 447,
-        "end_line": 449
+        "start_line": 452,
+        "end_line": 454
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 618,
-        "end_line": 620
+        "start_line": 623,
+        "end_line": 625
       }
     ]
   },
@@ -4564,23 +4564,23 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 720,
-        "end_line": 748
+        "start_line": 725,
+        "end_line": 753
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 753,
-        "end_line": 780
+        "start_line": 758,
+        "end_line": 785
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 785,
-        "end_line": 819
+        "start_line": 790,
+        "end_line": 824
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 948,
-        "end_line": 998
+        "start_line": 953,
+        "end_line": 1003
       }
     ]
   },
@@ -4589,13 +4589,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 826,
-        "end_line": 861
+        "start_line": 831,
+        "end_line": 866
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 1007,
-        "end_line": 1056
+        "start_line": 1012,
+        "end_line": 1061
       }
     ]
   },
@@ -4724,8 +4724,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 503,
-        "end_line": 509
+        "start_line": 576,
+        "end_line": 582
       }
     ]
   },
@@ -5229,13 +5229,13 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1459,
-        "end_line": 1459
+        "start_line": 1536,
+        "end_line": 1536
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1706,
-        "end_line": 1706
+        "start_line": 1783,
+        "end_line": 1783
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -5314,8 +5314,8 @@
       },
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 229,
-        "end_line": 229
+        "start_line": 228,
+        "end_line": 228
       },
       {
         "file": "tests/reset_derived_compaction.rs",
@@ -5514,8 +5514,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1022,
-        "end_line": 1027
+        "start_line": 1099,
+        "end_line": 1104
       }
     ]
   },
@@ -5739,13 +5739,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1537,
-        "end_line": 1562
+        "start_line": 1614,
+        "end_line": 1639
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1565,
-        "end_line": 1616
+        "start_line": 1642,
+        "end_line": 1693
       }
     ]
   },
@@ -5874,13 +5874,13 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1674,
-        "end_line": 1694
+        "start_line": 1679,
+        "end_line": 1699
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1726,
-        "end_line": 1747
+        "start_line": 1731,
+        "end_line": 1752
       }
     ]
   },
@@ -6019,8 +6019,8 @@
       },
       {
         "file": "src/main.rs",
-        "start_line": 363,
-        "end_line": 365
+        "start_line": 364,
+        "end_line": 366
       }
     ]
   },
