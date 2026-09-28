@@ -1690,6 +1690,48 @@ mod tests {
         );
     }
 
+    /// Spec 101, criterion 4: a carried valid-time never crosses a generation that dropped the
+    /// fact, however many generations before that gap asserted it. `L` is asserted at h1 (10s)
+    /// and h3 (15s), dropped at h2 (20s) and asserted again on the return to h1 (30s): the
+    /// surviving recording holds from 30s.
+    #[test]
+    fn a_carried_valid_time_stops_at_the_generation_that_dropped_the_fact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let at = |key: &str, data: &[u8], secs: u64| {
+            Event::new(crate::contextgraph::TYPE_DOC_LINK_EXTRACTED, data.to_vec())
+                .with_meta(crate::ingest::META_REPLAY_KEY, key)
+                .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+        };
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[(
+                "run",
+                vec![
+                    at("gd/docs/f.md@h1#0", b"L", 10),
+                    at("gd/docs/f.md@h3#0", b"L", 15),
+                    at("gd/docs/f.md@h2#0", b"M", 20),
+                    at("gd/docs/f.md@h1#0", b"L", 30),
+                ],
+            )],
+        );
+        s.prune_derived_index("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        let kept: Vec<(i64, i64)> = Connection::open(&path)
+            .unwrap()
+            .prepare("SELECT position, valid_from FROM events ORDER BY position")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            kept,
+            vec![(4, Duration::from_secs(30).as_nanos() as i64)],
+            "only the return's recording survives, dated from the return"
+        );
+    }
+
     /// Spec 101, criterion 4: the measurement is the prune's own selection, so superseded
     /// generations count as redundancy even when every key is recorded once. Three generations of
     /// one file are three rows of which the prune keeps one: 3.0x, and the rows the measurement

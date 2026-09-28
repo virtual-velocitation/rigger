@@ -525,6 +525,35 @@ rigger::test_cases! {
             ("src/f.rs::alpha", "code-entity"),
         ],
     );
+    /// A document that is both a design concept and the source of a link in one generation stays
+    /// the design doc it was extracted as, with its title, in every generation.
+    a_design_doc_that_links_in_the_same_generation_stays_a_design_doc: compaction_rebuilds_the_whole_logs_graph(
+        ["h1", "h2"]
+            .into_iter()
+            .zip([10, 20])
+            .flat_map(|(generation, secs)| {
+                [
+                    keyed(
+                        TYPE_DOC_CONCEPT_EXTRACTED,
+                        serde_json::to_vec(&serde_json::json!({
+                            "kind": rigger::contextgraph::KIND_DESIGN_DOC, "id": "docs/f.md",
+                            "title": "F", "doc": "docs/f.md",
+                        }))
+                        .unwrap(),
+                        &format!("gd/docs/f.md@{generation}#0"),
+                        secs,
+                    ),
+                    keyed(
+                        TYPE_DOC_LINK_EXTRACTED,
+                        link("src/a.rs"),
+                        &format!("gd/docs/f.md@{generation}#1"),
+                        secs,
+                    ),
+                ]
+            })
+            .collect(),
+        &[("docs/f.md", "design-doc"), ("src/a.rs", "artifact")],
+    );
     /// A design concept a later generation drops is retired with it.
     a_dropped_design_concept_is_retired: compaction_rebuilds_the_whole_logs_graph(
         vec![

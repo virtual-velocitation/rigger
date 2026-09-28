@@ -8889,6 +8889,25 @@ mod tests {
         }
 
         #[test]
+        fn a_nodes_kind_settles_on_its_first_assertion_promoted_only_from_a_bare_artifact() {
+            let cases: [(&[&str], Option<&str>); 7] = [
+                (&[], None),
+                (&[KIND_ARTIFACT], Some(KIND_ARTIFACT)),
+                (&[KIND_ARTIFACT, KIND_FILE], Some(KIND_FILE)),
+                (
+                    &[KIND_ARTIFACT, KIND_ARTIFACT, KIND_CODE_ENTITY],
+                    Some(KIND_CODE_ENTITY),
+                ),
+                (&[KIND_ARTIFACT, KIND_DECISION], Some(KIND_ARTIFACT)),
+                (&[KIND_FILE, KIND_ARTIFACT], Some(KIND_FILE)),
+                (&[KIND_CODE_ENTITY, KIND_FILE], Some(KIND_CODE_ENTITY)),
+            ];
+            for (kinds, settled) in cases {
+                assert_eq!(settled_kind(kinds.iter().copied()), settled, "{kinds:?}");
+            }
+        }
+
+        #[test]
         fn a_dropped_entity_a_decision_still_governs_stays_live() {
             let p = Projector::open(":memory:", "test").unwrap();
             apply_keyed(
