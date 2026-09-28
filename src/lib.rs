@@ -74,6 +74,8 @@ pub use rigger_driver::sidecar;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_grounder::ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::holders;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::reap;

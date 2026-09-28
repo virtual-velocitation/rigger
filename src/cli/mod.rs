@@ -3643,13 +3643,28 @@ fn format_residue(report: &ResidueReport) -> Vec<String> {
 /// category), and the command an operator runs to reclaim it. `reclaim_hint` is `None` for
 /// a category with no rigger-owned reclaim command at all (store, backups: spec 77 Global
 /// Constraint 4, "the store and its backups are NEVER auto-deleted... only the operator
-/// removes them") - such a category is reported but never flagged.
+/// removes them") - such a category is reported but never flagged. `reclaimable` lists the
+/// dead entries `rigger reset --build-cache` removes one by one ([`reclaim_dead_footprint`]) -
+/// the SAME entries whose bytes `dead_bytes` counts, so the advisory and the reaper read one
+/// accounting (gap 96). It is empty for a category that verb does not reclaim entry by entry:
+/// store and backups (never auto-deleted), worktrees (git-registered, reclaimed by `rigger
+/// step`), and the shared build cache (reclaimed whole, under its guard, by
+/// [`reclaim_shared_build_cache`]).
 #[derive(Debug, Clone, PartialEq)]
 struct FootprintCategory {
     name: &'static str,
     total_bytes: u64,
     dead_bytes: u64,
     reclaim_hint: Option<&'static str>,
+    reclaimable: Vec<DeadEntry>,
+}
+
+/// One dead entry a footprint category counts: its path, and the resolved root it was
+/// enumerated under, which authorizes the reap that runs before its removal.
+#[derive(Debug, Clone, PartialEq)]
+struct DeadEntry {
+    path: PathBuf,
+    root: PathBuf,
 }
 
 /// The dead-share threshold (spec 77 criterion 6, "flags any category whose dead share
@@ -3660,13 +3675,19 @@ struct FootprintCategory {
 /// is reported) or fixed, never per-project configurable.
 const FOOTPRINT_DEAD_SHARE_THRESHOLD_PCT: u64 = 50;
 
-/// Reclaim hint shared by the two scratch-root-resident, per-unit-classified categories
-/// (per-unit caches and worktrees): both are already reclaimed automatically the moment
-/// [`reclaim_orphan_scratch`] next runs (every `rigger step`), so a dead entry an operator
-/// sees here is transient, not a leak requiring manual action - naming both the automatic
-/// path and the manual fallback for an operator who is not mid-run.
+/// Reclaim hint for dead worktrees: reclaimed automatically the moment
+/// [`reclaim_orphan_scratch`] next runs (every `rigger step`), which deregisters each from git
+/// as it removes it - so a dead entry an operator sees here is transient, not a leak requiring
+/// manual action - naming both the automatic path and the manual fallback for an operator who
+/// is not mid-run.
 const FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED: &str =
     "reclaimed automatically by the next `rigger step`, or remove the listed dirs directly";
+
+/// Reclaim hint for dead per-unit caches (gap 96): `rigger reset --build-cache` reclaims them
+/// now, and the next `rigger step`'s orphan backstop ([`reclaim_orphan_scratch`]) would too -
+/// an operator with no run in flight needs the verb, not a step that may never come.
+const FOOTPRINT_RECLAIM_HINT_UNIT_CACHES: &str =
+    "`rigger reset --build-cache` reclaims it now (the next `rigger step` also does)";
 
 /// Reclaim hint for the registered-scratch-roots category (spec 77 criterion 6): unlike
 /// the unit-scoped categories above, a dead spawn leaf is NOT swept by `rigger step`'s
@@ -3678,7 +3699,7 @@ const FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED: &str =
 /// surface (a hung, never-retried spawn: `adv-u77c2r8-mutation-scratch-orphan-on-never-
 /// reported-spawn`) - nothing reclaims it until an explicit `rigger result` names it.
 const FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED: &str =
-    "reclaimed automatically the next time `rigger result` is recorded for the owning spawn, or remove the listed dirs directly";
+    "`rigger reset --build-cache` reclaims it now (recording `rigger result` for the owning spawn also does)";
 
 /// Reclaim hint for the "unowned agent scratch" category (spec 77 criterion 6): a top-level
 /// dir (or bare file) directly under `agent-scratch` that carries NO run/spawn structure at
@@ -3688,12 +3709,11 @@ const FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED: &str =
 /// container). Unlike the two hints above, NEITHER the per-step orphan backstop
 /// ([`reclaim_orphan_scratch`], which never descends into `agent-scratch`) NOR the per-spawn
 /// reclaim on `rigger result` ([`reclaim_spawn_scratch`], keyed on a spawn id this shape does
-/// not carry) will EVER reach it automatically - so this names a direct removal, the one
-/// path that actually applies.
+/// not carry) will EVER reach it automatically - so this names the operator verb that does.
 const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
-    "no run or spawn owns this, so nothing reclaims it automatically - remove it directly, \
-     and point future manual scratch/CARGO_TARGET_DIR at `rigger scratch <spawn>`'s own \
-     container instead of a hardcoded agent-scratch/<name> literal";
+    "no run or spawn owns this, so nothing reclaims it automatically - `rigger reset \
+     --build-cache` reclaims it now; point future manual scratch/CARGO_TARGET_DIR at `rigger \
+     scratch <spawn>`'s own container instead of a hardcoded agent-scratch/<name> literal";
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix
 /// shapes [`scan_residue`] already classifies: `rigger-wt-<slug>` worktrees,
@@ -3758,30 +3778,38 @@ fn scratch_footprint(
     // `residue.caches` conflates the shared cache (bare `cargo-target`/`target`) with
     // per-unit caches (`cargo-target-<slug>`); only the latter belongs to THIS category -
     // the shared cache's dead share is decided unconditionally above, not read from here.
-    let cache_dead: u64 = residue
+    let dead_caches: Vec<&(String, u64)> = residue
         .caches
         .iter()
         .filter(|(name, _)| name.starts_with(rigger::worktree::UNIT_CACHE_PREFIX))
-        .map(|(_, bytes)| bytes)
-        .sum();
+        .collect();
     (
         FootprintCategory {
             name: "worktrees",
             total_bytes: wt_total,
             dead_bytes: wt_dead,
             reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED),
+            reclaimable: Vec::new(),
         },
         FootprintCategory {
             name: "per-unit caches",
             total_bytes: cache_total,
-            dead_bytes: cache_dead,
-            reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED),
+            dead_bytes: dead_caches.iter().map(|(_, bytes)| bytes).sum(),
+            reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_UNIT_CACHES),
+            reclaimable: dead_caches
+                .iter()
+                .map(|(name, _)| DeadEntry {
+                    path: scratch_root.join(name),
+                    root: scratch_root.to_path_buf(),
+                })
+                .collect(),
         },
         FootprintCategory {
             name: "shared build cache",
             total_bytes: build_cache_total,
             dead_bytes: build_cache_total,
             reclaim_hint: Some("rigger reset --build-cache"),
+            reclaimable: Vec::new(),
         },
     )
 }
@@ -3819,8 +3847,11 @@ fn store_and_backup_bytes(rigger_dir: &Path) -> (u64, u64) {
     (store, backups)
 }
 
-/// Sum the sizes of `root`'s direct child directories whose name is NOT in
-/// `live_leaf_names` - the one-level DEAD half of a scratch root whose direct children
+/// Paths, each with its size in bytes.
+type SizedPaths = Vec<(PathBuf, u64)>;
+
+/// `root`'s direct child directories whose name is NOT in `live_leaf_names`, each with its
+/// size - the one-level DEAD half of a scratch root whose direct children
 /// are themselves spawn leaves (the mutation-scratch root's own shape: every entry
 /// directly under `<cache_home>/rigger-mutants` IS a
 /// [`crate::liveness::marker_filename`]-encoded spawn leaf,
@@ -3829,17 +3860,20 @@ fn store_and_backup_bytes(rigger_dir: &Path) -> (u64, u64) {
 /// spawn's leaf `reclaim_spawn_scratch` has not yet reclaimed, or a leftover from a run
 /// this process no longer tracks - counts fully dead, mirroring how [`scratch_footprint`]
 /// already treats an un-owned entry elsewhere in this file. Best-effort like every other
-/// scratch walk here: an unreadable `root` reads as zero, never an error.
-fn dead_spawn_leaf_bytes(root: &Path, live_leaf_names: &std::collections::HashSet<String>) -> u64 {
+/// scratch walk here: an unreadable `root` reads as empty, never an error.
+fn dead_spawn_leaves(
+    root: &Path,
+    live_leaf_names: &std::collections::HashSet<String>,
+) -> SizedPaths {
     let Ok(entries) = std::fs::read_dir(root) else {
-        return 0;
+        return Vec::new();
     };
     entries
         .flatten()
         .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
         .filter(|e| !live_leaf_names.contains(&e.file_name().to_string_lossy().into_owned()))
-        .map(|e| dir_size_bytes(&e.path()))
-        .sum()
+        .map(|e| (e.path(), dir_size_bytes(&e.path())))
+        .collect()
 }
 
 /// Whether `dir`'s own direct children are ALL directories - the shape a WELL-FORMED run-id
@@ -3884,18 +3918,18 @@ fn looks_like_run_container(dir: &Path) -> bool {
 /// subdir") every run-id subdir counts fully dead, matching the same "no live units" degrade
 /// [`current_run_units`] itself already falls back to.
 ///
-/// Returns `(dead_bytes_of_well_formed_containers, ad_hoc_entries)`, the latter a `(name,
-/// bytes)` pair per unowned top-level entry.
+/// Returns `(dead_leaves_of_well_formed_containers, ad_hoc_entries)`: a `(path, bytes)` pair
+/// per dead spawn leaf, and a `(name, bytes)` pair per unowned top-level entry.
 fn classify_agent_scratch(
     agent_scratch_root: &Path,
     current_run_leaf: Option<&str>,
     live_leaf_names: &std::collections::HashSet<String>,
-) -> (u64, Vec<(String, u64)>) {
+) -> (SizedPaths, Vec<(String, u64)>) {
     let Ok(entries) = std::fs::read_dir(agent_scratch_root) else {
-        return (0, Vec::new());
+        return (Vec::new(), Vec::new());
     };
     let no_live_leaves = std::collections::HashSet::new();
-    let mut dead = 0u64;
+    let mut dead = Vec::new();
     let mut ad_hoc = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -3915,7 +3949,7 @@ fn classify_agent_scratch(
             } else {
                 &no_live_leaves
             };
-            dead += dead_spawn_leaf_bytes(&path, live);
+            dead.extend(dead_spawn_leaves(&path, live));
         } else {
             ad_hoc.push((name, dir_size_bytes(&path)));
         }
@@ -3979,22 +4013,31 @@ fn footprint_report(
         dir_size_bytes(&agent_scratch_root).saturating_sub(ad_hoc_bytes);
     let scratch_bytes =
         agent_scratch_well_formed_total + mutation_root.map(dir_size_bytes).unwrap_or(0);
-    let scratch_dead_bytes = agent_scratch_dead
-        + mutation_root
-            .map(|m| dead_spawn_leaf_bytes(m, live_spawn_leaf_names))
-            .unwrap_or(0);
+    // Each dead leaf with the root it was enumerated under: agent-scratch leaves sit under the
+    // scratch root, mutation-scratch leaves under the mutation-scratch root.
+    let dead_leaves: Vec<(PathBuf, u64, PathBuf)> = agent_scratch_dead
+        .into_iter()
+        .map(|(path, bytes)| (path, bytes, scratch_root.to_path_buf()))
+        .chain(mutation_root.into_iter().flat_map(|m| {
+            dead_spawn_leaves(m, live_spawn_leaf_names)
+                .into_iter()
+                .map(move |(path, bytes)| (path, bytes, m.to_path_buf()))
+        }))
+        .collect();
     vec![
         FootprintCategory {
             name: "store",
             total_bytes: store_bytes,
             dead_bytes: 0,
             reclaim_hint: None,
+            reclaimable: Vec::new(),
         },
         FootprintCategory {
             name: "backups",
             total_bytes: backup_bytes,
             dead_bytes: 0,
             reclaim_hint: None,
+            reclaimable: Vec::new(),
         },
         build_cache,
         unit_caches,
@@ -4002,8 +4045,12 @@ fn footprint_report(
         FootprintCategory {
             name: "registered scratch roots",
             total_bytes: scratch_bytes,
-            dead_bytes: scratch_dead_bytes,
+            dead_bytes: dead_leaves.iter().map(|(_, bytes, _)| bytes).sum(),
             reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED),
+            reclaimable: dead_leaves
+                .into_iter()
+                .map(|(path, _, root)| DeadEntry { path, root })
+                .collect(),
         },
         FootprintCategory {
             name: "unowned agent scratch",
@@ -4013,6 +4060,13 @@ fn footprint_report(
             // fully dead: there is no "live" reading of a byte nothing owns.
             dead_bytes: ad_hoc_bytes,
             reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH),
+            reclaimable: ad_hoc_entries
+                .iter()
+                .map(|(name, _)| DeadEntry {
+                    path: agent_scratch_root.join(name),
+                    root: scratch_root.to_path_buf(),
+                })
+                .collect(),
         },
     ]
 }
@@ -4044,6 +4098,87 @@ fn footprint_advisories(categories: &[FootprintCategory]) -> Vec<String> {
             ))
         })
         .collect()
+}
+
+/// What `rigger reset --build-cache` did to one footprint category's dead entries (gap 96):
+/// the bytes and entries it removed, and each entry it left in place because a live process
+/// still holds it.
+#[derive(Debug, Default, PartialEq)]
+struct FootprintReclaim {
+    name: &'static str,
+    bytes: u64,
+    removed: usize,
+    held: Vec<PathBuf>,
+}
+
+/// Reclaim every dead entry the footprint accounting lists (gap 96, ONE ACCOUNTING, ONE
+/// REAPER): the exact entries `rigger validate` counts dead in each category's `reclaimable`,
+/// never a second, independently-derived notion of dead. Before any removal it checks for a
+/// holder ([`rigger::holders::processes_holding`]: a process whose cwd or open file descriptor
+/// is inside) and leaves a held entry where it is; a directory is then removed through
+/// [`reap_then_remove_dir`] under the root it was enumerated from. Best-effort per entry: one
+/// that still exists afterwards is neither counted nor reported as removed.
+fn reclaim_dead_footprint(categories: &[FootprintCategory]) -> Vec<FootprintReclaim> {
+    categories
+        .iter()
+        .filter(|c| !c.reclaimable.is_empty())
+        .map(|c| {
+            let mut done = FootprintReclaim {
+                name: c.name,
+                ..FootprintReclaim::default()
+            };
+            for entry in &c.reclaimable {
+                if !rigger::holders::processes_holding(&entry.path).is_empty() {
+                    done.held.push(entry.path.clone());
+                    continue;
+                }
+                let bytes = if entry.path.is_dir() {
+                    let bytes = dir_size_bytes(&entry.path);
+                    reap_then_remove_dir(&entry.path, &entry.root);
+                    bytes
+                } else {
+                    let bytes = entry.path.metadata().map(|m| m.len()).unwrap_or(0);
+                    let _ = std::fs::remove_file(&entry.path);
+                    bytes
+                };
+                if !entry.path.exists() {
+                    done.bytes += bytes;
+                    done.removed += 1;
+                }
+            }
+            done
+        })
+        .collect()
+}
+
+/// The lines `rigger reset --build-cache` reports for [`reclaim_dead_footprint`]'s outcome:
+/// per category, what it reclaimed and, separately, every entry a live process kept.
+fn footprint_reclaim_lines(reclaims: &[FootprintReclaim]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for r in reclaims {
+        if r.removed > 0 {
+            lines.push(format!(
+                "--build-cache: reclaimed {} ({} byte(s)) from {} ({} dead entr{})",
+                human_size(r.bytes),
+                r.bytes,
+                r.name,
+                r.removed,
+                if r.removed == 1 { "y" } else { "ies" }
+            ));
+        }
+        if !r.held.is_empty() {
+            let held: Vec<String> = r.held.iter().map(|p| p.display().to_string()).collect();
+            lines.push(format!(
+                "--build-cache: left {} dead entr{} of {} in place - a live process still holds \
+                 each: {}",
+                r.held.len(),
+                if r.held.len() == 1 { "y" } else { "ies" },
+                r.name,
+                held.join(", ")
+            ));
+        }
+    }
+    lines
 }
 
 /// The repo root that owns the CURRENT store scope from `cwd`: the store's OWNING root
@@ -6799,7 +6934,11 @@ mod tests {
 
         let (dead, ad_hoc) = classify_agent_scratch(root, None, &std::collections::HashSet::new());
 
-        assert_eq!(dead, 20, "only the well-formed container's bytes");
+        assert_eq!(
+            dead,
+            vec![(root.join("run-1").join("spawn-1"), 20)],
+            "only the well-formed container's dead leaf"
+        );
         assert_eq!(ad_hoc, vec![("stray.log".to_string(), 7)]);
     }
 
@@ -6892,6 +7031,7 @@ mod tests {
             total_bytes: 1000,
             dead_bytes: 1000,
             reclaim_hint: Some("rigger reset --build-cache"),
+            reclaimable: Vec::new(),
         }];
         let advisories = footprint_advisories(&categories);
         assert_eq!(advisories.len(), 1);
@@ -6953,6 +7093,7 @@ mod tests {
             total_bytes,
             dead_bytes,
             reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED),
+            reclaimable: Vec::new(),
         }];
         assert!(footprint_advisories(&categories).is_empty());
     }
@@ -6972,6 +7113,7 @@ mod tests {
             total_bytes: 1000,
             dead_bytes: 500, // exactly FOOTPRINT_DEAD_SHARE_THRESHOLD_PCT (50%), not above it
             reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED),
+            reclaimable: Vec::new(),
         }];
         let advisories = footprint_advisories(&categories);
         assert_eq!(
@@ -6991,6 +7133,7 @@ mod tests {
             total_bytes: 1_000_000,
             dead_bytes: 1_000_000,
             reclaim_hint: None,
+            reclaimable: Vec::new(),
         }];
         assert!(footprint_advisories(&categories).is_empty());
     }

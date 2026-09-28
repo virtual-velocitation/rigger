@@ -648,3 +648,37 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
         "the mutation anchor is not dead footprint and must survive"
     );
 }
+
+/// Gap 96, FAIL CLOSED: when the run log cannot be read, nothing says which units and spawns
+/// are live, so `rigger reset --build-cache` reclaims nothing from the per-unit and scratch
+/// classes and says why - it never reads "unknown" as "every unit is dead". The holder check is
+/// the second line of defence, not the first.
+#[test]
+fn reset_build_cache_reclaims_no_unit_or_scratch_class_when_the_run_log_is_unreadable() {
+    let project = temp_store_project();
+    let root = project.path();
+    std::fs::write(
+        common::cli::rigger_file(root, "events.db"),
+        b"not a sqlite database",
+    )
+    .expect("corrupt the run log");
+    let scratch = common::default_scratch_root(root);
+    let unit_cache = scratch.join("cargo-target-maybe-live-unit");
+    write_file(&unit_cache.join("debug").join("a.rlib"), &[0u8; 1_000]);
+    let spawn_leaf = scratch.join("agent-scratch").join("run-x").join("spawn-x");
+    write_file(&spawn_leaf.join("c"), &[0u8; 200]);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    assert!(
+        unit_cache.join("debug").join("a.rlib").exists() && spawn_leaf.join("c").exists(),
+        "an unreadable run log must reclaim nothing liveness-dependent; stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        !ok,
+        "the refusal is loud (non-zero exit); stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        err.contains("cannot be read") && err.contains("live"),
+        "the refusal names why: {err:?}"
+    );
+}

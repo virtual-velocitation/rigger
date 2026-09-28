@@ -965,6 +965,17 @@ fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
 /// but cannot be opened or read (e.g. an unreachable configured server) - a store-ACCESS miss, distinct
 /// from a selection FAILURE.
 fn read_run_units(cwd: &Path) -> Result<RunUnits, Box<dyn std::error::Error>> {
+    Ok(read_run_units_or_why(cwd)?.unwrap_or_default())
+}
+
+/// [`read_run_units`] without its best-effort degrade: a store-ACCESS miss comes back as the
+/// inner `Err`, naming why, instead of as an empty live set. A caller that DELETES what it
+/// judges dead (`rigger reset --build-cache`, gap 96) must fail closed on it - "cannot tell which
+/// units are live" is never "no unit is live". A project whose store was never created still
+/// reads as no live units: nothing ever ran there.
+fn read_run_units_or_why(
+    cwd: &Path,
+) -> Result<Result<RunUnits, String>, Box<dyn std::error::Error>> {
     let sel = store_selection(None, None)?;
     // Resolve the store's OWNING root and identity. For sqlite the durable log is a LOCAL file,
     // so walk UP to it (as the couriers do); its absence means no run ever happened => no live
@@ -974,7 +985,7 @@ fn read_run_units(cwd: &Path) -> Result<RunUnits, Box<dyn std::error::Error>> {
     // letting [`resolve_store`] reach the server.
     let loc = if sel.is_sqlite() {
         let Some(dir) = find_store_dir_from(cwd) else {
-            return Ok(RunUnits::default());
+            return Ok(Ok(RunUnits::default()));
         };
         StoreLocation { dir }
     } else {
@@ -984,14 +995,15 @@ fn read_run_units(cwd: &Path) -> Result<RunUnits, Box<dyn std::error::Error>> {
     // live units - best-effort, distinct from the selection FAILURE surfaced above: the store WAS
     // resolved, it just cannot be reached, so the residue scan stays warning-only rather than
     // failing validate on a transient outage.
-    let Ok(backend) = resolve_store(&sel, &loc.file("events.db")) else {
-        return Ok(RunUnits::default());
+    let backend = match resolve_store(&sel, &loc.file("events.db")) {
+        Ok(backend) => backend,
+        Err(e) => return Ok(Err(format!("the run log cannot be opened: {e}"))),
     };
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
-        Ok(events) => Ok(current_run_units(&events)),
-        Err(_) => Ok(RunUnits::default()),
-    }
+    Ok(store
+        .read_stream(conductor::STREAM, 0, Direction::Forward)
+        .map(|events| current_run_units(&events))
+        .map_err(|e| format!("the run log cannot be read: {e}")))
 }
 
 /// `rigger validate`'s unconditional FOOTPRINT report (spec 77 criterion 6): one line per
@@ -1017,14 +1029,32 @@ fn footprint_report_lines(categories: &[FootprintCategory]) -> Vec<String> {
 fn footprint_report_for(
     cfg: &config::Config,
 ) -> Result<(Vec<String>, Vec<String>), Box<dyn std::error::Error>> {
-    let cwd = cwd();
-    let repo = owning_repo_root(&cwd);
+    let (categories, _liveness_unknown) =
+        measure_footprint(&cwd(), &cfg.workflow.defaults.workdir)?;
+    Ok((
+        footprint_report_lines(&categories),
+        footprint_advisories(&categories),
+    ))
+}
+
+/// Rigger's footprint by category, measured from `cwd` with the scratch root `workdir`
+/// configures - the ONE measurement both `rigger validate`'s report and `rigger reset
+/// --build-cache`'s reclaim read (gap 96), so the verb reclaims exactly what the advisory
+/// calls dead. See [`footprint_report_for`] for how each input resolves. The second value is
+/// `Some(why)` when the run log could not be read: the liveness-dependent classes were then
+/// measured against an EMPTY live set, which an advisory may report but a reclaim must never act
+/// on ([`read_run_units_or_why`]).
+pub(super) fn measure_footprint(
+    cwd: &Path,
+    workdir: &str,
+) -> Result<(Vec<FootprintCategory>, Option<String>), Box<dyn std::error::Error>> {
+    let repo = owning_repo_root(cwd);
     let rigger_dir = Path::new(&repo).join(RIGGER_DIR);
-    let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
-        &repo,
-        &cfg.workflow.defaults.workdir,
-    ));
-    let run_units = read_run_units(&cwd)?;
+    let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(&repo, workdir));
+    let (run_units, liveness_unknown) = match read_run_units_or_why(cwd)? {
+        Ok(units) => (units, None),
+        Err(why) => (RunUnits::default(), Some(why)),
+    };
     let slugs = live_slugs(&run_units.live_branches);
     let cache_home = cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"));
     let mutation_root = cache_home.map(|h| mutation_scratch_root(&h));
@@ -1037,10 +1067,7 @@ fn footprint_report_for(
         run_units.current_run_scratch_leaf.as_deref(),
         &run_units.live_spawn_leaf_names,
     );
-    Ok((
-        footprint_report_lines(&categories),
-        footprint_advisories(&categories),
-    ))
+    Ok((categories, liveness_unknown))
 }
 
 /// `rigger docs` renders the operating discipline from the code the binary runs on into
@@ -1659,12 +1686,14 @@ mod tests {
                 total_bytes: 100,
                 dead_bytes: 0,
                 reclaim_hint: None,
+                reclaimable: Vec::new(),
             },
             FootprintCategory {
                 name: "shared build cache",
                 total_bytes: 0,
                 dead_bytes: 0,
                 reclaim_hint: Some("rigger reset --build-cache"),
+                reclaimable: Vec::new(),
             },
         ];
         let lines = footprint_report_lines(&categories);

@@ -12684,13 +12684,12 @@ fn validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liven
         "stderr:\n{err}"
     );
     assert!(
-        err.contains(
-            "reclaimed automatically the next time `rigger result` is recorded for the owning spawn"
-        ),
-        "the advisory must name the real spawn-scoped reclaim path (this category is reclaimed \
-         by `cmd_result`, never by `rigger step`'s per-step orphan sweep, which explicitly \
-         never touches agent-scratch) rather than the unit-scoped `rigger step` hint the other \
-         categories use; stderr:\n{err}"
+        err.contains("`rigger reset --build-cache` reclaims it now")
+            && err.contains("recording `rigger result` for the owning spawn also does"),
+        "the advisory must name the verb that reclaims it now (gap 96) and the real \
+         spawn-scoped automatic path (this category is reclaimed by `cmd_result`, never by \
+         `rigger step`'s per-step orphan sweep, which explicitly never touches agent-scratch) \
+         rather than the unit-scoped `rigger step` hint; stderr:\n{err}"
     );
 }
 

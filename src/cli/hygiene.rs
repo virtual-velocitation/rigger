@@ -260,10 +260,13 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
     Ok(modes)
 }
 
-/// `rigger reset --build-cache` (spec 77 criterion 5, BOUNDED SHARED CACHE): reclaims the
-/// shared gate build cache under the resolved scratch root - a PURE cache (always safe to
-/// cold-rebuild), so this is the one reset mode with no store-mutation implication at all
-/// and no backend requirement (unlike `--derived`).
+/// `rigger reset --build-cache` (spec 77 criterion 5, BOUNDED SHARED CACHE; gap 96): reclaims
+/// every dead footprint class `rigger validate` names with this verb - dead per-unit caches,
+/// dead spawns' registered scratch, unowned agent scratch ([`reclaim_dead_footprint`] over the
+/// one [`super::validate::measure_footprint`] accounting, skipping any entry a live process
+/// holds) - and the shared gate build cache under the resolved scratch root. All of it is
+/// rebuildable scratch, so this is the one reset mode with no store-mutation implication at
+/// all and no backend requirement (unlike `--derived`).
 ///
 /// Resolves `repo`/`scratch` the SAME way every other scratch-touching command in this
 /// project does: `repo` is the parent of the ALREADY-RESOLVED store dir `cmd_reset` handed
@@ -316,14 +319,28 @@ fn reset_build_cache(loc: &StoreLocation) -> Res {
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
         &repo, &workdir,
     ));
+    // Every dead class the footprint accounting names with this verb first (gap 96), so a
+    // busy shared cache below never keeps the rest from being reclaimed - unless the run log
+    // cannot be read: then nothing says which units and spawns are live, and every
+    // liveness-dependent class is left alone (FAIL CLOSED), reported after the shared cache,
+    // whose own guard lock decides it independently.
+    let (categories, liveness_unknown) = super::validate::measure_footprint(&cwd(), &workdir)?;
+    if liveness_unknown.is_none() {
+        for line in footprint_reclaim_lines(&reclaim_dead_footprint(&categories)) {
+            println!("{line}");
+        }
+    }
     let cache = scratch.join(rigger::worktree::SHARED_BUILD_CACHE_NAME);
     let outcome = reclaim_shared_build_cache(&cache, &scratch)?;
-    match build_cache_reclaim_report(outcome) {
-        Ok(line) => {
-            println!("{line}");
-            Ok(())
-        }
-        Err(msg) => Err(msg.into()),
+    println!("{}", build_cache_reclaim_report(outcome)?);
+    match liveness_unknown {
+        None => Ok(()),
+        Some(why) => Err(format!(
+            "reset --build-cache: reclaimed nothing from per-unit caches, registered scratch \
+             roots or unowned agent scratch - {why}, so which units and spawns are live cannot \
+             be read, and an unknown is never treated as dead; repair the run log and rerun"
+        )
+        .into()),
     }
 }
 

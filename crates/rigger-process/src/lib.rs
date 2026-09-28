@@ -1,10 +1,13 @@
 //! Rigger's process adapters, ring 3 of the workspace: the one process-spawn port every child
-//! is built through, the reaper that ends processes rooted inside a directory, the machine-wide
+//! is built through, the reaper that ends processes rooted inside a directory, the read-only
+//! check for a process still holding a directory, the machine-wide
 //! build-slot budget and the ordered parallel map. They know `std::process`, the filesystem and
 //! threads; the root `rigger` crate re-exports every module under its historical path.
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod budget;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod holders;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
