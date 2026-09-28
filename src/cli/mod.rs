@@ -6899,6 +6899,52 @@ mod tests {
         assert!(advisories[0].contains("rigger reset --build-cache"));
     }
 
+    /// Gap 96, ONE ACCOUNTING, ONE REAPER: every dead class `rigger reset --build-cache`
+    /// reclaims names that verb in its validate advisory, so the advisory and the reaper can
+    /// never disagree about what reclaims the bytes it reports.
+    #[test]
+    fn footprint_advisories_name_reset_build_cache_for_every_class_it_reclaims() {
+        let root = tempfile::tempdir().unwrap();
+        let scratch = root.path().join("scratch");
+        let mutation_root = root.path().join("cache-home").join("rigger-mutants");
+        write_file(&scratch.join("cargo-target-gone").join("a"), &[0u8; 10]);
+        let leaf = scratch
+            .join("agent-scratch")
+            .join("run-gone")
+            .join("spawn-gone");
+        write_file(&leaf.join("b"), &[0u8; 10]);
+        write_file(
+            &scratch.join("agent-scratch").join("adhoc").join("c"),
+            &[0u8; 10],
+        );
+        write_file(&mutation_root.join("spawn-gone").join("d"), &[0u8; 10]);
+        let none = std::collections::HashSet::new();
+        let categories = footprint_report(
+            &root.path().join(".rigger"),
+            &scratch,
+            Some(&mutation_root),
+            &none,
+            &none,
+            None,
+            &none,
+        );
+        let advisories = footprint_advisories(&categories);
+        for name in [
+            "per-unit caches",
+            "registered scratch roots",
+            "unowned agent scratch",
+        ] {
+            let line = advisories
+                .iter()
+                .find(|a| a.contains(&format!("{name} is 100% dead")))
+                .unwrap_or_else(|| panic!("no advisory for {name}: {advisories:?}"));
+            assert!(
+                line.contains("`rigger reset --build-cache`"),
+                "the advisory names the verb that reclaims it: {line}"
+            );
+        }
+    }
+
     /// One unit-scoped category `name` of `total_bytes`, `dead_bytes` of them dead, draws no
     /// footprint advisory.
     fn assert_hinted_category_is_silent(name: &'static str, total_bytes: u64, dead_bytes: u64) {

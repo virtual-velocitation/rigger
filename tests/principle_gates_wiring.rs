@@ -325,3 +325,26 @@ fn every_persona_carries_its_principle_gate_checklist_line() {
     let missing = missing_checklist_lines(&repo_root());
     assert!(missing.is_empty(), ".rigger/agents: {missing:#?}");
 }
+
+/// The check-in mutation gate's logic lives in ONE shipped script: this repository's `mutation`
+/// gate runs it, and `rigger init` writes the identical file into a consumer project, so the
+/// sweep's bounds and scope reach every consumer rather than living in this repository alone.
+#[test]
+fn the_mutation_gate_runs_the_shipped_script_and_init_writes_the_same_script() {
+    assert_eq!(
+        repo_gate_command("mutation"),
+        "sh .rigger/gates/mutation.sh",
+        "the gate is a one-line invocation of the shipped script"
+    );
+    let dir = temp_project();
+    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let shipped = std::fs::read_to_string(repo_root().join(".rigger/gates/mutation.sh"))
+        .expect("the shipped mutation gate script");
+    let scaffolded = std::fs::read_to_string(dir.path().join(".rigger/gates/mutation.sh"))
+        .expect("rigger init must write .rigger/gates/mutation.sh");
+    assert_eq!(
+        scaffolded, shipped,
+        "the consumer gets the same script, byte for byte"
+    );
+}

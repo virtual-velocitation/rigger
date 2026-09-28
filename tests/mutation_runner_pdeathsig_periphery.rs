@@ -157,3 +157,57 @@ fn a_launcher_that_merely_exits_ends_the_runner_and_its_wrapped_process_with_it(
 fn shell_quote(s: impl AsRef<str>) -> String {
     format!("'{}'", s.as_ref().replace('\'', r"'\''"))
 }
+
+/// The address-space cap (in bytes) the shipped runner applies to the process it wraps, read
+/// back from that process's own `/proc/self/limits`, with the runner's environment `envs`.
+fn applied_address_space_cap(envs: &[(&str, &str)]) -> String {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(pidns_runner_path());
+    cmd.arg("/bin/sh")
+        .arg("-c")
+        .arg("cat /proc/self/limits")
+        .env("RIGGER_TEST_TMPDIR", tmp.path())
+        .env_remove("RIGGER_TEST_AS_BYTES")
+        .env_remove("RIGGER_PIDNS");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("run the shipped runner");
+    let limits = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "the runner must run its wrapped command; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    limits
+        .lines()
+        .find(|l| l.starts_with("Max address space"))
+        .and_then(|l| l.split_whitespace().nth(3))
+        .unwrap_or_else(|| panic!("no address-space line in {limits}"))
+        .to_string()
+}
+
+/// Gap 92: the per-test cap is sized for a mutation sweep's CONCURRENCY, not for one runaway.
+/// At the old 24 GiB default, eight concurrent children of one loop mutant grew to ~5.5 GiB each
+/// and the global OOM killer took the check-in step instead; at 4 GiB each such child fails its
+/// own allocation first, and the whole suite still passes under it. Both the namespace path and
+/// the plain path apply the same cap, and an explicit `RIGGER_TEST_AS_BYTES` still wins.
+#[test]
+fn the_runner_caps_each_test_process_address_space_at_4_gib_on_both_paths() {
+    const FOUR_GIB: &str = "4294967296";
+    assert_eq!(
+        applied_address_space_cap(&[]),
+        FOUR_GIB,
+        "the namespace path"
+    );
+    assert_eq!(
+        applied_address_space_cap(&[("RIGGER_PIDNS", "off")]),
+        FOUR_GIB,
+        "the plain path (a CI container) caps each test process the same way"
+    );
+    assert_eq!(
+        applied_address_space_cap(&[("RIGGER_TEST_AS_BYTES", "8589934592")]),
+        "8589934592",
+        "an explicit cap still overrides the default"
+    );
+}

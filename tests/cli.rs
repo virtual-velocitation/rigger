@@ -23175,17 +23175,23 @@ fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_9
         .gates
         .get("mutation")
         .expect(".rigger/workflow.yml must define a `mutation` gate (spec 91)");
+    // The gate's command runs the shipped script; the script is what must invoke the sweep.
+    let script_rel = mutation_gate.run.strip_prefix("sh ").unwrap_or_else(|| {
+        panic!(
+            "the mutation gate runs a shipped script: {:?}",
+            mutation_gate.run
+        )
+    });
+    let script = repo_text(script_rel);
     assert!(
-        mutation_gate.run.contains("cargo mutants"),
-        "the mutation gate's command must actually invoke cargo mutants, not merely \
-         mention it in a comment: {:?}",
-        mutation_gate.run
+        script.contains("cargo mutants"),
+        "the mutation gate's script must actually invoke cargo mutants, not merely \
+         mention it in a comment: {script_rel}"
     );
     assert!(
-        mutation_gate.run.contains("$MUTANTS"),
-        "the mutation gate's command must read the unit-keyed $MUTANTS root the conductor \
-         exports (THE GATE ENVIRONMENT) - never an ambient/shared TMPDIR: {:?}",
-        mutation_gate.run
+        script.contains("$MUTANTS"),
+        "the mutation gate's script must read the unit-keyed $MUTANTS root the conductor \
+         exports (THE GATE ENVIRONMENT) - never an ambient/shared TMPDIR: {script_rel}"
     );
 
     // The real ambient PATH on a correctly-provisioned machine has cargo-mutants installed

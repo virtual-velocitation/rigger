@@ -1,174 +1,248 @@
-//! Periphery (real-git) proof for spec 91's round-2 fix (upheld finding
-//! adv-u91c2-mutation-gate-diff-base-collapses-to-empty): the checkin stage's `mutation`
-//! gate must diff the whole spec against `$RIGGER_RUN_BASE` - the run branch's tip commit
-//! sha AT THE MOMENT the run started (`RunStarted.base_tip`) - NEVER a `git merge-base`
-//! with the run branch.
+//! Periphery (real-git) proof for the check-in `mutation` gate: the SHIPPED script
+//! `.rigger/gates/mutation.sh` - the file `.rigger/workflow.yml` runs and `rigger init` writes
+//! into a consumer project - driven against fixture repositories with a stand-in `cargo` and a
+//! stand-in `systemd-run` on a fixture PATH (`tests/fixtures/mutation-gate-*.sh`, argv
+//! capture), so every launch decision is read back exactly and no real sweep ever runs.
 //!
-//! WHY A MERGE-BASE COLLAPSES TO EMPTY HERE. The checkin stage's own worktree branches off
-//! the run branch (`rigger-run`) AFTER every implement unit has already integrated onto it
-//! (`needs: [implement]`), so by the time the mutation gate's command ever runs,
-//! `git merge-base rigger-run HEAD` is trivially `HEAD` itself - a `git diff` against that
-//! merge-base is always empty, and the whole-spec mutation sweep (this gate's entire stated
-//! purpose) would silently certify nothing, every run.
+//! THE DIFF BASE (spec 91, adv-u91c2-mutation-gate-diff-base-collapses-to-empty). The gate
+//! diffs the whole spec against `$RIGGER_RUN_BASE` - the run branch's tip AT THE MOMENT the run
+//! started (`RunStarted.base_tip`) - never a merge base with the run branch: the checkin
+//! stage's own worktree branches off the run branch AFTER every implement unit integrated, so
+//! a merge base there is already HEAD and the sweep would certify nothing, every run. A run
+//! with no recorded base refuses loud.
 //!
-//! This file drives the LITERAL, shipped `.rigger/workflow.yml` gate command (never a
-//! hand-copied stand-in that could quietly drift from what actually ships) against a real
-//! git repository whose topology reproduces the exact defect shape, so a future edit that
-//! reintroduces the merge-base idiom - or drops the `test -n` guard - fails this test, not
-//! just a human's re-reading of the YAML.
+//! THE SWEEP'S BOUNDS AND SCOPE (gap 92 and the check-in budget). The sweep mutates the whole
+//! workspace (`--workspace`: the root manifest is a package, so a bare sweep would see only
+//! the root package's files) and tests, per mutant, only the packages its diff touches plus
+//! the root package - never `--test-workspace`; it runs under nextest; the baseline run stays
+//! on (nothing proves the scoped packages green on this tree - see the script's header); and
+//! it runs inside its own systemd scope bounded to half of `MemAvailable`, with `-j` sized
+//! from that bound, or unbounded with an advisory where no systemd user manager exists.
 //!
-//! A THIRD, independent defect shape once lived in the same shipped command:
-//! `GateSelection::PostMerge` (spec 12, unit 5) re-ran the checkin stage's whole gate
-//! list - `mutation` included - against `self.deps.repo`, which owned no per-unit
-//! worktree of its own, so this command's `$MUTANTS` used to arrive empty there and
-//! crash `mkdir -p ""` outright, every single postmerge re-gate, deterministically
-//! (first observed live on the spec-89 run's checkin stage: event-store position
-//! 3101642, `mkdir: cannot create directory ''`). The real fix lives in-conductor
-//! (`RunCtx::run_gates`, conductor.rs): it derives the postmerge `$MUTANTS` root from
-//! the unit's own worktree name whenever the sibling-of-`dir` derivation every other
-//! selection uses comes back empty, so this command's own `$MUTANTS` is never left
-//! empty and needs no gate-side guard - covered by conductor.rs's own
-//! `the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo` test,
-//! not this file (an earlier config-only skip-when-empty guard here traded away real
-//! postmerge coverage - the merged tree a batch-mate's own pre-merge gate can miss - for
-//! a crash workaround, and was retired once the real fix landed). Spec 103 criterion 7
-//! later moved the re-gate itself off `self.deps.repo` entirely, into its own throwaway
-//! scratch-rooted worktree of the landed sha (`RunCtx::integrate_and_emit`), so this
-//! `$MUTANTS`-root derivation is now defense in depth rather than the only guard against
-//! an empty root; `tests/postmerge_gate_modified_file_periphery.rs` covers the half of
-//! that criterion - a locally modified tracked file in the operator's checkout - this
-//! file's own scope never reached.
+//! THE GATE OWNS ITS INSTRUMENT. A unit diff that adds an exclusion or examine key to
+//! `.cargo/mutants.toml`, or a cargo-mutants skip attribute, fails before any sweep.
 
 mod common;
 
-use common::git::git_ok;
-use common::git::git_out;
+use common::git::{git_commit_all, git_ok, git_out, init_repo};
+use common::repo::repo_root;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The path to this repo's own committed `.rigger/workflow.yml`, resolved the same
-/// CWD-independent way every other committed-file pin in this suite does.
-fn workflow_yml_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+/// The shipped gate script.
+fn gate_script() -> PathBuf {
+    repo_root()
         .join(".rigger")
-        .join("workflow.yml")
+        .join("gates")
+        .join("mutation.sh")
 }
 
-/// The REAL, shipped `mutation` gate's `run:` command, read straight off
-/// `.rigger/workflow.yml` (a plain YAML parse - no `Config::validate`, so this test needs no
-/// `cargo-mutants` on PATH to even load the string it is about to slice).
-fn shipped_mutation_gate_command() -> String {
-    let path = workflow_yml_path();
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
-    doc["gates"]["mutation"]["run"]
-        .as_str()
-        .unwrap_or_else(|| panic!("gates.mutation.run must be a string in {}", path.display()))
-        .to_string()
+/// The tools the gate script runs besides `cargo` and `systemd-run`.
+const GATE_TOOLS: &[&str] = &[
+    "git", "awk", "sed", "sort", "cat", "rm", "mkdir", "mv", "cp", "head", "tr", "wc", "dirname",
+    "env", "xargs", "grep", "true",
+];
+
+/// The first executable named `tool` on the ambient PATH.
+fn ambient_tool(tool: &str) -> PathBuf {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .map(|d| d.join(tool))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| panic!("`{tool}` must be on PATH for the mutation gate fixture"))
 }
 
-/// The diff-computation PREFIX of the shipped mutation gate command - the
-/// `test -n "$RIGGER_RUN_BASE" && git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff` clause
-/// this file's two tests exercise - sliced off BEFORE the `rm -rf "$MUTANTS" && mkdir -p ...`
-/// / `cargo mutants` tail, which neither test needs to run (no Rust-project fixture, no
-/// multi-minute sweep, no `cargo-mutants` dependency for this test binary at all).
-fn diff_computation_prefix(full: &str) -> String {
-    let marker = "rm -rf";
-    let idx = full.find(marker).unwrap_or_else(|| {
-        panic!(
-            "the shipped mutation gate no longer contains {marker:?} - it \
-                                    may have been restructured; update this fixture's slice \
-                                    point to match. got: {full}"
+/// A fixture PATH directory holding the gate's ordinary tools, the stand-in `cargo`, and - when
+/// `with_systemd_run` - the stand-in `systemd-run`. Every entry is a symlink, so no test ever
+/// writes a file it then executes.
+fn fixture_bin(dir: &Path, with_systemd_run: bool) -> PathBuf {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for tool in GATE_TOOLS {
+        std::os::unix::fs::symlink(ambient_tool(tool), bin.join(tool)).unwrap();
+    }
+    let fixtures = repo_root().join("tests").join("fixtures");
+    std::os::unix::fs::symlink(fixtures.join("mutation-gate-cargo.sh"), bin.join("cargo")).unwrap();
+    if with_systemd_run {
+        std::os::unix::fs::symlink(
+            fixtures.join("mutation-gate-systemd-run.sh"),
+            bin.join("systemd-run"),
         )
-    });
-    full[..idx]
-        .trim_end()
-        .trim_end_matches("&&")
-        .trim_end()
-        .to_string()
+        .unwrap();
+    }
+    bin
 }
 
-fn init_repo(dir: &Path) {
-    git_ok(dir, &["init", "-q"]);
-    git_ok(dir, &["config", "user.email", "t@example.com"]);
-    git_ok(dir, &["config", "user.name", "t"]);
+/// What one run of the shipped gate did.
+struct GateRun {
+    passed: bool,
+    output: String,
+    /// One line per `cargo` invocation, its argv space-joined (empty when cargo never ran).
+    cargo: String,
+    /// One line per `systemd-run` invocation (empty when it never ran or is absent).
+    scope: String,
 }
 
-fn commit_all(dir: &Path, msg: &str) {
-    git_ok(dir, &["add", "-A"]);
-    git_ok(dir, &["commit", "-q", "-m", msg]);
+impl GateRun {
+    /// The main sweep's `cargo` argv line (the one that sweeps `unit.diff`).
+    fn sweep_line(&self) -> &str {
+        self.cargo
+            .lines()
+            .find(|l| l.contains("mutants") && l.contains("--in-diff unit.diff"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no sweep of unit.diff was launched; cargo saw:\n{}",
+                    self.cargo
+                )
+            })
+    }
 }
+
+/// Run the shipped gate in `repo` with `base` as `$RIGGER_RUN_BASE` (unset when `None`), a
+/// meminfo reporting `mem_available_kb`, and the fixture PATH.
+fn run_gate(
+    repo: &Path,
+    base: Option<&str>,
+    mem_available_kb: u64,
+    with_systemd_run: bool,
+) -> GateRun {
+    let work = tempfile::tempdir().unwrap();
+    let bin = fixture_bin(work.path(), with_systemd_run);
+    let meminfo = work.path().join("meminfo");
+    std::fs::write(
+        &meminfo,
+        format!("MemTotal:       65000000 kB\nMemAvailable:   {mem_available_kb} kB\n"),
+    )
+    .unwrap();
+    let cargo_capture = work.path().join("cargo.argv");
+    let scope_capture = work.path().join("scope.argv");
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg(gate_script())
+        .current_dir(repo)
+        .env("PATH", &bin)
+        .env(
+            "MUTANTS",
+            work.path().join("scratch").join("cargo-mutants-checkin"),
+        )
+        .env("RIGGER_MEMINFO", &meminfo)
+        .env("RIGGER_ARGV_CAPTURE", &cargo_capture)
+        .env("RIGGER_SCOPE_CAPTURE", &scope_capture)
+        .env_remove("CARGO_TARGET_DIR");
+    match base {
+        Some(b) => cmd.env("RIGGER_RUN_BASE", b),
+        None => cmd.env_remove("RIGGER_RUN_BASE"),
+    };
+    let out = cmd.output().expect("run the shipped mutation gate");
+    GateRun {
+        passed: out.status.success(),
+        output: format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        cargo: std::fs::read_to_string(&cargo_capture).unwrap_or_default(),
+        scope: std::fs::read_to_string(&scope_capture).unwrap_or_default(),
+    }
+}
+
+/// Write `content` to `rel` under `repo`, creating parent directories.
+fn write(repo: &Path, rel: &str, content: &str) {
+    let path = repo.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+}
+
+/// A three-package workspace (`fixture-root` at the root, `alpha` and `beta` under crates/)
+/// with one commit, returning its base sha; a later change to `alpha` alone is the unit diff.
+fn workspace_repo(repo: &Path) -> String {
+    init_repo(repo);
+    write(
+        repo,
+        "Cargo.toml",
+        "[package]\nname = \"fixture-root\"\nversion = \"0.1.0\"\n\n[workspace]\nmembers = [\".\", \"crates/alpha\", \"crates/beta\"]\n",
+    );
+    write(repo, "src/lib.rs", "pub fn root() -> u8 {\n    1\n}\n");
+    for name in ["alpha", "beta"] {
+        write(
+            repo,
+            &format!("crates/{name}/Cargo.toml"),
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n"),
+        );
+        write(
+            repo,
+            &format!("crates/{name}/src/lib.rs"),
+            "pub fn f(a: u8, b: u8) -> u8 {\n    a + b\n}\n",
+        );
+    }
+    git_commit_all(repo, "base");
+    let base = git_out(repo, &["rev-parse", "HEAD"]);
+    write(
+        repo,
+        "crates/alpha/src/lib.rs",
+        "pub fn f(a: u8, b: u8) -> u8 {\n    a * b\n}\n",
+    );
+    git_commit_all(repo, "unit changes alpha");
+    base
+}
+
+/// 40 GiB available: a 20 GiB bound, three 6 GiB jobs.
+const FORTY_GIB_KB: u64 = 40 * 1024 * 1024;
 
 #[test]
 fn the_shipped_mutation_gate_guards_on_rigger_run_base_never_a_merge_base() {
-    let full = shipped_mutation_gate_command();
+    let script = std::fs::read_to_string(gate_script()).expect("the shipped gate script");
     assert!(
-        full.contains("test -n \"$RIGGER_RUN_BASE\""),
-        "the shipped mutation gate must guard on RIGGER_RUN_BASE before diffing; got: {full}"
+        script.contains("test -n \"$RIGGER_RUN_BASE\""),
+        "the shipped mutation gate must guard on RIGGER_RUN_BASE before diffing"
     );
     assert!(
-        full.contains("git diff \"$RIGGER_RUN_BASE\""),
-        "the shipped mutation gate must diff against RIGGER_RUN_BASE; got: {full}"
+        script.contains("git diff \"$RIGGER_RUN_BASE\""),
+        "the shipped mutation gate must diff against RIGGER_RUN_BASE"
     );
     assert!(
-        !full.contains("merge-base"),
-        "the shipped mutation gate must never recompute a merge-base with the run branch - \
-         spec 91's own amendment retired it because it collapses to HEAD once the checkin \
-         stage's worktree branches off the run branch, after every implement unit has \
-         integrated (adv-u91c2-mutation-gate-diff-base-collapses-to-empty); got: {full}"
+        !script.contains("merge-base"),
+        "the shipped mutation gate must never recompute a merge-base with the run branch - it \
+         collapses to HEAD once the checkin worktree branches off the run branch \
+         (adv-u91c2-mutation-gate-diff-base-collapses-to-empty)"
     );
 }
 
 #[test]
 fn mutation_gate_diffs_against_rigger_run_base_capturing_the_whole_spec_diff() {
-    let prefix = diff_computation_prefix(&shipped_mutation_gate_command());
-
     let repo = tempfile::tempdir().unwrap();
     let dir = repo.path();
-    init_repo(dir);
+    git_ok(dir, &["init", "-q"]);
+    git_ok(dir, &["config", "user.email", "t@example.com"]);
+    git_ok(dir, &["config", "user.name", "t"]);
     std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-    commit_all(dir, "origin");
+    git_commit_all(dir, "origin");
 
-    // The run branch anchors HERE - RIGGER_RUN_BASE is stamped from this exact tip when a
-    // real run mints its RunStarted (spec 91, RunStarted.base_tip).
+    // The run branch anchors HERE - RIGGER_RUN_BASE is stamped from this exact tip.
     git_ok(dir, &["checkout", "-q", "-b", "rigger-run"]);
     let base_tip = git_out(dir, &["rev-parse", "HEAD"]);
 
-    // Two implement units land, each merging onto rigger-run - exactly as they do in a real
-    // run, BEFORE the checkin stage's own worktree ever exists.
+    // Two implement units land on rigger-run BEFORE the checkin stage's worktree exists.
     std::fs::write(dir.join("a.rs"), "fn a() { 1; }\n").unwrap();
-    commit_all(dir, "unit one lands");
+    git_commit_all(dir, "unit one lands");
     std::fs::write(dir.join("b.rs"), "fn b() {}\n").unwrap();
-    commit_all(dir, "unit two lands");
+    git_commit_all(dir, "unit two lands");
 
-    // The checkin stage's OWN worktree branches off rigger-run's tip AFTER both units above
-    // have already integrated - the exact topology spec 91's amendment names.
+    // The checkin stage's OWN worktree branches off rigger-run's tip after both landed.
     git_ok(dir, &["checkout", "-q", "-b", "checkin-worktree"]);
     let head = git_out(dir, &["rev-parse", "HEAD"]);
     let merge_base = git_out(dir, &["merge-base", "rigger-run", "HEAD"]);
     assert_eq!(
         merge_base, head,
         "fixture precondition: the checkin worktree's merge-base with rigger-run must already \
-         equal HEAD (reproducing the exact topology the retired line silently diffed nothing \
-         against) - otherwise this test would not be exercising the defect at all"
+         equal HEAD - the topology a merge-base diff silently sweeps nothing against"
     );
 
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(&prefix)
-        .current_dir(dir)
-        // A non-empty MUTANTS clears the empty-MUTANTS guard the third test below
-        // covers, so this test exercises the diff-computation clause exactly as it did
-        // before that guard existed - a real per-unit invocation always has one set.
-        .env("MUTANTS", "placeholder-nonempty-mutants-root")
-        .env("RIGGER_RUN_BASE", &base_tip)
-        .status()
-        .expect("run the shipped diff-computation prefix");
+    let run = run_gate(dir, Some(&base_tip), FORTY_GIB_KB, true);
     assert!(
-        status.success(),
-        "the diff-computation prefix must succeed once RIGGER_RUN_BASE is set"
+        run.passed,
+        "the gate must pass on an all-caught sweep: {}",
+        run.output
     );
 
     let produced =
@@ -182,43 +256,163 @@ fn mutation_gate_diffs_against_rigger_run_base_capturing_the_whole_spec_diff() {
         produced.trim_end(),
         expected.trim_end(),
         "RIGGER_RUN_BASE must diff against the run's ACTUAL starting tip, capturing the whole \
-         spec diff across every implement unit - never the empty diff a merge-base with the \
-         (already-advanced) run branch would produce at this exact topology"
+         spec diff across every implement unit"
     );
 }
 
 #[test]
 fn mutation_gate_refuses_loud_when_rigger_run_base_is_unset_rather_than_sweeping_an_empty_diff() {
-    let prefix = diff_computation_prefix(&shipped_mutation_gate_command());
-
     let repo = tempfile::tempdir().unwrap();
     let dir = repo.path();
     init_repo(dir);
     std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-    commit_all(dir, "origin");
+    git_commit_all(dir, "origin");
 
-    // A legacy run whose RunStarted predates `base_tip` (spec 91) simply never has
-    // RIGGER_RUN_BASE to export. `env_remove` guards against the ambient test-runner
-    // environment ever carrying a stray value of its own.
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(&prefix)
-        .current_dir(dir)
-        // Non-empty so this test isolates the RIGGER_RUN_BASE guard alone - see the
-        // sibling test above for why.
-        .env("MUTANTS", "placeholder-nonempty-mutants-root")
-        .env_remove("RIGGER_RUN_BASE")
-        .status()
-        .expect("run the shipped diff-computation prefix");
-
+    let run = run_gate(dir, None, FORTY_GIB_KB, true);
     assert!(
-        !status.success(),
-        "with no RIGGER_RUN_BASE, the gate's own `test -n` guard must fail the command loud - \
-         never silently proceed to an empty (or missing) diff"
+        !run.passed,
+        "with no RIGGER_RUN_BASE the gate must fail loud, never sweep an empty diff: {}",
+        run.output
     );
     assert!(
         !dir.join("unit.diff").exists(),
-        "a refused gate must never even attempt the git diff - no unit.diff should be written \
-         at all when RIGGER_RUN_BASE is unset"
+        "a refused gate must never even attempt the git diff"
     );
+    assert!(
+        run.cargo.is_empty(),
+        "a refused gate launches no sweep: {}",
+        run.cargo
+    );
+}
+
+#[test]
+fn the_sweep_mutates_the_workspace_and_tests_only_the_touched_packages_plus_the_root() {
+    let repo = tempfile::tempdir().unwrap();
+    let base = workspace_repo(repo.path());
+    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true);
+    assert!(run.passed, "{}", run.output);
+    let sweep = run.sweep_line();
+    assert!(
+        sweep.contains("--workspace "),
+        "the root manifest is a package, so only --workspace lets --in-diff see crates/: {sweep}"
+    );
+    assert!(
+        sweep.contains("--test-package alpha ") && sweep.contains("--test-package fixture-root "),
+        "each mutant runs the touched package's tests plus the root package's: {sweep}"
+    );
+    assert!(
+        !sweep.contains("beta"),
+        "an untouched package's tests are never run for this diff's mutants: {sweep}"
+    );
+    assert!(
+        !sweep.contains("--test-workspace"),
+        "the sweep never widens to every package's tests: {sweep}"
+    );
+    assert!(sweep.contains("--test-tool nextest "), "{sweep}");
+    assert!(
+        !sweep.contains("--baseline skip"),
+        "nothing proves the scoped packages green on this tree, so the baseline stays on: {sweep}"
+    );
+}
+
+#[test]
+fn the_sweep_runs_in_its_own_scope_bounded_by_half_of_mem_available() {
+    let repo = tempfile::tempdir().unwrap();
+    let base = workspace_repo(repo.path());
+
+    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true);
+    assert!(run.passed, "{}", run.output);
+    let bounded = run
+        .scope
+        .lines()
+        .find(|l| l.contains("cargo mutants"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the sweep must launch through systemd-run; saw:\n{}",
+                run.scope
+            )
+        });
+    assert!(
+        bounded.starts_with("--user --scope ")
+            && bounded.contains("-p MemoryMax=20971520K -- env -u CARGO_TARGET_DIR cargo mutants "),
+        "a transient user scope bounded to half of the 40 GiB available: {bounded}"
+    );
+    assert!(
+        run.sweep_line().contains("-j 3 "),
+        "20 GiB / 6 GiB per job = 3: {}",
+        run.sweep_line()
+    );
+
+    // 8 GiB available: a 4 GiB bound holds less than one 6 GiB job, and the floor is one.
+    let repo = tempfile::tempdir().unwrap();
+    let base = workspace_repo(repo.path());
+    let run = run_gate(repo.path(), Some(&base), 8 * 1024 * 1024, true);
+    assert!(run.passed, "{}", run.output);
+    assert!(
+        run.scope.contains("-p MemoryMax=4194304K "),
+        "{}",
+        run.scope
+    );
+    assert!(run.sweep_line().contains("-j 1 "), "{}", run.sweep_line());
+}
+
+#[test]
+fn without_systemd_run_the_sweep_runs_unbounded_and_the_gate_says_so() {
+    let repo = tempfile::tempdir().unwrap();
+    let base = workspace_repo(repo.path());
+    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, false);
+    assert!(run.passed, "{}", run.output);
+    assert!(
+        run.output.contains("advisory") && run.output.contains("WITHOUT its own memory bound"),
+        "the fallback names what the operator loses: {}",
+        run.output
+    );
+    assert!(
+        run.scope.is_empty(),
+        "no scope wrapper exists here: {}",
+        run.scope
+    );
+    assert!(run.sweep_line().contains("-j 3 "), "{}", run.sweep_line());
+}
+
+#[test]
+fn the_gate_refuses_every_narrowing_token_before_any_sweep() {
+    // Built from parts so this file's own diff never carries a token the gate refuses.
+    let keys = [
+        concat!("exclude", "_re"),
+        concat!("examine", "_re"),
+        concat!("exclude", "_globs"),
+        concat!("examine", "_globs"),
+    ];
+    let skip = concat!("mutants::", "skip");
+    for token in keys.iter().copied().chain([skip]) {
+        let repo = tempfile::tempdir().unwrap();
+        let base = workspace_repo(repo.path());
+        if token == skip {
+            write(
+                repo.path(),
+                "crates/alpha/src/lib.rs",
+                &format!("#[{token}]\npub fn f(a: u8, b: u8) -> u8 {{\n    a * b\n}}\n"),
+            );
+        } else {
+            write(
+                repo.path(),
+                ".cargo/mutants.toml",
+                &format!("{token} = [\"f\"]\n"),
+            );
+        }
+        git_commit_all(repo.path(), "unit narrows the sweep");
+        let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true);
+        assert!(!run.passed, "`{token}` must fail the gate: {}", run.output);
+        assert!(
+            run.output.contains("the gate owns its instrument"),
+            "`{token}`: the refusal names why: {}",
+            run.output
+        );
+        assert!(
+            !run.cargo.contains("mutants"),
+            "`{token}`: no sweep may run once the unit narrowed it: {}",
+            run.cargo
+        );
+    }
 }
