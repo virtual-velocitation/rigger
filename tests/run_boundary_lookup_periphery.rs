@@ -11,7 +11,8 @@
 //!    composition (a project namespace over a file-backed store) as an external caller holds it,
 //!    with streams interleaved so a per-stream revision and a global position differ;
 //!  - the counting store double is the ONE shared instrument every later criterion asserts a read
-//!    cost with, and nothing pins that it records each call exactly and forwards it unchanged.
+//!    cost with, and nothing pins that it records each call exactly - a failed one and a
+//!    subscription's deliveries included - and forwards it unchanged.
 
 mod common;
 
@@ -182,12 +183,15 @@ fn the_counting_double_records_every_read_exactly_and_forwards_it_unchanged() {
         [6, 5, 4, 3, 2]
     );
     let sub = counted.subscribe_stream("s", 2).unwrap();
-    let first = sub.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert_eq!((first.stream.as_str(), first.revision), ("s", 2));
+    let delivered: Vec<(String, i64)> = (0..2)
+        .map(|_| sub.recv_timeout(Duration::from_secs(10)).unwrap())
+        .map(|e| (e.stream, e.revision))
+        .collect();
+    assert_eq!(delivered, [("s".to_string(), 2), ("s".to_string(), 3)]);
     drop(sub);
     let sub_all = counted.subscribe_all(5, &Filter::default()).unwrap();
     let first = sub_all.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert_eq!(first.position, 6);
+    assert_eq!((first.stream.as_str(), first.position), ("t", 6));
     drop(sub_all);
     assert_eq!(counted.last_position("s", "A").unwrap(), Some(2));
     assert_eq!(counted.last_position("t", "A").unwrap(), None);
@@ -220,8 +224,12 @@ fn the_counting_double_records_every_read_exactly_and_forwards_it_unchanged() {
             CountedRead::SubscribeStream {
                 stream: "s".to_string(),
                 from: 2,
+                delivered: 2,
             },
-            CountedRead::SubscribeAll { from: 5 },
+            CountedRead::SubscribeAll {
+                from: 5,
+                delivered: 1,
+            },
             CountedRead::LastPosition {
                 stream: "s".to_string(),
                 event_type: "A".to_string(),
@@ -234,8 +242,8 @@ fn the_counting_double_records_every_read_exactly_and_forwards_it_unchanged() {
     );
     assert_eq!(
         counted.materialized(),
-        14,
-        "the total is the sum of the events every read handed back: 3 + 4 + 2 + 5"
+        17,
+        "the total is the sum of the events every read handed back: 3 + 4 + 2 + 5 + 2 + 1"
     );
     assert_eq!(
         counted
@@ -243,7 +251,57 @@ fn the_counting_double_records_every_read_exactly_and_forwards_it_unchanged() {
             .iter()
             .map(CountedRead::materialized)
             .collect::<Vec<_>>(),
-        [3, 4, 2, 5, 0, 0, 0, 0],
-        "a subscription or a lookup hands back no event at the call"
+        [3, 4, 2, 5, 2, 1, 0, 0],
+        "a subscription materializes what it delivered; a lookup hands back no event"
     );
+}
+
+/// Given the shared counting double over a store whose log is gone, when a stream read, a $all read
+/// or a lookup fails, then each failed call is still recorded, in call order, having handed
+/// back nothing - a read cost assertion never loses the call that erred.
+#[test]
+fn the_counting_double_records_a_read_that_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+    store
+        .append("s", ExpectedRevision::NoStream, &[ev("A", "{}")])
+        .unwrap();
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch("DROP TABLE events;")
+        .unwrap();
+    let counted = ReadCountingStore::new(&store);
+
+    counted
+        .read_stream("s", 0, Direction::Forward)
+        .expect_err("a read of a dropped log fails");
+    counted
+        .read_all(0, Direction::Backward, &Filter::default())
+        .expect_err("a $all read of a dropped log fails");
+    counted
+        .last_position("s", "A")
+        .expect_err("a lookup in a dropped log fails");
+
+    assert_eq!(
+        counted.reads(),
+        [
+            CountedRead::Stream {
+                stream: "s".to_string(),
+                from: 0,
+                forward: true,
+                materialized: 0,
+            },
+            CountedRead::All {
+                from: 0,
+                forward: false,
+                materialized: 0,
+            },
+            CountedRead::LastPosition {
+                stream: "s".to_string(),
+                event_type: "A".to_string(),
+            },
+        ]
+    );
+    assert_eq!(counted.materialized(), 0);
 }
