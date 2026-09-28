@@ -26,12 +26,25 @@ server-backed KurrentDB store (`crates/rigger-store-sqlite/src/eventstore/kurren
 backward read that stops at the first match. No caller derives the boundary by scanning forward from 0.
 
 **THREE READ CLASSES.** (i) The run's own events, from the boundary forward, are read and
-folded whole - they are the run. (ii) Carried-over knowledge - `LessonLearned`,
-`DecisionMade`, `ReviewFinding` and the playbook events the fold consults across runs - is
-read BY TYPE over the whole stream through a new `EventStore::read_stream_typed` port method
-backed by a type index; `Filter` carries only a `stream_prefix` today, so no by-type read
-exists to reuse. Its cost is bounded by its own count (about 22,000 events today), never by the derived
-types. (iii) The derived ingest types (`ingest::DERIVED_INDEX_TYPES`, `crates/rigger-domain/src/ingest.rs:36`) are NEVER materialized
+folded whole - they are the run. (ii) The typed carry-over has two parts, both read BY TYPE over
+the whole stream through a new `EventStore::read_stream_typed` port method backed by a type
+index; `Filter` carries only a `stream_prefix` today, so no by-type read exists to reuse. (a) The
+knowledge types: `LessonLearned`, `DecisionMade`, `ReviewFinding` and the playbook events the fold
+consults across runs. (b) The criterion-adoption lifecycle types: `RunStarted`, `UnitStarted`,
+`UnitIntegrated`, `UnitFailed` and `UnitStatus` of every run, read `Only` by type and ONLY by a
+step that starts a criterion unit in a repo, because criterion adoption consults every prior
+run's outcome by contract; a step that starts no criterion unit, and every other one-shot
+command, performs no adoption read. Each part is one constant list declared once, side by side,
+in the domain (no second spelling anywhere), read as `Only(list)`, never `Except(derived)` and
+never a whole-stream read; each is bounded by its own count (the knowledge types about 22,000
+events today), never by the derived types, and neither ever materializes a derived event. "The
+typed carry-over" in criterion 2's cost bound means both parts: a repo step that does not ingest
+costs exactly the run's events plus the knowledge types plus the adoption lifecycle types, and
+nothing else. So the counting-double step test covers a stage with a repo and a criterion id and
+asserts the adoption read through the double, and the binary poisoned-log step test runs a REPO
+step against a log whose superseded runs' events outside both parts and every derived event are
+undecodable, so a step that materializes one fails while the adoption read of the superseded
+runs' lifecycle events passes. (iii) The derived ingest types (`ingest::DERIVED_INDEX_TYPES`, `crates/rigger-domain/src/ingest.rs:36`) are NEVER materialized
 by a one-shot command: `graph.db` is their fold, and the only question a command asks of
 them - a file's latest recorded generation (today `ingest::project_scoped_latest_generations`,
 `crates/rigger-domain/src/ingest.rs:174`, over a whole-stream read) - is answered per identity by
@@ -147,9 +160,15 @@ that step-wide assertion. Neither unit builds the other's half.
   re-asserts that generation's facts as the newest generation, so retired facts return live under
   the newer valid-time and the compaction keeps only that newest recording. A generation that
   drops EVERY fact of a file leaves the file's node live only while a live decision, lesson or
-  finding edge touches it.
+  finding edge touches it. An existing `graph.db` folded before the rule is cold-rebuilt from the
+  log once on its next open, and `--derived` refuses to compact it until then. A cross-file
+  reference or test proof whose definition a generation drops is demoted, or returned to pending,
+  as that definition retires, so a later definition of the name converges it identically in both
+  rebuilds. A dropped entity touched only by a community or concept edge retires, with that edge,
+  in both rebuilds.
 - *Concurrent step and status:* status reads the boundary and the typed carry-over and takes no
-  step lock; the step's lookups read committed rows only. A `rigger graph build` running beside a
+  step lock; the step's lookups read committed rows only. A repo step that adopts a prior
+  criterion branch reads the adoption lifecycle types by type and nothing else cross-run. A `rigger graph build` running beside a
   step can record one generation twice, as it can today, and criterion 4's dedup collapses it.
 - *Crash-resume:* on sqlite the stamp commits with its event; on KurrentDB a crash leaves at most a
   dangling link, which the lookup skips. A step that crashed mid-walk leaves the files it appended
@@ -176,20 +195,68 @@ fact live is a defect of the fold, and this spec closes it. When a newer generat
 newer generation does not re-assert is retired (`valid_to` stamped, never deleted), exactly as the
 code half already retires a prior generation's edges: the design half's links
 (`DocLinkExtracted`) and concepts (`DocConceptExtracted`) exactly as the code half's edges. A node
-that no live generation asserts and no live edge touches is retired the same way; a node that a
-live decision, lesson or finding edge still touches stays live. The mechanism is the fold's, at
+that no live generation asserts is retired the same way; only a live decision, lesson or finding
+edge (the knowledge edges) still touching it keeps it live. The mechanism is the fold's, at
 the single fold authority for each arm (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`
 and the domain rules in `crates/rigger-domain/src/contextgraph.rs`), never a second pass or a
 post-fold sweep. This is what makes criterion 4's identity hold whenever a later generation DROPS
 a fact, not only when it adds or moves one.
-- *The identity.* "`graph.db` rebuilt ... byte-identical" is the LIVE PROJECTION: the public wire
-  form of `Projector::whole()` (every node, every live edge, every column, deterministically
-  ordered) of `graph.db` rebuilt from the compacted log versus from the original log. The
-  `graph.db` FILE differs by construction (the applied ledger records every folded position, and
-  retired rows are history the compacted log no longer replays), so file bytes are not the
-  identity. A test asserting this identity MUST seed at least one generation that drops a design
-  link and one that drops a code entity, besides the ordinary add-and-move generations, and MUST
-  NOT except any node or edge from the equality.
+- *Convergences undo with their definition.* Every name-resolution convergence the fold keeps is
+  two-way. A reference tier promoted because a definition of its name existed (AMBIGUOUS to
+  INFERRED, or its CALLS twin) is demoted again when the last live definition of that name retires,
+  and a test proof that landed on a definition returns to the pending state when that definition
+  retires, so a later definition of the same name receives it. The projection is a pure function of
+  the log, so folding a log and folding its compacted form reach the same state on EVERY future
+  event, not only at the point compared. The single authority is the fold's own sites in
+  `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`: the definition arm's tier promotion and
+  the pending-proof reconcile. No sweep and no second pass.
+- *The identity.* Criterion 4 compares the LIVE PROJECTION (the public wire form of
+  `Projector::whole()`: every node, every live edge, every column, deterministically ordered) PLUS
+  the fold state that decides future folds: the pending proofs, the restored-attribute record of
+  retired nodes, and the assertion ledgers restricted to live generations, of `graph.db` rebuilt
+  from the compacted log versus from the original log. Everything else in the `graph.db` file
+  differs by construction (the applied-position ledger records every folded position, and retired
+  history rows are history the compacted log no longer replays) and is excluded, so file bytes are
+  not the identity. The test compares those tables row for row, then folds at least one further
+  event into both rebuilds and compares again, so a latent divergence cannot pass. Its fixture MUST
+  seed at least one generation that drops a design link and one that drops a code entity, besides
+  the ordinary add-and-move generations, plus a cross-file reference to a dropped name, a test proof
+  consumed by a definition a later generation sheds, and a log mixing unkeyed and keyed recordings
+  of the same fact; it MUST NOT except any node or edge from the equality.
+- *Existing graph.db files.* The fold rule ships with a projection version recorded in `graph.db`. A
+  `graph.db` whose recorded version predates the rule (its generation and assertion ledgers empty or
+  absent) is rebuilt cold from the log on the next open, before any incremental fold, and the new
+  version is recorded so the rebuild happens once; incremental folding never resumes on a
+  ledger-less file. `rigger reset --derived` refuses to compact a store whose `graph.db` is at the
+  old version until that rebuild has happened, and says so. A test folds into a `graph.db` lacking
+  the ledger tables and asserts the cold rebuild. Without this, every store folded before this spec
+  keeps facts a pre-upgrade generation asserted, and a compacted such store disagrees with every
+  future rebuild.
+- *Unkeyed recordings are permanent asserters.* A derived recording without a replay key (written
+  before replay keys existed) is an asserter in its own right for the nodes AND edges it folds: a
+  keyed generation's retirement never retires a node or edge an unkeyed recording still asserts,
+  edges get the same identity-empty asserter record nodes already have, and compaction never selects
+  unkeyed rows. The two rebuilds therefore agree on a log that mixes unkeyed and keyed recordings of
+  the same fact, which is the shape of every store written before replay keys.
+- *Only knowledge holds a node.* The edges that hold a node whose asserting generation retired
+  are exactly the knowledge edges, folded from `DecisionMade`, `LessonLearned` and `ReviewFinding`;
+  nothing else holds. A graph-derived attachment - the `IN_COMMUNITY` edge from `CommunityAssigned`
+  and the `REALIZES` edge from `ConceptRealized` - is not a derived index type, survives
+  compaction, and never holds a node: when the last live generation asserting the node retires,
+  those edges retire with it (`valid_to` stamped), and the retired node keeps none of the retired
+  generation's attributes, the same retraction the code half applies to any superseded generation
+  (an early return on an unsettled kind is not this rule). An attachment folded onto a node the
+  graph does not hold (the compacted log replays one whose node's generation was shed) is recorded
+  retired at fold time, never creates a node and never stays live; a knowledge edge folded onto an
+  absent node creates the held node as the whole-log fold leaves it, so the two rebuilds agree node
+  for node and edge for edge. The authority is the fold's own arms in
+  `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` (the community arm, the concept arm and
+  the node-retirement rule), no sweep and no second pass. Criterion 4's fixture MUST seed a
+  community assignment and a concept realization on an entity a later generation drops, and a
+  knowledge edge on another dropped entity, and assert both rebuilds agree on every node and edge
+  including the retired-node record; the review verifies criterion 4 by a rebuild-identity check
+  over a subset of a real log (every non-derived event plus the derived events of a bounded set of
+  identities), not by the synthetic fixture alone.
 - *Ownership.* Criterion 4's unit owns the fold change, and its blast radius grows to
   `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` and
   `crates/rigger-domain/src/contextgraph.rs`, because the compaction's correctness argument IS
