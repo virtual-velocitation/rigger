@@ -26,6 +26,7 @@ use serde_json::Value;
 use crate::agent::{classify_failure, no_result_error, AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
 use crate::eventstore::{Direction, EventStore};
+use crate::hooks;
 use crate::liveness;
 use crate::progress::{self, SpawnLaunched};
 use crate::progress_store;
@@ -172,7 +173,7 @@ impl Driver<'_> {
             opts,
             &session_id,
             bin_or_path_default(&self.rigger_bin, "rigger"),
-        );
+        )?;
 
         let started = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1044,19 +1045,58 @@ fn first_user_message(task: &str) -> String {
     .to_string()
 }
 
-/// The `--mcp-config` value naming exactly one server, this spawn's own bound MCP server
-/// (§4.3): `<rigger_bin> mcp --spawn <spawn_id>`. Passed as a JSON string, never a file
-/// (§4.1).
-fn mcp_config_json(spawn_id: &str, rigger_bin: &str) -> String {
-    serde_json::json!({
-        "mcpServers": {
-            "rigger": {
-                "command": rigger_bin,
-                "args": ["mcp", "--spawn", spawn_id],
-            },
-        },
-    })
-    .to_string()
+/// One composed configuration as the inline JSON argument its flag takes, or the error naming
+/// which configuration could not be composed.
+fn json_arg(composed: Result<Vec<u8>, hooks::Error>, what: &str) -> Result<String, Error> {
+    composed
+        .and_then(|bytes| String::from_utf8(bytes).map_err(|e| hooks::Error(e.to_string())))
+        .map_err(|e| {
+            Error(format!(
+                "claude_code driver: compose the spawn's {what}: {e}"
+            ))
+        })
+}
+
+/// The spawn's configuration, handed over on the command line because a headless session reads
+/// its hooks, MCP servers and subagents from its working directory and a fresh unit worktree
+/// carries none of them (`.claude/` is machine-local, and a consumer's `.gitignore` ignores it).
+/// Nothing is written into the worktree - the attempt checkpoint commits whatever is there -
+/// and every value comes from the one home [`hooks`] keeps for it, the same one `rigger setup`
+/// installs from, as inline JSON (the CLI takes all three flags as JSON strings, so no file
+/// outlives the launch):
+///
+/// - `--mcp-config` names exactly one server, this spawn's own bound MCP server (§4.3,
+///   `<rigger_bin> mcp --spawn <spawn_id>`), and `--strict-mcp-config` keeps every other MCP
+///   configuration out;
+/// - `--settings` is the spawn's own settings (`opts.settings_json`, may be empty) with the
+///   SessionStart prime hook, the PreToolUse grep-guard and the status line merged in;
+/// - `--agents` defines the `lookup` and `verify` fan-out helpers.
+fn spawn_config_args(opts: &SpawnOpts, rigger_bin: &str) -> Result<Vec<String>, Error> {
+    let helpers = hooks::helper_agents_json().map_err(|e| {
+        Error(format!(
+            "claude_code driver: compose the spawn's agents: {e}"
+        ))
+    })?;
+    Ok(vec![
+        "--mcp-config".to_string(),
+        json_arg(
+            hooks::install_mcp_server(
+                b"",
+                hooks::MCP_SERVER_NAME,
+                rigger_bin,
+                &["mcp", "--spawn", &opts.id],
+            ),
+            "MCP config",
+        )?,
+        "--strict-mcp-config".to_string(),
+        "--settings".to_string(),
+        json_arg(
+            hooks::install_session_settings(opts.settings_json.as_bytes()),
+            "settings",
+        )?,
+        "--agents".to_string(),
+        helpers.to_string(),
+    ])
 }
 
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
@@ -1067,13 +1107,14 @@ fn mcp_config_json(spawn_id: &str, rigger_bin: &str) -> String {
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
 /// flags, MCP config and settings only) and is not built here; a later criterion adds it
 /// alongside whichever caller knows a persona is a verdict role, through this same
-/// function rather than a second argv authority.
+/// function rather than a second argv authority. Fails only when the spawn's own
+/// `settings_json` is not a JSON object the session settings can merge into.
 pub fn build_args(
     agent: &AgentDef,
     opts: &SpawnOpts,
     session_id: &str,
     rigger_bin: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>, Error> {
     let mut args = vec![
         "-p".to_string(),
         "--output-format".to_string(),
@@ -1106,14 +1147,8 @@ pub fn build_args(
     args.push(PERMISSION_MODE.to_string());
     args.push("--permission-prompts".to_string());
     args.push("none".to_string());
-    args.push("--mcp-config".to_string());
-    args.push(mcp_config_json(&opts.id, rigger_bin));
-    args.push("--strict-mcp-config".to_string());
-    if !opts.settings_json.is_empty() {
-        args.push("--settings".to_string());
-        args.push(opts.settings_json.clone());
-    }
-    args
+    args.extend(spawn_config_args(opts, rigger_bin)?);
+    Ok(args)
 }
 
 #[cfg(test)]
@@ -1137,8 +1172,8 @@ mod tests {
             ..Default::default()
         };
         let mut o = opts("u1/implementer#0");
-        o.settings_json = "{\"hooks\":{}}".to_string();
-        let args = build_args(&a, &o, "sess-123", "rigger");
+        o.settings_json = "{\"model\":\"opus\"}".to_string();
+        let args = build_args(&a, &o, "sess-123", "rigger").unwrap();
 
         assert_eq!(args[0], "-p");
         let get_val = |flag: &str| -> String {
@@ -1159,7 +1194,15 @@ mod tests {
         assert_eq!(get_val("--permission-mode"), "default");
         assert_eq!(get_val("--permission-prompts"), "none");
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
-        assert_eq!(get_val("--settings"), "{\"hooks\":{}}");
+        let settings: serde_json::Value = serde_json::from_str(&get_val("--settings")).unwrap();
+        assert_eq!(
+            settings["model"], "opus",
+            "the spawn's own settings survive the merge"
+        );
+        assert_eq!(
+            settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            hooks::PRIME_COMMAND
+        );
     }
 
     // ---- classify_no_result: run-scoping + degrade-on-store-error ----
@@ -1314,7 +1357,7 @@ mod tests {
     fn build_args_mcp_config_names_the_spawn_bound_server() {
         let a = AgentDef::default();
         let o = opts("u7-launch/implementer#2");
-        let args = build_args(&a, &o, "sess", "rigger");
+        let args = build_args(&a, &o, "sess", "rigger").unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
         let cfg: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
         assert_eq!(cfg["mcpServers"]["rigger"]["command"], "rigger");
@@ -1330,7 +1373,7 @@ mod tests {
     fn build_args_mcp_config_uses_the_configured_rigger_bin() {
         let a = AgentDef::default();
         let o = opts("u/implementer#0");
-        let args = build_args(&a, &o, "sess", "/custom/path/rigger");
+        let args = build_args(&a, &o, "sess", "/custom/path/rigger").unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
         let cfg: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
         assert_eq!(
@@ -1345,13 +1388,14 @@ mod tests {
         let o = opts("u/implementer#0"); // settings_json left empty by opts()
         let mut bare = o;
         bare.system_prompt = String::new();
-        let args = build_args(&a, &bare, "sess", "rigger");
+        let args = build_args(&a, &bare, "sess", "rigger").unwrap();
         assert!(!args.iter().any(|x| x == "--system-prompt"));
         assert!(!args.iter().any(|x| x == "--model"));
         assert!(!args.iter().any(|x| x == "--fallback-model"));
         assert!(!args.iter().any(|x| x == "--allowed-tools"));
-        assert!(!args.iter().any(|x| x == "--settings"));
-        // The always-on flags are still present.
+        // The always-on flags are still present, the session configuration included.
+        assert!(args.iter().any(|x| x == "--settings"));
+        assert!(args.iter().any(|x| x == "--agents"));
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         assert!(args.iter().any(|x| x == "--session-id"));
     }

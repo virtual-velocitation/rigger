@@ -196,7 +196,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     std::fs::create_dir_all(&claude_dir)?;
     let settings_path = claude_dir.join("settings.json");
     let existing = std::fs::read(&settings_path).unwrap_or_default();
-    let merged = hooks::install_session_start(&existing, "rigger prime")?;
+    let merged = hooks::install_session_start(&existing, hooks::PRIME_COMMAND)?;
     let wrote_hook = merged != existing;
     if wrote_hook {
         std::fs::write(&settings_path, &merged)?;
@@ -208,7 +208,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     let helpers_dir = claude_dir.join("agents");
     std::fs::create_dir_all(&helpers_dir)?;
     let mut new_helpers = Vec::new();
-    for (file, content) in SCAFFOLD_HELPER_AGENTS {
+    for (file, content) in hooks::HELPER_AGENTS {
         if write_if_absent(&helpers_dir.join(file), content)? {
             new_helpers.push(file.to_string());
         }
@@ -771,8 +771,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     match status_line {
         InstallOutcome::Installed => println!(
             "registered the rigger status line command (.claude/settings.json: statusLine -> \
-             {STATUS_LINE_COMMAND}) - the editor's status bar now shows the same line `rigger \
-             status` prints first"
+             {}) - the editor's status bar now shows the same line `rigger \
+             status` prints first",
+            hooks::STATUS_LINE_COMMAND
         ),
         InstallOutcome::Refreshed => println!(
             "refreshed the drifted rigger status line command (.claude/settings.json) to match \
@@ -793,16 +794,6 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     Ok(())
 }
 
-/// The matcher and command the graph-first lookup hook installs under `PreToolUse` (spec
-/// 92, criterion 4: IN EVERY SESSION'S HAND). Fires on the built-in `Grep` tool and on
-/// `Bash` (a `grep` command may be buried inside an arbitrary shell command) - the real
-/// narrowing (is this actually a grep? does it target src/, tests/, or workflows/? was
-/// `--literal` given?) happens in [`grep_guard_decision`], which `rigger grep-guard` (the
-/// installed command) runs, so a Bash call that is not a grep at all is a silent allow,
-/// never a false bounce.
-const GREP_GUARD_MATCHER: &str = "Grep|Bash";
-const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
-
 /// Install the graph-first lookup hook (spec 92, criterion 4): merges the PreToolUse
 /// hook that runs `rigger grep-guard` into `.claude/settings.json`. Drift-aware and
 /// non-destructive like every other `rigger setup` install (see
@@ -818,7 +809,11 @@ const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
 /// block -> `AlreadyCurrent` (a silent no-op).
 fn install_lookup_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
     install_into_claude_settings(root, |existing| {
-        hooks::install_pretooluse_hook(existing, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)
+        hooks::install_pretooluse_hook(
+            existing,
+            hooks::GREP_GUARD_MATCHER,
+            hooks::GREP_GUARD_COMMAND,
+        )
     })
 }
 
@@ -854,13 +849,7 @@ fn install_into(
     })
 }
 
-/// The command `rigger setup` registers as the editor's status line (spec 94, criterion 5:
-/// THE STATUSLINE COMMAND) - prints `console::statusline`'s own text (see `cmd_status`'s
-/// `--line` handling), so the line the editor shows under the person's conversation and the
-/// line `rigger status` prints first are one text, never two derivations.
-const STATUS_LINE_COMMAND: &str = "rigger status --line";
-
-/// Register [`STATUS_LINE_COMMAND`] as the editor's status line (spec 94, criterion 5): merges
+/// Register [`hooks::STATUS_LINE_COMMAND`] as the editor's status line (spec 94, criterion 5): merges
 /// `.claude/settings.json`'s `statusLine` key via [`hooks::install_status_line`]. Drift-aware
 /// and non-destructive like every other `rigger setup` install (see
 /// [`install_operator_mcp`]'s identical `existed`/byte-compare shape - `statusLine` has no
@@ -872,7 +861,7 @@ const STATUS_LINE_COMMAND: &str = "rigger status --line";
 /// `Refreshed`, already carrying the exact command -> `AlreadyCurrent` (a silent no-op).
 fn install_status_line(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
     install_into_claude_settings(root, |existing| {
-        hooks::install_status_line(existing, STATUS_LINE_COMMAND)
+        hooks::install_status_line(existing, hooks::STATUS_LINE_COMMAND)
     })
 }
 
@@ -885,7 +874,7 @@ fn install_status_line(root: &Path) -> Result<InstallOutcome, Box<dyn std::error
 /// untouched.
 fn install_operator_mcp(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
     install_into(&root.join(".mcp.json"), |existing| {
-        hooks::install_mcp_server(existing, "rigger", "rigger", &["mcp"])
+        hooks::install_mcp_server(existing, hooks::MCP_SERVER_NAME, "rigger", &["mcp"])
     })
 }
 
@@ -1294,15 +1283,6 @@ gates: [build, audit, test, lint, boundary, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n";
 
-/// The fan-out helpers every persona dispatches (the built-in working discipline names them):
-/// `lookup`, one Haiku instance per graph node, and `verify`, one Sonnet instance for builds
-/// and test runs. `rigger init` installs them at `.claude/agents/`, where Claude Code discovers
-/// subagents; the text is this repository's own committed helpers, so the two cannot drift.
-const SCAFFOLD_HELPER_AGENTS: &[(&str, &str)] = &[
-    ("lookup.md", include_str!("../../.claude/agents/lookup.md")),
-    ("verify.md", include_str!("../../.claude/agents/verify.md")),
-];
-
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
 /// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
 /// referenced id is seeded here (the two stay in lockstep so a fresh `rigger init` seeds
@@ -1311,7 +1291,7 @@ const SCAFFOLD_HELPER_AGENTS: &[(&str, &str)] = &[
 /// four generic placeholder personas (implementer, devils-advocate, reviewer.architecture,
 /// reviewer.technical) deliberately do NOT appear. Every seed, reviewers included, runs on
 /// `opus` and may fan its mechanical work out (`Agent` in `tools`, `recurse: true`) to the
-/// `lookup` and `verify` helpers [`SCAFFOLD_HELPER_AGENTS`] installs; the discipline that
+/// `lookup` and `verify` helpers [`hooks::HELPER_AGENTS`] installs; the discipline that
 /// governs that fan-out is the built-in instruction layer, never copied into a seed. Each is a
 /// markdown-with-frontmatter definition `config::load` parses; filenames are arbitrary, the
 /// `id` is what the workflow binds to.
@@ -2577,8 +2557,8 @@ mod tests {
         assert!(
             blocks
                 .iter()
-                .any(|b| b["hooks"][0]["command"] == GREP_GUARD_COMMAND
-                    && b["matcher"] == GREP_GUARD_MATCHER),
+                .any(|b| b["hooks"][0]["command"] == hooks::GREP_GUARD_COMMAND
+                    && b["matcher"] == hooks::GREP_GUARD_MATCHER),
             "our lookup hook must be installed"
         );
 

@@ -1,12 +1,96 @@
 //! Installs Rigger's Claude Code integration: merges a SessionStart hook into
 //! .claude/settings.json - preserving every other setting - so a session opened
 //! in a Rigger repository starts primed with the project's recent decisions.
+//!
+//! This is also the one home of WHAT a rigger session carries: the hook and status-line
+//! commands, the MCP server name and the fan-out helper agents. `rigger setup` writes them into
+//! the operator's checkout; the headless host hands the same values to every spawn on its
+//! command line (a fresh unit worktree carries no `.claude/` of its own), so the two cannot
+//! drift.
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
 pub struct Error(pub String);
+
+/// The command the SessionStart hook runs: prime the session with the instructions in force
+/// and the project's recent decisions.
+pub const PRIME_COMMAND: &str = "rigger prime";
+
+/// The matcher and command the graph-first lookup hook installs under `PreToolUse` (spec 92,
+/// criterion 4). Fires on the built-in `Grep` tool and on `Bash` (a `grep` may be buried inside
+/// an arbitrary shell command); the real narrowing happens in `rigger grep-guard` itself, so a
+/// Bash call that is not a grep at all is a silent allow, never a false bounce.
+pub const GREP_GUARD_MATCHER: &str = "Grep|Bash";
+/// See [`GREP_GUARD_MATCHER`].
+pub const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
+
+/// The editor's status line command (spec 94, criterion 5): the same one-line summary
+/// `rigger status` prints first.
+pub const STATUS_LINE_COMMAND: &str = "rigger status --line";
+
+/// The name rigger's MCP server is registered under, so its tools are `mcp__rigger__*`.
+pub const MCP_SERVER_NAME: &str = "rigger";
+
+/// The fan-out helpers every persona dispatches (the built-in working discipline names them):
+/// `lookup`, one Haiku instance per graph node, and `verify`, one Sonnet instance for builds
+/// and test runs. The text is this repository's own committed `.claude/agents/` helpers, so
+/// what `rigger init` scaffolds and what a headless spawn receives cannot drift from them.
+pub const HELPER_AGENTS: &[(&str, &str)] = &[
+    (
+        "lookup.md",
+        include_str!("../../../.claude/agents/lookup.md"),
+    ),
+    (
+        "verify.md",
+        include_str!("../../../.claude/agents/verify.md"),
+    ),
+];
+
+/// Merge every session setting rigger installs - the SessionStart prime hook, the PreToolUse
+/// grep-guard and the status line - into `existing` settings JSON, through the same installers
+/// `rigger setup` runs one by one, preserving every other setting. `existing` may be empty.
+pub fn install_session_settings(existing: &[u8]) -> Result<Vec<u8>, Error> {
+    let primed = install_session_start(existing, PRIME_COMMAND)?;
+    let guarded = install_pretooluse_hook(&primed, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)?;
+    install_status_line(&guarded, STATUS_LINE_COMMAND)
+}
+
+/// The [`HELPER_AGENTS`] as the JSON object Claude Code's `--agents` flag takes:
+/// `{name: {description, model, tools: [..], prompt}}`, each field read from the helper's own
+/// frontmatter and the prompt its body, verbatim.
+pub fn helper_agents_json() -> Result<Value, Error> {
+    let mut agents = Map::new();
+    for (file, text) in HELPER_AGENTS {
+        let (front, body) = rigger_domain::config::split_frontmatter(text)
+            .map_err(|e| Error(format!("helper agent {file}: {e}")))?;
+        let mut def = Map::new();
+        let mut name = None;
+        for line in front.lines() {
+            let (key, value) = line
+                .split_once(':')
+                .ok_or_else(|| Error(format!("helper agent {file}: frontmatter line {line:?}")))?;
+            let value = value.trim();
+            match key {
+                "name" => name = Some(value),
+                "tools" => {
+                    def.insert(
+                        key.to_string(),
+                        value.split(',').map(str::trim).collect::<Vec<_>>().into(),
+                    );
+                }
+                _ => {
+                    def.insert(key.to_string(), value.into());
+                }
+            }
+        }
+        def.insert("prompt".to_string(), body.into());
+        let name = name.ok_or_else(|| Error(format!("helper agent {file}: no name")))?;
+        agents.insert(name.to_string(), Value::Object(def));
+    }
+    Ok(Value::Object(agents))
+}
 
 /// Merge a SessionStart hook that runs `command` into the settings JSON. Idempotent
 /// (installing twice does not duplicate the hook) and preserves all other settings.

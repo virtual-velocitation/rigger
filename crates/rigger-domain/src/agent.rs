@@ -127,9 +127,9 @@ pub struct SpawnOpts {
     /// [`SpawnRequest::reviews`](crate::spawn::SpawnRequest::reviews) for the thin
     /// driver to render inside the action phrase.
     pub reviews: Vec<String>,
-    /// The per-spawn `--settings` JSON string (spec 104 criterion 1) - this struct only
-    /// carries the finished string through to the argv. Empty
-    /// omits `--settings` entirely; the cli/workflow drivers ignore this field.
+    /// The per-spawn settings JSON (spec 104 criterion 1): the headless host merges rigger's
+    /// session hooks and status line onto it and passes the result as `--settings`. Empty
+    /// means no settings of the spawn's own; the cli/workflow drivers ignore this field.
     pub settings_json: String,
     /// The 0-based ordinal of this launch within the spawn's current attempt (spec 104
     /// criterion 1): 0 for the first launch, N for the Nth relaunch after an API-side
