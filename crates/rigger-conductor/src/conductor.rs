@@ -2083,13 +2083,18 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 &fanout_criteria,
                 &fanout_template_gates,
             )?;
-            ctx.run_wave(
+            // A wave that admits nothing is a fixpoint for this process: every slot is held
+            // by a unit still in flight off-process, and nothing below can free one, so the
+            // step ends and a later step offers the refused stages again.
+            if !ctx.run_wave(
                 &stages,
                 &ready,
                 &mut integrated,
                 &mut terminal,
                 &mut in_flight,
-            )?;
+            )? {
+                break;
+            }
             // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
             // wide wave can exhaust the budget partway through, refusing later spawns.
             // Record the breaker and stop here too, not only at the next wave boundary.
@@ -3559,6 +3564,7 @@ impl RunCtx<'_> {
         Ok(())
     }
 
+    /// Run one wave of `ready` stages and answer whether the width bound admitted any of them.
     fn run_wave(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -3566,7 +3572,7 @@ impl RunCtx<'_> {
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
         in_flight: &mut HashSet<String>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         // The wave-width bound (spec 102, criterion 1): `defaults.max_parallel_units`
         // caps how many units may be in flight AT ONCE across the WHOLE run, not just
         // this wave's own batches. `0` (the default) is unbounded - the historical
@@ -3737,7 +3743,7 @@ impl RunCtx<'_> {
         }
         match first_err {
             Some(e) => Err(e),
-            None => Ok(()),
+            None => Ok(!admitted.is_empty()),
         }
     }
 
