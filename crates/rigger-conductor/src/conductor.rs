@@ -10098,12 +10098,15 @@ impl RunCtx<'_> {
         format!("{}{}", self.build_prompt(st), review_protocol(actor))
     }
 
-    /// Build a stage's prompt, optionally prepending a first-class prior-failure
-    /// block (spec 02 / item 3 + 5). On the first attempt `prior` is empty and the
-    /// prompt is byte-identical to the historical `build_prompt`; on a retry the
-    /// block names exactly the gates that failed (with their compact evidence) and
-    /// the adjudicator's rejection reasoning, so the next attempt addresses the
-    /// specific failure instead of a blind re-grounded restart.
+    /// Build a stage's prompt. Sections, in order: the first-class prior-failure block
+    /// (spec 02 / item 3 + 5; empty on the first attempt, and on a retry it names exactly
+    /// the gates that failed with their compact evidence and the adjudicator's rejection
+    /// reasoning, so the next attempt addresses the specific failure instead of a blind
+    /// re-grounded restart - it leads so "fix exactly these" is read first); the unit's
+    /// [`task_block`] (its name and verbatim acceptance criterion, for every non-producer
+    /// stage that owns one - implementers and the review tiers alike); the grounding
+    /// context; the emit protocol; and, for the producer/planner only, the refine protocol
+    /// carrying every criterion.
     fn build_prompt_with_failure(
         &self,
         st: &Stage,
@@ -10112,6 +10115,7 @@ impl RunCtx<'_> {
     ) -> String {
         let mut b = String::new();
         b.push_str(&prior.block());
+        b.push_str(&task_block(st));
         // Spec 29c criterion 5: ensure the unified graph reflects the LIVE project before the
         // traversal below reads it. Exercising this grounding path is what makes the run itself
         // extract the project's real source (29a) and design docs (29b) into the graph - the
@@ -11506,6 +11510,24 @@ const CODE_NEIGHBORHOOD_VERBATIM_N: usize = 24;
 /// code-neighborhood section, so a large file's extracted definitions can never blow the prompt.
 /// The store keeps the full graph; only this prompt slice narrows.
 const CODE_NEIGHBORHOOD_BUDGET_BYTES: usize = 24 * 1024;
+
+/// The unit's task block: its name and its acceptance criterion, verbatim. A worker's prompt is
+/// its whole assignment, so the criterion it owns - the exact text the reviewer judges the unit
+/// against - is stated in the prompt itself rather than left for the worker to infer from the
+/// grounding context. Empty for the producer/planner (its refine protocol already lists every
+/// criterion) and for a stage that owns no criterion (a plan-critique gate or conflict-resolution
+/// spawn), whose prompts are unchanged.
+fn task_block(st: &Stage) -> String {
+    let criterion = st.coverage.trim();
+    if is_producer(st) || criterion.is_empty() {
+        return String::new();
+    }
+    format!(
+        "UNIT: {}\nACCEPTANCE CRITERION (verbatim from the spec - this is your whole contract; \
+         the reviewer judges the unit against exactly this text):\n{criterion}\n\n",
+        st.name
+    )
+}
 
 /// The header for the code-neighborhood injection - single-sourced so the renderer and any test
 /// that asserts its presence agree byte-for-byte.
