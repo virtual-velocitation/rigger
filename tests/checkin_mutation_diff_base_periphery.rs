@@ -19,6 +19,14 @@
 //! it runs inside its own systemd scope bounded to half of `MemAvailable`, with `-j` sized
 //! from that bound, or unbounded with an advisory where no systemd user manager exists.
 //!
+//! THE REAPER ENDS A MUTANT, NEVER THE SWEEP (gap 100). The scope carries
+//! `OOMPolicy=continue`, so a process the kernel's OOM reaper ends inside it is that one
+//! mutant's outcome; each copy runs its share of the cores as nextest test threads, so the
+//! sweep's total in-flight test processes stay at the core count whatever `-j` is. A mutant
+//! whose TEST phase was ended by a signal is a detection, like a timeout; one whose BUILD
+//! phase was (cargo-mutants files a signal-ended compiler as unviable and exits 0 either way)
+//! fails the gate by name as an environment failure.
+//!
 //! THE GATE OWNS ITS INSTRUMENT. A unit diff that adds an exclusion or examine key to
 //! `.cargo/mutants.toml`, or a cargo-mutants skip attribute, fails before any sweep.
 
@@ -41,8 +49,17 @@ fn gate_script() -> PathBuf {
 /// The tools the gate script runs besides `cargo` and `systemd-run`.
 const GATE_TOOLS: &[&str] = &[
     "git", "awk", "sed", "sort", "cat", "rm", "mkdir", "mv", "cp", "head", "tr", "wc", "dirname",
-    "env", "xargs", "grep", "true",
+    "env", "xargs", "grep", "true", "nproc",
 ];
+
+/// This machine's core count, as the gate reads it.
+fn cores() -> u64 {
+    let out = Command::new("nproc").output().expect("run nproc");
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("nproc prints a number")
+}
 
 /// The first executable named `tool` on the ambient PATH.
 fn ambient_tool(tool: &str) -> PathBuf {
@@ -108,6 +125,17 @@ fn run_gate(
     mem_available_kb: u64,
     with_systemd_run: bool,
 ) -> GateRun {
+    run_gate_with(repo, base, mem_available_kb, with_systemd_run, &[])
+}
+
+/// [`run_gate`] with extra environment for the fixture tools.
+fn run_gate_with(
+    repo: &Path,
+    base: Option<&str>,
+    mem_available_kb: u64,
+    with_systemd_run: bool,
+    env: &[(&str, &str)],
+) -> GateRun {
     let work = tempfile::tempdir().unwrap();
     let bin = fixture_bin(work.path(), with_systemd_run);
     let meminfo = work.path().join("meminfo");
@@ -129,7 +157,8 @@ fn run_gate(
         .env("RIGGER_MEMINFO", &meminfo)
         .env("RIGGER_ARGV_CAPTURE", &cargo_capture)
         .env("RIGGER_SCOPE_CAPTURE", &scope_capture)
-        .env_remove("CARGO_TARGET_DIR");
+        .env_remove("CARGO_TARGET_DIR")
+        .envs(env.iter().copied());
     match base {
         Some(b) => cmd.env("RIGGER_RUN_BASE", b),
         None => cmd.env_remove("RIGGER_RUN_BASE"),
@@ -185,7 +214,7 @@ fn workspace_repo(repo: &Path) -> String {
     base
 }
 
-/// 40 GiB available: a 20 GiB bound, three 6 GiB jobs.
+/// 40 GiB available: a 20 GiB bound, four 5 GiB jobs, capped at three.
 const FORTY_GIB_KB: u64 = 40 * 1024 * 1024;
 
 #[test]
@@ -342,11 +371,18 @@ fn the_sweep_runs_in_its_own_scope_bounded_by_half_of_mem_available() {
     );
     assert!(
         run.sweep_line().contains("-j 3 "),
-        "20 GiB / 6 GiB per job = 3: {}",
+        "20 GiB / 5 GiB per job = 4, capped at 3: {}",
         run.sweep_line()
     );
 
-    // 8 GiB available: a 4 GiB bound holds less than one 6 GiB job, and the floor is one.
+    // 20 GiB available: a 10 GiB bound holds two 5 GiB jobs (the measured per-copy figure).
+    let repo = tempfile::tempdir().unwrap();
+    let base = workspace_repo(repo.path());
+    let run = run_gate(repo.path(), Some(&base), 20 * 1024 * 1024, true);
+    assert!(run.passed, "{}", run.output);
+    assert!(run.sweep_line().contains("-j 2 "), "{}", run.sweep_line());
+
+    // 8 GiB available: a 4 GiB bound holds less than one 5 GiB job, and the floor is one.
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
     let run = run_gate(repo.path(), Some(&base), 8 * 1024 * 1024, true);
@@ -416,6 +452,102 @@ fn the_gate_refuses_every_narrowing_token_before_any_sweep() {
             !run.cargo.contains("mutants"),
             "`{token}`: no sweep may run once the unit narrowed it: {}",
             run.cargo
+        );
+    }
+}
+
+#[test]
+fn the_sweep_scope_lets_the_reaper_end_one_mutant_never_the_whole_sweep() {
+    let repo = tempfile::tempdir().unwrap();
+    let base = workspace_repo(repo.path());
+    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true);
+    assert!(run.passed, "{}", run.output);
+    let bounded = run
+        .scope
+        .lines()
+        .find(|l| l.contains("cargo mutants"))
+        .unwrap_or_else(|| panic!("the sweep must launch through systemd-run: {}", run.scope));
+    assert!(
+        bounded.contains(" -p OOMPolicy=continue "),
+        "systemd's default OOMPolicy=stop ends the whole scope when the reaper ends one process \
+         in it; the sweep's scope must continue: {bounded}"
+    );
+}
+
+#[test]
+fn each_copy_runs_its_share_of_the_cores_so_total_test_fanout_is_constant() {
+    let cores = cores();
+    for (avail_kb, jobs) in [
+        (FORTY_GIB_KB, 3),
+        (20 * 1024 * 1024, 2),
+        (8 * 1024 * 1024, 1),
+    ] {
+        let repo = tempfile::tempdir().unwrap();
+        let base = workspace_repo(repo.path());
+        let run = run_gate(repo.path(), Some(&base), avail_kb, true);
+        assert!(run.passed, "{}", run.output);
+        let threads = (cores / jobs).max(1);
+        let sweep = run.sweep_line();
+        assert!(
+            sweep.contains(&format!("-j {jobs} "))
+                && sweep
+                    .trim_end()
+                    .ends_with(&format!(" -- --test-threads {threads}")),
+            "{jobs} copies x {threads} nextest threads each stay at the {cores} cores whatever -j \
+             is; the bound goes after `--`, which cargo-mutants hands to the test phase only: \
+             {sweep}"
+        );
+    }
+}
+
+#[test]
+fn a_test_phase_ended_by_a_signal_is_a_detection_like_a_timeout() {
+    let repo = tempfile::tempdir().unwrap();
+    let base = workspace_repo(repo.path());
+    let run = run_gate_with(
+        repo.path(),
+        Some(&base),
+        FORTY_GIB_KB,
+        true,
+        &[("RIGGER_FIXTURE_ENDED", "test")],
+    );
+    assert!(
+        run.passed,
+        "the mutant made its tests grow until the reaper ended them - a detection: {}",
+        run.output
+    );
+    assert!(
+        run.output.contains(
+            "crates/alpha/src/lib.rs:2:5: replace f -> u8 with 0 - its test phase ended on signal 9"
+        ) && run.output.contains("counted as a detection"),
+        "the gate names the mutant it counted: {}",
+        run.output
+    );
+}
+
+#[test]
+fn a_build_ended_by_a_signal_fails_the_gate_by_name_as_an_environment_failure() {
+    for mode in ["build", "rustc"] {
+        let repo = tempfile::tempdir().unwrap();
+        let base = workspace_repo(repo.path());
+        let run = run_gate_with(
+            repo.path(),
+            Some(&base),
+            FORTY_GIB_KB,
+            true,
+            &[("RIGGER_FIXTURE_ENDED", mode)],
+        );
+        assert!(
+            !run.passed,
+            "`{mode}`: a mutant whose build was ended was never tested - never a silent pass: {}",
+            run.output
+        );
+        assert!(
+            run.output.contains(
+                "error[mutation]: ENDED crates/alpha/src/lib.rs:2:5: replace f -> u8 with 0 - its build phase ended on signal 9"
+            ) && run.output.contains("environment failure"),
+            "`{mode}`: the verdict names the mutant, the phase and the cause: {}",
+            run.output
         );
     }
 }
