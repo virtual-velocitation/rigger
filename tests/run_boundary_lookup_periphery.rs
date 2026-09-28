@@ -36,6 +36,14 @@ fn index_columns(conn: &rusqlite::Connection, index: &str) -> Vec<String> {
     cols
 }
 
+/// Remove the log table out from under a store that holds `db` open, so its next read fails.
+fn drop_the_log(db: &std::path::Path) {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute_batch("DROP TABLE events;")
+        .unwrap();
+}
+
 /// Given an `events.db` written before the stream-and-type index existed, when the store opens it,
 /// then the index is created over (stream, type, position) and the boundary lookup answers the
 /// newest match of each type on each project's own stream, by per-stream revision.
@@ -267,10 +275,7 @@ fn the_counting_double_records_a_read_that_fails() {
     store
         .append("s", ExpectedRevision::NoStream, &[ev("A", "{}")])
         .unwrap();
-    rusqlite::Connection::open(&db)
-        .unwrap()
-        .execute_batch("DROP TABLE events;")
-        .unwrap();
+    drop_the_log(&db);
     let counted = ReadCountingStore::new(&store);
 
     counted
@@ -348,10 +353,7 @@ fn a_subscription_through_the_double_and_a_namespace_counts_each_delivery_then_r
         .unwrap();
     assert_eq!(next(), ("run".to_string(), 2, "Live".to_string()));
 
-    rusqlite::Connection::open(&db)
-        .unwrap()
-        .execute_batch("DROP TABLE events;")
-        .unwrap();
+    drop_the_log(&db);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while sub.err().is_none() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
