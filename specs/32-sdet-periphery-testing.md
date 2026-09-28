@@ -10,7 +10,7 @@ the independent backstop that makes "no untested surface" a guarantee rather tha
 
 ## Design
 
-The unit lifecycle is hardcoded Rust control flow in `RunCtx::run_single_stage` (`src/conductor.rs`):
+The unit lifecycle is hardcoded Rust control flow in `RunCtx::run_single_stage` (`crates/rigger-conductor/src/conductor.rs`):
 implementer spawn -> commit worktree -> `run_gates` -> `review_unit` -> integrate, in one loop that
 re-enters on remediation. The seam for the SDET is BETWEEN the implementer emitting green (its code +
 unit tests pass, in its worktree) and the pre-gate commit - so the SDET's periphery tests land in the

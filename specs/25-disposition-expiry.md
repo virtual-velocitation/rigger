@@ -34,7 +34,7 @@ reads the adjudicator disposition and sets `valid_to` on the resolved findings' 
 `REL_ABOUT` edges, attributed to the disposing run's provenance (the `RunStarted`-boundary
 attribution that `reset --runs` and the LIVE/HISTORICAL peer labels already use, spec 21).
 
-Grounding observes the effect for free: `graph_context` (`src/conductor.rs`) builds its injected
+Grounding observes the effect for free: `graph_context` (`crates/rigger-conductor/src/conductor.rs`) builds its injected
 slice from a single `graph.subgraph(seed, 2)` whose traversal already filters `valid_to IS NULL`,
 then renders `write_capped_findings` under `FINDINGS_BUDGET_BYTES` (48 KiB). Resolved findings
 simply stop appearing.

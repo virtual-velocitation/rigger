@@ -8,14 +8,14 @@ and 47.9x on THIS repo's own store (1.32M of 1.48M events are `EdgeInferred`; 98
 re-derivable index). The spec-49 keyed-batch dedup machinery is correct and already stamps every
 ingest event with its `<prefix>/<file>@<hash>#<i>` replay key - the defect is one scoping line:
 `replayed_keys` is seeded from `crate::run::current_run(&all_prior)` (the CURRENT run's slice,
-`src/conductor.rs` around line 1339), so a NEW run sees none of the prior runs' ingest keys and
+`crates/rigger-conductor/src/conductor.rs` around line 1339), so a NEW run sees none of the prior runs' ingest keys and
 re-appends the whole index. Run-scoping is right for unit-lifecycle replay (the Gap 11 zombie
 fix) and wrong for derived project facts, which are project-scoped: a file's content hash does
 not change because a new run started.
 
 ## Design
 
-- **Project-scoped ingest dedup** (`src/conductor.rs`): the dedup consulted by the ingest emit
+- **Project-scoped ingest dedup** (`crates/rigger-conductor/src/conductor.rs`): the dedup consulted by the ingest emit
   path is project-scoped, derived from the whole stream (`all_prior`, already read at run start
   - no extra store round-trip), not from the current-run slice. The comparison is LATEST-PER-FILE,
   not ever-recorded: a file's batch is suppressed only when its content hash equals the hash of
@@ -141,7 +141,7 @@ not change because a new run started.
 - [ ] a test proves UNCHANGED-TREE RUNS APPEND NOTHING: a second run (fresh `RunStarted`) over an
   unchanged tree appends zero derived-index events, because the ingest dedup keys are seeded from
   the whole stream rather than the current run's slice. This criterion OWNS the seeding fix at
-  BOTH ingest sinks, named: the run's keyed emit in `src/conductor.rs` (the `replayed_keys`
+  BOTH ingest sinks, named: the run's keyed emit in `crates/rigger-conductor/src/conductor.rs` (the `replayed_keys`
   seeding at run start and the keyed batch emit) AND the cold graph build in `src/main.rs`, which
   today collects every event's replay key with no type test at all (ever-recorded AND type-blind)
   and is the larger of the two edits. It owns with them the type-first suppression predicate

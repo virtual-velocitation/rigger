@@ -12,7 +12,7 @@ test fixtures.
 
 ## Design
 
-Today structural grounding is stitched in `build_prompt_with_failure` (`src/conductor.rs`): it
+Today structural grounding is stitched in `build_prompt_with_failure` (`crates/rigger-conductor/src/conductor.rs`): it
 calls `gr.ground(&query, 8)`, builds a `seed` Vec from the returned refs' `.file` fields, then
 calls `graph_context(seed)` which runs a single `graph.subgraph(seed, 2)`. Blast radius is a
 separate `BlastRadius { precise: Vec<String>, safe: Vec<String>, serialize: bool }` struct

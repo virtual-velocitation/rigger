@@ -2,7 +2,7 @@
 
 **Goal:** stop the loop deleting the unit worktree out from under its own out-of-process
 agents. The unit-stage driver creates the worktree, runs the stage, and removes the worktree
-UNCONDITIONALLY when the stage call returns (`src/conductor.rs` around line 3010, `w.remove()`
+UNCONDITIONALLY when the stage call returns (`crates/rigger-conductor/src/conductor.rs` around line 3010, `w.remove()`
 after `run_single_stage`). That teardown is correct for the BLOCKING drivers, whose agents run
 in-process while the worktree exists, and wrong for the parked step driver, where
 `run_single_stage` returns every time it PARKS a spawn for the courier: the worktree is removed
@@ -17,7 +17,7 @@ agents into inventing private CARGO_TARGET_DIR workarounds against the shared-ta
 
 ## Design
 
-- **Phase-aware teardown** (`src/conductor.rs`, the single-stage driver): the stage's return
+- **Phase-aware teardown** (`crates/rigger-conductor/src/conductor.rs`, the single-stage driver): the stage's return
   is split into TERMINAL (the stage completed in this process: integrated, failed, escalated,
   or otherwise done) and PARKED (the stage handed one or more spawns to the courier and will
   resume in a later process). A TERMINAL return removes the worktree and reclaims its cache

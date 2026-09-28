@@ -1,6 +1,6 @@
 [
   {
-    "id": "dup-a93b5528b8a8",
+    "id": "dup-252bfd2c826c",
     "disposition": "not-a-duplicate",
     "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity); the shared token shape is a one-line `format!`."
   },
@@ -70,7 +70,7 @@
     "reason": "Three slice accessors returning three different fields of three different types (community nodes, filter types, failure rules)."
   },
   {
-    "id": "dup-4819f408aeb3",
+    "id": "dup-27610bbbcb28",
     "disposition": "not-a-duplicate",
     "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
   },
@@ -360,12 +360,12 @@
     "reason": "One pins the unattributed-correct-reject count over planted items and the other the control and control-false-positive counts over known-good items: different canary metrics that only share the `canary_outcome` fixture."
   },
   {
-    "id": "dup-21f642b8fe3c",
+    "id": "dup-edcfd444cd88",
     "disposition": "not-a-duplicate",
     "reason": "Three durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips; the landed sha and pre-merge tip)."
   },
   {
-    "id": "dup-c984f2da13bb",
+    "id": "dup-7a935e08967c",
     "disposition": "not-a-duplicate",
     "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and then delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, rather than re-implementing it."
   },
@@ -400,7 +400,7 @@
     "reason": "`commit` and `commit_checkpoint` are the two named entry points to the one `commit_with`, differing in whether the repository's hooks run (agent commits) or are bypassed (machine bookkeeping)."
   },
   {
-    "id": "dup-7c339ccc6fa5",
+    "id": "dup-c36d696064fd",
     "disposition": "not-a-duplicate",
     "reason": "Four stub accessors each reading a different per-agent spawn log (prompts, dirs, system prompt, title) through the one shared `cached` lookup."
   },
@@ -495,12 +495,12 @@
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-5d7389dec484",
+    "id": "dup-59ab8e8cdb6e",
     "disposition": "not-a-duplicate",
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
   {
-    "id": "dup-2c72def49283",
+    "id": "dup-d82ba3558c88",
     "disposition": "not-a-duplicate",
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
   },
@@ -510,37 +510,37 @@
     "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
   },
   {
-    "id": "dup-0fd09c691597",
+    "id": "dup-f13596146362",
     "disposition": "not-a-duplicate",
     "reason": "`spawn_is_recorded` checks a test driver's recorded spawn set while `is_shared` classifies a graph query result; the shared shape is a single boolean lookup."
   },
   {
-    "id": "dup-a87f9002607d",
+    "id": "dup-e2420edc22e9",
     "disposition": "not-a-duplicate",
     "reason": "`unit_branch` names a unit's git branch while `key_expr` builds a SQL key expression; both are one-line `format!` calls over different templates."
   },
   {
-    "id": "dup-da9e46413ab9",
+    "id": "dup-f5ed8c200bec",
     "disposition": "not-a-duplicate",
     "reason": "Accessors that each clone a different recorded field of a different test double or channel (spawn ids, calls, targets, mutants dirs, store fences, build-cache guards, placements, receiver, error); the lock-and-clone line is the whole body."
   },
   {
-    "id": "dup-5fb59803c9f3",
+    "id": "dup-60da41568392",
     "disposition": "not-a-duplicate",
     "reason": "`spawned` reads a test driver's spawn log while `covers` tests an interval against a position; the shared shape is a one-line lookup."
   },
   {
-    "id": "dup-cd30ba0dffbb",
+    "id": "dup-97f834a327e5",
     "disposition": "not-a-duplicate",
     "reason": "Two `AgentDriver::spawn` doubles scripted for different scenarios (a conductor unit test versus the post-merge gate error-cleanup periphery), each returning its own canned output."
   },
   {
-    "id": "dup-59328344af76",
+    "id": "dup-ae7ef878296c",
     "disposition": "not-a-duplicate",
     "reason": "`AgentDriver::spawn` test doubles that each script a different scenario's worktree writes and verdicts; the trait signature is what makes them look alike."
   },
   {
-    "id": "dup-140a34865d26",
+    "id": "dup-b91a09b322bf",
     "disposition": "not-a-duplicate",
     "reason": "Two different workflows built from the already-shared config fixtures: `critique_cfg` wires an adversary into the plan-critique gate while `two_episode_cfg` runs it with no adversary and a different agent roster."
   },
@@ -815,7 +815,7 @@
     "reason": "`seed_workflow_yml` and `seed_js_files` seed different files for different constants checks."
   },
   {
-    "id": "dup-d501c7d9195a",
+    "id": "dup-c6dfc41a628c",
     "disposition": "not-a-duplicate",
     "reason": "Two constructors of two different test doubles (the conductor Stub answering one output, the plan-amend driver naming its planner); each sets its own type's one field over its own defaults."
   },

@@ -9,11 +9,11 @@ Workstream B of `docs/architecture-addendum-pit-of-success.md`.
 ## Design
 
 Builds on the native driver's done/halt handling (`workflows/rigger.js`), the conductor's
-step/done result and escalation (`UnitEscalated`, `src/conductor.rs`), the per-spawn
+step/done result and escalation (`UnitEscalated`, `crates/rigger-conductor/src/conductor.rs`), the per-spawn
 wall-clock (`max_wall_clock` in `crates/rigger-domain/src/config.rs`), and `rigger validate` (`cmd_validate` in
 `src/main.rs`).
 
-**Unit 1 - a wedged run surfaces as a loud error (touches `src/conductor.rs`,
+**Unit 1 - a wedged run surfaces as a loud error (touches `crates/rigger-conductor/src/conductor.rs`,
 `workflows/rigger.js`).** A unit that exhausts remediation ESCALATES: it goes terminal, the
 run continues and reaches a clean `done` fixpoint, so the driver logs "run complete" and
 resolves SUCCESSFULLY with the wedge recorded only as a `UnitEscalated` event - a wedged

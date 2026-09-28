@@ -14,7 +14,7 @@ until its run dies. Spec 25 already moves RESOLVED findings into history by disp
 structural edges are already retired when a fresh generation lands (`supersede_file_edges`,
 `sqlite.rs:1814`) and a superseding decision retires `GOVERNS` (`sqlite.rs:1055`). Nothing consolidates: no code folds decisions or findings into a
 digest at any altitude. Grounding knows two altitudes,
-`GroundingSlice::Implement` and `GroundingSlice::Full` (`src/conductor.rs:12788`), and both
+`GroundingSlice::Implement` and `GroundingSlice::Full` (`crates/rigger-conductor/src/conductor.rs:12788`), and both
 serve raw file-level items. `DecisionMade` carries two kinds of content under one type: durable
 claims about the code and process records (a constraints recheck, a verdict, an accounting),
 and nothing tells them apart: 11,280 of the 11,791 carry `governs`, and 6,441 (55%) carry a

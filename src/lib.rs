@@ -29,7 +29,7 @@ pub mod canary_store;
 pub use rigger_domain::community;
 pub mod concepts;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod conductor;
+pub use rigger_conductor::conductor;
 pub use rigger_config_files::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_config_files::config_store;

@@ -51,7 +51,7 @@ skills, and push-side guardrails that land anomalies in the orchestrator's own s
   anomalies once - correct for a fresh observer). `--once` prints standing anomalies and
   exits (cron/CI); streaming is the harness-monitor default. Reads only store, process
   table, and status - never the driver, which is exactly the process that may be dead.
-- **A failed unit names its cause; recurrence counts per cause** (`src/conductor.rs`
+- **A failed unit names its cause; recurrence counts per cause** (`crates/rigger-conductor/src/conductor.rs`
   `TYPE_UNIT_FAILED` emit sites, the ledger fold, `cmd_status`, watch/attention): the
   conductor is in a distinct branch for each failure mode but emits a bare `{id, attempts}`.
   Stamp an additive serde-defaulted `cause` at each emit site from that branch (`reject`,

@@ -58,6 +58,15 @@ const RINGS: &[(&str, u8)] = &[
 /// beside it.
 const EDGE_ALLOWLIST: &[(&str, &str)] = &[
     ("console-core", "rigger"), // removed by: split: extract rigger-console
+    // The conductor still calls these adapters directly; each edge goes when the port its lesson
+    // names is introduced and the composition root injects the adapter.
+    ("rigger-conductor", "rigger-store-sqlite"), // lesson-split-conductor-store-sqlite-edge
+    ("rigger-conductor", "rigger-process"),      // lesson-split-conductor-process-edge
+    ("rigger-conductor", "rigger-worktree-git"), // lesson-split-conductor-worktree-git-edge
+    ("rigger-conductor", "rigger-gates-shell"),  // lesson-split-conductor-gates-shell-edge
+    ("rigger-conductor", "rigger-driver"),       // lesson-split-conductor-driver-edge
+    ("rigger-conductor", "rigger-grounder"),     // lesson-split-conductor-grounder-edge
+    ("rigger-conductor", "rigger-config-files"), // lesson-split-conductor-config-files-edge
 ];
 
 /// One workspace crate: its package name and the workspace crates it depends on (normal and
@@ -290,12 +299,12 @@ const DEFERRED_DOMAIN_ITEMS: &[(&str, &str, &str)] = &[
         "lesson-split-domain-blast-radius-eval",
     ),
     (
-        "src/conductor.rs",
+        "crates/rigger-conductor/src/conductor.rs",
         "validate_acyclic",
         "lesson-split-domain-conductor-error",
     ),
     (
-        "src/conductor.rs",
+        "crates/rigger-conductor/src/conductor.rs",
         "assert_no_ungated_fanout_unit",
         "lesson-split-domain-conductor-error",
     ),

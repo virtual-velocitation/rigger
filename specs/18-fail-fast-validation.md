@@ -12,8 +12,8 @@ Builds on the existing config validation (`config::load`, `ReviewPanel::validate
 `ReviewPanel::agent_ids` in `crates/rigger-domain/src/config.rs`), the `rigger validate` command
 (`cmd_validate`, `validate_advisories` in `src/main.rs`), the fail-closed integration
 gate (`verdict_approves`, `run_adjudicator`, `IntegrationApproval` in
-`src/conductor.rs`), the planner-to-baseline reconciliation (`harvest_proposed`,
-`normalize_ws`, `baseline_units`, `PLAN_PROTOCOL` in `src/conductor.rs`), and the run
+`crates/rigger-conductor/src/conductor.rs`), the planner-to-baseline reconciliation (`harvest_proposed`,
+`normalize_ws`, `baseline_units`, `PLAN_PROTOCOL` in `crates/rigger-conductor/src/conductor.rs`), and the run
 entry / anchoring (`cmd_workflow`, `parse_run_args`, `load_criteria` in `src/main.rs`;
 `Worktree::ensure_run_branch`, `ref_resolves` in `crates/rigger-worktree-git/src/worktree.rs`).
 
@@ -36,7 +36,7 @@ check runs at `config::load` time so a `rigger run`/`rigger workflow`/`rigger st
 config with a non-compliant gating persona REFUSES to begin with the same fix message,
 rather than starting a doomed run.
 
-**Unit 3 - runtime verdict-channel mismatch detection (touches `src/conductor.rs`).**
+**Unit 3 - runtime verdict-channel mismatch detection (touches `crates/rigger-conductor/src/conductor.rs`).**
 Backstops a persona that passed the lint but still returned no verdict. When a gating
 spawn returns a result with NO parseable verdict line AND an approve-shaped verdict was
 emitted via `rigger_emit` during that spawn, the conductor HARD-ERRORS that unit with the
@@ -54,7 +54,7 @@ unreliable. Each advisory recommends "one observable behavior per criterion; put
 shapes and detail in a non-criteria Notes section." Reuses `extract_criteria`
 (`crates/rigger-domain/src/spec.rs`).
 
-**Unit 5 - planner-to-baseline stable-id match (touches `src/conductor.rs`).** The
+**Unit 5 - planner-to-baseline stable-id match (touches `crates/rigger-conductor/src/conductor.rs`).** The
 conductor reconciles a planner's proposed unit against its baseline by comparing the
 criterion text with only whitespace normalization (`normalize_ws`), so a planner that
 paraphrases or truncates a criterion it was told to copy verbatim produces a proposal

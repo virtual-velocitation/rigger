@@ -11,7 +11,7 @@ core or the multi-project isolation the store already guarantees.
 
 ## 1. Problem (measured)
 
-Each spawned agent's prompt is assembled in `build_prompt_with_failure` (`src/conductor.rs`):
+Each spawned agent's prompt is assembled in `build_prompt_with_failure` (`crates/rigger-conductor/src/conductor.rs`):
 grounder seed refs + `graph_context(seed)` (decisions, lessons, findings pulled from the
 context graph, scoped to the unit's files) + protocols. Three measured facts about the graph
 that feeds that injection:
@@ -110,7 +110,7 @@ Demotes the hand-tuned cap constants to backstop assertions. Directly relieves t
 usage-limit pressure this project measured.
 
 _Code:_ `contextgraph/sqlite.rs` `fold`/`apply` (add the disposition-invalidation arm),
-`graph_context`/`write_capped_findings` (`src/conductor.rs`), the adjudicator verdict
+`graph_context`/`write_capped_findings` (`crates/rigger-conductor/src/conductor.rs`), the adjudicator verdict
 (`upheld`/`discarded`) already recorded in the log.
 
 ## 4. Workstream B — Safe dedup + dependency-restore at injection
@@ -120,7 +120,7 @@ low on findings/decisions post-reset, higher cross-run before consolidation land
 **restore any dependency** a kept item references so nothing fact-complete is dropped. Applies
 to prompt rendering only (§2.4). Modest alone; a cheap complement to §3 and a safety net for §5.
 
-_Code:_ the `write_capped_*` path (`src/conductor.rs`), a normalized-text dedup with a
+_Code:_ the `write_capped_*` path (`crates/rigger-conductor/src/conductor.rs`), a normalized-text dedup with a
 graph-edge-based dependency-restore pass (structural, not the external article's regex).
 
 ## 5. Workstream C — Sleep-phase consolidation: a findings/decisions distiller
@@ -329,7 +329,7 @@ provenance) — the two invariants that make a shared, cross-run KG safe.
 
 _Code:_ `src/contextgraph/` (new node kinds + fold arms), `crates/rigger-grounder/src/grounder/symbols/` (re-expressed
 as an event-emitting extractor that folds into the projection), `graph_context`
-(`src/conductor.rs`) unified traversal, docs ingestion.
+(`crates/rigger-conductor/src/conductor.rs`) unified traversal, docs ingestion.
 
 ---
 

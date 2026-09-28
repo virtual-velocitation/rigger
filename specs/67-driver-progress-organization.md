@@ -33,7 +33,7 @@ terse human sentence with role and attempt as metadata - never a slug.
   DISPROVE the other agents' work); adjudicator "weigh <roster> and rule"; plan "decompose
   the spec into a unit DAG"; plan-critique "critique the decomposition". Unknown roles keep
   their persona token with the generic "review:" verb - readable, never a slug.
-- **Review tiers name their targets** (`src/conductor.rs` review-spawn seam + the driver):
+- **Review tiers name their targets** (`crates/rigger-conductor/src/conductor.rs` review-spawn seam + the driver):
   `<roster>` is the actual persona set that tier judges, stamped by the CONDUCTOR on the
   review-tier wave item as one additive, serde-defaulted field (e.g.
   `reviews: ["lens:sdet","lens:architecture-reviewer"]`; the adjudicator's roster also

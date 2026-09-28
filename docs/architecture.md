@@ -323,7 +323,7 @@ just entries in a project's `gates:` map. Rigger ships **zero** gates.
 ### 4.1 The pipeline, now *declared*
 
 A fixed pipeline bakes one team's process into the tool. Rigger's `conductor::run`
-(`src/conductor.rs`) instead executes whatever DAG the workflow YAML declares: it
+(`crates/rigger-conductor/src/conductor.rs`) instead executes whatever DAG the workflow YAML declares: it
 topo-sorts the stages, runs the ready set wave by wave (independent stages concurrently),
 defers the coverage gate past a `produces` planner stage, trips the budget breaker before
 each wave, and projects the final `RunState`. The canonical pipeline above is simply the
@@ -912,7 +912,7 @@ measurement and the push/pull split.
 ## 6. The agent driver: pluggable spawning  **[AS-BUILT]**
 
 ```rust
-// src/conductor.rs
+// crates/rigger-conductor/src/conductor.rs
 pub trait AgentDriver: Send + Sync {
     /// Spawn one agent to completion. The agent records events it emits during its run by
     /// calling `emit` (the workflow driver wires it to an in-process tool; the cli driver,

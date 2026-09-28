@@ -44,7 +44,7 @@
 //! by `(file, start_line)`, never `(file, name)` or bare array position: `render_section_1`
 //! re-groups entries by PROPOSED MODULE (sorted alphabetically), so the report's own citation
 //! order is a permutation of `MAP_LINES_PATH`'s array order, ruling out a positional join;
-//! `(file, name)` is not unique either - `src/conductor.rs`'s three `Error::from` impls all share
+//! `(file, name)` is not unique either - `crates/rigger-conductor/src/conductor.rs`'s three `Error::from` impls all share
 //! one bare name in one file (visible in the committed map's own `conductor::error` module
 //! group). `(file, start_line)` is the one key that is: no two function definitions can start on
 //! the same line of the same file.
@@ -76,7 +76,11 @@ const MAP_PATH: &str = "docs/audit/responsibility-map.json";
 /// The documented contract a downstream consumer decodes [`MAP_PATH`] as.
 const MAP_CONTRACT: &str =
     "MapEntry contract (file/name/is_test/proposed_module/reason/content_hash)";
-const TARGET_FILES: [&str; 3] = ["src/conductor.rs", "src/main.rs", "src/dash.rs"];
+const TARGET_FILES: [&str; 3] = [
+    "crates/rigger-conductor/src/conductor.rs",
+    "src/main.rs",
+    "src/dash.rs",
+];
 
 rigger::test_cases! {
     /// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 85's documented field shape
@@ -88,7 +92,7 @@ rigger::test_cases! {
 }
 
 /// Every entry names one of the three files spec 85's Done-when criterion 1 fixes by literal
-/// path (`src/conductor.rs`, `src/main.rs`, `src/dash.rs`) - a consumer filtering by file (e.g.
+/// path (`crates/rigger-conductor/src/conductor.rs`, `src/main.rs`, `src/dash.rs`) - a consumer filtering by file (e.g.
 /// a later refactor spec pinning `conductor.rs`'s own count) must never see a stray value.
 #[test]
 fn every_deserialized_entry_names_one_of_the_three_target_files() {

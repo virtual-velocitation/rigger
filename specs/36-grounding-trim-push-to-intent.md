@@ -17,7 +17,7 @@ review-determinism guarantee is a later workstream).
 
 ## Design
 
-`build_prompt_with_failure` (`src/conductor.rs`) assembles every spawn's prompt and pushes
+`build_prompt_with_failure` (`crates/rigger-conductor/src/conductor.rs`) assembles every spawn's prompt and pushes
 `graph_context(seed)` verbatim. `graph_context` renders, from one `subgraph(seed, 2)`:
 `write_code_neighborhood` + `write_design_intent` + `write_capped_decisions` +
 `write_capped_lessons` + `write_capped_findings`. The last three are the truncated bulk; the design
@@ -35,7 +35,7 @@ Split grounding by stage at the assembly seam:
   `src/main.rs`). It OMITS `write_capped_decisions` / `write_capped_lessons` / `write_capped_findings`.
 - a **REVIEW** spawn (lens / adversary / adjudicator) keeps the FULL `graph_context` UNCHANGED. The
   adversary grounds after the lenses and the adjudicator after both, and they retrieve the lenses'
-  findings through `graph_context`'s findings section (`src/conductor.rs`: the adversary/adjudicator
+  findings through `graph_context`'s findings section (`crates/rigger-conductor/src/conductor.rs`: the adversary/adjudicator
   grounding comments, and the existing regression asserting a lens finding arrives under the
   `graph_context` findings header). Trimming findings here would blind review - explicitly out of
   scope.

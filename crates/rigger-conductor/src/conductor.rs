@@ -32,7 +32,7 @@ use crate::spawn::{
 #[cfg(test)]
 use crate::spawn_store;
 use crate::worktree::{self, Worktree};
-pub(crate) use rigger_domain::review::verdict_approves;
+pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
@@ -11400,7 +11400,7 @@ section governs the DISCIPLINE and cadence - follow it on every turn.";
 /// `pub(crate)` so the canary runner (spec 13, unit 5) composes a canary reviewer's
 /// system prompt through the SAME single authority, rather than a second copy that
 /// could drift from the discipline every live spawn receives.
-pub(crate) fn build_system_prompt(persona: &str, operator: &[Instruction]) -> String {
+pub fn build_system_prompt(persona: &str, operator: &[Instruction]) -> String {
     format!(
         "{}{RIGGER_COMMUNICATION}",
         crate::instructions::compose(persona, operator)
@@ -11430,7 +11430,7 @@ pub(crate) fn build_system_prompt(persona: &str, operator: &[Instruction]) -> St
 /// `pub(crate)` so the canary runner (spec 13, unit 5) appends the SAME finding-emission
 /// protocol to its reviewer prompts, so a canary reviewer attributes each finding by the
 /// same `by` role token the live review-quality folds key on - one protocol, not two.
-pub(crate) fn review_protocol(actor: &str) -> String {
+pub fn review_protocol(actor: &str) -> String {
     format!(
         "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
          {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
@@ -17211,14 +17211,14 @@ mod tests {
         // UnitStarted per real spec criterion, each carrying the REAL criterion text
         // (metrics/stats), never the `coverage: required` label. This is exactly the path
         // the live `rigger workflow specs/01-observability.md` drives.
-        let mut cfg = config_store::load(".").expect("the repo's own .rigger config must load");
+        let mut cfg = config_store::load("../..").expect("the repo's own .rigger config must load");
         // Neutralize the real cargo gate COMMANDS to `true` so this test exercises the
         // decomposition path without recursively invoking cargo (the gate IDENTITIES and
         // the stage graph stay exactly as authored - only the shell command is stubbed).
         for g in cfg.workflow.gates.values_mut() {
             g.run = "true".into();
         }
-        let spec_text = std::fs::read_to_string("specs/01-observability.md")
+        let spec_text = std::fs::read_to_string("../../specs/01-observability.md")
             .expect("the real spec 01 must be present");
         let criteria = crate::spec::extract_criteria(&spec_text);
         assert_eq!(
@@ -18553,8 +18553,8 @@ mod tests {
     #[cfg(feature = "symbols")]
     #[test]
     fn the_grounding_path_populates_the_unified_graph_from_the_live_project() {
-        let real_src = include_str!("../crates/rigger-domain/src/run.rs");
-        let real_doc = include_str!("../specs/29c-unified-traversal-tiers.md");
+        let real_src = include_str!("../../rigger-domain/src/run.rs");
+        let real_doc = include_str!("../../../specs/29c-unified-traversal-tiers.md");
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -18994,7 +18994,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("specs/29c-unified-traversal-tiers.md"),
-            include_str!("../specs/29c-unified-traversal-tiers.md"),
+            include_str!("../../../specs/29c-unified-traversal-tiers.md"),
         )
         .unwrap();
         let repo_path = root.to_str().unwrap().to_string();
@@ -19226,7 +19226,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("specs/29c-unified-traversal-tiers.md"),
-            include_str!("../specs/29c-unified-traversal-tiers.md"),
+            include_str!("../../../specs/29c-unified-traversal-tiers.md"),
         )
         .unwrap();
         let repo_path = root.to_str().unwrap().to_string();

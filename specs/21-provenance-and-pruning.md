@@ -11,7 +11,7 @@ active run (which would throw away the memory). This spec implements Workstream 
 
 Builds on the whole-stream context graph (`Projector`, `src/contextgraph/`), the run
 boundary (`RunStarted`, `current_run`, `start_fresh` in `crates/rigger-domain/src/run.rs`), and the read paths
-`rigger peers` and grounding (`graph_context` in `src/conductor.rs`). The graph has no
+`rigger peers` and grounding (`graph_context` in `crates/rigger-conductor/src/conductor.rs`). The graph has no
 run column today; attribution is derived from the event stream.
 
 **Unit 1 - RunStarted-boundary attribution (touches `src/contextgraph/`, `crates/rigger-domain/src/run.rs`).**
@@ -30,7 +30,7 @@ except the active one) from the graph, while PRESERVING `LessonLearned` and the 
 run's decisions and findings. It is the supported way to shed dead-run noise without
 deleting the whole store; there is no way to do this today short of wiping `graph.db`.
 
-**Unit 3 - `rigger peers` provenance labels (touches `src/main.rs`, `src/conductor.rs`).**
+**Unit 3 - `rigger peers` provenance labels (touches `src/main.rs`, `crates/rigger-conductor/src/conductor.rs`).**
 `rigger peers` presents live and historical decisions identically. Label each decision as
 LIVE (from the active run) or HISTORICAL (from a superseded run), using the same
 attribution as Unit 1. Grounding still INCLUDES cross-run decisions by default (the

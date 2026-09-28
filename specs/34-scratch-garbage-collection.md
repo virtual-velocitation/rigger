@@ -38,7 +38,7 @@ scratch.
   reading or a target a running build is writing.
 
 `.rigger/tmp` is transient by definition; nothing durable is ever stored there, so reclamation is
-always safe. This is code only (`src/conductor.rs` and the scratch/worktree lifecycle it owns); it
+always safe. This is code only (`crates/rigger-conductor/src/conductor.rs` and the scratch/worktree lifecycle it owns); it
 changes no agent persona, no `workflow.yml`, and no `.rigger/agents/` - so it introduces no definition
 drift and needs no operator action.
 

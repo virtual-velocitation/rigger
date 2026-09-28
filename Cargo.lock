@@ -1884,6 +1884,7 @@ dependencies = [
  "fs2",
  "kurrentdb",
  "regex",
+ "rigger-conductor",
  "rigger-config-files",
  "rigger-domain",
  "rigger-driver",
@@ -1904,6 +1905,25 @@ dependencies = [
  "testcontainers",
  "thiserror",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "rigger-conductor"
+version = "0.1.0"
+dependencies = [
+ "rigger-config-files",
+ "rigger-domain",
+ "rigger-driver",
+ "rigger-gates-shell",
+ "rigger-graph-sqlite",
+ "rigger-grounder",
+ "rigger-process",
+ "rigger-store-sqlite",
+ "rigger-worktree-git",
+ "serde",
+ "serde_json",
+ "tempfile",
  "uuid",
 ]
 

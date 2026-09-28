@@ -1,5 +1,5 @@
 //! Spec 85 criterion 1, THE RESPONSIBILITY MAP: a deterministic, zero-new-dependency scan of
-//! every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs`, each assigned a
+//! every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `src/dash.rs`, each assigned a
 //! proposed module (ports-and-adapters shape) with its current line span and a reason, written
 //! to `docs/audit/responsibility-map.json` and rendered as section 1 of
 //! `docs/audit/2026-09-simplification-audit.md`. This unit OWNS the scanner and the
@@ -36,7 +36,7 @@
 //!
 //! Lexical state tracked while scanning ANY file content (signatures and bodies alike): line
 //! comments, NESTED block comments (Rust nests `/* /* */ */`, confirmed present in
-//! `src/conductor.rs`), string and raw-string literals (`r"..."`, `r#"..."#`, ... with
+//! `crates/rigger-conductor/src/conductor.rs`), string and raw-string literals (`r"..."`, `r#"..."#`, ... with
 //! hash-count matching, confirmed present in all three files) and byte-string variants
 //! (`b"..."`, `br#"..."#`), and char literals disambiguated from lifetimes by bounded
 //! lookahead: a `'` immediately followed by one char (or a short backslash escape) and a
@@ -113,7 +113,11 @@ use rigger::grounder::symbols::store::content_hash;
 
 /// The three files this criterion scans - spec 85's Design and Done-when name them by literal
 /// path, in this fixed order (also the order every generated artifact lists them in).
-const TARGET_FILES: [&str; 3] = ["src/conductor.rs", "src/main.rs", "src/dash.rs"];
+const TARGET_FILES: [&str; 3] = [
+    "crates/rigger-conductor/src/conductor.rs",
+    "src/main.rs",
+    "src/dash.rs",
+];
 
 // =========================================================================================
 // THE SCANNER
@@ -1027,7 +1031,7 @@ struct Rule {
     concern: &'static str,
 }
 
-/// `src/conductor.rs`'s free-function rule table, derived from the concern keywords that
+/// `crates/rigger-conductor/src/conductor.rs`'s free-function rule table, derived from the concern keywords that
 /// actually repeat across its ~600 functions (a frequency pass over the checked-out tree,
 /// decision `u85c1-classification-scheme`) - ordered most-specific-concern first so a name
 /// matching two rules takes the earlier, narrower one.
@@ -1552,7 +1556,7 @@ const DASH_RULES: &[Rule] = &[
 /// The three files' rule tables in [`TARGET_FILES`] order.
 fn rules_for(file: &str) -> &'static [Rule] {
     match file {
-        "src/conductor.rs" => CONDUCTOR_RULES,
+        "crates/rigger-conductor/src/conductor.rs" => CONDUCTOR_RULES,
         "src/main.rs" => MAIN_RULES,
         "src/dash.rs" => DASH_RULES,
         _ => &[],
@@ -1645,7 +1649,7 @@ fn classify(f: &ScannedFn) -> (Option<String>, String) {
 /// this with anything else).
 fn file_stem(file: &str) -> &str {
     match file {
-        "src/conductor.rs" => "conductor",
+        "crates/rigger-conductor/src/conductor.rs" => "conductor",
         "src/main.rs" => "main",
         "src/dash.rs" => "dash",
         other => Path::new(other)
@@ -1884,7 +1888,7 @@ fn render_section_1(entries: &[MapEntry], lines: &[MapEntryLines]) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` \
+        "Every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `src/dash.rs` \
          ({} functions total), assigned to a proposed module by \
          `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier \
          (never by hand). Instrument: the brace-matching scanner over the three named files.",
@@ -2078,7 +2082,7 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 9] = [
+const SPLIT_CRATES: [&str; 10] = [
     "crates/rigger-domain",
     "crates/rigger-store-sqlite",
     "crates/rigger-graph-sqlite",
@@ -2088,6 +2092,7 @@ const SPLIT_CRATES: [&str; 9] = [
     "crates/rigger-driver",
     "crates/rigger-grounder",
     "crates/rigger-config-files",
+    "crates/rigger-conductor",
 ];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
@@ -2177,17 +2182,17 @@ const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/conductor.rs",
+        "crates/rigger-conductor/src/conductor.rs",
         "land_refused",
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/conductor.rs",
+        "crates/rigger-conductor/src/conductor.rs",
         "speculation_escalates_when_every_candidate_is_rejected",
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/conductor.rs",
+        "crates/rigger-conductor/src/conductor.rs",
         "replay_step",
         SampleVerdict::Closed(
         "three stepwise budget and attention tests re-rolled its body (and `started_store`'s) as inline closures; all now call `replay_step`",
@@ -2330,7 +2335,7 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
      eleven suites; every one now calls `repo_text`",
     "`tests/replan_episode_identity.rs` `serving` had two inline copies of its scan in its own \
      file; both now call it",
-    "`src/conductor.rs` `integrate_and_emit` repeated `catch_up_owed_regeneration`'s \
+    "`crates/rigger-conductor/src/conductor.rs` `integrate_and_emit` repeated `catch_up_owed_regeneration`'s \
      regenerate/record/clear sequence twice; all three now call `regenerate_and_record`",
     "`tests/dash_run_tree_spine.rs` \
      `an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed` repeated \
@@ -2353,7 +2358,7 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
      did eleven sibling tests; all thirteen now call it",
     "`tests/stop_failure_hook_periphery.rs` `hook_refuses_naming` was repeated inline by \
      `hook_stop_failure_rejects_an_unrecognized_class`; it now calls it",
-    "`src/conductor.rs` `proposal_event` was re-rolled inline by \
+    "`crates/rigger-conductor/src/conductor.rs` `proposal_event` was re-rolled inline by \
      `a_same_episode_re_seen_on_a_later_fold_still_never_self_supersedes`; it now calls it and \
      `harvest_seeded`",
     "`src/contextgraph/mod.rs` `is_false` re-implemented `std::ops::Not::not`, which the symbol \
@@ -4180,14 +4185,14 @@ fn joined(lines: &[usize]) -> String {
         .join(",")
 }
 
-/// Section 3, BOUNDARY VIOLATIONS: two real findings (`src/conductor.rs`'s mutation-scratch
+/// Section 3, BOUNDARY VIOLATIONS: two real findings (`crates/rigger-conductor/src/conductor.rs`'s mutation-scratch
 /// reclaim reaching into the concrete `driver::replay` adapter, and `crates/rigger-grounder/src/ingest.rs` reaching two
 /// concrete grounder modules, each for a concern no port covers) plus the checked-and-clean
 /// port-concretion sweeps and the use-cases-importing-infrastructure / second-mutation-authority
 /// categories (decision `u85c3-boundary-violation-mutation-scratch-reach`). Every citation and
 /// figure is computed from `files` and the tree at render time.
 fn render_section_3(files: &[FileScan]) -> String {
-    const CONDUCTOR: &str = "src/conductor.rs";
+    const CONDUCTOR: &str = "crates/rigger-conductor/src/conductor.rs";
     const INGEST: &str = "crates/rigger-grounder/src/ingest.rs";
     const MAIN: &str = "src/main.rs";
     const AGENT_PORT: &str = "crates/rigger-domain/src/agent.rs";
@@ -5491,7 +5496,7 @@ fn render_section_6() -> String {
         into a neutral module every `AgentDriver` adapter and `conductor.rs` can depend on \
         alike (no new trait needed - neither function takes a driver instance, so this is a \
         home fix, not a port-method fix).\n\
-        - Files: `src/conductor.rs`, `crates/rigger-driver/src/driver/replay.rs`, a new home for the two \
+        - Files: `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-driver/src/driver/replay.rs`, a new home for the two \
         relocated functions.\n\
         - Expected line delta: near zero net - a pure move of two functions.\n\
         - Risk: low-medium. The reclaim path is covered by spec 83's \
@@ -5567,10 +5572,12 @@ fn render_section_6() -> String {
         sum those test functions' own spans, so they exclude the module-level doc comments, \
         `use` statements and blank lines around them.\n\n",
     );
-    let conductor = god_file_shape("src/conductor.rs");
-    out.push_str("#### 4. Extract `src/conductor.rs`'s inline test module\n\n");
+    let conductor = god_file_shape("crates/rigger-conductor/src/conductor.rs");
+    out.push_str(
+        "#### 4. Extract `crates/rigger-conductor/src/conductor.rs`'s inline test module\n\n",
+    );
     out.push_str(&test_extraction_scope(
-        "src/conductor.rs",
+        "crates/rigger-conductor/src/conductor.rs",
         "src/conductor/tests",
         &format!(
             "Partition into a `src/conductor/tests/` directory, one file per concern, reusing \
@@ -5633,10 +5640,10 @@ fn render_section_6() -> String {
         move with whichever module they sit beside, without needing their own assignment.\n\n",
     );
     out.push_str(
-        "#### 7. Split `src/conductor.rs`'s production code into `src/conductor/*.rs`\n\n",
+        "#### 7. Split `crates/rigger-conductor/src/conductor.rs`'s production code into `src/conductor/*.rs`\n\n",
     );
     out.push_str(&production_split_scope(
-        "src/conductor.rs",
+        "crates/rigger-conductor/src/conductor.rs",
         "`src/conductor/mod.rs`",
         "src/conductor",
     ));
@@ -5720,7 +5727,7 @@ fn render_section_6() -> String {
         "- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
         `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \
         own literal.\n\
-        - Files: spans dozens of files including `src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \
+        - Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \
         `src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
         `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
         `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
@@ -7626,7 +7633,7 @@ mod tests {
 
     fn conductor_fn(name: &str) -> ScannedFn {
         ScannedFn {
-            file: "src/conductor.rs".to_string(),
+            file: "crates/rigger-conductor/src/conductor.rs".to_string(),
             name: name.to_string(),
             start_line: 1,
             end_line: 2,
@@ -7795,7 +7802,7 @@ mod tests {
         assert_eq!(pluralize(2, "function"), "2 functions");
     }
 
-    /// A non-test `src/conductor.rs` map entry named `name` spanning `lines`, its content hash
+    /// A non-test `crates/rigger-conductor/src/conductor.rs` map entry named `name` spanning `lines`, its content hash
     /// `hash-<name>`.
     fn conductor_map_entry(
         name: &str,
@@ -7804,7 +7811,7 @@ mod tests {
         reason: &str,
     ) -> MapEntry {
         MapEntry {
-            file: "src/conductor.rs".to_string(),
+            file: "crates/rigger-conductor/src/conductor.rs".to_string(),
             name: name.to_string(),
             start_line: lines.0,
             end_line: lines.1,
@@ -7992,7 +7999,7 @@ mod tests {
         a_pin_bump_leaves_the_guarded_responsibility_map_byte_identical:
             assert_a_pin_bump_leaves_the_guarded_json_byte_identical(
                 &[
-                    ("src/conductor.rs", "fn one() {}\n"),
+                    ("crates/rigger-conductor/src/conductor.rs", "fn one() {}\n"),
                     ("src/main.rs", "fn two() {}\n"),
                     ("src/dash.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
                 ],
@@ -8030,12 +8037,12 @@ mod tests {
         two_branches_each_adding_an_unrelated_function_to_a_different_target_file_never_perturb_an_existing_responsibility_map_entry:
             assert_two_branches_never_perturb_an_existing_entry(
                 &[
-                    ("src/conductor.rs", "fn one() {}\n"),
+                    ("crates/rigger-conductor/src/conductor.rs", "fn one() {}\n"),
                     ("src/main.rs", "fn two() {}\n"),
                     ("src/dash.rs", "fn three() {}\n"),
                 ],
                 (
-                    "src/conductor.rs",
+                    "crates/rigger-conductor/src/conductor.rs",
                     "fn one() {}\n\nfn branch_a_only() {\n    let _ = 1;\n}\n",
                 ),
                 (
@@ -8054,7 +8061,7 @@ mod tests {
     /// count, every module's own heading with its declared function count, and the unassigned
     /// heading with its declared count - never the exact citation bytes, which are free to
     /// legitimately move between explicit `RIGGER_AUDIT_WRITE=1` regens (a pin bump anywhere
-    /// in `src/conductor.rs`, `src/main.rs` or `src/dash.rs`).
+    /// in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` or `src/dash.rs`).
     fn assert_section_1_structurally_matches(committed_section_1: &str, entries: &[MapEntry]) {
         assert!(
             committed_section_1.starts_with("## 1. Responsibility Map"),
@@ -8166,9 +8173,9 @@ mod tests {
 
         assert_section_1_structurally_matches(&before_rendered, &before);
         assert_section_1_structurally_matches(&after_rendered, &after);
-        assert!(before_rendered.contains("`src/conductor.rs:1-3`"));
-        assert!(after_rendered.contains("`src/conductor.rs:6-8`"));
-        assert!(!after_rendered.contains("`src/conductor.rs:1-3`"));
+        assert!(before_rendered.contains("`crates/rigger-conductor/src/conductor.rs:1-3`"));
+        assert!(after_rendered.contains("`crates/rigger-conductor/src/conductor.rs:6-8`"));
+        assert!(!after_rendered.contains("`crates/rigger-conductor/src/conductor.rs:1-3`"));
     }
 
     /// CLAIM-4 equivalent for section 1 (mirrors
@@ -10407,7 +10414,7 @@ mod tests {
             assert!(rendered.contains(&cited_sweep(name).id), "{name}");
         }
         // Cites the god-file test/production split for all three files.
-        assert!(rendered.contains("src/conductor.rs"));
+        assert!(rendered.contains("crates/rigger-conductor/src/conductor.rs"));
         assert!(rendered.contains("src/main.rs"));
         assert!(rendered.contains("src/dash.rs"));
         // Cites section 5's own headline test-suite consolidation items.

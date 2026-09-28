@@ -1,7 +1,7 @@
 # Reference Architecture Addendum — Project-Agnostic Concept Knowledge Graph
 
 **Status:** design, approved for planning. Current-state facts are grounded in the code as of
-2026-07-21 (`src/main.rs` `cmd_graph`, `src/conductor.rs` `ingest_project_into_graph`, the
+2026-07-21 (`src/main.rs` `cmd_graph`, `crates/rigger-conductor/src/conductor.rs` `ingest_project_into_graph`, the
 `crates/rigger-grounder/src/grounder/symbols` tree-sitter extractor); figures marked *(est.)* are not measured.
 **Scope:** an addendum to `docs/architecture.md`, building on the unified event-sourced
 knowledge graph established in the context-management addendum (its §6). It makes that graph a

@@ -9,7 +9,7 @@ parallel) that was the dominant cost: load average 125 on 32 cores and `/home` a
 Operator rule (2026-09-11): cargo-mutants runs ONLY after the normal dev cycle has completed
 and the code is about to be checked in, and remediates once - and that belongs in the DAG
 flow, not in application code. Today the DAG cannot say it: a stage's `needs` are satisfied by
-integrated STAGE names (`ready_stages`, src/conductor.rs), and the fan-out `implement`
+integrated STAGE names (`ready_stages`, crates/rigger-conductor/src/conductor.rs), and the fan-out `implement`
 template never integrates as itself (only its units do), so a stage after it never becomes
 ready; and `max_retries` is run-wide (`defaults.max_retries`, crates/rigger-domain/src/config.rs:374), so no stage
 can bound its own remediation.

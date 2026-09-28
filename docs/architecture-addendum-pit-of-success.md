@@ -102,7 +102,7 @@ problem is real, but the cause is that live and superseded decisions are
 indistinguishable, not that cross-run memory is wrong. The fix is provenance and
 pruning (§7), not amnesia.
 
-_Code:_ `graph_context`, `Projector` (`src/contextgraph/`), `src/conductor.rs`.
+_Code:_ `graph_context`, `Projector` (`src/contextgraph/`), `crates/rigger-conductor/src/conductor.rs`.
 
 ### 2.3 The gate reads the result-channel verdict; events are for diagnosis, not authority
 
@@ -135,7 +135,7 @@ distilled, authoritative output. So the system does look at both; the result cha
 line, the conductor reads that mismatch and hard-errors with the exact fix (§3.1)
 instead of silently treating it as a reject.
 
-_Code:_ `verdict_approves`, `run_adjudicator`, `IntegrationApproval` (`src/conductor.rs`).
+_Code:_ `verdict_approves`, `run_adjudicator`, `IntegrationApproval` (`crates/rigger-conductor/src/conductor.rs`).
 
 ### 2.4 The loop is the blessed build path; TDD is intrinsic to it
 
@@ -183,7 +183,7 @@ a persona that passed the static lint but still failed to return a verdict (e.g.
 agent ignored its instructions).
 
 _Code:_ `config::load`, `ReviewPanel::validate_depth` (`crates/rigger-config-files/src/config_store.rs`, `crates/rigger-domain/src/config.rs`); `cmd_validate`
-(`src/main.rs`); the gate site in `run_adjudicator` (`src/conductor.rs`).
+(`src/main.rs`); the gate site in `run_adjudicator` (`crates/rigger-conductor/src/conductor.rs`).
 
 ### 3.2 Spec-shape lint
 
@@ -233,7 +233,7 @@ duplicating, and (c) an intentional split still runs and emits the `unmatched-pr
 signal.
 
 _Code:_ `harvest_proposed`, `normalize_ws`, `baseline_units`, `PLAN_PROTOCOL`
-(`src/conductor.rs`).
+(`crates/rigger-conductor/src/conductor.rs`).
 
 ### 3.4 `--base` reachability + missing-files refusal
 
@@ -358,7 +358,7 @@ unit being worked.
 
 _Code:_ `meta`, `phaseOf`, the `log()` sites (`workflows/rigger.js`); `SpawnRequest`
 (`crates/rigger-domain/src/spawn.rs`); the `Stage.coverage` source and the wire in `rigger step`
-(`src/conductor.rs`, `crates/rigger-domain/src/spawn.rs`).
+(`crates/rigger-conductor/src/conductor.rs`, `crates/rigger-domain/src/spawn.rs`).
 
 ### 4.4 Dashboard responsive redesign
 
@@ -403,7 +403,7 @@ treats a fixpoint reached with any such unit as a LOUD failure (throws, non-zero
 them) — exactly as it already does for a `halted` budget stop. Escalation-and-continue
 mid-run is unchanged; only the final terminus must not masquerade as success.
 
-_Code:_ the done/step result (`src/conductor.rs`), the driver's done handling
+_Code:_ the done/step result (`crates/rigger-conductor/src/conductor.rs`), the driver's done handling
 (`workflows/rigger.js`).
 
 ### 4.7 No silent hang

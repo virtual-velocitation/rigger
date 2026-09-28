@@ -20,7 +20,7 @@ promise that resolves to text or to null, so rigger infers what it needs to know
 | whether an agent is alive | a marker file the agent is asked to touch | the first step after the outage read the marker 61,963 s stale, recorded a liveness fault and halted; manual re-drive |
 | where an agent works | a sentence in its prompt; its tool cwd is the operator checkout | 20+ edits landed in the operator checkout; the next landing was refused |
 | which session is the agent's | a search of harness files for the spawn id | no transcript or token totals in the log |
-| what an agent concluded | prose parsed for a verdict line (`src/conductor.rs:10513`); self-reported results by shell-out | an empty-stdin report overwrote a real result; one spawn recorded two |
+| what an agent concluded | prose parsed for a verdict line (`crates/rigger-conductor/src/conductor.rs:10513`); self-reported results by shell-out | an empty-stdin report overwrote a real result; one spawn recorded two |
 | when the run needs a person | polling by the operator session | about 60 unanswerable polls in one night |
 | how long a step may run | a 10-minute tool cap on the agent that relays `rigger step` | every longer gate or integration step is detached by hand |
 

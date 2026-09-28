@@ -19,7 +19,7 @@ in-graph state.
   `Namespaced::new` uses to build the `proj-<id>-` prefix (a plain project string). The fold path
   (`Projection::apply` -> `fold`, `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) stamps it on insert.
 - **Filter on read.** `subgraph(seed, depth)` and every read the conductor uses (`graph_context`,
-  `src/conductor.rs`) filter to the current project, so a seed id that exists in two projects
+  `crates/rigger-conductor/src/conductor.rs`) filter to the current project, so a seed id that exists in two projects
   returns only the current project's neighborhood. This mirrors, for the graph, what
   `Namespaced::scope_filter` does for streams.
 - **Scope the prune.** `Projector::prune` (the `reset --runs` authority) deletes only the current

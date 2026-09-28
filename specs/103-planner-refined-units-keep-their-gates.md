@@ -2,8 +2,8 @@
 
 **Goal:** a fan-out unit's gates come from the proposal that created it, not from the
 template it replaced. `harvest_proposed` builds the stage a planner proposal supersedes a
-baseline with as `gates: u.gates` (`src/conductor.rs:10293`), while the baseline it removes
-carried `template.gates` (`src/conductor.rs:12107`) and `PLAN_PROTOCOL`'s proposal shape names
+baseline with as `gates: u.gates` (`crates/rigger-conductor/src/conductor.rs:10293`), while the baseline it removes
+carried `template.gates` (`crates/rigger-conductor/src/conductor.rs:12107`) and `PLAN_PROTOCOL`'s proposal shape names
 `id`, `agent`, `criterion`, `criterion_id` and `needs` - never `gates`. So a proposal that
 omits `gates` yields a unit with none: `verified_evidence` is `{}`, no `GateVerdict` is
 recorded, and the unit goes green to verified within a minute of its SDET result. Spec 93's run
@@ -11,8 +11,8 @@ recorded 844 gate verdicts because its planner volunteered the list; spec 84's r
 every one from the static `checkin` stage or the post-merge re-gate, and u84c1-u84c4 and
 u94c5 verified with empty evidence. The same defect family hides in integration: the
 already-landed resume path sets `(commit, pre_merge) = (unit_tip, run_tip)`
-(`src/conductor.rs:7989`), and the post-merge re-gate addresses the tree of `commit`
-(`src/conductor.rs:8225`), so a landing that was a real merge (a686558 = 1293e23 plus the run
+(`crates/rigger-conductor/src/conductor.rs:7989`), and the post-merge re-gate addresses the tree of `commit`
+(`crates/rigger-conductor/src/conductor.rs:8225`), so a landing that was a real merge (a686558 = 1293e23 plus the run
 branch's newer tree) replayed the unit's own pre-merge green and emitted `UnitIntegrated`
 (position 3401888) without a gate run.
 
@@ -20,13 +20,13 @@ Four more seams of the loop's own machinery fail under load. `Worktree::create` 
 "corrupt" worktree admin entries before every add (`crates/rigger-worktree-git/src/worktree.rs:2007`), and
 `worktree_admin_is_corrupt` (`crates/rigger-worktree-git/src/worktree.rs:2035`) flags an entry whose `commondir` or
 `gitdir` is missing; git writes an entry as mkdir, `locked`, `gitdir`, `HEAD`, `commondir`, so
-a batch-mate's add on a concurrent thread (`run_batch`, `src/conductor.rs:3478`) is deleted
+a batch-mate's add on a concurrent thread (`run_batch`, `crates/rigger-conductor/src/conductor.rs:3478`) is deleted
 mid-write and fails with `failed to read .git/worktrees/<name>/commondir`. `run_single_stage`
 commits whatever the unit worktree holds as `wip(<unit>): tree of halted spawn` on every
-window entry (`src/conductor.rs:4191`), even when the named spawn already has a result and
+window entry (`crates/rigger-conductor/src/conductor.rs:4191`), even when the named spawn already has a result and
 reviewers are live in the shared worktree; it committed a reviewer's temporary red-repro edit
 above an approved tip and the unit was rejected and escalated. The post-merge re-gate runs in
-the operator's working directory (`src/conductor.rs:8225`), so an untracked operator file
+the operator's working directory (`crates/rigger-conductor/src/conductor.rs:8225`), so an untracked operator file
 failed a whole-tree test, the landing was reset and charged as `integrate-conflict`, and an
 approved unit escalated. And a landing git refuses for local changes records the refusal
 text but neither the blocking paths nor where their content came from.
