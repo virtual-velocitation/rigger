@@ -1692,6 +1692,54 @@ mod tests {
         );
     }
 
+    /// Spec 101, criterion 4: the measurement is the prune's own selection, so superseded
+    /// generations count as redundancy even when every key is recorded once. Three generations of
+    /// one file are three rows of which the prune keeps one: 3.0x, and the rows the measurement
+    /// calls redundant are exactly the rows the prune's preview counts.
+    #[test]
+    fn measure_derived_duplication_counts_superseded_generations_as_the_prune_selects_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[(
+                "run",
+                vec![
+                    keyed(
+                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        "gc/src/a.rs@h1#0",
+                    ),
+                    keyed(
+                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        "gc/src/a.rs@h2#0",
+                    ),
+                    keyed(
+                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        "gc/src/a.rs@h3#0",
+                    ),
+                ],
+            )],
+        );
+        let identity = crate::ingest::derived_index_identity();
+        let measured = s.measure_derived_duplication("", &identity).unwrap();
+        assert_eq!(measured.rows, 3);
+        assert_eq!(
+            measured.factor(),
+            3.0,
+            "three generations of which a compaction keeps only the latest"
+        );
+        let previewed: usize = s
+            .count_derived_duplicates("", &identity)
+            .unwrap()
+            .iter()
+            .map(|(_, n)| n)
+            .sum();
+        assert_eq!(
+            previewed, 2,
+            "the prune's own preview selects the two superseded generations"
+        );
+    }
+
     #[test]
     fn measure_derived_duplication_on_an_empty_log_reports_a_factor_of_one_not_a_division_by_zero()
     {

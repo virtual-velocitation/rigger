@@ -572,37 +572,9 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
         &id,
         &scratch.path().join("after.db"),
     );
-    // The one node the whole log folds and the compacted log does not is `src/b.rs::gen_one`: the
-    // definition only the SHED generation held. The fold never deletes a node, so a full-log
-    // rebuild keeps it as an orphan no live edge reaches (the live edges below are identical);
-    // every other node is the same row.
-    let orphan = before_graph
-        .0
-        .iter()
-        .filter(|n| n.starts_with("src/b.rs::gen_one|"))
-        .cloned()
-        .collect::<Vec<_>>();
     assert_eq!(
-        orphan.len(),
-        1,
-        "the seed must fold the superseded definition"
-    );
-    let expected_nodes: Vec<String> = before_graph
-        .0
-        .iter()
-        .filter(|n| !orphan.contains(n))
-        .cloned()
-        .collect();
-    assert_eq!(
-        after_graph.0, expected_nodes,
-        "the compacted log must fold to the same nodes, less the shed generation's orphan"
-    );
-    assert!(
-        !before_graph
-            .1
-            .iter()
-            .any(|e| e.contains("src/b.rs::gen_one|")),
-        "the shed generation's definition must have no live edge in the whole-log fold"
+        after_graph.0, before_graph.0,
+        "the compacted log must fold to the same nodes"
     );
     assert_eq!(
         after_graph.1, before_graph.1,
@@ -806,10 +778,12 @@ const GEN_RECORDINGS: u64 = 2;
 
 /// Seed three content generations of ONE file - its code batch (`gc/src/f.rs`) and its design
 /// batch (`gd/docs/f.md`) - each generation recorded [`GEN_RECORDINGS`] times, every recording at
-/// a later valid-time than the one before. Each generation keeps the entity set of the one before
-/// and moves its definition's line, the shape an ordinary edit leaves; the design batch asserts
-/// the SAME `SPECIFIES` fact in every generation (so the fold dates it from generation 1) and
-/// generation 3 adds a second fact of its own.
+/// a later valid-time than the one before. Every generation moves `alpha`'s line and references
+/// `beta`, the shape an ordinary edit leaves, and the design batch asserts the SAME `SPECIFIES`
+/// fact in every generation (so the fold dates it from generation 1). Generation 1 also defines
+/// `gone` and links `src/old.rs`, and generation 2 DROPS both - the edit that removes a function
+/// and a design link, whose facts only the shed generation ever asserted. Generation 3 adds a
+/// design fact of its own.
 fn seed_three_generations(root: &Path) {
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
@@ -822,30 +796,47 @@ fn seed_three_generations(root: &Path) {
         for _ in 0..GEN_RECORDINGS {
             secs += 1;
             let code = format!("gc/src/f.rs@h{generation}");
-            events.push(keyed(
+            let mut code_batch = vec![(
                 rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
                 code_entity("src/f.rs", "alpha", generation, true),
-                &format!("{code}#0"),
-                secs,
-            ));
-            events.push(keyed(
+            )];
+            if generation == 1 {
+                code_batch.push((
+                    rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                    code_entity("src/f.rs", "gone", 9, false),
+                ));
+            }
+            code_batch.push((
                 rigger::contextgraph::TYPE_EDGE_INFERRED,
                 edge_inferred("src/f.rs", "beta"),
-                &format!("{code}#1"),
-                secs,
             ));
             let design = format!("gd/docs/f.md@h{generation}");
-            events.push(keyed(
-                rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED,
-                doc_link("docs/f.md", "src/f.rs", rigger::contextgraph::REL_SPECIFIES),
-                &format!("{design}#0"),
-                secs,
-            ));
-            if generation == 3 {
+            let mut design_batch = vec![doc_link(
+                "docs/f.md",
+                "src/f.rs",
+                rigger::contextgraph::REL_SPECIFIES,
+            )];
+            match generation {
+                1 => design_batch.push(doc_link(
+                    "docs/f.md",
+                    "src/old.rs",
+                    rigger::contextgraph::REL_SPECIFIES,
+                )),
+                3 => design_batch.push(doc_link(
+                    "docs/f.md",
+                    "src/g.rs",
+                    rigger::contextgraph::REL_SPECIFIES,
+                )),
+                _ => {}
+            }
+            for (i, (type_, data)) in code_batch.into_iter().enumerate() {
+                events.push(keyed(type_, data, &format!("{code}#{i}"), secs));
+            }
+            for (i, data) in design_batch.into_iter().enumerate() {
                 events.push(keyed(
                     rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED,
-                    doc_link("docs/f.md", "src/g.rs", rigger::contextgraph::REL_SPECIFIES),
-                    &format!("{design}#1"),
+                    data,
+                    &format!("{design}#{i}"),
                     secs,
                 ));
             }
@@ -919,17 +910,17 @@ fn reset_derived_sheds_every_superseded_generation_and_the_rebuilt_graph_is_byte
     );
 
     // The count shed, per type and in total, and how many of them were superseded generations:
-    // generations 1 and 2 are 2 recordings x 3 events each = 12 rows, the latest generation's
-    // exact-key duplicates are 4 more.
+    // generation 1 is 2 recordings x 5 events and generation 2 is 2 recordings x 3 events = 16
+    // rows, the latest generation's exact-key duplicates are 4 more.
     assert!(
         out.contains(
-            "(CodeEntityExtracted 5, EdgeInferred 5, DocConceptExtracted 0, DocLinkExtracted 6)"
+            "(CodeEntityExtracted 7, EdgeInferred 5, DocConceptExtracted 0, DocLinkExtracted 8)"
         ),
         "the report must name the rows shed per type; got: {out:?}"
     );
     assert!(
-        out.contains("pruned 16 redundant derived-index event(s)")
-            && out.contains("12 of them recordings of a superseded generation"),
+        out.contains("pruned 20 redundant derived-index event(s)")
+            && out.contains("16 of them recordings of a superseded generation"),
         "the report must name the total shed and the superseded-generation share; got: {out:?}"
     );
 
@@ -963,8 +954,47 @@ fn reset_derived_sheds_every_superseded_generation_and_the_rebuilt_graph_is_byte
     );
     assert_eq!(
         String::from_utf8(after_graph).unwrap(),
-        String::from_utf8(before_graph).unwrap(),
+        String::from_utf8(before_graph.clone()).unwrap(),
         "the graph rebuilt from the compacted log must be byte-identical to the original's"
+    );
+    // Not vacuous: the whole log folds to exactly the latest generation's facts. The function
+    // and the design link generation 2 dropped are gone from it, and every fact generation 3
+    // makes is live.
+    let graph: rigger::contextgraph::Graph = serde_json::from_slice(&before_graph).unwrap();
+    let nodes: Vec<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        nodes,
+        vec![
+            "docs/f.md",
+            "src/f.rs",
+            "src/f.rs::alpha",
+            "src/f.rs::beta",
+            "src/g.rs"
+        ],
+        "the whole-log graph must hold exactly the latest generation's nodes"
+    );
+    let edges: Vec<(&str, &str, &str)> = graph
+        .edges
+        .iter()
+        .map(|e| (e.from.as_str(), e.to.as_str(), e.rel.as_str()))
+        .collect();
+    assert_eq!(
+        edges,
+        vec![
+            ("docs/f.md", "src/f.rs", rigger::contextgraph::REL_SPECIFIES),
+            ("docs/f.md", "src/g.rs", rigger::contextgraph::REL_SPECIFIES),
+            (
+                "src/f.rs",
+                "src/f.rs::alpha",
+                rigger::contextgraph::REL_CONTAINS
+            ),
+            (
+                "src/f.rs",
+                "src/f.rs::beta",
+                rigger::contextgraph::REL_REFERENCES
+            ),
+        ],
+        "the whole-log graph must hold exactly the latest generation's live edges"
     );
 
     // A second pass has nothing left to shed.

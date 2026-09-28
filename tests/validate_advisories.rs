@@ -77,16 +77,21 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
 /// project's own namespaced stream - the exact duplication `rigger reset --derived` prunes and
 /// the bloat advisory measures.
 fn seed_duplicated_key(root: &Path, rounds: usize) {
+    seed_derived_keys(root, &vec!["gc/src/a.rs@h1#0"; rounds]);
+}
+
+/// Seed one `CodeEntityExtracted` per entry of `keys`, in order, each carrying that replay key.
+fn seed_derived_keys(root: &Path, keys: &[&str]) {
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
-    for _ in 0..rounds {
+    for &key in keys {
         events.push(
             Event::new(
                 rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
                 b"{}".to_vec(),
             )
-            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+            .with_meta(rigger::ingest::META_REPLAY_KEY, key),
         );
     }
     store
@@ -276,6 +281,33 @@ fn validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived(
     assert!(
         err.contains("rigger reset --derived"),
         "the bloat warning must name `rigger reset --derived` as the fix; stderr:\n{err}"
+    );
+}
+
+/// Spec 101, criterion 4: the advisory measures the ONE selection `rigger reset --derived` acts
+/// on, so a log whose every key is recorded once but which holds five superseded generations of
+/// one file (six generations, only the latest of which a compaction keeps) is 6.0x bloated.
+#[test]
+fn validate_warns_of_log_bloat_on_a_log_holding_only_superseded_generations() {
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    let (_out, err) = validate_after_init(root, |root| {
+        seed_derived_keys(
+            root,
+            &[
+                "gc/src/a.rs@h1#0",
+                "gc/src/a.rs@h2#0",
+                "gc/src/a.rs@h3#0",
+                "gc/src/a.rs@h4#0",
+                "gc/src/a.rs@h5#0",
+                "gc/src/a.rs@h6#0",
+            ],
+        )
+    });
+    assert!(
+        err.contains("6.0") && err.contains("rigger reset --derived"),
+        "six generations of which a compaction keeps one must warn at the measured 6.0x and name \
+         `rigger reset --derived`; stderr:\n{err}"
     );
 }
 

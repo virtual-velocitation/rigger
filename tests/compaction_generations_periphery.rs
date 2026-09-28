@@ -295,6 +295,114 @@ fn a_carried_valid_time_is_the_earliest_recording_of_the_same_fact_in_the_same_i
     );
 }
 
+/// The whole live projection - every node, every live edge, every column - of a graph folded from
+/// `store`'s run stream, in its public wire form.
+fn rebuilt_whole(store: &Store, graph_db: &Path) -> String {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    let events = Namespaced::new(store, PROJECT)
+        .read_stream(
+            rigger::conductor::STREAM,
+            0,
+            rigger::eventstore::Direction::Forward,
+        )
+        .unwrap();
+    let p = Projector::open(graph_db.to_str().unwrap(), PROJECT).unwrap();
+    p.apply_batch(&events).unwrap();
+    serde_json::to_string(&p.whole().unwrap()).unwrap()
+}
+
+/// A fact a generation DROPS and a later generation asserts again is live again from its RETURN,
+/// never from the date it first held: the generation between retired it. `docs/f.md` asserts `a`
+/// and `b` at h1, drops `b` at h2, and returns to h1; `src/f.rs` defines `gone` at h1, drops it at
+/// h2, and defines it again on the return. The compaction carries `a` (asserted by every
+/// generation) back to 10s but `b` only to its return at 30s, and the graph rebuilt from the
+/// compacted log is the whole log's, node for node and edge for edge.
+#[test]
+fn a_fact_that_returns_after_a_generation_dropped_it_is_dated_from_its_return() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut events = Vec::new();
+    for (generation, secs) in [("h1", 10), ("h2", 20), ("h1", 30)] {
+        let code = format!("gc/src/f.rs@{generation}");
+        let design = format!("gd/docs/f.md@{generation}");
+        let mut def = serde_json::from_slice::<serde_json::Value>(&entity("alpha", 1)).unwrap();
+        def["fresh"] = serde_json::Value::Bool(true);
+        events.push(keyed(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            serde_json::to_vec(&def).unwrap(),
+            &format!("{code}#0"),
+            secs,
+        ));
+        events.push(keyed(
+            TYPE_DOC_LINK_EXTRACTED,
+            link("src/a.rs"),
+            &format!("{design}#0"),
+            secs,
+        ));
+        if generation == "h1" {
+            events.push(keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                entity("gone", 9),
+                &format!("{code}#1"),
+                secs,
+            ));
+            events.push(keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/b.rs"),
+                &format!("{design}#1"),
+                secs,
+            ));
+        }
+    }
+    let (backend, db) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
+    let before = rebuilt_whole(&backend, &dir.path().join("before.db"));
+
+    let identity = rigger::ingest::derived_index_identity();
+    let pruned = backend
+        .prune_derived_index(&Namespaced::prefix_for(PROJECT), &identity)
+        .unwrap();
+    assert_eq!(
+        pruned.removed,
+        per_type(3, 0, 0, 3),
+        "h2's two rows are superseded and h1's first four recordings are exact-key duplicates"
+    );
+
+    let kept: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
+    assert_eq!(
+        kept,
+        vec![
+            ("gc/src/f.rs@h1#0".to_string(), nanos(30)),
+            ("gd/docs/f.md@h1#0".to_string(), nanos(10)),
+            ("gc/src/f.rs@h1#1".to_string(), nanos(30)),
+            ("gd/docs/f.md@h1#1".to_string(), nanos(30)),
+        ],
+        "`a` held through every generation and keeps 10s; `b` was dropped at h2 and holds only \
+         since its return at 30s"
+    );
+
+    let after = rebuilt_whole(&backend, &dir.path().join("after.db"));
+    assert_eq!(
+        after, before,
+        "the graph rebuilt from the compacted log must be the whole log's"
+    );
+    let graph: rigger::contextgraph::Graph = serde_json::from_str(&before).unwrap();
+    let edges: Vec<(&str, &str, i64)> = graph
+        .edges
+        .iter()
+        .map(|e| (e.from.as_str(), e.to.as_str(), e.valid_from))
+        .collect();
+    assert_eq!(
+        edges,
+        vec![
+            ("docs/f.md", "src/a.rs", nanos(10)),
+            ("docs/f.md", "src/b.rs", nanos(30)),
+            ("src/f.rs", "src/f.rs::alpha", nanos(30)),
+            ("src/f.rs", "src/f.rs::gone", nanos(30)),
+        ],
+        "the whole log dates each live fact from the start of its unbroken run of generations"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // 2. Identity is per stream and per prefix
 // ---------------------------------------------------------------------------------------
