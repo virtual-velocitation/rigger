@@ -31170,6 +31170,107 @@ mod tests {
     }
 
     #[test]
+    fn a_step_whose_width_is_filled_by_parked_units_returns_instead_of_re_reading_the_stream() {
+        // The wave loop re-offers every ready stage until `wave_ready` is empty. A stage the
+        // width refuses stays ready, and a PARKED unit keeps its slot for the whole process, so
+        // with `max_parallel_units: 1`, "a" parked and "b" refused, no later wave in this
+        // process can admit anything: the step must end and leave "b" to a later step. The
+        // store double counts the whole-stream reads and fails past a cap, so a loop that
+        // re-reads the stream once per futile wave ends in an error instead of spinning.
+        struct CappedReads<'a> {
+            inner: &'a dyn EventStore,
+            reads: AtomicU32,
+        }
+        impl EventStore for CappedReads<'_> {
+            fn append(
+                &self,
+                stream: &str,
+                expected: ExpectedRevision,
+                events: &[Event],
+            ) -> Result<crate::eventstore::Appended, crate::eventstore::Error> {
+                self.inner.append(stream, expected, events)
+            }
+            fn read_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+                dir: Direction,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                if self.reads.fetch_add(1, Ordering::SeqCst) >= READ_CAP {
+                    return Err(crate::eventstore::Error::Backend(
+                        "read cap reached: the step re-reads the stream without progress".into(),
+                    ));
+                }
+                self.inner.read_stream(stream, from, dir)
+            }
+            fn read_all(
+                &self,
+                from: crate::eventstore::Position,
+                dir: Direction,
+                filter: &crate::eventstore::Filter,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_all(from, dir, filter)
+            }
+            fn subscribe_all(
+                &self,
+                from: crate::eventstore::Position,
+                filter: &crate::eventstore::Filter,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_all(from, filter)
+            }
+            fn subscribe_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_stream(stream, from)
+            }
+        }
+        const READ_CAP: u32 = 200;
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_parallel_units = 1;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        for name in ["a", "b"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "worker".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let inner = Store::open(":memory:").unwrap();
+        let store = CappedReads {
+            inner: &inner,
+            reads: AtomicU32::new(0),
+        };
+        let driver = Stub {
+            park_spawn_ids: [spawn_id("a", ROLE_IMPLEMENTER, 0)].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let rs = run_isolated(&cfg, &deps);
+        let reads = store.reads.load(Ordering::SeqCst);
+        let rs = rs.unwrap_or_else(|e| {
+            panic!("the step must end once no wave can admit a stage; it failed after {reads} whole-stream reads: {e}")
+        });
+        assert!(
+            !rs.units.contains_key("b"),
+            "b was refused a slot, so it must not have started this step: {:?}",
+            rs.units.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            driver.spawn_ids().iter().all(|id| id.starts_with("a/")),
+            "only a may have spawned this step: {:?}",
+            driver.spawn_ids()
+        );
+    }
+
+    #[test]
     fn live_run_folds_no_gate_machinery() {
         // De-noise (spec 43): a gate is run machinery, not the target project. After a stage with a
         // gate touches a file and integrates, the conductor still emits a GateVerdict (metrics and
