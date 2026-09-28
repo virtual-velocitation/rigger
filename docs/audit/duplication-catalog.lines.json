@@ -5220,7 +5220,7 @@
     ]
   },
   {
-    "id": "dup-a890a813b3ae",
+    "id": "dup-a4496aa7b106",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5381,6 +5381,11 @@
         "file": "tests/reset_menu_identity_migration_periphery.rs",
         "start_line": 95,
         "end_line": 95
+      },
+      {
+        "file": "tests/run_boundary_lookup_periphery.rs",
+        "start_line": 71,
+        "end_line": 71
       },
       {
         "file": "tests/store_append_order_periphery.rs",
