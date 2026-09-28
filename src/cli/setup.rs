@@ -2551,4 +2551,211 @@ mod tests {
             "a rerun changes nothing"
         );
     }
+
+    /// The repository root: this binary crate's manifest directory.
+    fn repo() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// Every committed persona under `.rigger/agents/`, `(file name, text)`, sorted by name.
+    fn committed_personas() -> Vec<(String, String)> {
+        let dir = repo().join(".rigger").join("agents");
+        let mut out: Vec<(String, String)> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{} must be readable: {e}", dir.display()))
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "md"))
+            .map(|p| {
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                (name, std::fs::read_to_string(&p).unwrap())
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Every agent text rigger ships: the committed personas and the scaffold seeds, each
+    /// labelled with where it lives.
+    fn every_shipped_persona() -> Vec<(String, String)> {
+        let mut all: Vec<(String, String)> = committed_personas()
+            .into_iter()
+            .map(|(f, t)| (format!(".rigger/agents/{f}"), t))
+            .collect();
+        all.extend(
+            SCAFFOLD_AGENTS
+                .iter()
+                .map(|(f, t)| (format!("SCAFFOLD_AGENTS {f}"), (*t).to_string())),
+        );
+        all
+    }
+
+    /// Byran's seam rulings: every persona, reviewers included, runs on opus with no ladder,
+    /// and may fan its mechanical work out (the `Agent` tool, `recurse: true`), in the
+    /// committed fleet and in every scaffold seed alike.
+    #[test]
+    fn every_persona_and_scaffold_seed_runs_on_opus_and_may_fan_out() {
+        assert_eq!(
+            committed_personas().len(),
+            8,
+            "the committed fleet is eight personas"
+        );
+        for (at, text) in every_shipped_persona() {
+            let def = config::parse_agent(text.as_bytes())
+                .unwrap_or_else(|e| panic!("{at} must parse: {e}"));
+            assert_eq!(def.model, "opus", "{at} runs on opus");
+            assert!(def.model_ladder.is_empty(), "{at} carries no model ladder");
+            assert!(
+                def.tools.iter().any(|t| t == "Agent"),
+                "{at} grants the Agent tool; got {:?}",
+                def.tools
+            );
+            assert!(def.recurse, "{at} is `recurse: true`");
+            assert!(
+                !text.contains("cannot fan out"),
+                "{at} still says it cannot fan out"
+            );
+        }
+    }
+
+    /// DRY: a harness-wide rule lives in the built-in instruction layer, which reaches every
+    /// spawn; no persona file or scaffold seed carries a copy of any of its lines.
+    #[test]
+    fn personas_and_seeds_carry_no_copy_of_a_built_in_instruction() {
+        for (at, text) in every_shipped_persona() {
+            for (name, body) in instructions::BUILTIN {
+                for line in body.lines().map(str::trim).filter(|l| l.len() > 40) {
+                    assert!(
+                        !text.contains(line),
+                        "{at} copies a line of the built-in {name:?} (it reaches every spawn \
+                         already): {line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The roles that write or judge tests carry the mutation-proof test block exactly once;
+    /// no other role does.
+    #[test]
+    fn the_test_roles_carry_the_mutation_test_block_exactly_once() {
+        const HEADING: &str = "## Every test must survive mutation testing";
+        for (file, text) in committed_personas() {
+            let want = usize::from(matches!(
+                file.as_str(),
+                "rust-engineer.md" | "sdet-author.md" | "sdet.md"
+            ));
+            assert_eq!(
+                text.matches(HEADING).count(),
+                want,
+                "{file}: the test block appears {want} time(s)"
+            );
+        }
+    }
+
+    /// A mutation survivor is always a failure: the engineer closes it with a failing test or
+    /// a rewrite, never by justifying it, and its accounting has no justified status.
+    #[test]
+    fn rust_engineer_closes_every_survivor_and_never_justifies_one() {
+        let text = std::fs::read_to_string(repo().join(".rigger/agents/rust-engineer.md")).unwrap();
+        for banned in ["JUSTIFIED", "missed-justified", "equivalence reason"] {
+            assert!(
+                !text.contains(banned),
+                "rust-engineer.md still offers {banned:?}"
+            );
+        }
+        for wanted in [
+            "(surviving) mutant is always a failure",
+            "never by an\n  `exclude_re` or `mutants::skip`",
+            "caught | missed-caught (naming the catching test) | unviable | timeout",
+        ] {
+            assert!(
+                text.contains(wanted),
+                "rust-engineer.md must say {wanted:?}"
+            );
+        }
+    }
+
+    /// The CLI handlers live in `src/cli/`; the periphery author's CLI-surface probe diffs
+    /// them alongside the registry in `src/main.rs`.
+    #[test]
+    fn sdet_author_probes_the_cli_modules_for_new_cli_surface() {
+        let text = std::fs::read_to_string(repo().join(".rigger/agents/sdet-author.md")).unwrap();
+        assert!(
+            text.contains("git diff BASE -- src/main.rs src/cli"),
+            "the CLI probe must cover src/cli"
+        );
+        assert!(
+            !text.contains("git diff BASE -- src/main.rs |"),
+            "the CLI probe must not stop at src/main.rs"
+        );
+    }
+
+    /// The fan-out helpers the working discipline names live at `.claude/agents/`: committed
+    /// in this repository and scaffolded byte-identical into every project `init` sets up.
+    #[test]
+    fn init_scaffolds_the_fan_out_helpers_byte_identical_to_the_committed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        init_project(dir.path()).expect("init must scaffold");
+        for (file, model) in [
+            ("lookup.md", "model: haiku"),
+            ("verify.md", "model: sonnet"),
+        ] {
+            let committed = repo().join(".claude").join("agents").join(file);
+            let committed = std::fs::read_to_string(&committed)
+                .unwrap_or_else(|e| panic!("{} must be committed: {e}", committed.display()));
+            let scaffolded = dir.path().join(".claude").join("agents").join(file);
+            let scaffolded = std::fs::read_to_string(&scaffolded)
+                .unwrap_or_else(|e| panic!("init must write {}: {e}", scaffolded.display()));
+            assert_eq!(
+                scaffolded, committed,
+                "{file}: the scaffold mirrors the committed file"
+            );
+            assert!(committed.contains(model), "{file} runs on {model}");
+        }
+        let rerun = init_project(dir.path()).expect("a rerun must succeed");
+        assert!(!rerun.changed(), "a rerun rewrites no helper");
+    }
+
+    /// KISS is the fewest moving parts, never a line count: no agent, instruction or handbook
+    /// text rigger ships states a size limit.
+    #[test]
+    fn no_size_limit_sentence_ships_in_any_agent_instruction_or_handbook_text() {
+        let limit = regex::Regex::new(
+            r"too_many_lines|cognitive_complexity|over \d[\d,]* lines|\d[\d,]* lines (fails|caps|limit)",
+        )
+        .unwrap();
+        let mut texts = every_shipped_persona();
+        for dir in ["crates/rigger-domain/src/instructions", ".claude/agents"] {
+            for entry in std::fs::read_dir(repo().join(dir)).into_iter().flatten() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|x| x == "md") {
+                    texts.push((
+                        path.display().to_string(),
+                        std::fs::read_to_string(&path).unwrap(),
+                    ));
+                }
+            }
+        }
+        let handbook = repo().join("docs/handbook/authoring-agents.md");
+        texts.push((
+            handbook.display().to_string(),
+            std::fs::read_to_string(&handbook).unwrap(),
+        ));
+        for (name, body) in instructions::BUILTIN {
+            texts.push((format!("BUILTIN {name}"), (*body).to_string()));
+        }
+        let hits: Vec<String> = texts
+            .iter()
+            .flat_map(|(at, text)| {
+                text.lines()
+                    .enumerate()
+                    .filter(|(_, l)| limit.is_match(l))
+                    .map(move |(i, l)| format!("{at}:{}: {l}", i + 1))
+            })
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "size-limit sentences ship:\n{}",
+            hits.join("\n")
+        );
+    }
 }

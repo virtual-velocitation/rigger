@@ -26700,12 +26700,15 @@ fn instructions_prints_an_operator_file_after_the_built_in_law() {
     let builtin = out
         .find("## engineering-principles")
         .unwrap_or_else(|| panic!("built-in missing; got:\n{out}"));
+    let discipline = out
+        .find("## working-discipline")
+        .unwrap_or_else(|| panic!("the working discipline is missing; got:\n{out}"));
     let house = out
         .find("## 10-house")
         .unwrap_or_else(|| panic!("operator file missing; got:\n{out}"));
     assert!(
-        builtin < house,
-        "the built-in law renders first; got:\n{out}"
+        builtin < discipline && discipline < house,
+        "the built-in law, then the working discipline, then the operator file; got:\n{out}"
     );
     assert!(
         out.contains("House rule: name every error path."),
@@ -26726,7 +26729,10 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
     assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
     assert_eq!(
         out.lines().next(),
-        Some("# Rigger instructions in force: engineering-principles - see rigger instructions"),
+        Some(
+            "# Rigger instructions in force: engineering-principles, working-discipline - see \
+             rigger instructions"
+        ),
         "with no operator files the parenthetical is omitted; got:\n{out}"
     );
 }
@@ -26747,8 +26753,8 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
     assert_eq!(
         lines.next(),
         Some(
-            "# Rigger instructions in force: engineering-principles (+2 operator files) - see \
-             rigger instructions"
+            "# Rigger instructions in force: engineering-principles, working-discipline (+2 \
+             operator files) - see rigger instructions"
         ),
         "got:\n{out}"
     );

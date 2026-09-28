@@ -11520,7 +11520,7 @@ mod tests {
         /// 77's TMPDIR-registration pin) - both retired here: spec 91 Design decides "the
         /// implementer persona's mutation block is removed together with its unit.diff/TMPDIR
         /// choreography", so there is no more seeded per-round step, gating clause, or TMPDIR
-        /// template to pin. The kill-or-justify accounting contract those tests protected now
+        /// template to pin. The mutant accounting contract those tests protected now
         /// lives in the `checkin` stage's own task text (per `tests/cli.rs`'s
         /// `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`,
         /// spec 91 criterion 2's own drift guard, naming this as criterion 3's pin) - this
@@ -11530,7 +11530,7 @@ mod tests {
         /// implementer persona (`.rigger/agents/rust-engineer.md`) is OPERATOR CONFIGURATION
         /// seeded by the operator, not authored by any unit (spec 73 Design: "the grounder cannot
         /// ground non-code files, so no unit can own a Markdown blast radius").
-        implementer_persona_pins_the_checkin_stage_kill_or_justify_contract:
+        implementer_persona_pins_the_checkin_stage_survivor_closing_contract:
             assert_implementer_persona_pins(&[
             // One contiguous-phrase check, not two independently-satisfiable fragments: a
             // decomposed persona that keeps "checkin" and "stage" as bare substrings in unrelated
@@ -11539,7 +11539,7 @@ mod tests {
             (
                 true,
                 "When you are spawned for the `checkin` stage",
-                "the kill-or-justify step must be gated on being spawned for the checkin stage, \
+                "the survivor-closing step must be gated on being spawned for the checkin stage, \
                  as one contiguous clause, not two independently-satisfiable fragments",
             ),
             (
@@ -11548,32 +11548,29 @@ mod tests {
                 "the checkin stage must read the mutation gate's own outcomes file, never \
                  stdout",
             ),
-            // One contiguous-phrase check naming the either-or relation itself, not two bare
-            // keywords: a decomposed persona that keeps "KILLED" and "JUSTIFIED" as unrelated
-            // words (e.g. "always JUSTIFIED ... and never KILLED") would still satisfy two
-            // independent `contains` calls despite inverting the disjunction.
+            // A survivor is always a failure (Byran 2026-09-26): one contiguous clause naming
+            // the two ways it closes and the instrument narrowing that never closes it, so a
+            // persona that re-admits a justification (an equivalence argument recorded as an
+            // exclusion) fails this test.
             (
                 true,
+                "(surviving) mutant is always a failure: it is closed by a test that fails on it \
+                 or by rewriting the site so the mutable token disappears, never by an \
+                 `exclude_re` or `mutants::skip`",
+                "a missed mutant closes only by a failing test or a rewrite, never by an \
+                 exclusion, as one contiguous clause",
+            ),
+            (
+                false,
                 "is either KILLED by a strengthened test or JUSTIFIED with a concrete \
                  equivalence reason",
-                "a missed mutant must be resolved by an explicit kill-or-justify disjunction, as \
-                 one contiguous either-or clause, not two independent bare keywords",
+                "no justification closes a survivor: the kill-or-justify disjunction is gone",
             ),
             (
                 true,
-                "an `exclude_re` entry in `.cargo/mutants.toml`",
-                "a justification must name the exclude_re mechanism a missed mutant is recorded \
-                 equivalent through",
-            ),
-            // The consequence itself, not just the "unjustified miss" keyword: an inversion that
-            // keeps the words "unjustified miss" but reverses the outcome (e.g. "is merely noted
-            // in the log, and the checkin stage may still be marked done") must fail this test.
-            (
-                true,
-                "an unjustified miss means the checkin stage is not done",
-                "an unjustified missed mutant must leave the checkin stage not done - the \
-                 consequence clause itself, not merely the presence of the words \"unjustified \
-                 miss\"",
+                "a miss still standing means the checkin stage is not done",
+                "a missed mutant still standing must leave the checkin stage not done - the \
+                 consequence clause itself",
             ),
             // The ACCOUNTING shape (spec 73's deterministic per-mutant DecisionMade format): one
             // contiguous clause each for the id convention, the no-new-event-type + deterministic
@@ -11595,8 +11592,7 @@ mod tests {
             ),
             (
                 true,
-                "caught | missed-killed (naming the killing test) | missed-justified (with \
-                 reason) | unviable | timeout",
+                "caught | missed-caught (naming the catching test) | unviable | timeout",
                 "the accounting's per-mutant status vocabulary must be exhaustive and in this \
                  order",
             ),
@@ -11658,7 +11654,7 @@ mod tests {
     }
 
     /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). The structural counterpart of
-    /// `implementer_persona_pins_the_checkin_stage_kill_or_justify_contract` above: no persona
+    /// `implementer_persona_pins_the_checkin_stage_survivor_closing_contract` above: no persona
     /// under `.rigger/agents/` - implementer, reviewer, or the SDET author - may INVOKE
     /// `cargo mutants` itself any more. Only the `checkin` stage's `mutation` GATE (spec 91
     /// criterion 2, `.rigger/workflow.yml`) runs that command now; a persona merely reading or

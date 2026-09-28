@@ -25123,6 +25123,9 @@ mod tests {
             let builtin_at = sys
                 .find("## engineering-principles")
                 .unwrap_or_else(|| panic!("agent {id:?} lacks the built-in law; got: {sys:?}"));
+            let working_at = sys.find("## working-discipline").unwrap_or_else(|| {
+                panic!("agent {id:?} lacks the working discipline; got: {sys:?}")
+            });
             let operator_at = sys
                 .find("House rule: every public fn carries a doc comment.")
                 .unwrap_or_else(|| panic!("agent {id:?} lacks the operator layer; got: {sys:?}"));
@@ -25130,7 +25133,10 @@ mod tests {
                 .find("Rigger communication discipline")
                 .expect("discipline present");
             assert!(
-                persona_at < builtin_at && builtin_at < operator_at && operator_at < discipline_at,
+                persona_at < builtin_at
+                    && builtin_at < working_at
+                    && working_at < operator_at
+                    && operator_at < discipline_at,
                 "agent {id:?}: persona, built-in, operator, discipline must appear in order; got: {sys:?}"
             );
         }

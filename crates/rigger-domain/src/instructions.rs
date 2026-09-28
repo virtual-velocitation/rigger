@@ -146,14 +146,83 @@ mod tests {
             "YAGNI",
             "TDD",
             "BDD",
-            "One pass, by excellence",
-            "A surviving mutant is always a failure",
         ] {
             assert!(
                 body.contains(phrase),
                 "the built-in law must name {phrase:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_built_in_layer_is_the_law_then_the_working_discipline_in_that_order() {
+        let names: Vec<&str> = BUILTIN.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names,
+            ["engineering-principles", "working-discipline"],
+            "the built-in layer is exactly the law followed by the working discipline"
+        );
+    }
+
+    #[test]
+    fn the_working_discipline_carries_one_pass_the_fan_out_helpers_and_the_survivor_rule() {
+        let (_, body) = BUILTIN
+            .iter()
+            .find(|(name, _)| *name == "working-discipline")
+            .expect("the working-discipline entry is built in");
+        for heading in [
+            "## One pass, by excellence",
+            "## Fan out the mechanical work",
+            "## A surviving mutant is always a failure",
+        ] {
+            assert_eq!(
+                body.matches(heading).count(),
+                1,
+                "the working discipline carries {heading:?} exactly once"
+            );
+        }
+        for phrase in [
+            "`lookup` (Haiku, graph-only): ONE instance PER GRAPH NODE",
+            "`verify` (Sonnet, with a shell): ONE instance",
+            "`.claude/agents/`",
+            "never over files",
+        ] {
+            assert!(
+                body.contains(phrase),
+                "the fan-out section must name {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_built_in_section_heading_has_exactly_one_home() {
+        let mut seen: Vec<(&str, &str)> = Vec::new();
+        for (name, body) in BUILTIN {
+            for line in body.lines().filter(|l| l.starts_with("## ")) {
+                if let Some((other, _)) = seen.iter().find(|(_, h)| *h == line) {
+                    panic!("{line:?} is in both {other:?} and {name:?}; a rule has one home");
+                }
+                seen.push((name, line));
+            }
+        }
+        assert!(
+            seen.len() >= 4,
+            "the law and the discipline each carry their sections; got {seen:?}"
+        );
+    }
+
+    #[test]
+    fn compose_places_the_working_discipline_after_the_law_and_before_the_operator_layer() {
+        let sys = compose("P.", &[op("10-house", "House rule.")]);
+        let law = sys.find("## engineering-principles").expect("the law");
+        let discipline = sys
+            .find("## working-discipline")
+            .expect("the working discipline reaches every spawn");
+        let house = sys.find("## 10-house").expect("the operator file");
+        assert!(
+            law < discipline && discipline < house,
+            "law, then discipline, then operator; got:\n{sys}"
+        );
     }
 
     #[test]
