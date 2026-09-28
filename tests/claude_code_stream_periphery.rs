@@ -113,6 +113,18 @@ impl Fixture {
             .collect()
     }
 
+    /// Every `SpawnLaunched` record (open and closing alike) the progress store holds, in
+    /// append order.
+    fn launch_records(&self) -> Vec<rigger::progress::SpawnLaunched> {
+        self.progress_store
+            .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == rigger::progress::TYPE_SPAWN_LAUNCHED)
+            .map(|e| serde_json::from_slice(&e.data).unwrap())
+            .collect()
+    }
+
     /// Every agent-progress activity line the progress store holds.
     fn activities(&self) -> Vec<String> {
         self.progress_store
@@ -217,7 +229,8 @@ fn spawn_records_the_result_in_the_run_store_with_its_full_meta() {
     assert_eq!(res.meta["usage"]["cache_read"], 10);
     assert_eq!(res.meta["turns"], 3);
     assert_eq!(res.meta["cost_usd"], 0.0456);
-    // One `system/permission_denied` line in the fixture.
+    // One denial, both streamed as `system/permission_denied` and listed in the result's
+    // own `permission_denials` array - counted once.
     assert_eq!(res.meta["permission_denials"], 1);
 }
 
@@ -371,7 +384,21 @@ fn spawn_fails_classified(
         "{why}: {}",
         err.0
     );
+    assert_closed_as_a_fault(&fx, class);
     err.0
+}
+
+/// The fixture's latest launch record closes the launch `fault` with `class` (spec 104 THE
+/// LAUNCH: "at exit it closes the record with `ended: completed | interrupted | fault |
+/// stopped` and the class").
+fn assert_closed_as_a_fault(fx: &Fixture, class: AgentFailure) {
+    let closing = fx.launch_records().pop().expect("the launch was recorded");
+    assert_eq!(closing.ended.as_deref(), Some("fault"), "{closing:?}");
+    assert_eq!(
+        closing.class.as_deref(),
+        Some(class.as_str()),
+        "{closing:?}"
+    );
 }
 
 #[test]
@@ -422,6 +449,100 @@ rigger::test_cases! {
             "the OTHER run's StopFailure record must not outrank this run's own api_retry \
              category",
         );
+}
+
+// ---- LAUNCH FAULT (spec 104 THE STREAM): "a `rigger` server that did not connect fails
+// the launch as a fault" ----
+
+#[cfg(unix)]
+#[test]
+fn a_rigger_mcp_server_that_failed_at_init_stops_the_session_as_an_unknown_fault() {
+    // 2026-09-28 probe against the real claude 2.1.283: the spawn's `rigger mcp --spawn`
+    // server exited before it connected, init reported it `failed`, and the session ran its
+    // whole task with no rigger tools while the host recorded a success. The fixture replays
+    // that init, then carries on toward a result the host must never read.
+    let fx = Fixture::new();
+    let pid_file = fx.scratch_file("agent.pid");
+    let o = opts_with_env(
+        "u104-mcp/implementer#0",
+        "RIGGER_TEST_MCP_FAILED_PID_FILE",
+        &pid_file,
+    );
+
+    let started = Instant::now();
+    let err = fx
+        .driver_running("claude-code-mcp-server-failed-agent.sh")
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect_err("a session whose rigger MCP server failed must not read as a success");
+    let elapsed = started.elapsed();
+
+    let message = rigger::conductor::strip_failure_marker(&err);
+    assert!(
+        message.contains(&format!("class {}", AgentFailure::Unknown)),
+        "a launch fault is class unknown: {}",
+        err.0
+    );
+    assert!(
+        message.contains("u104-mcp/implementer#0")
+            && message.contains("rigger MCP server")
+            && message.contains("\"failed\""),
+        "the failure names the spawn, the server and its reported status: {message}"
+    );
+    // Stopped at the init line, never after the fixture's toolless work: the session is
+    // starting its task, not winding down, so no grace is spent on it.
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "the session must be stopped at init, not left to run: {elapsed:?}"
+    );
+    let pid = recorded_pid(&pid_file, "the fixture recorded its pid before init");
+    assert!(
+        !common::is_alive(pid),
+        "child pid {pid} must not outlive its launch fault"
+    );
+    assert!(
+        fx.spawn_results().is_empty(),
+        "a launch fault records no result of its own"
+    );
+    assert_closed_as_a_fault(&fx, AgentFailure::Unknown);
+}
+
+#[test]
+fn a_connected_rigger_mcp_server_proceeds_whatever_another_server_reports() {
+    let fx = Fixture::new();
+    let o = opts("u104-mcp/implementer#0");
+
+    let result = fx
+        .driver_running("claude-code-mcp-server-connected-agent.sh")
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect("a connected rigger server is a healthy launch");
+
+    assert_eq!(result.output, "done with the rigger tools");
+    assert_eq!(fx.spawn_results().len(), 1);
+}
+
+// ---- THE STREAM's denial count: the `result` event's `permission_denials` is its one source ----
+
+/// The `permission_denials` count the run store holds after a spawn of `script`.
+fn recorded_denials(script: &str) -> serde_json::Value {
+    let fx = Fixture::new();
+    let o = opts("u104-denials/implementer#0");
+
+    fx.driver_running(script)
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect("the fixture stream ends in a result");
+
+    let results = fx.spawn_results();
+    assert_eq!(results.len(), 1, "exactly one SpawnResult landed");
+    spawn::SpawnResult::from_event(&results[0]).unwrap().meta["permission_denials"].clone()
+}
+
+rigger::test_cases! {
+    // 2026-09-28 probe: a PreToolUse hook block emits no `system/permission_denied` event,
+    // yet the result lists it.
+    a_hook_blocked_denial_with_no_stream_event_is_counted_from_the_result:
+        assert_eq!(recorded_denials("claude-code-hook-blocked-denial-agent.sh"), 1);
+    a_denial_both_streamed_and_listed_in_the_result_is_counted_once:
+        assert_eq!(recorded_denials(STREAM_AGENT), 1);
 }
 
 #[test]
@@ -765,22 +886,13 @@ fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
     );
 
     // "the launch ends `stopped`" - the progress-store closing record.
-    let progress_events = fx
-        .progress_store
-        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
-        .unwrap();
-    let launches: Vec<_> = progress_events
-        .iter()
-        .filter(|e| e.type_ == rigger::progress::TYPE_SPAWN_LAUNCHED)
-        .collect();
+    let launches = fx.launch_records();
     assert_eq!(
         launches.len(),
         2,
         "the open launch record plus its stopped closing record"
     );
-    let closing: rigger::progress::SpawnLaunched =
-        serde_json::from_slice(&launches[1].data).unwrap();
-    assert_eq!(closing.ended.as_deref(), Some("stopped"));
+    assert_eq!(launches[1].ended.as_deref(), Some("stopped"));
 }
 
 #[test]

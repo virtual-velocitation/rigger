@@ -3,4 +3,4 @@
 {"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working on it."}]},"session_id":"11111111-1111-4111-8111-111111111111"}
 not json at all, a stray diagnostic line
-{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"duration_api_ms":900,"num_turns":3,"result":"done: the answer is 42","session_id":"11111111-1111-4111-8111-111111111111","total_cost_usd":0.0456,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":20,"cache_read_input_tokens":10},"permission_denials":[]}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"duration_api_ms":900,"num_turns":3,"result":"done: the answer is 42","session_id":"11111111-1111-4111-8111-111111111111","total_cost_usd":0.0456,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":20,"cache_read_input_tokens":10},"permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_01DeniedRemove","tool_input":{"command":"rm -rf /"}}]}
