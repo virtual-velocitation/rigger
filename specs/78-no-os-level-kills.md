@@ -79,7 +79,7 @@ construction:
   independently (git-identity) authorized reap share the ONE termination implementation
   rather than a second, parallel one.
 - Callers (round 2 signatures): `reap_then_remove_dir`/`reap_then_remove_worktree`
-  (`src/main.rs`) and `reclaim_unit_mutation_scratch` (`src/driver/replay.rs`) now thread an
+  (`src/main.rs`) and `reclaim_unit_mutation_scratch` (`crates/rigger-driver/src/driver/replay.rs`) now thread an
   `authorized_root` through to `reap_processes_rooted_under`, resolved from the SAME context
   each already had (the run's resolved scratch root, or the registered mutation-scratch root
   under `cache_home`); `Worktree::remove` (`crates/rigger-worktree-git/src/worktree.rs`) calls `reap::reap_authorized`

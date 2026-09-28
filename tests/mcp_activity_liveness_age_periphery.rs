@@ -20,9 +20,9 @@
 //!
 //! WHY NOT A `rigger serve` SUBPROCESS (the usual periphery pattern for this MCP surface, see
 //! `tests/workflow_driver_resolved_model_periphery.rs`). Investigated and rejected: under the
-//! WORKFLOW driver `rigger serve` composes `Server` with (`src/driver/workflow.rs::Driver`), a
+//! WORKFLOW driver `rigger serve` composes `Server` with (`crates/rigger-driver/src/driver/workflow.rs::Driver`), a
 //! parked spawn is tracked purely in an in-memory queue and NEVER appended to the run's event
-//! log as a `TYPE_SPAWN_REQUESTED` event - only the REPLAY driver (`src/driver/replay.rs`,
+//! log as a `TYPE_SPAWN_REQUESTED` event - only the REPLAY driver (`crates/rigger-driver/src/driver/replay.rs`,
 //! `rigger step`'s driver) parks that way. `tool_activity`'s frontier is
 //! `spawn::step_result(run_events)?.wave`, which folds exactly those `TYPE_SPAWN_REQUESTED`
 //! events - so under a real `rigger serve` process the frontier that array is built from is

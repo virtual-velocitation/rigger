@@ -2,7 +2,7 @@
 //! CONFIG-PARSE seam, closed at the check-in seam (spec 91) re-enumeration pass over the
 //! whole spec-104 diff.
 //!
-//! `src/config.rs`'s own doc comment on the field and `src/driver/claude_code.rs`'s
+//! `src/config.rs`'s own doc comment on the field and `crates/rigger-driver/src/driver/claude_code.rs`'s
 //! `build_args_types_the_full_launch` both assume the field reaches [`build_args`] already
 //! populated, but neither proves it actually GETS there from a real
 //! `.rigger/agents/<id>.md` document: the implementer's own inline test builds the
@@ -12,7 +12,7 @@
 //! before this file, `fallback_model` had zero references anywhere under `tests/`.
 //!
 //! `tests/claude_code_launch_wire_periphery.rs` explicitly defers the argv shape
-//! (including `--fallback-model`) to `src/driver/claude_code.rs`'s own inline tests - this
+//! (including `--fallback-model`) to `crates/rigger-driver/src/driver/claude_code.rs`'s own inline tests - this
 //! file does not re-litigate that (it asserts the SAME flag, but only ever downstream of a
 //! REAL parse, which is the one link in the chain nothing else exercises).
 

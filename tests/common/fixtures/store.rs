@@ -2,18 +2,6 @@
 
 use rigger::eventstore::Event;
 
-/// Every event on `store`'s run stream, oldest first.
-pub fn run_log(store: &rigger::eventstore::sqlite::Store) -> Vec<Event> {
-    use rigger::eventstore::EventStore;
-    store
-        .read_stream(
-            rigger::conductor::STREAM,
-            0,
-            rigger::eventstore::Direction::Forward,
-        )
-        .unwrap()
-}
-
 /// Race two `Worktree::create` calls against the ONE repository at `repo_path` for `rounds`
 /// rounds - disjoint branches, and dirs named `{dir_prefix}race-a-{round}` /
 /// `{dir_prefix}race-b-{round}` - asserting every create on both threads succeeds: a heal scan on

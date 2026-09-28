@@ -13,7 +13,7 @@ the baseline the day's memory overrun landed on. `rigger validate` reported noth
 
 **THE WIDTH IS A CONFIG KEY THE CONDUCTOR ENFORCES.** `defaults.max_parallel_units`
 (the key the config already carries) bounds the stages in flight across a wave: within each
-batch `run_wave` (`src/conductor.rs:3756`) admits at most that many stages; a stage not
+batch `run_wave` (`src/conductor.rs:3449`) admits at most that many stages; a stage not
 admitted is neither failed nor terminal - it waits, and starts when a slot frees in this
 step's wave or a later one. `0` means unbounded and is the default, so an existing consumer's
 behavior does not change until it writes the key; `rigger init` and `rigger setup` scaffold

@@ -1,0 +1,48 @@
+[package]
+name = "rigger-driver"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's agent-host adapters: the drivers behind the AgentDriver port (the headless Claude Code host, the CLI, the Workflow and the replay driver), the per-spawn liveness markers, the peers side-car, the installed hooks and the supervised child guard."
+
+[lib]
+name = "rigger_driver"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = ["rigger-domain/store", "rigger-process/store", "rigger-store-sqlite/store"]
+core = ["rigger-domain/core", "rigger-process/core", "rigger-store-sqlite/core"]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# The process-spawn port and the reaper every agent child ends through (a same-ring edge).
+rigger-process = { path = "../rigger-process", default-features = false }
+# The event-store adapters and the spawn/progress write halves (a same-ring edge).
+rigger-store-sqlite = { path = "../rigger-store-sqlite", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The headless host's fresh session id.
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+regex = "1"
+serial_test = "3"
+# The replay driver's tests drive the conductor's run loop, and the shared fixtures name the
+# conductor, config, gate, canary, ingest and worktree vocabulary (recorded in
+# tests/boundary_audit.rs ADAPTER_VIOLATIONS). A test is its own composition root, so it
+# reaches them through the root package as a dev-dependency, renamed because the shared
+# fixtures already call this crate `rigger`. No default features, so the dev-dependency never
+# widens the root's lane when both crates are tested in one invocation.
+rigger-root = { package = "rigger", path = "../..", default-features = false }
+
+[lints]
+workspace = true

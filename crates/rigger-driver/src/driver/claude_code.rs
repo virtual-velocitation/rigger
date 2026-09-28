@@ -23,9 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::conductor::{
-    classify_failure, no_result_error, AgentDriver, AgentResult, Error, SpawnOpts,
-};
+use crate::agent::{classify_failure, no_result_error, AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
 use crate::eventstore::{Direction, EventStore};
 use crate::liveness;
@@ -49,7 +47,7 @@ const PERMISSION_MODE: &str = "default";
 const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
-/// stdout-reader threads, right after `dash::ReapedChild::drop` reaps the one child this
+/// stdout-reader threads, right after `reaped_child::ReapedChild::drop` reaps the one child this
 /// function held - a dedicated diagnostic-drain bound, DELIBERATELY NEVER
 /// [`Driver::stop_grace`] (adj-u104stop-r4-verdict-reject REQUIRED FIX,
 /// `op-104-stop-ordinary-path-drain-bound`): `stop_grace` is THE STOP's own wait for a
@@ -250,7 +248,7 @@ impl Driver<'_> {
     /// this reader cannot parse is never silently lost - it still lands liveness, the
     /// transcript file, AND a progress line (below), just no structured record.
     ///
-    /// Every exit reaps the child through ONE mechanism, [`crate::dash::ReapedChild`] -
+    /// Every exit reaps the child through ONE mechanism, [`crate::reaped_child::ReapedChild`] -
     /// the SAME guard the dashboard's own supervised child uses (adj-u104-stream round-3
     /// REQUIRED FIX 2: a second, hand-rolled Drop-based reap guard duplicated that exact
     /// concern; deleted in favor of reusing the canonical one, per this codebase's
@@ -318,7 +316,7 @@ impl Driver<'_> {
         max_wall_clock: u64,
     ) -> Result<AgentResult, Error> {
         let session_id = launch.session_id.clone();
-        let mut reaper = crate::dash::ReapedChild::new(launch.child);
+        let mut reaper = crate::reaped_child::ReapedChild::new(launch.child);
 
         let stdout = reaper.child_mut().stdout.take().ok_or_else(|| {
             Error(format!(
@@ -663,7 +661,7 @@ impl Driver<'_> {
     /// own fault.
     fn stop_for_wall_clock_silence(
         &self,
-        mut reaper: crate::dash::ReapedChild,
+        mut reaper: crate::reaped_child::ReapedChild,
         stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
         stdout_reader: std::thread::JoinHandle<()>,
         opts: &SpawnOpts,
@@ -1121,7 +1119,7 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conductor::{strip_failure_marker, AgentFailure};
+    use crate::agent::{strip_failure_marker, AgentFailure};
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
@@ -1362,7 +1360,7 @@ mod tests {
 
     fn fixture_bin() -> String {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/claude-code-echo-agent.sh")
+            .join("../../tests/fixtures/claude-code-echo-agent.sh")
             .to_string_lossy()
             .into_owned()
     }

@@ -1,6 +1,6 @@
 [
   {
-    "id": "dup-b4bb8ede3da2",
+    "id": "dup-a93b5528b8a8",
     "disposition": "not-a-duplicate",
     "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity); the shared token shape is a one-line `format!`."
   },
@@ -60,7 +60,7 @@
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
   {
-    "id": "dup-3dc6b7903687",
+    "id": "dup-0a701eb6cf8d",
     "disposition": "not-a-duplicate",
     "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
   },
@@ -85,12 +85,12 @@
     "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
   },
   {
-    "id": "dup-1b30068be20e",
+    "id": "dup-b43ee3b4b5bb",
     "disposition": "not-a-duplicate",
     "reason": "Two regression tests pinning the empty-scratch-root guard at two different call sites (`spawn_scratch_path` and `marker_path`), each deliberately tested where callers reach it."
   },
   {
-    "id": "dup-7329c003ba55",
+    "id": "dup-d340e212490f",
     "disposition": "not-a-duplicate",
     "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
   },
@@ -110,7 +110,7 @@
     "reason": "Three predicates over two different enums, each excluding a different variant (`Product`, `Infra`, `Deferred`) for a different policy."
   },
   {
-    "id": "dup-48b52977d9de",
+    "id": "dup-9f14620abab1",
     "disposition": "not-a-duplicate",
     "reason": "Two unit tests over two different functions (`marker_filename` and `heading_level`) each asserting their own `None` boundary."
   },
@@ -300,7 +300,7 @@
     "reason": "One test proves that a compensation revert reopens adoption of the second-life tip; the other is the control proving that a plain remediation failure never does - opposite outcomes of different ledger events."
   },
   {
-    "id": "dup-f31e5f12e527",
+    "id": "dup-4cf25824ad00",
     "disposition": "not-a-duplicate",
     "reason": "The two backstop tests seed different interleavings that guard different defects (the emit-only-approve backstop itself, and a parked-unanswered sibling suppressing it); their seeding and assertions already go through the shared helpers."
   },
@@ -385,7 +385,7 @@
     "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
   },
   {
-    "id": "dup-6ee3275d996e",
+    "id": "dup-e33cc9f09356",
     "disposition": "not-a-duplicate",
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
@@ -425,7 +425,7 @@
     "reason": "`stage_failing_docs_rigger_shim` and `stage_stale_rigger_shim` pass different shim scripts (fail `docs` then exec the real binary, vs a stand-alone stale binary that never delegates) to the one shared `rigger_shim_on_path`."
   },
   {
-    "id": "dup-1856c00f9b89",
+    "id": "dup-cd5c22f2a701",
     "disposition": "not-a-duplicate",
     "reason": "The replay driver's `spawn_request` assembles the parked request from an agent definition and the conductor's spawn options, while the test fixture builds a minimal request from bare labels with every optional field empty."
   },
@@ -505,7 +505,7 @@
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
   },
   {
-    "id": "dup-16b57df5dd8d",
+    "id": "dup-2a5626cb9627",
     "disposition": "not-a-duplicate",
     "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
   },
@@ -615,12 +615,12 @@
     "reason": "Card-route tests asserting different fields for different subjects (known versus unknown, code subject, membership-less entity, param precedence)."
   },
   {
-    "id": "dup-16f4e615101a",
+    "id": "dup-7ce260b96af1",
     "disposition": "not-a-duplicate",
     "reason": "Three spawn-option builders with different field values for different drivers (the replay driver, the stream host, the conductor implementer)."
   },
   {
-    "id": "dup-9b530092e109",
+    "id": "dup-8c5011c59ed1",
     "disposition": "not-a-duplicate",
     "reason": "`stage` builds a review-less never-merging `Stage` for the replay tests while `agent_with_prompt` builds an `AgentDef`; they construct different types."
   },
@@ -650,7 +650,7 @@
     "reason": "`derived_key_parts` is the production splitter while the periphery `split` is the test's independent oracle that must not reuse it."
   },
   {
-    "id": "dup-21dfa9e879a5",
+    "id": "dup-1a78461a4b17",
     "disposition": "not-a-duplicate",
     "reason": "Two injectivity tests over different functions (liveness marker filenames, origin-URL normalization) with different inputs."
   },
@@ -670,7 +670,7 @@
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
   },
   {
-    "id": "dup-3dd926889508",
+    "id": "dup-c0f477204b6e",
     "disposition": "not-a-duplicate",
     "reason": "`len` reports a sidecar's entry count while `batch_calls` reads a test double's recorded batch count."
   },
@@ -840,7 +840,7 @@
     "reason": "Lookups over two different read models: a dash Neighborhood node's optional layer, and a call-graph node's layer in the shared graph fixtures."
   },
   {
-    "id": "dup-262161c4943f",
+    "id": "dup-282069e7109f",
     "disposition": "not-a-duplicate",
     "reason": "Struct builders for different types and fields: a sonnet agent with tools, a fan-out stage with needs and gates, and an agent with a model ladder."
   },

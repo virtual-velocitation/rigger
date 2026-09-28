@@ -1,7 +1,7 @@
 //! Periphery for spec 104 criterion 5 (A FAILURE HAS A CLASS): drives
 //! `rigger hook stop-failure --spawn <id> --class <category>` through the REAL COMPILED
 //! binary against a real `.rigger/progress.db` - the boundary
-//! `src/driver/claude_code.rs`'s own `mod tests` and `progress_store.rs`'s own tests
+//! `crates/rigger-driver/src/driver/claude_code.rs`'s own `mod tests` and `progress_store.rs`'s own tests
 //! structurally cannot reach: real argv parsing, real store-directory resolution
 //! ([`require_store_dir`]'s walk-up), and the real CLI-level `--class` validation
 //! [`cmd_hook_stop_failure`] owns.

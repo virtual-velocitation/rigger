@@ -58,7 +58,7 @@
 //! fix's own extension of `tests/cli.rs`'s
 //! `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver` already
 //! proves that real cross-process BEHAVIOR end to end (stamp once, no restamp, clear on
-//! recovery), and the implementer's own `mod tests` in `src/liveness.rs` already proves each
+//! recovery), and the implementer's own `mod tests` in `crates/rigger-driver/src/liveness.rs` already proves each
 //! function's contract from INSIDE the crate (path shape, round trip, malformed input).
 //! Neither proves the thing `hung_cursor_functions_are_a_working_public_contract_across_the_
 //! crate_boundary` below does: that the three functions are usable, AS DOCUMENTED, from
@@ -73,7 +73,7 @@ use common::repo::repo_text;
 /// hung_cursor_path`, `read_hung_cursor`, and `write_hung_cursor` are the three new PUBLIC
 /// functions the round-4 fix added - called EXACTLY as an external crate consumer would
 /// (`use rigger::liveness::{...}`), never through any crate-internal privilege the
-/// implementer's own `src/liveness.rs::tests` has. Full permutation coverage of each
+/// implementer's own `crates/rigger-driver/src/liveness.rs::tests` has. Full permutation coverage of each
 /// function's own contract (path shape variants, per-run scoping, malformed-file handling)
 /// already lives there and is not re-derived here; this proves only that the exported
 /// symbols work as documented when called from outside the crate, plus one case genuinely

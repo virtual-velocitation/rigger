@@ -6,7 +6,7 @@
 //! WHY THIS FILE. `cmd_status`/`cmd_setup` are PRIVATE free functions in the `rigger` BINARY
 //! crate (`src/main.rs`), unreachable from an integration-test crate under `tests/` other than
 //! by spawning the compiled binary (mirrors `tests/console_status_periphery.rs`'s identical
-//! situation for the same command). `src/hooks.rs`'s own colocated `mod tests` already proves
+//! situation for the same command). `crates/rigger-driver/src/hooks.rs`'s own colocated `mod tests` already proves
 //! the settings-merge logic (`install_status_line`) in isolation; this file proves the OTHER
 //! half - that the real compiled `rigger status --line` and `rigger setup` wire it through a
 //! real `argv` -> `main()` dispatch and a real on-disk store/settings file.

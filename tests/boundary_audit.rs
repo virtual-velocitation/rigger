@@ -42,8 +42,7 @@ const RINGS: &[(&str, u8)] = &[
     ("rigger-graph-sqlite", 3),
     ("rigger-store-segments", 3),
     ("rigger-graph-mmap", 3),
-    ("rigger-driver-claude-code", 3),
-    ("rigger-driver-cli", 3),
+    ("rigger-driver", 3),
     ("rigger-worktree-git", 3),
     ("rigger-process", 3),
     ("rigger-gates-shell", 3),
@@ -468,6 +467,7 @@ const ADAPTER_SRCS: &[&str] = &[
     "crates/rigger-process/src",
     "crates/rigger-worktree-git/src",
     "crates/rigger-gates-shell/src",
+    "crates/rigger-driver/src",
 ];
 
 /// Items the workspace plan assigns to an adapter crate that still live in the root crate,
@@ -587,6 +587,20 @@ const ADAPTER_VIOLATIONS: &[(&str, &str, &str, &str)] = &[
         "metrics::project, through a dev-dependency on the root crate",
         "lesson-split-graph-sqlite-test-metrics-project",
     ),
+    (
+        "crates/rigger-driver/src/driver/replay.rs",
+        "tests",
+        "the conductor's run loop, Deps, park recognition and meta/event keys, the root Config and \
+         the gate runner, through a dev-dependency on the root crate",
+        "lesson-split-driver-replay-tests-drive-the-conductor",
+    ),
+    (
+        "crates/rigger-driver/src/lib.rs",
+        "conductor_fixtures",
+        "the shared conductor and config fixtures' conductor, Config and gate vocabulary, through a \
+         dev-dependency on the root crate",
+        "lesson-split-driver-fixtures-name-the-conductor",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -623,7 +637,7 @@ const ADAPTERS: &[Adapter] = &[
     Adapter {
         family: "agent driver",
         constructor: r"\b(ReplayDriver::new|Driver::new|Driver::default)\(|\bDriver \{",
-        home: &["src/driver/", "crates/rigger-driver-"],
+        home: &["crates/rigger-driver/"],
     },
 ];
 

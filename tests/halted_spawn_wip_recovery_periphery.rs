@@ -494,7 +494,7 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is
 /// the exact shape the spec's own Problem statement names: "`run_single_stage` commits whatever
 /// the unit worktree holds ... even when the named spawn already has a result and reviewers are
 /// live in the shared worktree; it committed a reviewer's temporary red-repro edit above an
-/// approved tip". `src/liveness.rs`'s own
+/// approved tip". `crates/rigger-driver/src/liveness.rs`'s own
 /// `spawn_is_halted_is_false_when_the_named_spawn_already_has_a_real_result` proves the guard
 /// white-box, on the pure function alone; nothing before this test wires it through
 /// `run_single_stage` at all - the sibling round-trip test above only ever runs `rigger step`

@@ -1,15 +1,15 @@
 # 104 - Rigger hosts its agents as headless Claude Code sessions
 
-**Goal:** the CLI driver launches `claude -p`, blocks on `output()` (`src/driver/cli.rs:71`),
+**Goal:** the CLI driver launches `claude -p`, blocks on `output()` (`crates/rigger-driver/src/driver/cli.rs:71`),
 learns nothing until exit, maps every non-zero exit to one generic error (`cli.rs:88`), leaves
-`resolved_model` empty (`src/conductor.rs:593`) and bridges emits by parsing stdout afterwards
+`resolved_model` empty (`crates/rigger-domain/src/agent.rs:45`) and bridges emits by parsing stdout afterwards
 (`cli.rs:121`). Elsewhere an agent's heartbeat, model and result are self-reported by
 shell-out, its session is unknown, and an API failure has no class. Claude Code's headless
 surface already carries all of it: a probe with an invalid credential emitted
 `{"type":"system","subtype":"api_retry","error_status":401,"error":"authentication_failed"}`
 within one second. This spec ships the agent host of
 docs/architecture-addendum-claude-code-integration.md (section 4) behind the `AgentDriver`
-port (`src/conductor.rs:1340`). The swap of the `rigger run` composition root
+port (`crates/rigger-domain/src/agent.rs:130`). The swap of the `rigger run` composition root
 (`src/main.rs:3667`) onto this host, and the hold that consumes its failure classes, are
 spec 105's.
 

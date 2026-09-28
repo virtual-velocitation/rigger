@@ -1,7 +1,7 @@
 //! Spec 79 criterion 2, THE BARE-REMOVAL AUDIT: the whole-tree companion to criterion 1's
 //! reap-before-removal rewiring (`sweep_terminal`, `clear_worktree_dir`, `reclaim_cache_sibling`,
 //! `reclaim_worktree_on_branch`, `Worktree::discard`, `Worktree::remove` - crates/rigger-worktree-git/src/worktree.rs, and
-//! `reclaim_unit_mutation_scratch` - src/driver/replay.rs). This test walks every `.rs` file
+//! `reclaim_unit_mutation_scratch` - crates/rigger-driver/src/driver/replay.rs). This test walks every `.rs` file
 //! under `src/` and fails, naming file and line, on any `fs::remove_dir_all(...)` or
 //! `git worktree remove` call site that is NEITHER routed through a reap-then-remove path NOR
 //! carries a claimed-exemption comment this test independently verifies is present (spec 79's
@@ -73,7 +73,7 @@
 //!   discloses as not safely bridgeable by a plain text scan.
 //!
 //! SCOPE: `src/` and each member crate's `crates/<name>/src/` only, recursively
-//! (`src/driver/replay.rs` included) - never `tests/`. Spec
+//! (`crates/rigger-driver/src/driver/replay.rs` included) - never `tests/`. Spec
 //! 79's Done-when line is literally "walks `src/`", and its Notes name why: "the pid-namespace
 //! test runner already contains TEST-spawned orphans; this spec is about the OPERATOR-side
 //! runtime paths, which run in no namespace." A test fixture's own tempdir teardown (e.g.

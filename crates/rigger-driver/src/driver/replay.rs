@@ -24,9 +24,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::conductor::{parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts, STREAM};
+use crate::agent::{parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
 use crate::eventstore::{Direction, EventStore};
+use crate::run::STREAM;
 use crate::spawn::{self, SpawnRequest};
 use crate::spawn_store;
 

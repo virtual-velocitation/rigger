@@ -6,9 +6,7 @@
 use crate::eventstore::Event;
 use crate::spawn::SpawnEvent;
 
-#[derive(Debug, thiserror::Error)]
-#[error("worktree: {0}")]
-pub struct Error(pub String);
+pub use rigger_domain::worktree::Error;
 
 /// Which `git diff` range [`Worktree::diff_names`] compares `from` against `HEAD` with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

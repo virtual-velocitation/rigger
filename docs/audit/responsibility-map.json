@@ -241,14 +241,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "parked_spawn",
-    "is_test": false,
-    "proposed_module": "conductor::spawn",
-    "reason": "name contains \"spawn\" (spawn lifecycle); grouped under `conductor::spawn`.",
-    "content_hash": "8aae656c6ad0511d"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "is_parked",
     "is_test": false,
     "proposed_module": "conductor::spawn",
@@ -294,54 +286,6 @@
     "proposed_module": "conductor::schedule",
     "reason": "name contains \"plan\" (unit scheduling); grouped under `conductor::schedule`.",
     "content_hash": "3e932a274b024e8e"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "as_str",
-    "is_test": false,
-    "proposed_module": "conductor::agent_failure",
-    "reason": "method inside `impl AgentFailure`; grouped with its other `AgentFailure` methods.",
-    "content_hash": "131c6738584d66f5"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "from_category",
-    "is_test": false,
-    "proposed_module": "conductor::agent_failure",
-    "reason": "method inside `impl AgentFailure`; grouped with its other `AgentFailure` methods.",
-    "content_hash": "ddaebb211396fe88"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "fmt",
-    "is_test": false,
-    "proposed_module": "conductor::agent_failure",
-    "reason": "method inside `impl std::fmt::Display for AgentFailure`; grouped with its other `AgentFailure` methods.",
-    "content_hash": "49ddd7abba7ff822"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "classify_failure",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "c8aff3d6072945b4"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "no_result_error",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "68539024e1120100"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "strip_failure_marker",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "2d876a6409078f25"
   },
   {
     "file": "src/conductor.rs",
@@ -725,7 +669,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a173ef5fbd9ba1dc"
+    "content_hash": "7fac194b775c57d5"
   },
   {
     "file": "src/conductor.rs",
@@ -12494,70 +12438,6 @@
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
     "content_hash": "6e3f395a2f91b165"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "new",
-    "is_test": false,
-    "proposed_module": "dash::reaped_child",
-    "reason": "method inside `impl ReapedChild`; grouped with its other `ReapedChild` methods.",
-    "content_hash": "ae1ae8215e7464f5"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "id",
-    "is_test": false,
-    "proposed_module": "dash::reaped_child",
-    "reason": "method inside `impl ReapedChild`; grouped with its other `ReapedChild` methods.",
-    "content_hash": "6d432a1da1dab4dd"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "child_mut",
-    "is_test": false,
-    "proposed_module": "dash::reaped_child",
-    "reason": "method inside `impl ReapedChild`; grouped with its other `ReapedChild` methods.",
-    "content_hash": "9b1a0cd608730797"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "drop",
-    "is_test": false,
-    "proposed_module": "dash::reaped_child",
-    "reason": "method inside `impl Drop for ReapedChild`; grouped with its other `ReapedChild` methods.",
-    "content_hash": "9c60e6cecdebf6f3"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "spawn_blocking_child",
-    "is_test": true,
-    "proposed_module": "dash::tests::supervised_lifecycle",
-    "reason": "defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "7d1ba37e7b5f71fc"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "watch_for_exit",
-    "is_test": true,
-    "proposed_module": "dash::tests::supervised_lifecycle",
-    "reason": "defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "9771a7eae297c6ee"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "reaped_child_reaps_even_when_the_driver_panics",
-    "is_test": true,
-    "proposed_module": "dash::tests::supervised_lifecycle",
-    "reason": "defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "ef22a4185fce73e3"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dropping_the_peers_sidecar_reaps_its_collector_thread",
-    "is_test": true,
-    "proposed_module": "dash::tests::supervised_lifecycle",
-    "reason": "defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "75d7cc2ac0788c7a"
   },
   {
     "file": "src/dash.rs",

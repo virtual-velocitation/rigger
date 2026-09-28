@@ -2078,13 +2078,14 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 6] = [
+const SPLIT_CRATES: [&str; 7] = [
     "crates/rigger-domain",
     "crates/rigger-store-sqlite",
     "crates/rigger-graph-sqlite",
     "crates/rigger-process",
     "crates/rigger-worktree-git",
     "crates/rigger-gates-shell",
+    "crates/rigger-driver",
 ];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
@@ -2206,7 +2207,7 @@ const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/driver/cli.rs",
+        "crates/rigger-driver/src/driver/cli.rs",
         "bridge_emits_propagates_the_first_emit_error",
         SampleVerdict::NoDuplicate,
     ),
@@ -4186,9 +4187,10 @@ fn render_section_3(files: &[FileScan]) -> String {
     const CONDUCTOR: &str = "src/conductor.rs";
     const INGEST: &str = "src/ingest.rs";
     const MAIN: &str = "src/main.rs";
+    const AGENT_PORT: &str = "crates/rigger-domain/src/agent.rs";
     let boundary = test_boundary(CONDUCTOR);
     let reclaim = cite_fn(files, CONDUCTOR, "reclaim_terminal_unit_mutation_scratch");
-    let agent_driver = line_of(CONDUCTOR, "pub trait AgentDriver");
+    let agent_driver = line_of(AGENT_PORT, "pub trait AgentDriver");
     let walk = cite_fn(files, INGEST, "walk_batches");
     let ingest_batches = line_of(CONDUCTOR, "fn ingest_project_batches");
     let ingest_caller = line_of(CONDUCTOR, "self.ingest_project_batches()");
@@ -4218,7 +4220,7 @@ fn render_section_3(files: &[FileScan]) -> String {
         `crate::driver::replay::cache_home_from` and \
         `crate::driver::replay::reclaim_unit_mutation_scratch` directly by \
         concrete module path. The port `conductor.rs` actually depends on for \
-        driving agents is `trait AgentDriver` (`{CONDUCTOR}:{agent_driver}`) - one \
+        driving agents is `trait AgentDriver` (`{AGENT_PORT}:{agent_driver}`) - one \
         method, `spawn`. Neither called function is about driving an agent or \
         replaying a recorded run (the concern `driver::replay` otherwise owns); both \
         are pure, driver-instance-free scratch-lifecycle utilities that happen to \
@@ -4345,7 +4347,7 @@ fn render_section_3(files: &[FileScan]) -> String {
         depends only on `dyn gate::Runner` (`{CONDUCTOR}:{}`); every production \
         mention of a concrete runner is a doc comment (`{CONDUCTOR}:{}`), and the \
         import of `ExecRunner` (`{CONDUCTOR}:{}`) and every one of its {} uses sit \
-        inside `#[cfg(test)] mod tests`. In `src/driver/replay.rs`, all {} \
+        inside `#[cfg(test)] mod tests`. In `crates/rigger-driver/src/driver/replay.rs`, all {} \
         `ExecRunner` mentions sit inside that file's own `#[cfg(test)] mod tests` \
         too.",
         line_of(CONDUCTOR, "dyn gate::Runner"),
@@ -4355,7 +4357,7 @@ fn render_section_3(files: &[FileScan]) -> String {
             .iter()
             .filter(|&&l| l > boundary)
             .count(),
-        test_only_hits("src/driver/replay.rs", "ExecRunner"),
+        test_only_hits("crates/rigger-driver/src/driver/replay.rs", "ExecRunner"),
     );
     let use_case_files = [
         CONDUCTOR,
@@ -5474,7 +5476,7 @@ fn render_section_6() -> String {
         into a neutral module every `AgentDriver` adapter and `conductor.rs` can depend on \
         alike (no new trait needed - neither function takes a driver instance, so this is a \
         home fix, not a port-method fix).\n\
-        - Files: `src/conductor.rs`, `src/driver/replay.rs`, a new home for the two \
+        - Files: `src/conductor.rs`, `crates/rigger-driver/src/driver/replay.rs`, a new home for the two \
         relocated functions.\n\
         - Expected line delta: near zero net - a pure move of two functions.\n\
         - Risk: low-medium. The reclaim path is covered by spec 83's \

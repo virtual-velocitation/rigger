@@ -49,7 +49,7 @@ pub mod dash;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod docs;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod driver;
+pub use rigger_driver::driver;
 pub mod eventstore;
 pub use rigger_domain::failure;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -57,7 +57,7 @@ pub use rigger_gates_shell::gate;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod hooks;
+pub use rigger_driver::hooks;
 /// Project-source ingest into the context graph (spec 45): the ONE walk-and-content-key
 /// authority both the live run and the standalone `rigger graph build` entry share, so the
 /// content key an event is deduped under can never drift between the two ingest entries.
@@ -68,7 +68,7 @@ pub mod ingest;
 pub mod instructions;
 pub use rigger_domain::ledger;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod liveness;
+pub use rigger_driver::liveness;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod mcpserver;
 pub use rigger_domain::metrics;
@@ -79,6 +79,8 @@ pub mod playbooks;
 pub mod progress;
 pub use rigger_domain::run;
 pub use rigger_domain::safety;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_driver::sidecar;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::reap;
 /// The write half of [`progress`] (spec 93, criterion 1): see that module's own doc.
@@ -92,8 +94,6 @@ pub use rigger_store_sqlite::registry;
 /// The write half of [`run`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_store_sqlite::run_store;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod sidecar;
 pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_domain::spec;

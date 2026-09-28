@@ -3,7 +3,7 @@
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.
 //!
-//! `src/driver/replay.rs`'s own unit test pins `mutation_scratch_root`'s output for one
+//! `crates/rigger-driver/src/driver/replay.rs`'s own unit test pins `mutation_scratch_root`'s output for one
 //! literal cache-home input, in isolation. `src/main.rs`'s FOOTPRINT ACCOUNTING (spec 77
 //! criterion 5) silently DEPENDS on a relationship neither side's unit tests can see across
 //! the module boundary: `footprint_report_for` measures the "registered scratch roots"

@@ -1886,6 +1886,7 @@ dependencies = [
  "kurrentdb",
  "regex",
  "rigger-domain",
+ "rigger-driver",
  "rigger-gates-shell",
  "rigger-graph-sqlite",
  "rigger-process",
@@ -1922,6 +1923,23 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_yaml",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "rigger-driver"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "rigger",
+ "rigger-domain",
+ "rigger-process",
+ "rigger-store-sqlite",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
  "thiserror",
  "uuid",
 ]

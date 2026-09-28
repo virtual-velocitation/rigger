@@ -6,7 +6,7 @@ hook entries in `.claude/settings.json`, an `.mcp.json` entry, a workflow script
 chat session: the script relays `rigger step` through an agent under a 10-minute tool cap, a
 chat message can halt it, and the session learns of run events only by polling
 (`crates/rigger-domain/src/watch.rs:150`, 180 s). Reviewer verdicts are parsed from prose
-(`src/conductor.rs:10820`). This spec ships the operator seam of
+(`src/conductor.rs:10513`). This spec ships the operator seam of
 docs/architecture-addendum-claude-code-integration.md (section 6) on the host of spec 104 and
 the hold of spec 105, and retires the script and the shim.
 
@@ -54,7 +54,7 @@ reads that field. `verdict_approves` remains only to replay a result recorded wi
 
 THE BOLT-ON RETIRES, decided: setup no longer installs the workflow script or the shim;
 `workflows/rigger.js`, `shim/`, `rigger workflow`, the bridge tools `rigger_next` and
-`rigger_result`, and `src/driver/workflow.rs` are removed. `rigger step` stays as the
+`rigger_result`, and `crates/rigger-driver/src/driver/workflow.rs` are removed. `rigger step` stays as the
 hand-step. The shipped skills name `rigger run --detach`, `--attach` and `--stop` as the way
 to start, resume and stop a run.
 

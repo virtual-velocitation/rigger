@@ -48,7 +48,7 @@ the engine itself, and the engine is wrong in three ways that no read discipline
 - **It has no notion of a project's lifecycle.** A store is open whenever any process wants
   it: every command opens up to three engine handles at its composition root
   (`src/main.rs:3911-3928`), the dashboard, which is already the machine's multi-project
-  reader (`?instance=<id>`, `src/dash.rs:3413`), reopens each attached project's files on
+  reader (`?instance=<id>`, `src/dash.rs:3415`), reopens each attached project's files on
   every HTTP request (`src/main.rs:7270-7377`), and every subscription is a thread waking
   every 25 ms to poll through the store's single mutexed connection
   (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:42`, `:1001`). Nothing distinguishes a project running three
@@ -253,7 +253,7 @@ decorator already does. There is no wake-up protocol because the file is the pro
 
 Why one watcher per process: today every subscription is its own 25 ms thread contending
 for the store's write mutex; the side-car alone stacks a 25 ms database poll under a 50 ms
-channel poll (`src/sidecar.rs:149`). One length check per process per 250 ms costs nothing
+channel poll (`crates/rigger-driver/src/sidecar.rs:149`). One length check per process per 250 ms costs nothing
 measurable and cannot contend with appends because it never takes the lock.
 
 ### 5.7 Compaction and archive

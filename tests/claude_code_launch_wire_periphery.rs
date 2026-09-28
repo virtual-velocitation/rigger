@@ -7,7 +7,7 @@
 //! failed launch - that no child survives it - which only a real, externally-observed pid
 //! can prove.
 //!
-//! WHY THIS FILE, DISTINCT FROM THE IMPLEMENTER'S OWN TESTS. `src/driver/claude_code.rs`'s
+//! WHY THIS FILE, DISTINCT FROM THE IMPLEMENTER'S OWN TESTS. `crates/rigger-driver/src/driver/claude_code.rs`'s
 //! own `mod tests`, and `src/progress.rs`'s / `src/progress_store.rs`'s own `mod tests`,
 //! prove `Driver::launch`, `build_args`, `SpawnLaunched::to_stamped_event` and
 //! `progress_store::record_launch` IN PROCESS - every one of them against
@@ -46,7 +46,7 @@
 //!
 //! NOT OWNED HERE: argv/cwd/env shape (`build_args`, `launch`'s own process plumbing with
 //! both fields already set, INCLUDING the new `--fallback-model` flag - one more field of
-//! the same already-exempted shape) - `src/driver/claude_code.rs`'s own tests already
+//! the same already-exempted shape) - `crates/rigger-driver/src/driver/claude_code.rs`'s own tests already
 //! drive the real fixture binary and assert every one of those; THE STREAM reader, session
 //! resume and failure classification - criterion 2 onward, not yet landed (`impl
 //! AgentDriver for Driver` does not exist yet on this branch); the spawn-bound MCP server,
@@ -77,7 +77,7 @@ fn fixture_path(name: &str) -> String {
         .into_owned()
 }
 
-/// The checked-in fixture `src/driver/claude_code.rs`'s own tests already point `bin` at -
+/// The checked-in fixture `crates/rigger-driver/src/driver/claude_code.rs`'s own tests already point `bin` at -
 /// see its header comment (`tests/fixtures/claude-code-echo-agent.sh`) for why it is
 /// checked in rather than written at test time.
 fn fixture_bin() -> String {
@@ -423,7 +423,7 @@ fn launch_reaps_the_child_when_the_stdin_write_fails() {
 
     // The durable claim still landed - `launch()` records BEFORE it ever attempts to
     // start, let alone write to, the child (same ordering the other tests in this suite
-    // and `src/driver/claude_code.rs`'s own suite already pin for the spawn-failure case).
+    // and `crates/rigger-driver/src/driver/claude_code.rs`'s own suite already pin for the spawn-failure case).
     let recorded = store
         .read_stream(STREAM, 0, Direction::Forward)
         .expect("read the progress stream");

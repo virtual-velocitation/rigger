@@ -67,7 +67,7 @@
 //! private-helper changes with no new cross-module seam). The one periphery-visible surface item:
 //! the fix removes 4 named false-positive candidates from the committed artifact -
 //! `Namespaced::new` (`src/eventstore/namespace.rs`), `ReplayDriver::new`
-//! (`src/driver/replay.rs`), `Buckets::new` (`src/dash.rs`), `Server::new` (`src/mcpserver.rs`) -
+//! (`crates/rigger-driver/src/driver/replay.rs`), `Buckets::new` (`src/dash.rs`), `Server::new` (`src/mcpserver.rs`) -
 //! a regression class round 1's periphery layer could not yet pin since it postdates round 1. The
 //! ROUND 2 test after the round-1 tests below closes that gap. EXEMPT: the `dyn`/`impl`-keyword
 //! strip itself has no committed-artifact fact to assert against (zero `impl dyn` blocks exist in
@@ -478,7 +478,7 @@ rigger::test_cases! {
         assert_absent_from_dead_code(
             &[
                 ("new", Some("crates/rigger-store-sqlite/src/eventstore/namespace.rs")), // Namespaced::new
-                ("new", Some("src/driver/replay.rs")),        // ReplayDriver::new
+                ("new", Some("crates/rigger-driver/src/driver/replay.rs")),        // ReplayDriver::new
                 ("new", Some("src/dash.rs")),                 // Buckets::new
                 ("new", Some("src/mcpserver.rs")),            // Server::new
             ],

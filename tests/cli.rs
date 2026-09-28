@@ -5929,7 +5929,7 @@ stages:
 /// REVIEW TIERS NAME THEIR TARGETS (spec 67 criterion 4): the routed review roster the
 /// conductor stamps onto a review-tier `SpawnOpts` must survive the real production
 /// conversion - `SpawnOpts` (`src/conductor.rs`) -> `ReplayDriver::spawn` ->
-/// `spawn_request` (`src/driver/replay.rs`, "the ONE place `SpawnOpts` becomes a
+/// `spawn_request` (`crates/rigger-driver/src/driver/replay.rs`, "the ONE place `SpawnOpts` becomes a
 /// `SpawnRequest`") -> `SpawnRequest`/`WaveItem` (`src/spawn.rs`) - and land on the ACTUAL
 /// printed `rigger step` wave wire a real courier reads. `tests/review_tier_roster_periphery.rs`
 /// proves `workflows/rigger.js` renders a `req.reviews` it is HANDED correctly, and this
@@ -6262,7 +6262,7 @@ esac
 ///
 /// This drives the REAL `cli::Driver` instead - the synchronous, subprocess-per-spawn path
 /// `rigger run` uses - with a fake `claude` executable substituted onto `PATH` (the same
-/// shimming technique `src/driver/cli.rs`'s own `spawn_shells_out_and_bridges_the_agents_
+/// shimming technique `crates/rigger-driver/src/driver/cli.rs`'s own `spawn_shells_out_and_bridges_the_agents_
 /// emits` unit test uses for the driver alone, extended here through the whole compiled
 /// binary and a real git-backed unit worktree). The fake agent plays four roles, selected
 /// by a marker embedded in each agent's own persona (which `build_system_prompt` forwards
@@ -7797,7 +7797,7 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
 
 /// Regression for the round-2/3 review reject (ADJUDICATOR VERDICT REJECT u77c2b, spec 77
 /// criterion 2 "MUTATION SCRATCH IS REAPED"): `liveness::sweep` records a hung spawn's fault
-/// via `spawn_store::record_result_if_absent` DIRECTLY, in-process (`src/liveness.rs`), never
+/// via `spawn_store::record_result_if_absent` DIRECTLY, in-process (`crates/rigger-driver/src/liveness.rs`), never
 /// through `cmd_result` - so the ONLY production reclaim call site (`reclaim_spawn_scratch`,
 /// wired solely into `cmd_result`) never ran for it, leaking every hung spawn's registered
 /// mutation-scratch dir. The existing "for every outcome" test
@@ -8998,7 +8998,7 @@ stages:
 /// HOME, HOME)` and only enters `reclaim_unit_mutation_scratch` behind `if let Some(cache_
 /// home)` - so a HOMELESS environment (neither var set) takes the `None` arm for EVERY
 /// terminal unit, every step. No test anywhere else drives this arm: the pure-fn unit tests
-/// (`src/driver/replay.rs`) never see an `Option` at all (they call
+/// (`crates/rigger-driver/src/driver/replay.rs`) never see an `Option` at all (they call
 /// `reclaim_unit_mutation_scratch` with a real `&Path` directly), the pre-existing
 /// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` unit test
 /// (spec 38) never touches `HOME`/`XDG_CACHE_HOME` so it runs with whatever real home the
@@ -21567,7 +21567,7 @@ fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
 
 /// Spec 62, criterion 5 - the PUBLIC contract of [`rigger::liveness::any_marker_fresh`] at the
 /// CRATE BOUNDARY, mirroring `should_reap_singleton_public_contract_holds_at_the_crate_boundary`
-/// above for its sibling new pub fn in this same unit. `src/liveness.rs`'s own module tests prove
+/// above for its sibling new pub fn in this same unit. `crates/rigger-driver/src/liveness.rs`'s own module tests prove
 /// the function white-box (inside the module, including its recursive walk and unreadable-entry
 /// degrade); `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
 /// proves it end to end through the real watcher inside the built binary. Neither calls the
@@ -21622,7 +21622,7 @@ fn any_marker_fresh_public_contract_holds_at_the_crate_boundary() {
 /// Spec 103, THE HALTED-SPAWN CHECKPOINT - the PUBLIC contract of
 /// [`rigger::liveness::spawn_is_halted`] at the CRATE BOUNDARY, mirroring
 /// `any_marker_fresh_public_contract_holds_at_the_crate_boundary` above for this criterion's own
-/// new pub fn. `src/liveness.rs`'s own module tests prove it white-box, inside the module
+/// new pub fn. `crates/rigger-driver/src/liveness.rs`'s own module tests prove it white-box, inside the module
 /// (including the bounded/unbounded-sibling and same-run-scoping edge cases);
 /// `tests/halted_spawn_wip_recovery_periphery.rs` proves the cross-module seam - `conductor.rs`'s
 /// `RunCtx::halted_spawn_checkpoint_permitted` calling into it - end to end through the real
@@ -23687,7 +23687,7 @@ fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
 // --- Spec 66, criterion 5 (round 2): DISCOVERABILITY reaches the REAL pre-launch entries ---
 //
 // `rigger prime` above is the SessionStart hook, but the hook is always invoked with ZERO
-// args (src/hooks.rs pins the literal `rigger prime` string) - so in production it NEVER
+// args (crates/rigger-driver/src/hooks.rs pins the literal `rigger prime` string) - so in production it NEVER
 // carries a spec path and the reminder wired there alone never reaches an operator. The two
 // surfaces that DO hold the parsed spec path at the real pre-launch moment are `run_cli`
 // (`rigger run <spec>`) and `cmd_workflow` (`rigger workflow <spec>`); these tests drive the
@@ -24941,7 +24941,7 @@ impl McpSession {
 
     /// `rigger_peers`, polled until it reports a decision. `Sidecar::start` (spec 92,
     /// criterion 4's `cmd_mcp`) collects the store's backlog on a background thread polling
-    /// every 50ms (src/sidecar.rs); a call issued before that thread's first poll fires sees an
+    /// every 50ms (crates/rigger-driver/src/sidecar.rs); a call issued before that thread's first poll fires sees an
     /// empty backlog, so this polls (bounded, never a fixed sleep) instead of trusting the very
     /// first call.
     fn peers(&mut self) -> serde_json::Value {

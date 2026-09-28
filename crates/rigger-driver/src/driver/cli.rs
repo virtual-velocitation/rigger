@@ -10,7 +10,7 @@
 
 use serde_json::Value;
 
-use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
+use crate::agent::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
 use crate::config::AgentDef;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 
@@ -288,7 +288,7 @@ thinking out loud, not json\n\
         // it - which is what used to cause an intermittent ETXTBSY here under
         // parallel test execution.
         let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/fake-agent.sh")
+            .join("../../tests/fixtures/fake-agent.sh")
             .to_string_lossy()
             .into_owned();
 
@@ -344,7 +344,7 @@ thinking out loud, not json\n\
         // fixture "agent" echoes what it actually sees; empty `env` (the default,
         // wrapper off) must not inject anything either.
         let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/env-echo-agent.sh")
+            .join("../../tests/fixtures/env-echo-agent.sh")
             .to_string_lossy()
             .into_owned();
         let driver = Driver { bin };

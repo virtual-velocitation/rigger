@@ -18,7 +18,7 @@ later. The teardown of the creating context IS the reap point.
 
 ## Design
 
-Builds on the worktree teardown (`Worktree::remove`, `crates/rigger-worktree-git/src/worktree.rs:471`) and the per-step
+Builds on the worktree teardown (`Worktree::remove`, `crates/rigger-worktree-git/src/worktree.rs:469`) and the per-step
 scratch sweep (`cmd_step` / Gap 14, `src/main.rs:1306`), and the `rigger validate` residue
 scan (`residue_advisories`, `src/main.rs:4356`) that already surfaces leftover worktrees and
 caches as warning-only advisories.

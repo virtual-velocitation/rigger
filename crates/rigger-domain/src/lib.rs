@@ -2,6 +2,10 @@
 //! touches a file, a process, the network, the clock, a store or the agent host; the root
 //! `rigger` crate re-exports every module under its historical path.
 
+/// The agent-host port: the `AgentDriver` trait, its options, result and error, and the park and
+/// failure-class sentinels that cross it.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod agent;
 pub mod blocker;
 pub mod canary;
 /// Deterministic coupling-community detection (spec 53, the CODE lens): the offline pass that
@@ -37,6 +41,9 @@ pub mod spec;
 pub mod watch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod wave;
+/// The worktree adapter's error value the agent port's `Error` converts from.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod worktree;
 
 /// Parameterised tests: one shared case helper, one generated `#[test]` per named case.
 mod test_cases;

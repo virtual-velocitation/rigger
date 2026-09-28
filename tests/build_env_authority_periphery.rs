@@ -8,7 +8,7 @@
 //!
 //! `src/gate.rs`'s own unit tests call `BuildEnv::resolve`/`apply` directly against a
 //! `std::process::Command` they inspect in-process - they never observe a real OS
-//! environment. `src/driver/cli.rs`'s own test spawns a real subprocess through
+//! environment. `crates/rigger-driver/src/driver/cli.rs`'s own test spawns a real subprocess through
 //! `Driver::spawn` directly, but only that one site, in isolation. `src/conductor.rs`'s
 //! own integration test (`one_build_environment_authority_reaches_both_a_gate_build_and_
 //! an_agent_spawn`) proves the SINGLE-RESOLVER wiring end to end, but through

@@ -4,8 +4,8 @@
 ONLY a checkbox's first physical line, so every `Done when` criterion wrapped across lines -
 which the planning discipline mandates, since OWNS/exclusion clauses and verify-wording rarely
 fit one line - is silently truncated to its first ~88 columns in `self.deps.criteria`
-(wired at src/conductor.rs:13019; the only other call site is src/main.rs:3610). Downstream,
-`resolve_served_criterion` (src/conductor.rs:8181-8342) canonicalizes every proposal's
+(wired at src/conductor.rs:12712; the only other call site is src/main.rs:3610). Downstream,
+`resolve_served_criterion` (src/conductor.rs:7874-8342) canonicalizes every proposal's
 `st.coverage` to that truncated text BY DESIGN (anti-paraphrase), so the loss is structural: no
 replan can restore it, unit titles / grounding queries / `UnitStarted.spec_criterion` /
 `build_dag_critique_prompt` all serve OWNS-stripped criteria, and plan-critique correctly

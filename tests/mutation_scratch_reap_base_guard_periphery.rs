@@ -1,12 +1,12 @@
 //! Periphery (cross-module contract) test for the spec-78 base-guard's interaction with
-//! `src/driver/replay.rs::reclaim_unit_mutation_scratch` (spec 77 criterion 3, UNIT-TERMINAL
+//! `crates/rigger-driver/src/driver/replay.rs::reclaim_unit_mutation_scratch` (spec 77 criterion 3, UNIT-TERMINAL
 //! REAP).
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.
 //!
 //! `src/reap.rs`'s own unit tests exercise `is_reapable_base` and `reap_processes_rooted_under`
 //! entirely through a `FakeRepo` fixture it constructs itself - a git-inited root with an empty
-//! `.rigger/tmp` created for exactly this purpose. `src/driver/replay.rs`'s own unit tests
+//! `.rigger/tmp` created for exactly this purpose. `crates/rigger-driver/src/driver/replay.rs`'s own unit tests
 //! exercise `reclaim_unit_mutation_scratch` with a bare `tempfile::tempdir()` `cache_home` and
 //! never a LIVE PROCESS (only files, via `std::fs::write`) - the reap half of the call is never
 //! actually exercised there either. Neither side's unit tests ever drive the two together with

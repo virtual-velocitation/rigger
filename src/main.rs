@@ -13418,7 +13418,7 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 /// STDERR (unlike the other two, which use stdout) because its stdout carries exactly one
 /// line of `{wave,done}` JSON a driver parses, and the reminder must never share that line.
 /// `cmd_prime` also calls this when given an explicit spec arg, but its own sole AUTOMATIC
-/// caller - the installed Claude Code SessionStart hook (`src/hooks.rs`) - always invokes it
+/// caller - the installed Claude Code SessionStart hook (`crates/rigger-driver/src/hooks.rs`) - always invokes it
 /// with zero args (the hook fires before any spec is ever chosen), so `cmd_prime`'s spec-arg
 /// branch is exercised only by a hand-typed `rigger prime <spec>`, never by that hook. It is
 /// kept (harmless, tested) for that manual use, not as this criterion's production path.

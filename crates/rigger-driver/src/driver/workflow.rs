@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
+use crate::agent::{AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
 
 /// What the shim picks up via rigger_next.
