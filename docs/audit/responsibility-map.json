@@ -4857,11 +4857,19 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "last_position",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8a05209dc9286a25"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_whose_width_is_filled_by_parked_units_returns_instead_of_re_reading_the_stream",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9a7a519875cb3164"
+    "content_hash": "87a8a65fcc39ff76"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

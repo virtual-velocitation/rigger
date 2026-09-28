@@ -174,8 +174,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
-        "start_line": 69,
-        "end_line": 71
+        "start_line": 64,
+        "end_line": 66
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
@@ -384,38 +384,38 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 33138,
-        "end_line": 33140
+        "start_line": 33145,
+        "end_line": 33147
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 33141,
-        "end_line": 33143
+        "start_line": 33148,
+        "end_line": 33150
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 33144,
-        "end_line": 33146
+        "start_line": 33151,
+        "end_line": 33153
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 33147,
-        "end_line": 33149
+        "start_line": 33154,
+        "end_line": 33156
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 33150,
-        "end_line": 33152
+        "start_line": 33157,
+        "end_line": 33159
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 33153,
-        "end_line": 33155
+        "start_line": 33160,
+        "end_line": 33162
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 33275,
-        "end_line": 33277
+        "start_line": 33282,
+        "end_line": 33284
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
@@ -439,8 +439,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 198,
-        "end_line": 200
+        "start_line": 216,
+        "end_line": 218
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -484,18 +484,18 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36070,
-        "end_line": 36070
+        "start_line": 36077,
+        "end_line": 36077
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36084,
-        "end_line": 36084
+        "start_line": 36091,
+        "end_line": 36091
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36857,
-        "end_line": 36857
+        "start_line": 36864,
+        "end_line": 36864
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
@@ -3669,23 +3669,23 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 34462,
-        "end_line": 34503
+        "start_line": 34469,
+        "end_line": 34510
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 35005,
-        "end_line": 35047
+        "start_line": 35012,
+        "end_line": 35054
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 35468,
-        "end_line": 35505
+        "start_line": 35475,
+        "end_line": 35512
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 35613,
-        "end_line": 35658
+        "start_line": 35620,
+        "end_line": 35665
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
@@ -3699,8 +3699,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 38742,
-        "end_line": 38752
+        "start_line": 38749,
+        "end_line": 38759
       },
       {
         "file": "tests/replan_episode_identity.rs",
@@ -5220,7 +5220,7 @@
     ]
   },
   {
-    "id": "dup-a4496aa7b106",
+    "id": "dup-192f39380415",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5384,8 +5384,13 @@
       },
       {
         "file": "tests/run_boundary_lookup_periphery.rs",
-        "start_line": 71,
-        "end_line": 71
+        "start_line": 72,
+        "end_line": 72
+      },
+      {
+        "file": "tests/run_boundary_lookup_periphery.rs",
+        "start_line": 270,
+        "end_line": 270
       },
       {
         "file": "tests/store_append_order_periphery.rs",
