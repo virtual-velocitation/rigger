@@ -444,14 +444,15 @@ fn head(name: &str, line: u32, partial: bool) -> Vec<u8> {
 }
 
 /// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
-/// identity"): the pending proofs in staging order, the restorable attrs a retired node keeps, each
+/// identity"): every recorded test reference and where it resolved (pending ones included), the restorable attrs a retired node keeps, each
 /// identity's current generation, the node and edge assertions of live generations (edges by their
 /// columns, never their row ids), and the detached attachments a returning node revives. Everything
 /// else in the file is history a compacted log no longer replays.
 fn fold_state(graph_db: &Path) -> Vec<String> {
     let conn = rusqlite::Connection::open(graph_db).unwrap();
     [
-        "SELECT project, name, evidence FROM pending_proof ORDER BY id",
+        "SELECT project, name, file, evidence, source, target FROM proofs
+          ORDER BY project, name, file, source, evidence",
         "SELECT project, id, attrs FROM retired_nodes WHERE attrs IS NOT NULL ORDER BY project, id",
         "SELECT project, identity, generation FROM generations ORDER BY project, identity",
         "SELECT project, identity, generation, node_id, kind, attrs FROM live_node_assertions
@@ -1006,6 +1007,154 @@ fn a_proof_on_a_dropped_definition_lands_on_the_next_definition_of_its_name() {
             ("proven_by", "1")
         ],
         "the proof the dropped definition held belongs to the definition that replaced it"
+    );
+}
+
+/// Where a proof lands is a function of the definitions that hold NOW, never of the order they
+/// folded in: a cross-file proof on the only definition of its name waits again the moment a second
+/// definition of the name makes it ambiguous, whether that definition folded before the test's
+/// reference or after it - so neither same-named definition claims it, and both rebuilds agree.
+fn a_second_definition_makes_a_resolved_proof_wait(second_first: bool) {
+    let second = keyed(
+        TYPE_CODE_ENTITY_EXTRACTED,
+        def_in("src/h.rs", "gone", 4, true),
+        "gc/src/h.rs@j1#0",
+        11,
+    );
+    let reference = keyed(
+        TYPE_EDGE_INFERRED,
+        proof("gone", 3),
+        "gc/tests/t.rs@k1#0",
+        12,
+    );
+    let (h1, _) = f_drops_gone();
+    let tail = if second_first {
+        vec![second, reference]
+    } else {
+        vec![reference, second]
+    };
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        [h1, tail].concat(),
+        &[
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::gone", "code-entity"),
+            ("src/h.rs", "file"),
+            ("src/h.rs::gone", "code-entity"),
+        ],
+    );
+    let proven: Vec<&str> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.attrs.contains_key("proven_by") || n.attrs.contains_key("proof_evidence"))
+        .map(|n| n.id.as_str())
+        .collect();
+    assert_eq!(
+        proven,
+        Vec::<&str>::new(),
+        "an ambiguous name's proof waits on neither definition"
+    );
+}
+
+rigger::test_cases! {
+    /// The second definition folds before the test's reference.
+    a_reference_to_an_already_ambiguous_name_waits:
+        a_second_definition_makes_a_resolved_proof_wait(true);
+    /// The second definition folds after the proof landed on the first.
+    a_landed_proof_waits_again_once_its_name_turns_ambiguous:
+        a_second_definition_makes_a_resolved_proof_wait(false);
+}
+
+/// Several proofs on one definition list their evidence in the order the log recorded it, and a
+/// test file's re-extraction that drops its reference leaves the definition without any proof
+/// attrs at all - the same state a log that never recorded the reference folds to.
+#[test]
+fn proofs_list_in_recorded_order_and_a_dropped_last_proof_leaves_no_proof_attrs() {
+    let reference = |file: &str, line: u32| {
+        serde_json::to_vec(&serde_json::json!({
+            "file": file, "name": "gone", "lang": "rust", "fresh": true, "line": line,
+            "is_test": true,
+        }))
+        .unwrap()
+    };
+    let (h1, _) = f_drops_gone();
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        [
+            h1,
+            vec![
+                keyed(
+                    TYPE_EDGE_INFERRED,
+                    reference("tests/z.rs", 9),
+                    "gc/tests/z.rs@a#0",
+                    12,
+                ),
+                keyed(
+                    TYPE_EDGE_INFERRED,
+                    reference("tests/a.rs", 5),
+                    "gc/tests/a.rs@a#0",
+                    13,
+                ),
+            ],
+        ]
+        .concat(),
+        &[
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::gone", "code-entity"),
+        ],
+    );
+    let gone = graph
+        .nodes
+        .iter()
+        .find(|n| n.id == "src/f.rs::gone")
+        .unwrap();
+    assert_eq!(
+        (
+            gone.attrs["proven_by"].as_str(),
+            gone.attrs["proof_evidence"].as_str()
+        ),
+        ("2", r#"["tests/z.rs:9","tests/a.rs:5"]"#),
+        "recorded order, not name order"
+    );
+    let (h1, _) = f_drops_gone();
+    let dropped = compaction_rebuilds_the_whole_logs_graph(
+        [
+            h1,
+            vec![
+                keyed(
+                    TYPE_EDGE_INFERRED,
+                    reference("tests/z.rs", 9),
+                    "gc/tests/z.rs@a#0",
+                    12,
+                ),
+                keyed(
+                    TYPE_EDGE_INFERRED,
+                    serde_json::to_vec(&serde_json::json!({
+                        "file": "tests/z.rs", "name": "", "lang": "rust", "fresh": true,
+                        "is_test": true,
+                    }))
+                    .unwrap(),
+                    "gc/tests/z.rs@b#0",
+                    14,
+                ),
+            ],
+        ]
+        .concat(),
+        &[
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::gone", "code-entity"),
+        ],
+    );
+    let gone = dropped
+        .nodes
+        .iter()
+        .find(|n| n.id == "src/f.rs::gone")
+        .unwrap();
+    assert_eq!(
+        gone.attrs.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["kind", "lang", "line", "name"],
+        "no proof attrs remain once the last proof is gone"
     );
 }
 
