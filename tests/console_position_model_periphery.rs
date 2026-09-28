@@ -2,7 +2,7 @@
 //! MODEL - proven at the level Design's own Notes name for a page-side criterion in this
 //! spec: "the served page's source is asserted to call those ops and to carry the mock's
 //! markup and tokens" (browser execution itself is outside the gate set; the logic these
-//! calls drive - `fold_at`, `scrub_track` - is proven natively in `src/console/mod.rs` and
+//! calls drive - `fold_at`, `scrub_track` - is proven natively in `crates/rigger-console/src/console/mod.rs` and
 //! `crates/console-core`'s own tests). This file mirrors `tests/console_shell_periphery.rs`'s
 //! real-socket harness verbatim (see that file's own doc comment for why an in-process
 //! `route(...)` call is not enough on its own).

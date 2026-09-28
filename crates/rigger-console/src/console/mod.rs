@@ -314,7 +314,7 @@ fn integration_mark(e: &Event) -> Option<ScrubMark> {
 /// real store, but never trusted blindly) - the ONE degrade-not-panic clock conversion both
 /// this module and `dash` convert [`Event::recorded_at`] through, living here because
 /// `console` is the `core` module `dash` can depend on, never the reverse.
-pub(crate) fn unix_seconds(t: std::time::SystemTime) -> u64 {
+pub fn unix_seconds(t: std::time::SystemTime) -> u64 {
     t.duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)

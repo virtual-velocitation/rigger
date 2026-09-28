@@ -23,10 +23,10 @@
 
 use std::cell::RefCell;
 
-use rigger::console;
-use rigger::contextgraph::query::{graph_load, graph_query};
-use rigger::contextgraph::Graph;
-use rigger::eventstore::Event;
+use rigger_console::console;
+use rigger_domain::contextgraph::query::{graph_load, graph_query};
+use rigger_domain::contextgraph::Graph;
+use rigger_domain::eventstore::Event;
 
 /// One page's whole console session: the accumulated event log (owned so `fold_push` can
 /// append without a caller resending history every call), the configured remediation bound
@@ -1073,10 +1073,10 @@ mod dispatch_tests {
     /// shared fixture every `map_hit`/`graph_query` `map_*`-kind test below builds on, so each
     /// test's own assertions stay about the OP's wiring, not about re-deriving a fixture graph.
     fn built_map_session() -> ConsoleSession {
-        use rigger::contextgraph::{
+        use rigger_domain::contextgraph::{
             Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
         };
-        use rigger::eventstore::Position;
+        use rigger_domain::eventstore::Position;
         let code = |id: &str, name: &str| Node {
             id: id.to_string(),
             kind: KIND_CODE_ENTITY.to_string(),
@@ -1247,11 +1247,11 @@ mod dispatch_tests {
     /// carries a finding pinned to one of the fixture's own entities.
     #[test]
     fn graph_query_map_argued_about_reads_pinned_findings_from_the_loaded_graph() {
-        use rigger::contextgraph::{
+        use rigger_domain::contextgraph::{
             Edge, Graph, Node, KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_IN_COMMUNITY,
             TIER_EXTRACTED,
         };
-        use rigger::eventstore::Position;
+        use rigger_domain::eventstore::Position;
         let code = |id: &str, name: &str| Node {
             id: id.to_string(),
             kind: KIND_CODE_ENTITY.to_string(),
@@ -1438,10 +1438,10 @@ mod dispatch_tests {
     /// errors even once a graph is loaded (the two calls are independently gated).
     #[test]
     fn map_build_answers_real_district_and_entity_counts_from_the_loaded_graph() {
-        use rigger::contextgraph::{
+        use rigger_domain::contextgraph::{
             Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
         };
-        use rigger::eventstore::Position;
+        use rigger_domain::eventstore::Position;
         let g = Graph {
             nodes: vec![Node {
                 id: "src/worktree.rs::spawn_worktree".to_string(),
@@ -1495,10 +1495,10 @@ mod dispatch_tests {
     /// from the NEW graph, proving the session's viewport also reset rather than merely erroring.
     #[test]
     fn map_frame_errors_again_after_a_graph_reload_until_map_build_runs_again() {
-        use rigger::contextgraph::{
+        use rigger_domain::contextgraph::{
             Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
         };
-        use rigger::eventstore::Position;
+        use rigger_domain::eventstore::Position;
         let one_entity_graph = |fn_name: &str| {
             let g = Graph {
                 nodes: vec![Node {
@@ -1559,10 +1559,10 @@ mod dispatch_tests {
     /// tests) through the wire, not just in the pure function.
     #[test]
     fn map_frame_zooming_in_answers_more_entities_through_the_wire() {
-        use rigger::contextgraph::{
+        use rigger_domain::contextgraph::{
             Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
         };
-        use rigger::eventstore::Position;
+        use rigger_domain::eventstore::Position;
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         for d in 0..6 {
@@ -1669,7 +1669,7 @@ mod dispatch_tests {
     #[test]
     fn palette_commands_omits_only_a_malformed_recorded_spawns_agent_row() {
         let mut s = ConsoleSession::new();
-        s.events.push(rigger::eventstore::Event::new(
+        s.events.push(rigger_domain::eventstore::Event::new(
             "SpawnRequested",
             b"not json".to_vec(),
         ));
@@ -1915,24 +1915,24 @@ mod dispatch_tests {
             {"type":"UnitEscalated","data":{"id":"u2"},"position":9}
         ]}"#;
         call(&mut s, "fold_reset", events_json);
-        let full_events: Vec<rigger::eventstore::Event> = vec![
-            rigger::eventstore::Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec()),
-            rigger::eventstore::Event::new("UnitStarted", br#"{"id":"u2"}"#.to_vec()),
-            rigger::eventstore::Event::new(
+        let full_events: Vec<rigger_domain::eventstore::Event> = vec![
+            rigger_domain::eventstore::Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec()),
+            rigger_domain::eventstore::Event::new("UnitStarted", br#"{"id":"u2"}"#.to_vec()),
+            rigger_domain::eventstore::Event::new(
                 "UnitIntegrated",
                 br#"{"id":"u1","commit":"abc"}"#.to_vec(),
             ),
-            rigger::eventstore::Event::new("UnitEscalated", br#"{"id":"u2"}"#.to_vec()),
+            rigger_domain::eventstore::Event::new("UnitEscalated", br#"{"id":"u2"}"#.to_vec()),
         ];
         let positions = [2u64, 5, 7, 9];
-        let mut with_positions: Vec<rigger::eventstore::Event> = full_events;
+        let mut with_positions: Vec<rigger_domain::eventstore::Event> = full_events;
         for (e, p) in with_positions.iter_mut().zip(positions.iter()) {
             e.position = *p;
         }
         for n in 0..=10u64 {
-            let want_events: Vec<&rigger::eventstore::Event> =
+            let want_events: Vec<&rigger_domain::eventstore::Event> =
                 with_positions.iter().filter(|e| e.position <= n).collect();
-            let want_events: Vec<rigger::eventstore::Event> =
+            let want_events: Vec<rigger_domain::eventstore::Event> =
                 want_events.into_iter().cloned().collect();
             let want = console::fold(&want_events, 0).unwrap();
             let got = call(&mut s, "fold_at", &format!(r#"{{"position":{n}}}"#));
@@ -1966,7 +1966,7 @@ mod dispatch_tests {
     /// the `search` kind (no fixture-graph seed needed beyond a couple of nodes).
     #[test]
     fn graph_load_then_graph_query_answers_the_librarys_own_result() {
-        use rigger::contextgraph::{Graph, Node, KIND_FILE};
+        use rigger_domain::contextgraph::{Graph, Node, KIND_FILE};
         let g = Graph {
             nodes: vec![Node {
                 id: "src/a.rs".to_string(),
@@ -1991,7 +1991,7 @@ mod dispatch_tests {
     /// `graph_query` for an unknown kind is an error reply, never a panic.
     #[test]
     fn graph_query_unknown_kind_answers_with_an_error_reply() {
-        use rigger::contextgraph::Graph;
+        use rigger_domain::contextgraph::Graph;
         let g = Graph {
             nodes: Vec::new(),
             edges: Vec::new(),

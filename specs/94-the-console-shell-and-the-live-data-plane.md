@@ -23,7 +23,7 @@ sentence naming the spec that fills it.
 
 THE ASSETS, decided: the page's script, the core module and three typefaces - Sora (400, 500,
 600), Source Sans 3 (400, 600, 400 italic) and JetBrains Mono (400, 500) - are embedded in the
-binary as Latin-subset woff2 files under `src/console/fonts/` with the SIL Open Font License
+binary as Latin-subset woff2 files under `crates/rigger-console/src/console/fonts/` with the SIL Open Font License
 text beside each family, and served from `/console/`. The served page references no URL
 outside its own origin.
 

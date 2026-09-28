@@ -347,7 +347,8 @@ dependencies = [
 name = "console-core"
 version = "0.1.0"
 dependencies = [
- "rigger",
+ "rigger-console",
+ "rigger-domain",
  "serde",
  "serde_json",
 ]
@@ -1886,6 +1887,7 @@ dependencies = [
  "regex",
  "rigger-conductor",
  "rigger-config-files",
+ "rigger-console",
  "rigger-domain",
  "rigger-driver",
  "rigger-gates-shell",
@@ -1936,6 +1938,15 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tempfile",
+]
+
+[[package]]
+name = "rigger-console"
+version = "0.1.0"
+dependencies = [
+ "rigger-domain",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

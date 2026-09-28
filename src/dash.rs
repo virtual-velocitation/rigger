@@ -101,64 +101,74 @@ const CONSOLE_PAGE: &str = include_str!("console.html");
 /// matched against a fixed, closed set - no directory listing, no path traversal onto
 /// the real filesystem. The three faces (Sora, Source Sans 3, JetBrains Mono) are
 /// Latin-subset woff2 builds instanced from their upstream variable fonts; each family's
-/// `OFL.txt` sits beside its own faces on disk (`src/console/fonts/<family>/`) and is
+/// `OFL.txt` sits beside its own faces on disk (`crates/rigger-console/src/console/fonts/<family>/`) and is
 /// served from the same route family, unmodified from the upstream release, so the
 /// license the font ships under travels with the bytes.
 const CONSOLE_FONTS: &[(&str, &str, &[u8])] = &[
     (
         "sora/Sora-400.woff2",
         "font/woff2",
-        include_bytes!("console/fonts/sora/Sora-400.woff2"),
+        include_bytes!("../crates/rigger-console/src/console/fonts/sora/Sora-400.woff2"),
     ),
     (
         "sora/Sora-500.woff2",
         "font/woff2",
-        include_bytes!("console/fonts/sora/Sora-500.woff2"),
+        include_bytes!("../crates/rigger-console/src/console/fonts/sora/Sora-500.woff2"),
     ),
     (
         "sora/Sora-600.woff2",
         "font/woff2",
-        include_bytes!("console/fonts/sora/Sora-600.woff2"),
+        include_bytes!("../crates/rigger-console/src/console/fonts/sora/Sora-600.woff2"),
     ),
     (
         "sora/OFL.txt",
         "text/plain; charset=utf-8",
-        include_bytes!("console/fonts/sora/OFL.txt"),
+        include_bytes!("../crates/rigger-console/src/console/fonts/sora/OFL.txt"),
     ),
     (
         "source-sans-3/SourceSans3-400.woff2",
         "font/woff2",
-        include_bytes!("console/fonts/source-sans-3/SourceSans3-400.woff2"),
+        include_bytes!(
+            "../crates/rigger-console/src/console/fonts/source-sans-3/SourceSans3-400.woff2"
+        ),
     ),
     (
         "source-sans-3/SourceSans3-600.woff2",
         "font/woff2",
-        include_bytes!("console/fonts/source-sans-3/SourceSans3-600.woff2"),
+        include_bytes!(
+            "../crates/rigger-console/src/console/fonts/source-sans-3/SourceSans3-600.woff2"
+        ),
     ),
     (
         "source-sans-3/SourceSans3-400italic.woff2",
         "font/woff2",
-        include_bytes!("console/fonts/source-sans-3/SourceSans3-400italic.woff2"),
+        include_bytes!(
+            "../crates/rigger-console/src/console/fonts/source-sans-3/SourceSans3-400italic.woff2"
+        ),
     ),
     (
         "source-sans-3/OFL.txt",
         "text/plain; charset=utf-8",
-        include_bytes!("console/fonts/source-sans-3/OFL.txt"),
+        include_bytes!("../crates/rigger-console/src/console/fonts/source-sans-3/OFL.txt"),
     ),
     (
         "jetbrains-mono/JetBrainsMono-400.woff2",
         "font/woff2",
-        include_bytes!("console/fonts/jetbrains-mono/JetBrainsMono-400.woff2"),
+        include_bytes!(
+            "../crates/rigger-console/src/console/fonts/jetbrains-mono/JetBrainsMono-400.woff2"
+        ),
     ),
     (
         "jetbrains-mono/JetBrainsMono-500.woff2",
         "font/woff2",
-        include_bytes!("console/fonts/jetbrains-mono/JetBrainsMono-500.woff2"),
+        include_bytes!(
+            "../crates/rigger-console/src/console/fonts/jetbrains-mono/JetBrainsMono-500.woff2"
+        ),
     ),
     (
         "jetbrains-mono/OFL.txt",
         "text/plain; charset=utf-8",
-        include_bytes!("console/fonts/jetbrains-mono/OFL.txt"),
+        include_bytes!("../crates/rigger-console/src/console/fonts/jetbrains-mono/OFL.txt"),
     ),
 ];
 

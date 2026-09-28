@@ -22,7 +22,7 @@
 //! never a hardcoded magic number) rather than by reconstructing an unreadable pointer.
 
 use console_core::{console_alloc, console_call, console_free};
-use rigger::spawn::SpawnEvent;
+use rigger_domain::spawn::SpawnEvent;
 
 /// Write `bytes` into a fresh `console_alloc`'d buffer and hand back its pointer - the same
 /// alloc-then-write sequence a real caller performs before every `console_call`.
@@ -156,13 +156,13 @@ fn console_call_session_state_persists_across_separate_calls() {
 /// answers ... with the same results the library's query functions return for the same
 /// graph") - proven through two real `console_call` invocations, not through `dispatch`
 /// directly. Reply content is unreadable natively, so this compares the reply's LENGTH
-/// against the length of the exact answer `rigger::contextgraph::query::graph_query` itself
+/// against the length of the exact answer `rigger_domain::contextgraph::query::graph_query` itself
 /// returns for the identical graph and kind - an expected value computed from the same
 /// authority the ABI wires to, never a hardcoded number.
 #[test]
 fn console_call_wires_graph_load_and_graph_query_through_the_public_abi() {
-    use rigger::contextgraph::query::graph_query;
-    use rigger::contextgraph::{Graph, Node, KIND_FILE};
+    use rigger_domain::contextgraph::query::graph_query;
+    use rigger_domain::contextgraph::{Graph, Node, KIND_FILE};
 
     let graph = Graph {
         nodes: vec![Node {
@@ -215,11 +215,11 @@ fn console_call_wires_graph_load_and_graph_query_through_the_public_abi() {
 /// wires to, never a hardcoded number.
 #[test]
 fn console_call_wires_map_build_and_map_frame_through_the_public_abi() {
-    use rigger::console::map;
-    use rigger::contextgraph::{
+    use rigger_console::console::map;
+    use rigger_domain::contextgraph::{
         Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
     };
-    use rigger::eventstore::Position;
+    use rigger_domain::eventstore::Position;
 
     let graph = Graph {
         nodes: vec![Node {
@@ -278,10 +278,10 @@ fn console_call_wires_map_build_and_map_frame_through_the_public_abi() {
 /// periphery tests exist to guard.
 #[test]
 fn console_call_map_frame_zooming_in_answers_a_longer_reply_through_the_public_abi() {
-    use rigger::contextgraph::{
+    use rigger_domain::contextgraph::{
         Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
     };
-    use rigger::eventstore::Position;
+    use rigger_domain::eventstore::Position;
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -344,11 +344,11 @@ fn console_call_map_frame_zooming_in_answers_a_longer_reply_through_the_public_a
 /// other assertions use, never a hardcoded byte count.
 #[test]
 fn console_call_map_frame_errors_again_after_a_graph_reload_through_the_public_abi() {
-    use rigger::console::map;
-    use rigger::contextgraph::{
+    use rigger_console::console::map;
+    use rigger_domain::contextgraph::{
         Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
     };
-    use rigger::eventstore::Position;
+    use rigger_domain::eventstore::Position;
 
     fn one_entity_graph(fn_name: &str) -> Graph {
         Graph {
@@ -433,11 +433,11 @@ fn console_call_map_frame_errors_again_after_a_graph_reload_through_the_public_a
 /// the identical camera/point.
 #[test]
 fn console_call_wires_map_hit_through_the_public_abi() {
-    use rigger::console::map;
-    use rigger::contextgraph::{
+    use rigger_console::console::map;
+    use rigger_domain::contextgraph::{
         Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
     };
-    use rigger::eventstore::Position;
+    use rigger_domain::eventstore::Position;
 
     let graph = Graph {
         nodes: vec![Node {
@@ -512,11 +512,11 @@ fn console_call_wires_map_hit_through_the_public_abi() {
 /// `dispatch_tests` (already covered in `src/lib.rs`).
 #[test]
 fn console_call_wires_graph_query_map_landmarks_through_the_public_abi() {
-    use rigger::console::map;
-    use rigger::contextgraph::{
+    use rigger_console::console::map;
+    use rigger_domain::contextgraph::{
         Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
     };
-    use rigger::eventstore::Position;
+    use rigger_domain::eventstore::Position;
 
     let graph = Graph {
         nodes: vec![Node {
@@ -573,11 +573,11 @@ fn console_call_wires_graph_query_map_landmarks_through_the_public_abi() {
 /// `map_fit_*` periphery test below, so each test's own body stays about the OP's ABI wiring,
 /// never about re-deriving a fixture graph (the same discipline `built_map_session` in
 /// `src/lib.rs`'s own `dispatch_tests` already keeps).
-fn cross_district_fixture() -> rigger::contextgraph::Graph {
-    use rigger::contextgraph::{
+fn cross_district_fixture() -> rigger_domain::contextgraph::Graph {
+    use rigger_domain::contextgraph::{
         Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
     };
-    use rigger::eventstore::Position;
+    use rigger_domain::eventstore::Position;
 
     let code = |id: &str, name: &str| Node {
         id: id.to_string(),
@@ -621,16 +621,16 @@ fn cross_district_fixture() -> rigger::contextgraph::Graph {
 /// A single district with a real hull (one community, six members) - the SAME shape
 /// `console::map`'s own `hit_falls_back_to_a_district_when_no_entity_is_near_but_the_click_is_\
 /// inside_its_hull` unit test builds via `populous_graph(1, 1, 6)`, reproduced here since that
-/// helper is `#[cfg(test)]`-private to `src/console/map.rs` and unreachable from this external
+/// helper is `#[cfg(test)]`-private to `crates/rigger-console/src/console/map.rs` and unreachable from this external
 /// periphery crate. `cross_district_fixture`'s own two-member districts are too small to carry a
 /// hull radius any probe point can land inside without also landing within `map_hit`'s own hit
 /// radius of a dot - this fixture exists ONLY for the district-hit and no-hit periphery tests
 /// below, which need a real gap between "inside the hull" and "near a dot".
-fn six_member_district_graph() -> rigger::contextgraph::Graph {
-    use rigger::contextgraph::{
+fn six_member_district_graph() -> rigger_domain::contextgraph::Graph {
+    use rigger_domain::contextgraph::{
         Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
     };
-    use rigger::eventstore::Position;
+    use rigger_domain::eventstore::Position;
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -675,7 +675,7 @@ fn six_member_district_graph() -> rigger::contextgraph::Graph {
 /// field, not an `id`), never exercised by that test.
 #[test]
 fn console_call_wires_map_hit_through_the_public_abi_to_a_district() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = six_member_district_graph();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -732,7 +732,7 @@ fn console_call_wires_map_hit_through_the_public_abi_to_a_district() {
 /// but never be caught by either of the other two map_hit periphery tests.
 #[test]
 fn console_call_wires_map_hit_through_the_public_abi_to_none() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = six_member_district_graph();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -777,7 +777,7 @@ fn console_call_wires_map_hit_through_the_public_abi_to_none() {
 /// `dispatch_tests` case that only ever calls each kind by its own name).
 #[test]
 fn console_call_wires_graph_query_map_bridges_through_the_public_abi() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = cross_district_fixture();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -817,9 +817,9 @@ fn console_call_wires_graph_query_map_bridges_through_the_public_abi() {
 /// the one test proving that second piece of session state actually crosses the real ABI too.
 #[test]
 fn console_call_wires_graph_query_map_argued_about_through_the_public_abi() {
-    use rigger::console::map;
-    use rigger::contextgraph::{Edge, Node, KIND_FINDING, REL_ABOUT, TIER_EXTRACTED};
-    use rigger::eventstore::Position;
+    use rigger_console::console::map;
+    use rigger_domain::contextgraph::{Edge, Node, KIND_FINDING, REL_ABOUT, TIER_EXTRACTED};
+    use rigger_domain::eventstore::Position;
 
     let mut graph = cross_district_fixture();
     graph.nodes.push(Node {
@@ -876,9 +876,9 @@ fn console_call_wires_graph_query_map_argued_about_through_the_public_abi() {
 #[test]
 fn console_call_wires_graph_query_map_argued_about_excludes_a_superseded_finding_edge_through_the_public_abi(
 ) {
-    use rigger::console::map;
-    use rigger::contextgraph::{Edge, Node, KIND_FINDING, REL_ABOUT, TIER_EXTRACTED};
-    use rigger::eventstore::Position;
+    use rigger_console::console::map;
+    use rigger_domain::contextgraph::{Edge, Node, KIND_FINDING, REL_ABOUT, TIER_EXTRACTED};
+    use rigger_domain::eventstore::Position;
 
     let mut graph = cross_district_fixture();
     graph.nodes.push(Node {
@@ -952,7 +952,7 @@ fn console_call_wires_graph_query_map_argued_about_excludes_a_superseded_finding
 /// `ChangingParams`'s own crate-internal `dispatch_tests`.
 #[test]
 fn console_call_wires_graph_query_map_changing_through_the_public_abi() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = cross_district_fixture();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -996,7 +996,7 @@ fn console_call_wires_graph_query_map_changing_through_the_public_abi() {
 /// actually crosses the real ABI, not merely `op_map_query`'s own in-crate call.
 #[test]
 fn console_call_wires_graph_query_map_search_through_the_public_abi() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = cross_district_fixture();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -1037,7 +1037,7 @@ fn console_call_wires_graph_query_map_search_through_the_public_abi() {
 /// `"candidates"`/`"hits"` wrapper every ranked-list kind above answers).
 #[test]
 fn console_call_wires_graph_query_map_fit_whole_through_the_public_abi() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = cross_district_fixture();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -1074,7 +1074,7 @@ fn console_call_wires_graph_query_map_fit_whole_through_the_public_abi() {
 /// never resent on this op's own params, unlike `map_build`/`map_hit` above).
 #[test]
 fn console_call_wires_graph_query_map_fit_district_through_the_public_abi() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = cross_district_fixture();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -1123,7 +1123,7 @@ fn console_call_wires_graph_query_map_fit_district_through_the_public_abi() {
 #[test]
 fn console_call_graph_query_map_fit_district_of_unknown_purpose_answers_an_error_through_the_public_abi(
 ) {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = cross_district_fixture();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -1169,7 +1169,7 @@ fn console_call_graph_query_map_fit_district_of_unknown_purpose_answers_an_error
 /// `id` params struct.
 #[test]
 fn console_call_wires_graph_query_map_fit_entity_through_the_public_abi() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = cross_district_fixture();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -1213,7 +1213,7 @@ fn console_call_wires_graph_query_map_fit_entity_through_the_public_abi() {
 /// answers - the same proof `map_fit_district`'s own unknown-purpose test gives its sibling kind.
 #[test]
 fn console_call_graph_query_map_fit_entity_of_unknown_id_answers_an_error_through_the_public_abi() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let graph = cross_district_fixture();
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -1267,11 +1267,11 @@ fn console_call_graph_query_map_fit_entity_of_unknown_id_answers_an_error_throug
 /// gap by an ordinary positive zoom, far from every district pill's own reserved label footprint
 /// (`a`'s own world radius is 700+ units out, nowhere near the district centre a pill reserves
 /// around).
-fn tiebreak_fixture() -> (rigger::contextgraph::Graph, String, String) {
-    use rigger::contextgraph::{
+fn tiebreak_fixture() -> (rigger_domain::contextgraph::Graph, String, String) {
+    use rigger_domain::contextgraph::{
         Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
     };
-    use rigger::eventstore::Position;
+    use rigger_domain::eventstore::Position;
 
     let code = |id: &str, name: &str| Node {
         id: id.to_string(),
@@ -1324,7 +1324,7 @@ fn tiebreak_fixture() -> (rigger::contextgraph::Graph, String, String) {
 /// distances, this would answer `a` and fail.
 #[test]
 fn console_call_wires_map_hit_through_the_public_abi_preferring_the_nearer_of_two_in_range_dots() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let (graph, a_id, b_id) = tiebreak_fixture();
     let model = map::build(&graph);
@@ -1423,7 +1423,7 @@ fn console_call_wires_map_hit_through_the_public_abi_preferring_the_nearer_of_tw
 /// precondition every other map kind carries does not apply here).
 #[test]
 fn console_call_wires_graph_query_map_legend_through_the_public_abi_before_any_map_is_built() {
-    use rigger::console::map;
+    use rigger_console::console::map;
 
     let queried = unsafe { call("graph_query", r#"{"kind":"map_legend","params":{}}"#) };
 
@@ -1446,8 +1446,8 @@ fn console_call_wires_graph_query_map_legend_through_the_public_abi_before_any_m
 /// `map_legend` above, needs no prior `graph_load`/`map_build`: only a `fold_reset`'d session.
 #[test]
 fn console_call_wires_scrub_track_through_the_public_abi() {
-    use rigger::console;
-    use rigger::eventstore::Event;
+    use rigger_console::console;
+    use rigger_domain::eventstore::Event;
 
     let events_json = r#"{"events":[
         {"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":1}
@@ -1486,8 +1486,8 @@ fn console_call_wires_scrub_track_through_the_public_abi() {
 /// differs from the empty-session case, not merely a vacuous match.
 #[test]
 fn console_call_wires_palette_commands_through_the_public_abi() {
-    use rigger::console;
-    use rigger::eventstore::Event;
+    use rigger_console::console;
+    use rigger_domain::eventstore::Event;
 
     let events_json = r#"{"events":[
         {"type":"UnitStarted","data":{"id":"u1"},"position":1},
@@ -1543,8 +1543,8 @@ fn console_call_wires_palette_commands_through_the_public_abi() {
 /// `palette_commands` degrade on it for real.
 #[test]
 fn console_call_palette_commands_degrades_on_a_malformed_recorded_spawn_through_the_public_abi() {
-    use rigger::console;
-    use rigger::eventstore::Event;
+    use rigger_console::console;
+    use rigger_domain::eventstore::Event;
 
     // A JSON string, not a spawn-request object - well-formed wire JSON (so fold_reset's own
     // parsing and console::fold succeed) but not a shape SpawnRequest::from_event can parse.
@@ -1586,7 +1586,7 @@ fn console_call_palette_commands_degrades_on_a_malformed_recorded_spawn_through_
 /// The round-3 fix's own required proof (`adj-u94c4-r2-verdict-reject-palette-commands-fail-total`:
 /// "add a case proving a valid spawn survives alongside a malformed one in the SAME event
 /// log"), THROUGH THE EXPORTED ABI. That mixed-log case landed only as an in-process unit test
-/// (`palette_commands_keeps_a_valid_spawn_alongside_a_malformed_one`, `src/console/mod.rs`) and
+/// (`palette_commands_keeps_a_valid_spawn_alongside_a_malformed_one`, `crates/rigger-console/src/console/mod.rs`) and
 /// this crate's own private `dispatch_tests` backdoor still covers only the single-malformed-
 /// only scenario - never crossing `console_call`'s pointer-packing marshaling with BOTH an agent
 /// worth keeping and one worth dropping in the SAME session. The single-malformed ABI test
@@ -1597,8 +1597,8 @@ fn console_call_palette_commands_degrades_on_a_malformed_recorded_spawn_through_
 #[test]
 fn console_call_palette_commands_keeps_a_valid_spawn_alongside_a_malformed_one_through_the_public_abi(
 ) {
-    use rigger::console;
-    use rigger::eventstore::Event;
+    use rigger_console::console;
+    use rigger_domain::eventstore::Event;
 
     let events_json = r#"{"events":[
         {"type":"SpawnRequested","data":{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"},"position":1},
@@ -1666,8 +1666,8 @@ fn console_call_palette_commands_keeps_a_valid_spawn_alongside_a_malformed_one_t
 /// length, not merely the same one by coincidence.
 #[test]
 fn console_call_palette_commands_scopes_to_an_explicit_position_through_the_public_abi() {
-    use rigger::console;
-    use rigger::eventstore::Event;
+    use rigger_console::console;
+    use rigger_domain::eventstore::Event;
 
     let events_json = r#"{"events":[
         {"type":"UnitStarted","data":{"id":"u1"},"position":1},
@@ -1750,8 +1750,8 @@ fn console_call_palette_commands_scopes_to_an_explicit_position_through_the_publ
 #[test]
 fn console_call_palette_commands_answers_the_scrubbed_window_even_after_a_live_push_races_it_through_the_public_abi(
 ) {
-    use rigger::console;
-    use rigger::eventstore::Event;
+    use rigger_console::console;
+    use rigger_domain::eventstore::Event;
 
     let events_json = r#"{"events":[
         {"type":"UnitStarted","data":{"id":"u1"},"position":1},
@@ -1825,7 +1825,7 @@ fn console_call_palette_commands_answers_the_scrubbed_window_even_after_a_live_p
     );
 }
 
-/// `scrub_track`'s VERDICT marks read [`rigger::spawn::Adjudication::verdict`] - spec 94
+/// `scrub_track`'s VERDICT marks read [`rigger_domain::spawn::Adjudication::verdict`] - spec 94
 /// criterion 3's additive FIELD on the already-`pub` `Adjudication` struct (a plain
 /// `pub fn`/`struct`/`enum`/`trait`/`const`/`type` grep misses a new field on an existing
 /// item; this test exists precisely because that field never crosses a real boundary
@@ -1839,8 +1839,8 @@ fn console_call_palette_commands_answers_the_scrubbed_window_even_after_a_live_p
 /// presence, survives the ABI.
 #[test]
 fn console_call_wires_scrub_track_reject_verdict_marks_through_the_public_abi() {
-    use rigger::console;
-    use rigger::spawn::SpawnResult;
+    use rigger_console::console;
+    use rigger_domain::spawn::SpawnResult;
 
     let event = SpawnResult::ok(
         "u1/adjudicator#0",
@@ -1890,8 +1890,8 @@ fn console_call_wires_scrub_track_reject_verdict_marks_through_the_public_abi() 
 /// (or wired neither and always answered a fixed color) cannot pass both tests at once.
 #[test]
 fn console_call_wires_scrub_track_approve_verdict_marks_through_the_public_abi() {
-    use rigger::console;
-    use rigger::spawn::SpawnResult;
+    use rigger_console::console;
+    use rigger_domain::spawn::SpawnResult;
 
     let event = SpawnResult::ok("u1/adjudicator#0", r#"{"verdict":"approve"}"#)
         .to_event()
@@ -1943,8 +1943,8 @@ fn console_call_wires_scrub_track_approve_verdict_marks_through_the_public_abi()
 /// not merely surviving JSON parsing and then being dropped before the fold sees it.
 #[test]
 fn console_call_scrub_track_hour_ticks_read_recorded_at_across_the_public_abi() {
-    use rigger::console;
-    use rigger::eventstore::Event;
+    use rigger_console::console;
+    use rigger_domain::eventstore::Event;
     use std::time::{Duration, SystemTime};
 
     let events_json = r#"{"events":[
@@ -2031,8 +2031,8 @@ fn console_call_scrub_track_omits_ticks_through_the_public_abi_when_the_wire_car
 /// push would - never a longer reply carrying a second, duplicate mark for the same event.
 #[test]
 fn console_call_fold_push_is_idempotent_for_a_position_already_applied_through_the_public_abi() {
-    use rigger::console;
-    use rigger::eventstore::Event;
+    use rigger_console::console;
+    use rigger_domain::eventstore::Event;
 
     let reset = unsafe {
         call(

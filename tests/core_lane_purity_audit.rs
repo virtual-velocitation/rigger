@@ -194,8 +194,8 @@ fn every_listed_core_module_is_declared_ungated_in_its_parent() {
         fs::read_to_string("src/contextgraph/mod.rs").expect("reading src/contextgraph/mod.rs");
     let eventstore_text =
         fs::read_to_string("src/eventstore/mod.rs").expect("reading src/eventstore/mod.rs");
-    let console_text =
-        fs::read_to_string("src/console/mod.rs").expect("reading src/console/mod.rs");
+    let console_text = fs::read_to_string("crates/rigger-console/src/console/mod.rs")
+        .expect("reading crates/rigger-console/src/console/mod.rs");
 
     for m in &modules {
         let crate_parent = split_crate_parent(m);
@@ -205,13 +205,13 @@ fn every_listed_core_module_is_declared_ungated_in_its_parent() {
             (&lib_text, "contextgraph")
         } else if m == "src/eventstore/mod.rs" {
             (&lib_text, "eventstore")
-        } else if m == "src/console/mod.rs" {
+        } else if m == "crates/rigger-console/src/console/mod.rs" {
             (&lib_text, "console")
         } else if let Some(rest) = m.strip_prefix("src/contextgraph/") {
             (&contextgraph_text, rest.trim_end_matches(".rs"))
         } else if let Some(rest) = m.strip_prefix("src/eventstore/") {
             (&eventstore_text, rest.trim_end_matches(".rs"))
-        } else if let Some(rest) = m.strip_prefix("src/console/") {
+        } else if let Some(rest) = m.strip_prefix("crates/rigger-console/src/console/") {
             (&console_text, rest.trim_end_matches(".rs"))
         } else {
             let name = m

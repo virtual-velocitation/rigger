@@ -5,7 +5,7 @@
 //! 93's own module). Criterion 1 built the districts/entities/edges half; criterion 2 (THIS
 //! file's own extension) added `lit` to `DrawEntity`/`DrawEdge` and the `selected` card - the
 //! SAME wire contract, grown additively, never a second one. Every one of `console::map`'s own
-//! unit tests (`src/console/map.rs`'s `mod tests`) reads the RUST struct's fields directly
+//! unit tests (`crates/rigger-console/src/console/map.rs`'s `mod tests`) reads the RUST struct's fields directly
 //! (`.purpose`, `.name`, `.rel`, ...) - never through `serde_json` - so a `#[serde(rename)]`
 //! slip, an accidentally-renamed field, or a field that silently stopped deriving `Serialize`
 //! would still compile clean and pass every one of those tests while breaking every JS caller

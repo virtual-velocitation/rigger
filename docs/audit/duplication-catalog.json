@@ -3792,6 +3792,184 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-f61039476fc4",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "as_candidate",
+        "content_hash": "731d0b66c201f2bb"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "map_entry_wire",
+        "content_hash": "9102943ce1e2059d"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "map_entry_lines",
+        "content_hash": "89e2c1f7df26e37e"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-console/src/console/map.rs, tests/simplification_audit.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-ce4fa432a6da",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "in_community",
+        "content_hash": "7e91ab0afd535d44"
+      },
+      {
+        "file": "tests/files_lens_view_periphery.rs",
+        "name": "refs",
+        "content_hash": "c6cbf1804e8d9ccb"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-console/src/console/map.rs, tests/files_lens_view_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-2d4c80fb45b9",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "module_of_a_leaf_src_file_is_its_stem_never_the_file_name",
+        "content_hash": "7fca351216d814bf"
+      },
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "district_purpose_uses_the_curated_table_when_present",
+        "content_hash": "626d6aed796ac54e"
+      },
+      {
+        "file": "crates/rigger-domain/src/ledger.rs",
+        "name": "short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through",
+        "content_hash": "626d6aed796ac54e"
+      },
+      {
+        "file": "crates/rigger-domain/src/ledger.rs",
+        "name": "spec_stem_extracts_and_sanitizes_the_file_stem",
+        "content_hash": "b56b232956ab7336"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type",
+        "content_hash": "7fca351216d814bf"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "impl_self_type_strips_a_leading_dyn_token_on_the_self_type",
+        "content_hash": "626d6aed796ac54e"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match",
+        "content_hash": "626d6aed796ac54e"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "ident_kind_marker_classifies_by_casing",
+        "content_hash": "c8f8739d03c01acf"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-console/src/console/map.rs, crates/rigger-domain/src/ledger.rs, tests/simplification_audit.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-cf5c8cd56db9",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "module_of_never_returns_a_string_carrying_a_dot_or_a_slash",
+        "content_hash": "84dc1535e1142804"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
+        "name": "no_credential_fragment_ever_survives",
+        "content_hash": "76f737610a4ec43f"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-console/src/console/map.rs, crates/rigger-store-sqlite/src/eventstore/mod.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-227133ad22cd",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "budget_scales_the_step_by_zoom_rather_than_offsetting_it",
+        "content_hash": "804615af198d8343"
+      },
+      {
+        "file": "crates/rigger-domain/src/spec.rs",
+        "name": "strip_inline_code_direct_exact_output_pins_the_one_span_per_kind_rule",
+        "content_hash": "804615af198d8343"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
+        "name": "a_delimiter_inside_the_userinfo_never_leaks_the_credential_head",
+        "content_hash": "804615af198d8343"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-console/src/console/map.rs, crates/rigger-domain/src/spec.rs, crates/rigger-store-sqlite/src/eventstore/mod.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-30a334181642",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "caller_callee_graph",
+        "content_hash": "f9eb97323a92b752"
+      },
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "cross_district_graph",
+        "content_hash": "12bd84d421abea99"
+      }
+    ],
+    "proposed_home": "map::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-b8d5ee4b6f2b",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "landmarks_ranks_by_whole_map_degree_descending",
+        "content_hash": "c3aed2b943d9861c"
+      },
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "search_is_case_insensitive",
+        "content_hash": "4cf22fb46a0626b8"
+      },
+      {
+        "file": "crates/rigger-console/src/console/map.rs",
+        "name": "search_hit_carries_kind_and_degree_beside_the_name",
+        "content_hash": "c65ed034d60a50b5"
+      }
+    ],
+    "proposed_home": "map::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-2a5626cb9627",
     "classification": "near",
     "sites": [
@@ -4057,55 +4235,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/ingest.rs, tests/published_content_key_split_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-65d6d5073566",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/ledger.rs",
-        "name": "short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through",
-        "content_hash": "626d6aed796ac54e"
-      },
-      {
-        "file": "crates/rigger-domain/src/ledger.rs",
-        "name": "spec_stem_extracts_and_sanitizes_the_file_stem",
-        "content_hash": "b56b232956ab7336"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "module_of_a_leaf_src_file_is_its_stem_never_the_file_name",
-        "content_hash": "7fca351216d814bf"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "district_purpose_uses_the_curated_table_when_present",
-        "content_hash": "626d6aed796ac54e"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type",
-        "content_hash": "7fca351216d814bf"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "impl_self_type_strips_a_leading_dyn_token_on_the_self_type",
-        "content_hash": "626d6aed796ac54e"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "strip_trailing_where_clause_is_a_word_boundary_match_not_a_substring_match",
-        "content_hash": "626d6aed796ac54e"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "ident_kind_marker_classifies_by_casing",
-        "content_hash": "c8f8739d03c01acf"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/ledger.rs, src/console/map.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -4399,30 +4528,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/spec.rs, tests/simplification_audit.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-ee034ee789c2",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/spec.rs",
-        "name": "strip_inline_code_direct_exact_output_pins_the_one_span_per_kind_rule",
-        "content_hash": "804615af198d8343"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
-        "name": "a_delimiter_inside_the_userinfo_never_leaks_the_credential_head",
-        "content_hash": "804615af198d8343"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "budget_scales_the_step_by_zoom_rather_than_offsetting_it",
-        "content_hash": "804615af198d8343"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/spec.rs, crates/rigger-store-sqlite/src/eventstore/mod.rs, src/console/map.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5701,25 +5806,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d32a420335cb",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
-        "name": "no_credential_fragment_ever_survives",
-        "content_hash": "76f737610a4ec43f"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "module_of_never_returns_a_string_carrying_a_dot_or_a_slash",
-        "content_hash": "84dc1535e1142804"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/mod.rs, src/console/map.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-831910355599",
     "classification": "near",
     "sites": [
@@ -5849,92 +5935,6 @@
       }
     ],
     "proposed_home": "blast_radius_eval::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-be97ce907814",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/console/map.rs",
-        "name": "as_candidate",
-        "content_hash": "731d0b66c201f2bb"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "map_entry_wire",
-        "content_hash": "9102943ce1e2059d"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "map_entry_lines",
-        "content_hash": "89e2c1f7df26e37e"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/console/map.rs, tests/simplification_audit.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-73fd1b3e0b03",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/console/map.rs",
-        "name": "in_community",
-        "content_hash": "7e91ab0afd535d44"
-      },
-      {
-        "file": "tests/files_lens_view_periphery.rs",
-        "name": "refs",
-        "content_hash": "c6cbf1804e8d9ccb"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/console/map.rs, tests/files_lens_view_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-0e618ec2d345",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/console/map.rs",
-        "name": "caller_callee_graph",
-        "content_hash": "f9eb97323a92b752"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "cross_district_graph",
-        "content_hash": "12bd84d421abea99"
-      }
-    ],
-    "proposed_home": "map::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-0f11f47627d7",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/console/map.rs",
-        "name": "landmarks_ranks_by_whole_map_degree_descending",
-        "content_hash": "c3aed2b943d9861c"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "search_is_case_insensitive",
-        "content_hash": "4cf22fb46a0626b8"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "search_hit_carries_kind_and_degree_beside_the_name",
-        "content_hash": "c65ed034d60a50b5"
-      }
-    ],
-    "proposed_home": "map::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

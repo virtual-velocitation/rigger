@@ -57,7 +57,6 @@ const RINGS: &[(&str, u8)] = &[
 /// Outward edges that exist today, `(from, to)`, each deleted by the extraction commit named
 /// beside it.
 const EDGE_ALLOWLIST: &[(&str, &str)] = &[
-    ("console-core", "rigger"), // removed by: split: extract rigger-console
     // The conductor still calls these adapters directly; each edge goes when the port its lesson
     // names is introduced and the composition root injects the adapter.
     ("rigger-conductor", "rigger-store-sqlite"), // lesson-split-conductor-store-sqlite-edge

@@ -5,7 +5,7 @@ run-level event (`crates/rigger-domain/src/run.rs:33`); the failure taxonomy cla
 (`crates/rigger-domain/src/failure.rs:23`), so a spawn error charges the unit; the liveness sweep measures wall
 time (`crates/rigger-driver/src/liveness.rs:342`), so after a 17 h credential outage the first step read a marker
 61,963 s stale, recorded a liveness fault and halted; needs-you knows three conditions
-(`src/console/mod.rs:91`), none of them an outage, so status read "working" throughout. This
+(`crates/rigger-console/src/console/mod.rs:91`), none of them an outage, so status read "working" throughout. This
 spec ships the hold of docs/architecture-addendum-claude-code-integration.md (section 5) on
 the agent host of spec 104.
 

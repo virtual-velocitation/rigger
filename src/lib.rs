@@ -38,7 +38,7 @@ pub use rigger_config_files::config_store;
 /// the statusline from a recorded event stream, shared between `rigger status`
 /// and the Mission Control console page (specs 94-98). Always compiled (`core`):
 /// no `rusqlite`, `tokio`, `std::fs`, `std::process`, `std::net` or clock read.
-pub mod console;
+pub use rigger_console::console;
 pub mod contextgraph;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod dash;

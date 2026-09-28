@@ -15,10 +15,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # The pure subset ONLY (THE FEATURE SPLIT, spec 93 criterion 1): default-features = false
-# drops `store` (and `symbols`), so this crate - and therefore the wasm32 build - never
-# pulls rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb. `path = "../.."` is the workspace
-# root package itself, not a new external crate.
-rigger = { path = "../..", default-features = false, features = ["core"] }
+# drops `store`, so this crate - and therefore the wasm32 build - never pulls
+# rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb. Both are workspace members, not new external
+# crates: the console fold and code map, and the domain model they fold over.
+rigger-console = { path = "../rigger-console", default-features = false, features = ["core"] }
+rigger-domain = { path = "../rigger-domain", default-features = false, features = ["core"] }
 serde = { version = "1", features = ["derive"] }
 # `raw_value` (BUDGETS, spec 93 criterion 2): `fold_reset`/`fold_push` need an event's `data`
 # sub-object handed straight to `Event::new` as raw bytes, never round-tripped through a

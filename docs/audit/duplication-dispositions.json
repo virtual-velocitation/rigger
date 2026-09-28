@@ -80,7 +80,7 @@
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
   {
-    "id": "dup-ee034ee789c2",
+    "id": "dup-227133ad22cd",
     "disposition": "not-a-duplicate",
     "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
   },
@@ -225,12 +225,12 @@
     "reason": "Both already read through the shared `raw_rows`; one selects every edge row's project tag, the other the schema's own index names from `sqlite_master`."
   },
   {
-    "id": "dup-0e618ec2d345",
+    "id": "dup-30a334181642",
     "disposition": "not-a-duplicate",
     "reason": "Both already build through the shared `community_graph`; they are two different fixtures (one three-function district with a caller and a callee, two districts joined by one cross-district call)."
   },
   {
-    "id": "dup-0f11f47627d7",
+    "id": "dup-b8d5ee4b6f2b",
     "disposition": "not-a-duplicate",
     "reason": "Three different map queries over one fixture: landmark ranking by degree, case-insensitive name search, and the kind/degree fields a search hit carries."
   },
@@ -560,17 +560,17 @@
     "reason": "Unit tests of three different parsers (emit-payload literal binding, uuid8 recognition, error-shaping detection) with their own inputs and expectations."
   },
   {
-    "id": "dup-be97ce907814",
+    "id": "dup-f61039476fc4",
     "disposition": "not-a-duplicate",
     "reason": "Three struct projections into different output shapes (a map candidate, the responsibility-map wire record and its line-number record) over different source types."
   },
   {
-    "id": "dup-65d6d5073566",
+    "id": "dup-2d4c80fb45b9",
     "disposition": "not-a-duplicate",
     "reason": "Unit tests of different functions (module-of, district-purpose, short run id, spec stem, impl self-type, where-clause stripping, identifier kind) that share only the assert-equality shape."
   },
   {
-    "id": "dup-d32a420335cb",
+    "id": "dup-cf5c8cd56db9",
     "disposition": "not-a-duplicate",
     "reason": "Two property tests over different functions and invariants (module names never carry a dot or slash; credential fragments never survive redaction)."
   },
@@ -820,7 +820,7 @@
     "reason": "Two constructors of two different test doubles (the conductor Stub answering one output, the plan-amend driver naming its planner); each sets its own type's one field over its own defaults."
   },
   {
-    "id": "dup-73fd1b3e0b03",
+    "id": "dup-ce4fa432a6da",
     "disposition": "not-a-duplicate",
     "reason": "One-line edge constructors for different relations with different liveness: a live community-membership edge in the map tests and an extracted reference edge through the shared `edge` fixture."
   },
