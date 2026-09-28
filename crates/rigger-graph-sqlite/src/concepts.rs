@@ -285,10 +285,14 @@ mod tests {
         let d = derive(&g, &intent_layer(&g), DEFAULT_RESOLUTION);
         let evs = events(&d);
 
+        // The members a concept attaches to are nodes the graph holds (spec 101: an attachment on
+        // a node the graph does not hold is not live); a decision naming them holds them.
+        let held: Vec<&str> = d.members.iter().map(|(m, _)| m.as_str()).collect();
         let rebuild = |events: &[Event]| -> BTreeMap<String, String> {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("graph.db");
             let p = Projector::open(path.to_str().unwrap(), "proj").unwrap();
+            crate::test_support::apply_decision(&p, 900_000, "d-hold", "members", &held, "");
             for (i, e) in events.iter().enumerate() {
                 let mut e = e.clone();
                 e.position = i as u64 + 1;

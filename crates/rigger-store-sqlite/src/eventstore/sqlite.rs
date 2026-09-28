@@ -207,10 +207,13 @@ impl Store {
         &self,
         stream_prefix: &str,
         identity: &ContentIdentity,
-    ) -> Result<Vec<(String, usize)>, Error> {
+    ) -> Result<DerivedPreview, Error> {
         let guard = self.conn.lock().unwrap();
         let plan = plan_derived_prune(&guard, stream_prefix, identity, &[])?;
-        Ok(plan.removed_per_type(identity.types()))
+        Ok(DerivedPreview {
+            removed: plan.removed_per_type(identity.types()),
+            superseded_generations: plan.superseded,
+        })
     }
 
     /// [`Store::prune_derived_index`] with its post-commit space reclamation INJECTED.
@@ -411,6 +414,16 @@ impl Store {
     }
 }
 
+/// What [`Store::count_derived_duplicates`] previews a `rigger reset --derived` would remove,
+/// counted exactly as [`PrunedDerived`] reports the prune itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DerivedPreview {
+    /// The rows the prune would delete, per covered type in the policy's order, zeros included.
+    pub removed: Vec<(String, usize)>,
+    /// How many of them record a superseded generation of their file.
+    pub superseded_generations: usize,
+}
+
 /// What one derived-index compaction deletes and re-dates, decided by [`plan_derived_prune`].
 struct DerivedPrunePlan {
     /// How many covered, keyed rows the selection weighed.
@@ -437,13 +450,22 @@ impl DerivedPrunePlan {
 
 /// One re-asserted fact's valid-time as the selection walks its recordings newest first: the
 /// earliest valid-time of its UNBROKEN run of generations, the run (see [`plan_derived_prune`])
-/// it was last met in, whether an older generation that did not assert it has already ended the
-/// run, and the surviving rows it must be carried onto as `(position, own valid-time)`.
+/// it was last met in, and whether an older generation that did not assert it has already ended
+/// the run.
 struct FactRun {
     earliest: i64,
     run: usize,
     broken: bool,
-    survivors: Vec<(i64, i64)>,
+}
+
+/// A re-asserted fact's payload as the fold reads it: parsed and re-serialized with its object
+/// keys sorted, so the two ingest sinks, which spell one fact's keys in different orders, record
+/// the same fact. A payload that does not parse as a JSON object is its own bytes.
+fn canonical_payload(payload: Vec<u8>) -> Vec<u8> {
+    serde_json::from_slice::<std::collections::BTreeMap<String, serde_json::Value>>(&payload)
+        .ok()
+        .and_then(|fields| serde_json::to_vec(&fields).ok())
+        .unwrap_or(payload)
 }
 
 /// The ONE selection of a derived-index compaction, shared by the prune, its read-only preview
@@ -464,9 +486,11 @@ struct FactRun {
 /// fact a generation dropped is new again when a later one asserts it. So the walk numbers each
 /// identity's RUNS - maximal stretches of recordings of one generation, run 0 the latest - and a
 /// surviving row takes the minimum valid-time over the recordings of the same identity with the
-/// byte-identical payload (the same fact) in consecutive runs from its own, stopping at the first
-/// run that does not assert it. That carries a fact every generation re-asserted back to the
-/// generation that first asserted it, and never past a generation that dropped it.
+/// same parsed payload ([`canonical_payload`], the same fact) in consecutive runs from its own,
+/// stopping at the first run that does not assert it, and over the earlier recordings of its own
+/// exact key in its own run, however their payloads are spelled. That carries a fact every
+/// generation re-asserted back to the generation that first asserted it, and never past a
+/// generation that dropped it.
 fn plan_derived_prune(
     conn: &Connection,
     stream_prefix: &str,
@@ -492,9 +516,14 @@ fn plan_derived_prune(
     // (stream, identity) -> (latest generation, generation of the run being walked, its number).
     let mut runs: HashMap<(String, String), (String, String, usize)> = HashMap::new();
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
-    // (stream, type, identity, payload) -> the fact's run so far.
+    // (stream, type, identity, canonical payload) -> the fact's run so far.
     type Fact = (String, String, String, Vec<u8>);
     let mut facts: HashMap<Fact, FactRun> = HashMap::new();
+    // (stream, type, key) of a surviving re-asserting row -> (its run, the earliest valid-time of
+    // the key's recordings in that run): the exact-key carry, blind to how a payload is spelled.
+    let mut keys: HashMap<(String, String, String), (usize, i64)> = HashMap::new();
+    // position of a surviving re-asserting row -> (its own valid-time, its fact, its key).
+    let mut survivors: Vec<(i64, i64, Fact, (String, String, String))> = Vec::new();
     let mut plan = DerivedPrunePlan {
         rows: 0,
         deletes: Vec::new(),
@@ -525,7 +554,8 @@ fn plan_derived_prune(
         }
         let run = walk.2;
         let superseded = walk.0 != generation;
-        let survives = !superseded && seen.insert((stream.clone(), type_.clone(), content_key));
+        let exact = (stream.clone(), type_.clone(), content_key);
+        let survives = !superseded && seen.insert(exact.clone());
         if !survives {
             plan.deletes.push((type_index, position));
         }
@@ -533,31 +563,34 @@ fn plan_derived_prune(
             plan.superseded += 1;
         }
         if let Some(payload) = payload {
-            let fact = facts
-                .entry((stream, type_, batch, payload))
-                .or_insert(FactRun {
-                    earliest: valid_from,
-                    run,
-                    broken: false,
-                    survivors: Vec::new(),
-                });
+            if let Some((key_run, earliest)) = keys.get_mut(&exact) {
+                if *key_run == run {
+                    *earliest = (*earliest).min(valid_from);
+                }
+            }
+            let fact_key = (stream, type_, batch, canonical_payload(payload));
+            let fact = facts.entry(fact_key.clone()).or_insert(FactRun {
+                earliest: valid_from,
+                run,
+                broken: false,
+            });
             fact.broken |= run > fact.run + 1;
             if !fact.broken {
                 fact.earliest = fact.earliest.min(valid_from);
                 fact.run = run;
             }
             if survives {
-                fact.survivors.push((position, valid_from));
+                keys.insert(exact.clone(), (run, valid_from));
+                survivors.push((position, valid_from, fact_key, exact));
             }
         }
     }
-    for fact in facts.into_values() {
-        for (position, own) in fact.survivors {
-            // `earliest` is a minimum over a set holding `own`, so inequality is the one case
-            // with an earlier date to carry.
-            if fact.earliest != own {
-                plan.carries.push((position, fact.earliest));
-            }
+    for (position, own, fact, exact) in survivors {
+        let earliest = facts[&fact].earliest.min(keys[&exact].1);
+        // `earliest` is a minimum over a set holding `own`, so inequality is the one case with
+        // an earlier date to carry.
+        if earliest != own {
+            plan.carries.push((position, earliest));
         }
     }
     plan.carries.sort_unstable();
@@ -1805,6 +1838,7 @@ mod tests {
         let previewed: usize = s
             .count_derived_duplicates("", &identity)
             .unwrap()
+            .removed
             .iter()
             .map(|(_, n)| n)
             .sum();

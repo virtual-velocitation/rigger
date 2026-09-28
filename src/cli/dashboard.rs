@@ -823,7 +823,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&grounder_name);
-    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
     let driver = rigger::driver::workflow::Driver::new();
 
     // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's

@@ -140,11 +140,11 @@ fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     // per backend rather than a number a server-backed project could never actually reclaim.
     if selection.is_sqlite() {
         let es = open_sqlite_store(&loc.file("events.db"))?;
-        let duplicates = es.count_derived_duplicates(
+        let preview = es.count_derived_duplicates(
             &Namespaced::prefix_for(&loc.identity()),
             &rigger::ingest::derived_index_identity(),
         )?;
-        println!("{}", derived_menu_line(selection, Some(&duplicates)));
+        println!("{}", derived_menu_line(selection, Some(&preview)));
     } else {
         println!("{}", derived_menu_line(selection, None));
     }
@@ -161,19 +161,22 @@ fn runs_menu_line(stats: &PruneStats) -> String {
     )
 }
 
-/// The `--derived` line of [`reset_menu`], pure over the already-measured per-type duplicate
-/// counts (or their absence, on a backend that cannot compact) so both branches are
-/// unit-testable without a store or a live server: `duplicates` is `Some` on the sqlite backend
+/// The `--derived` line of [`reset_menu`], pure over the already-measured preview - the per-type
+/// counts and how many of them are superseded generations, worded as the `--derived` report words
+/// them - (or its absence, on a backend that cannot compact) so both branches are
+/// unit-testable without a store or a live server: `preview` is `Some` on the sqlite backend
 /// (`selection.is_sqlite()`) and `None` on any other, and this reads `selection` only to name the
 /// backend it is honest about.
-fn derived_menu_line(selection: &StoreSelection, duplicates: Option<&[(String, usize)]>) -> String {
-    match duplicates {
-        Some(counts) => {
-            let total: usize = counts.iter().map(|(_, n)| n).sum();
+fn derived_menu_line(selection: &StoreSelection, preview: Option<&DerivedPreview>) -> String {
+    match preview {
+        Some(preview) => {
+            let total: usize = preview.removed.iter().map(|(_, n)| n).sum();
             format!(
-                "--derived: {total} duplicate event(s) prunable from the event log across {} \
-                 derived type(s); rerun `rigger reset --derived` to compact them",
-                counts.len()
+                "--derived: {total} redundant derived-index event(s) prunable from the event log \
+                 across {} derived type(s), {} of them recordings of a superseded generation; \
+                 rerun `rigger reset --derived` to compact them",
+                preview.removed.len(),
+                preview.superseded_generations
             )
         }
         None => {
@@ -390,12 +393,30 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// constructor (§48), exactly as the local identity migration does when it needs the concrete
 /// store for a maintenance operation the port does not carry.
 fn reset_derived(loc: &StoreLocation) -> Res {
+    refuse_derived_reset_before_graph_rebuild(&loc.file("graph.db"), &loc.identity())?;
     let store = open_sqlite_store(&loc.file("events.db"))?;
     let pruned = store.prune_derived_index(
         &Namespaced::prefix_for(&loc.identity()),
         &rigger::ingest::derived_index_identity(),
     )?;
     println!("{}", derived_prune_report(&pruned));
+    Ok(())
+}
+
+/// `rigger reset --derived` refuses to compact while this project's `graph.db` was folded under an
+/// older fold rule and has not been rebuilt from the log yet (spec 101): only the whole log can
+/// rebuild such a file, and a compacted log no longer holds what its old folds asserted. A project
+/// with no `graph.db` has nothing to rebuild.
+fn refuse_derived_reset_before_graph_rebuild(graph_db: &str, project: &str) -> Res {
+    if Path::new(graph_db).exists() && Projector::open(graph_db, project)?.rebuild_owed() {
+        return Err(format!(
+            "reset --derived: {graph_db} was folded under an older fold rule and must be rebuilt \
+             from the whole event log once before the log is compacted - run `rigger graph build` \
+             (it rebuilds graph.db from the log), then re-run `rigger reset --derived`. Refusing \
+             rather than compacting away the history that rebuild needs."
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -1780,34 +1801,28 @@ mod tests {
     }
 
     #[test]
-    fn derived_menu_line_sums_the_measured_duplicate_counts_and_names_the_flag() {
-        let counts = vec![
-            ("CodeEntityExtracted".to_string(), 3usize),
-            ("EdgeInferred".to_string(), 0usize),
-            ("DocLinkExtracted".to_string(), 5usize),
-        ];
-        let line = derived_menu_line(&StoreSelection::Sqlite, Some(&counts));
-        assert!(
-            line.contains("--derived:"),
-            "must name its own flag; got {line:?}"
+    fn derived_menu_line_sums_the_preview_and_names_its_superseded_generations_and_the_flag() {
+        let preview = DerivedPreview {
+            removed: vec![
+                ("CodeEntityExtracted".to_string(), 3usize),
+                ("EdgeInferred".to_string(), 0usize),
+                ("DocLinkExtracted".to_string(), 5usize),
+            ],
+            superseded_generations: 6,
+        };
+        assert_eq!(
+            derived_menu_line(&StoreSelection::Sqlite, Some(&preview)),
+            "--derived: 8 redundant derived-index event(s) prunable from the event log across 3 \
+             derived type(s), 6 of them recordings of a superseded generation; rerun `rigger \
+             reset --derived` to compact them",
+            "must sum the per-type counts (3+0+5=8), name the superseded share and the flag"
         );
-        assert!(
-            line.contains("8 duplicate event(s)"),
-            "must sum the per-type counts (3+0+5=8); got {line:?}"
-        );
-        assert!(
-            line.contains("3 derived type(s)"),
-            "must name how many types were measured; got {line:?}"
-        );
-        assert!(
-            line.contains("--derived"),
-            "must tell the operator which flag compacts it; got {line:?}"
-        );
-
-        let zero = derived_menu_line(&StoreSelection::Sqlite, Some(&[]));
-        assert!(
-            zero.contains("0 duplicate event(s)"),
-            "an empty store must report zero, not omit the line; got {zero:?}"
+        assert_eq!(
+            derived_menu_line(&StoreSelection::Sqlite, Some(&DerivedPreview::default())),
+            "--derived: 0 redundant derived-index event(s) prunable from the event log across 0 \
+             derived type(s), 0 of them recordings of a superseded generation; rerun `rigger \
+             reset --derived` to compact them",
+            "an empty store must report zero, not omit the line"
         );
     }
 
@@ -1820,7 +1835,7 @@ mod tests {
         let server = StoreSelection::Server("esdb://127.0.0.1:2113?tls=false".to_string());
         let line = derived_menu_line(&server, None);
         assert!(
-            !line.contains("duplicate event(s)"),
+            !line.contains("event(s)"),
             "a backend that cannot compact must never print a count it could not measure; got {line:?}"
         );
         assert!(

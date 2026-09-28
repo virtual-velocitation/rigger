@@ -24,7 +24,7 @@ use rigger::driver::replay::{
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
-    sqlite::{PrunedDerived, Store},
+    sqlite::{DerivedPreview, PrunedDerived, Store},
     Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
@@ -392,6 +392,21 @@ impl StoreSelection {
 /// call site. The structural test in `tests/store_resolution.rs` pins that.
 fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
     Ok(Store::open(path)?)
+}
+
+/// Open this project's `graph.db` for folding (spec 101): a file folded under an older fold rule
+/// is first rebuilt cold from `log` (the project's namespaced store, whose run stream holds every
+/// event the graph folds), once, so nothing ever folds incrementally onto it.
+fn open_graph(
+    graph_db: &str,
+    project: &str,
+    log: &dyn EventStore,
+) -> Result<Projector, Box<dyn std::error::Error>> {
+    let graph = Projector::open(graph_db, project)?;
+    if graph.rebuild_owed() {
+        graph.rebuild(&log.read_stream(conductor::STREAM, 0, Direction::Forward)?)?;
+    }
+    Ok(graph)
 }
 
 /// The `KURRENTDB_CONN` connection string from the environment, treating an empty value as

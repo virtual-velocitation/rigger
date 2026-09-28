@@ -506,7 +506,7 @@ fn cmd_graph_build(_args: &[String]) -> Res {
     let selection = store_selection(None, None)?;
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
 
     // The tree to fold: the git top-level, so a build launched from a subdirectory still ingests
     // the WHOLE project (the same root a run's `deps.repo` carries), falling back to the cwd
@@ -670,7 +670,7 @@ fn run_graph_pass(
     let selection = store_selection(None, None)?;
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
 
     let (events, summary) = derive(&graph.whole()?, resolution);
     rigger::ingest::append_and_fold_batch(
@@ -926,7 +926,7 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     refresh_registry_entry(&loc, &selection);
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
+    let graph = open_graph(&loc.file("graph.db"), &loc.identity(), &store)?;
 
     // Same args shape the MCP tool receives, so emit_event - the shared core both
     // surfaces call - behaves identically here and over MCP. A non-empty `--spawn <id>`
