@@ -19,13 +19,13 @@ retries; HOLD when a session ends of it. `invalid_request`, `max_output_tokens`,
 FAULT under spec 104's bound; three consecutive FAULTs across the run - HOLD with cause
 `api-unstable`. Spec 104's halt-after-two-relaunches is replaced by these rules.
 
-THE COMPOSITION ROOT, decided: this spec's first unit swaps `src/main.rs:3667` from
+THE COMPOSITION ROOT, decided: this spec's first unit swaps `src/cli/run.rs:1440` from
 `cli::Driver` to spec 104's `claude_code::Driver`, so `rigger run` hosts its agents as headless
 sessions, and migrates the `tests/cli.rs` end-to-end fixtures (the fake `claude` on PATH) from
 the `-p <prompt>` plain-text contract to the stream-json contract the host speaks. Spec 104
 deliberately left the root on `cli::Driver` because without the hold below a bare `api_retry`
 ends an unattended run; the swap and the hold land in the same spec for that reason. The
-`rigger step` path (`src/main.rs:5726`) keeps `cli::Driver` until spec 106 retires it.
+`rigger step` path (`src/cli/eval.rs:217`) keeps `cli::Driver` until spec 106 retires it.
 
 THE EVENTS, decided: `RunHeld {cause, detail, action, by}` and `RunReleased {by, held_for_s}`
 are the two new run-stream event types; `by` is `host`, `probe` or `operator`. A run is held

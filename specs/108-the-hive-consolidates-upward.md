@@ -4,7 +4,7 @@
 slice it needs; the hive never loses understanding, it moves understanding to history when
 the evidence says so and to a higher altitude when a run is over. Today it forgets by age. The
 log holds 11,791 `DecisionMade` events; the live graph holds 403 decision nodes, because
-`rigger reset --runs` (`src/main.rs:9154`, `superseded_graph_nodes` at `main.rs:9231`,
+`rigger reset --runs` (`src/cli/hygiene.rs:703`, `superseded_graph_nodes` at `main.rs:9231`,
 `Projector::prune` at `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:173`) drops every dead run's decisions and
 findings from the graph on the run boundary alone, keeping only `LessonLearned`. A decision whose code is
 still in the tree is forgotten with its run; a decision whose code is long gone stays live

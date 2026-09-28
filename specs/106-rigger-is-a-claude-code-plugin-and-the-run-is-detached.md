@@ -1,6 +1,6 @@
 # 106 - Rigger is a Claude Code plugin and the run is detached
 
-**Goal:** `rigger setup` (`src/main.rs:12727`) writes loose project files - ten skills, two
+**Goal:** `rigger setup` (`src/cli/setup.rs:545`) writes loose project files - ten skills, two
 hook entries in `.claude/settings.json`, an `.mcp.json` entry, a workflow script
 (`main.rs:12146`) and a Node shim (`main.rs:12639`) - and the run lives inside the operator's
 chat session: the script relays `rigger step` through an agent under a 10-minute tool cap, a

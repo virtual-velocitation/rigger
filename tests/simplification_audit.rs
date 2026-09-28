@@ -1,5 +1,5 @@
 //! Spec 85 criterion 1, THE RESPONSIBILITY MAP: a deterministic, zero-new-dependency scan of
-//! every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `crates/rigger-dash/src/dash.rs`, each assigned a
+//! every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` and `crates/rigger-dash/src/dash.rs`, each assigned a
 //! proposed module (ports-and-adapters shape) with its current line span and a reason, written
 //! to `docs/audit/responsibility-map.json` and rendered as section 1 of
 //! `docs/audit/2026-09-simplification-audit.md`. This unit OWNS the scanner and the
@@ -115,7 +115,7 @@ use rigger::grounder::symbols::store::content_hash;
 /// path, in this fixed order (also the order every generated artifact lists them in).
 const TARGET_FILES: [&str; 3] = [
     "crates/rigger-conductor/src/conductor.rs",
-    "src/main.rs",
+    "src/cli/mod.rs",
     "crates/rigger-dash/src/dash.rs",
 ];
 
@@ -1557,7 +1557,7 @@ const DASH_RULES: &[Rule] = &[
 fn rules_for(file: &str) -> &'static [Rule] {
     match file {
         "crates/rigger-conductor/src/conductor.rs" => CONDUCTOR_RULES,
-        "src/main.rs" => MAIN_RULES,
+        "src/cli/mod.rs" => MAIN_RULES,
         "crates/rigger-dash/src/dash.rs" => DASH_RULES,
         _ => &[],
     }
@@ -1650,7 +1650,7 @@ fn classify(f: &ScannedFn) -> (Option<String>, String) {
 fn file_stem(file: &str) -> &str {
     match file {
         "crates/rigger-conductor/src/conductor.rs" => "conductor",
-        "src/main.rs" => "main",
+        "src/cli/mod.rs" => "main",
         "crates/rigger-dash/src/dash.rs" => "dash",
         other => Path::new(other)
             .file_stem()
@@ -1888,7 +1888,7 @@ fn render_section_1(entries: &[MapEntry], lines: &[MapEntryLines]) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and `crates/rigger-dash/src/dash.rs` \
+        "Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` and `crates/rigger-dash/src/dash.rs` \
          ({} functions total), assigned to a proposed module by \
          `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier \
          (never by hand). Instrument: the brace-matching scanner over the three named files.",
@@ -2221,17 +2221,17 @@ const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/main.rs",
+        "src/cli/hygiene.rs",
         "runs_menu_line",
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/main.rs",
+        "src/cli/run.rs",
         "reclaim_spawn_scratch",
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/main.rs",
+        "src/cli/validate.rs",
         "workflow_drift_advisory",
         SampleVerdict::NoDuplicate,
     ),
@@ -4196,7 +4196,7 @@ fn joined(lines: &[usize]) -> String {
 fn render_section_3(files: &[FileScan]) -> String {
     const CONDUCTOR: &str = "crates/rigger-conductor/src/conductor.rs";
     const INGEST: &str = "crates/rigger-grounder/src/ingest.rs";
-    const MAIN: &str = "src/main.rs";
+    const MAIN: &str = "src/cli/mod.rs";
     const AGENT_PORT: &str = "crates/rigger-domain/src/agent.rs";
     let boundary = test_boundary(CONDUCTOR);
     let reclaim = cite_fn(files, CONDUCTOR, "reclaim_terminal_unit_mutation_scratch");
@@ -5596,12 +5596,12 @@ fn render_section_6() -> String {
     );
     out.push_str("#### 5. Extract `src/main.rs`'s inline test module\n\n");
     out.push_str(&test_extraction_scope(
-        "src/main.rs",
+        "src/cli/mod.rs",
         "src/main/tests",
         &format!(
             "Same partition approach as item 4, reusing section 1's own production bucket \
             names ({}, ...).",
-            bucket_names(&god_file_shape("src/main.rs"), HEADLINE_BUCKETS)
+            bucket_names(&god_file_shape("src/cli/mod.rs"), HEADLINE_BUCKETS)
         ),
     ));
     out.push_str(
@@ -5664,7 +5664,7 @@ fn render_section_6() -> String {
     );
     out.push_str("#### 8. Split `src/main.rs`'s production code into `src/main/*.rs`\n\n");
     out.push_str(&production_split_scope(
-        "src/main.rs",
+        "src/cli/mod.rs",
         "`src/main.rs` (composition root, thinned)",
         "src/cli",
     ));
@@ -8004,7 +8004,7 @@ mod tests {
             assert_a_pin_bump_leaves_the_guarded_json_byte_identical(
                 &[
                     ("crates/rigger-conductor/src/conductor.rs", "fn one() {}\n"),
-                    ("src/main.rs", "fn two() {}\n"),
+                    ("src/cli/mod.rs", "fn two() {}\n"),
                     ("crates/rigger-dash/src/dash.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
                 ],
                 "crates/rigger-dash/src/dash.rs",
@@ -8042,7 +8042,7 @@ mod tests {
             assert_two_branches_never_perturb_an_existing_entry(
                 &[
                     ("crates/rigger-conductor/src/conductor.rs", "fn one() {}\n"),
-                    ("src/main.rs", "fn two() {}\n"),
+                    ("src/cli/mod.rs", "fn two() {}\n"),
                     ("crates/rigger-dash/src/dash.rs", "fn three() {}\n"),
                 ],
                 (
@@ -8050,7 +8050,7 @@ mod tests {
                     "fn one() {}\n\nfn branch_a_only() {\n    let _ = 1;\n}\n",
                 ),
                 (
-                    "src/main.rs",
+                    "src/cli/mod.rs",
                     "fn two() {}\n\nfn branch_b_only() {\n    let _ = 2;\n}\n",
                 ),
                 |root| ledger_json(&build_map(root), map_entry_wire),
@@ -8065,7 +8065,7 @@ mod tests {
     /// count, every module's own heading with its declared function count, and the unassigned
     /// heading with its declared count - never the exact citation bytes, which are free to
     /// legitimately move between explicit `RIGGER_AUDIT_WRITE=1` regens (a pin bump anywhere
-    /// in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` or `crates/rigger-dash/src/dash.rs`).
+    /// in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` or `crates/rigger-dash/src/dash.rs`).
     fn assert_section_1_structurally_matches(committed_section_1: &str, entries: &[MapEntry]) {
         assert!(
             committed_section_1.starts_with("## 1. Responsibility Map"),

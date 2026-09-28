@@ -49,8 +49,8 @@ archive therefore cannot leave a hole, and the revision-hole detection and two-p
 
 ONE HANDLE PER ROOT, decided: the `progress` stream lives in the same journal as kind-2
 records, excluded from replay by kind; a command opens one store per project root, resolved
-by `require_store_dir` (`src/main.rs:2068`), and the three-handle open sites
-(`src/main.rs:3911-3928`, the MCP server's cwd-resolved graph at `:13618-13625`) collapse to
+by `require_store_dir` (`src/cli/mod.rs:1388`), and the three-handle open sites
+(`src/cli/run.rs:1684-3928`, the MCP server's cwd-resolved graph at `:13618-13625`) collapse to
 that one resolution.
 
 SUBSCRIPTION, decided: `subscribe_all`/`subscribe_stream` watch the active segment's length

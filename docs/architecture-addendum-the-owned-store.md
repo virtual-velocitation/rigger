@@ -47,15 +47,15 @@ the engine itself, and the engine is wrong in three ways that no read discipline
   procedure repairs (`docs/architecture.md:580-617`).
 - **It has no notion of a project's lifecycle.** A store is open whenever any process wants
   it: every command opens up to three engine handles at its composition root
-  (`src/main.rs:3911-3928`), the dashboard, which is already the machine's multi-project
+  (`src/cli/run.rs:1684-3928`), the dashboard, which is already the machine's multi-project
   reader (`?instance=<id>`, `crates/rigger-dash/src/dash.rs:3425`), reopens each attached project's files on
-  every HTTP request (`src/main.rs:7270-7377`), and every subscription is a thread waking
+  every HTTP request (`src/cli/dashboard.rs:473-7377`), and every subscription is a thread waking
   every 25 ms to poll through the store's single mutexed connection
   (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:42`, `:1001`). Nothing distinguishes a project running three
   agents from a project nobody has touched in a month; both are reached the same way and cost
   the same to read. With two projects on one machine, the memory a courier spends is set by
   the largest project it happens to open. The MCP server even resolves its log through the
-  walked-up store root and its graph through the cwd (`src/main.rs:13618-13625`).
+  walked-up store root and its graph through the cwd (`src/cli/dashboard.rs:766-13625`).
 - **Its resource use is unbounded by design.** Resident memory is whatever a replay needs.
   The kernel's out-of-memory report of 2026-09-24 chose the largest process on the machine, a
   `rigger step` at 8.5 GB, while eight test children allocated 5.5 GB each. Nothing in rigger
@@ -300,8 +300,8 @@ framing, not the payload encoding, is what changes.
 ### 6.1 Identity
 
 A project is its root directory, found as today by the bounded walk up to the main repo
-root (`require_store_dir`, `src/main.rs:2068`). `.rigger/project.id` holds the stable id
-(`project_identity_at`, `src/main.rs:948`) that already names the stream namespace
+root (`require_store_dir`, `src/cli/mod.rs:1388`). `.rigger/project.id` holds the stable id
+(`project_identity_at`, `src/cli/mod.rs:789`) that already names the stream namespace
 `proj-<id>-`; machine-scope files are keyed by that id. Two checkouts of one repository are
 two projects with two roots and one id only if they share the tracked file, exactly as the
 namespace treats them today; a project moved to a new root keeps its id, and its slot row's

@@ -78,7 +78,7 @@ export function unwrap(result) {
 }
 
 // The pid-scoped parent-to-child contract's env var name (spec 66, criterion 5 disposition;
-// mirrors the Rust side's SPEC_LINT_REMINDER_PID_ENV constant in src/main.rs verbatim - ONE
+// mirrors the Rust side's SPEC_LINT_REMINDER_PID_ENV constant in src/cli/run.rs verbatim - ONE
 // contract, two processes). A nesting `rigger` surface (e.g. `rigger workflow`) that already
 // printed the spec-lint discoverability reminder sets this to ITS OWN pid before spawning us.
 export const SPEC_LINT_REMINDER_PID_ENV = 'RIGGER_SPEC_LINT_REMINDER_PID'

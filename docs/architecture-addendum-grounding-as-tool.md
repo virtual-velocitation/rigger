@@ -164,7 +164,7 @@ grows from file-scoped peers to a real query set, every tool a thin caller of th
   `subgraph`/`explain`/path already exist for the dash. This workstream exposes them over MCP, it
   does not reinvent retrieval.
 
-_Code:_ `crates/rigger-dash/src/mcpserver.rs` (new `tools/list` entries + `call_tool` arms), `src/main.rs` (CLI parity
+_Code:_ `crates/rigger-dash/src/mcpserver.rs` (new `tools/list` entries + `call_tool` arms), `src/cli/` (CLI parity
 subcommands), all delegating to the existing `contextgraph` traversal + `ground` pass.
 
 ## 5. Workstream C — Teach the agent, and keep review deterministic

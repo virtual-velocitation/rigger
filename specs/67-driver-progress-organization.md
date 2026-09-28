@@ -55,7 +55,7 @@ terse human sentence with role and attempt as metadata - never a slug.
 - The unit stays visible inside the sentence; the grouping dimension changes from unit to
   lifecycle phase by explicit preference.
 - The installed workflow refreshes through the drift-aware `rigger setup` path; the in-repo
-  template is the one source (`include_str!` at src/main.rs:129).
+  template is the one source (`include_str!` at src/cli/run.rs:19).
 - No new event type is introduced anywhere in this spec.
 
 ## Global constraints

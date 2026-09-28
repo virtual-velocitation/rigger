@@ -78,7 +78,7 @@ const MAP_CONTRACT: &str =
     "MapEntry contract (file/name/is_test/proposed_module/reason/content_hash)";
 const TARGET_FILES: [&str; 3] = [
     "crates/rigger-conductor/src/conductor.rs",
-    "src/main.rs",
+    "src/cli/mod.rs",
     "crates/rigger-dash/src/dash.rs",
 ];
 
@@ -92,7 +92,7 @@ rigger::test_cases! {
 }
 
 /// Every entry names one of the three files spec 85's Done-when criterion 1 fixes by literal
-/// path (`crates/rigger-conductor/src/conductor.rs`, `src/main.rs`, `crates/rigger-dash/src/dash.rs`) - a consumer filtering by file (e.g.
+/// path (`crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs`, `crates/rigger-dash/src/dash.rs`) - a consumer filtering by file (e.g.
 /// a later refactor spec pinning `conductor.rs`'s own count) must never see a stray value.
 #[test]
 fn every_deserialized_entry_names_one_of_the_three_target_files() {

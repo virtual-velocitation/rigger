@@ -12,7 +12,7 @@
 //! [`WatchInputs`] built from data the caller already read) so it is unit-testable
 //! without a store, a clock, or a process table, and so it can never reach for the
 //! driver - exactly the process that may be dead (spec 69: "it must work with the
-//! driver dead"). The composition root (`src/main.rs::cmd_watch`) does the I/O: reads
+//! driver dead"). The composition root (`src/cli/observe.rs::cmd_watch`) does the I/O: reads
 //! the run's event stream and the whole log (for store integrity), tries the step
 //! lock, gathers liveness-marker ages, and probes the dash - then hands the resolved
 //! facts in here.

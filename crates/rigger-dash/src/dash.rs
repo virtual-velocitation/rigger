@@ -514,7 +514,7 @@ pub const UNATTRIBUTED_PID: u32 = 0;
 /// `None` so it renders identically to the already-correct no-matching-marker case, and passes
 /// any other value through unchanged. This must be called ONLY at the point a pid is handed to
 /// something that prints or serializes it ([`dash_status`]'s `NotServing` construction,
-/// `watch_poll`'s three `watch::DashProbe::NotServing` construction sites in `src/main.rs`) -
+/// `watch_poll`'s three `watch::DashProbe::NotServing` construction sites in `src/cli/mod.rs`) -
 /// NEVER upstream of a liveness/idempotency decision such as [`pid_if_port_matches`], whose
 /// `Some`/`None` also drives which file's mtime `watch_poll` trusts for
 /// `dash_breadcrumb_written_at`; filtering there would turn a genuinely port-matching sentinel
@@ -660,7 +660,7 @@ fn format_held_port(addr: SocketAddr, holder: Option<(u32, Option<char>)>) -> St
 
 /// The impure half of the HELD-PORT DIAGNOSIS (spec 62, criterion 3): discover whatever this
 /// machine's `/proc` surface can prove about the process holding `addr`'s port, and render it
-/// via [`format_held_port`]. `pub` - `cmd_dash` (`src/main.rs`) is the one production caller,
+/// via [`format_held_port`]. `pub` - `cmd_dash` (`src/cli/dashboard.rs`) is the one production caller,
 /// reporting THIS as the `Err` it surfaces when [`bind_singleton`] finds the address genuinely
 /// held by a non-dash process (a real rigger dash already on this address resolves to
 /// `AlreadyServing` instead, so a caller only ever reaches this on a genuine conflict). Because
@@ -680,7 +680,7 @@ pub fn describe_held_port(addr: SocketAddr) -> String {
 /// SINGLE `/proc` discovery - exposed separately (spec 62 round 4 fix,
 /// adj-u62c3r3-verdict-reject-child-self-attribution) because a caller sometimes needs the
 /// discovered pid ITSELF, not only the human-readable message about it. The one such caller is
-/// `wait_for_dash_bind_or_diagnose` (`src/main.rs`, extracted out of `spawn_run_dashboard_detached`
+/// `wait_for_dash_bind_or_diagnose` (`src/cli/run.rs`, extracted out of `spawn_run_dashboard_detached`
 /// in this same round - see that function's own doc, adj-u62c3r4-independently-confirmed-stale-caller-doc):
 /// when its own `wait_for_dash_bind` gives up, it must tell a genuinely competing external process
 /// apart from its OWN just-spawned child having merely bound the port slower than the startup
@@ -708,13 +708,13 @@ pub fn held_port_holder(addr: SocketAddr) -> Option<(u32, String)> {
 ///
 /// `pub` (cross-crate: `src/main.rs` is a separate binary crate that depends on this library) -
 /// its production caller chain is [`describe_held_port`] -> `cmd_dash`'s manual `rigger dash` CLI
-/// arm (`src/main.rs`), reached only AFTER `bind_singleton` has itself already confirmed a
+/// arm (`src/cli/dashboard.rs`), reached only AFTER `bind_singleton` has itself already confirmed a
 /// genuine `AddrInUse` from that call's OWN bind attempt. This function's `None`-gates-a-claim
 /// discipline was originally written for a DIFFERENT caller - the step-path auto-start, which has
 /// no such upstream confirmation available (its bind attempt runs inside a detached child whose
 /// `io::Error` never reaches the parent, `Stdio::null()`, spec 44) - but round 4
 /// (adj-u62c3r3-verdict-reject-child-self-attribution) rewired that caller,
-/// `wait_for_dash_bind_or_diagnose` (`src/main.rs`), to call [`held_port_holder`] directly instead
+/// `wait_for_dash_bind_or_diagnose` (`src/cli/run.rs`), to call [`held_port_holder`] directly instead
 /// of through this function, since it also needs the raw pid (to rule out self-attribution; see
 /// [`held_port_holder`]'s own doc), not just a rendered message. The gate itself did not move -
 /// it lives in [`held_port_holder`], which both callers ultimately share - only which named
@@ -734,7 +734,7 @@ pub fn describe_held_port_if_confirmed(addr: SocketAddr) -> Option<String> {
 ///
 /// This is the ONE url-port parser shared by the library (`dash_status` below) and the `rigger`
 /// binary's `watch_poll` (spec 69, round 11 architecture/adversary review,
-/// `arch-u69c1-duplicate-url-port-parser`). `watch_poll` (`src/main.rs`) used to hand-roll a
+/// `arch-u69c1-duplicate-url-port-parser`). `watch_poll` (`src/cli/mod.rs`) used to hand-roll a
 /// second, DIVERGENT copy (`port_from_dash_url`, last-colon-in-the-whole-url) that only agreed
 /// with this scheme-and-path-aware parser on the single documented no-path URL shape; it now
 /// calls this fn directly instead. `pub`, not `pub(crate)`: the binary is a separate crate that
@@ -750,7 +750,7 @@ pub fn url_port(url: &str) -> Option<u16> {
 /// `adv-u69c1-pid-match-duplication-verified-and-escalated`): a marker's `pid` is only ever
 /// attributable to `port` when the marker's OWN port matches it - a marker naming some OTHER
 /// dash's port carries a pid that belongs to an unrelated process, never this one's. `dash_status`
-/// and `watch_poll` (`src/main.rs`) both need exactly this rule when deciding whether to name a
+/// and `watch_poll` (`src/cli/mod.rs`) both need exactly this rule when deciding whether to name a
 /// pid, so it is factored here as the crate's one implementation rather than each hand-rolling its
 /// own copy (round 9's `adv-u69c1r9-watch-poll-dashprobe-diverges-from-dash-status-mismatch-
 /// handling` was a real, adjudicator-upheld regression traced to exactly that duplication).
@@ -835,7 +835,7 @@ pub fn dash_status(
     };
     // A pid is only ever named when the marker's port MATCHES this url's - a mismatched
     // marker's pid belongs to some other, unrelated dash and must never be printed as though it
-    // were this url's. Shared with `watch_poll` (`src/main.rs`) via [`pid_if_port_matches`] so
+    // were this url's. Shared with `watch_poll` (`src/cli/mod.rs`) via [`pid_if_port_matches`] so
     // the rule is implemented exactly once in the crate.
     let pid = pid_if_port_matches(&marker, port);
     if port_serving(port) {
@@ -844,7 +844,7 @@ pub fn dash_status(
         // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): filtered HERE, at
         // the display construction site, never inside `pid_if_port_matches` itself, via the one
         // shared `displayable_pid` (see its doc for why). A pid of `UNATTRIBUTED_PID` names no
-        // real process - `spawn_run_dashboard_detached` (`src/main.rs`) records it only to keep
+        // real process - `spawn_run_dashboard_detached` (`src/cli/run.rs`) records it only to keep
         // the marker's PORT usable for idempotency, and documents that no reader may treat it as
         // a real pid. Printing it unfiltered here would render "marker names dead pid 0" for a
         // process that was never assigned that pid - a literal violation of spec 69 criterion 4's
@@ -8391,7 +8391,7 @@ mod tests {
         /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
         /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
         /// never promote an unconfirmed holder to a claim regardless of who calls it. This is what let
-        /// round 4 rewire the step-path auto-start (`wait_for_dash_bind_or_diagnose`, `src/main.rs`,
+        /// round 4 rewire the step-path auto-start (`wait_for_dash_bind_or_diagnose`, `src/cli/run.rs`,
         /// whose bind attempt runs in a detached child with no observable `io::Error` at all, so it
         /// has no upstream confirmation of its own to lean on) onto [`held_port_holder`] directly
         /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming

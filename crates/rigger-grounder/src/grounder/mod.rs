@@ -160,7 +160,7 @@ pub fn symbols_feature_missing_error() -> String {
 /// - `"grep"` -> [`Grep`] (the literal grounder, reachable ONLY when named explicitly);
 /// - the UNSET / empty default AND the explicit name `"symbols"` resolve to the structural
 ///   `symbols` grounder, which is the DEFAULT and the lookup surface. When the `symbols` feature is
-///   built, `src/main.rs::select_grounder` wires the real grounder before delegating here; here
+///   built, `src/cli/mod.rs::select_grounder` wires the real grounder before delegating here; here
 ///   (feature-independent) they are a LOUD feature-missing error, never a silent grep degrade.
 /// - the RETIRED names (`"turbovec"` / `"vector"` / `"hybrid"`, spec 57) are REJECTED with a
 ///   migration error naming the retirement and the `symbols` default - never a silent grep fallback

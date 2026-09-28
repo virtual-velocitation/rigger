@@ -3422,7 +3422,7 @@ fn cmd_step_source(main_rs: &str) -> &str {
 /// in the order lock -> sweep -> add.
 #[test]
 fn worktree_sweep_completes_before_any_add_within_one_step() {
-    let src = repo_text("src/main.rs");
+    let src = repo_text("src/cli/run.rs");
 
     // Isolate cmd_step's body (its declaration up to the next top-level `fn`) so the ordering
     // assertions stay pointed at the step lifecycle and are immune to the OTHER
@@ -8170,7 +8170,7 @@ fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
 /// text, at a bar a no-op cannot pass.
 #[test]
 fn the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed() {
-    let src = repo_text("src/main.rs");
+    let src = repo_text("src/cli/run.rs");
 
     let cmd_step = cmd_step_source(&src);
 

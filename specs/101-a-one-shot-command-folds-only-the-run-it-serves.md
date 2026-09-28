@@ -3,7 +3,7 @@
 **Goal:** every `rigger` invocation that serves one run reads that run, not the whole
 history of the project. Measured on the 2026-09-15 store (2,075,706 events, 1.24 GB):
 `rigger status` peaks at 2.7 GB resident, `rigger peers` at 5.3 GB (its sidecar replays from
-position 0, `src/main.rs:9163`), and one `rigger step` at 9.8 GB (the kernel's out-of-memory
+position 0, `src/cli/hygiene.rs:712`), and one `rigger step` at 9.8 GB (the kernel's out-of-memory
 report of that day) - while the run those commands served spans 67,456 events
 (positions 3,146,193 to 3,213,649). 97% of the stream is derived graph ingest: 1,801,003
 `EdgeInferred`, 125,861 `CodeEntityExtracted`, 101,354 `DocLinkExtracted`, and of the

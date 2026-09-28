@@ -83,7 +83,7 @@ feature-branch case is not to change the default but to make an explicit base
 **reachable** on every driver and to **refuse** a base that cannot contain the work
 (§3.4).
 
-_Code:_ `DEFAULT_BASE_REF` (`src/main.rs`), `parse_step_args`, `Worktree::ensure_run_branch`
+_Code:_ `DEFAULT_BASE_REF` (`src/cli/mod.rs`), `parse_step_args`, `Worktree::ensure_run_branch`
 (`crates/rigger-worktree-git/src/worktree.rs`).
 
 ### 2.2 The context graph spans runs
@@ -183,7 +183,7 @@ a persona that passed the static lint but still failed to return a verdict (e.g.
 agent ignored its instructions).
 
 _Code:_ `config::load`, `ReviewPanel::validate_depth` (`crates/rigger-config-files/src/config_store.rs`, `crates/rigger-domain/src/config.rs`); `cmd_validate`
-(`src/main.rs`); the gate site in `run_adjudicator` (`crates/rigger-conductor/src/conductor.rs`).
+(`src/cli/validate.rs`); the gate site in `run_adjudicator` (`crates/rigger-conductor/src/conductor.rs`).
 
 ### 3.2 Spec-shape lint
 
@@ -207,7 +207,7 @@ implementation detail in a non-criteria Notes section.* The distinction from §3
 deliberate: §3.1 catches a deterministic hang and hard-errors; §3.2 catches a
 probabilistic smell and advises.
 
-_Code:_ `extract_criteria` (`crates/rigger-domain/src/spec.rs`); `cmd_validate` (`src/main.rs`).
+_Code:_ `extract_criteria` (`crates/rigger-domain/src/spec.rs`); `cmd_validate` (`src/cli/validate.rs`).
 
 ### 3.3 Planner ↔ baseline robustness
 
@@ -260,7 +260,7 @@ a run anchored on the wrong ref produces doomed units instead of a refusal.
    avoid false positives on partial or paraphrased path references; a partial match
    warns.
 
-_Code:_ `cmd_workflow`, `parse_run_args`, `load_criteria` (`src/main.rs`);
+_Code:_ `cmd_workflow`, `parse_run_args`, `load_criteria` (`src/cli/run.rs`, `src/cli/mod.rs`);
 `Worktree::ensure_run_branch` / `ref_resolves` (`crates/rigger-worktree-git/src/worktree.rs`).
 
 ### 3.5 Version + build provenance an agent can self-serve
@@ -277,8 +277,8 @@ diagnostic uses that provenance to name which side is stale and the directive fi
 an ambiguous "they differ". Version is surfaced on the agent-visible paths (`rigger setup`
 output, `rigger validate`), and the `using-rigger` skill (§5) tells an agent to check it.
 
-_Code:_ a build script embedding the git commit; a `version` path (`src/main.rs`); the
-drift diagnostic in `cmd_validate` (`src/main.rs`).
+_Code:_ a build script embedding the git commit; a `version` path (`src/cli/setup.rs`); the
+drift diagnostic in `cmd_validate` (`src/cli/validate.rs`).
 
 ---
 
@@ -306,8 +306,8 @@ unmatched-proposal, budget-exhausted). It reads the same signals `rigger stats` 
 computes; the verdict-channel diagnostic that today only appears in stats becomes one of
 the blocker kinds.
 
-_Code:_ `cmd_status` (`src/main.rs`); the stats attribution in `append_review_quality`
-(`src/main.rs`); `crates/rigger-dash/src/dash.rs`.
+_Code:_ `cmd_status` (`src/cli/observe.rs`); the stats attribution in `append_review_quality`
+(`src/cli/mod.rs`); `crates/rigger-dash/src/dash.rs`.
 
 ### 4.2 Setup + run discoverability + always-on dash
 
@@ -332,7 +332,7 @@ addendum exists to remove: **an active harness must always have a dash.**
   a server unasked" had the priority inverted: the orphan risk is handled by §4.5, not by
   hiding the dash.
 
-_Code:_ `cmd_setup` (`src/main.rs`); the run entry points `run_workflow` / `run_cli`;
+_Code:_ `cmd_setup` (`src/cli/setup.rs`); the run entry points `run_workflow` / `run_cli`;
 `dash::DEFAULT_PORT`, the dash lifecycle (`crates/rigger-dash/src/dash.rs`).
 
 ### 4.3 Workflow tagline + live work-line
@@ -388,7 +388,7 @@ that never ends; across a multi-unit campaign these accumulate.
 kill-on-drop / kill-on-parent-exit guard — so a normally-finishing or crashing agent
 leaves no orphan.
 
-_Code:_ `run_workflow` / `cmd_serve` / `Sidecar::start` (`src/main.rs`), the shim
+_Code:_ `run_workflow` / `cmd_serve` / `Sidecar::start` (`src/cli/run.rs`), the shim
 (`shim/shim.mjs`), the dash lifecycle (`crates/rigger-dash/src/dash.rs`).
 
 ### 4.6 A wedged run surfaces as a loud error
@@ -420,7 +420,7 @@ default is unbounded and no per-agent bound covers the gating roles. A hung agen
 within a bounded time.
 
 _Code:_ the driver heartbeat framing (`workflows/rigger.js`), the wall-clock default +
-validate (`crates/rigger-config-files/src/config_store.rs`, `src/main.rs`).
+validate (`crates/rigger-config-files/src/config_store.rs`, `src/cli/validate.rs`).
 
 ---
 
@@ -479,7 +479,7 @@ never cherry-picks approved units by hand); and — for anyone authoring or port
 persona — every gating agent ends its output with the verdict line. Plus the §2
 load-bearing decisions, so the discipline explains its own constraints.
 
-_Code:_ a new `rigger docs` path (`src/main.rs`), a discipline template set + the
+_Code:_ a new `rigger docs` path (`src/cli/validate.rs`), a discipline template set + the
 code-fact context, the drift check in `cmd_validate`; `install_skill` in `cmd_setup`.
 
 ---
@@ -501,7 +501,7 @@ attribution mechanism is confirmed in the implementation plan; this is the adden
 highest-uncertainty unit and is specified with tests that prove lessons survive and
 active-run decisions survive while superseded-run decisions are dropped.
 
-_Code:_ a new reset path (`src/main.rs`); `Projector` and the graph store
+_Code:_ a new reset path (`src/cli/hygiene.rs`); `Projector` and the graph store
 (`src/contextgraph/`); the run-boundary source in `crates/rigger-domain/src/run.rs`.
 
 ### 6.2 `rigger peers` provenance
@@ -514,7 +514,7 @@ run) or **historical** (from a superseded run), using the same `RunStarted`-boun
 attribution as §6.1. Grounding still includes cross-run decisions by default (§2.2); the
 label makes their provenance legible instead of alarming.
 
-_Code:_ the peers path (`src/main.rs`); run-boundary attribution shared with §6.1.
+_Code:_ the peers path (`src/cli/observe.rs`); run-boundary attribution shared with §6.1.
 
 ---
 

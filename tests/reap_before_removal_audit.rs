@@ -1338,7 +1338,7 @@ fn g(dir: &str) {
              materialize_config_at_rev's checkout); got {hits:?}"
         );
         assert_eq!(
-            files.iter().filter(|f| **f == "src/main.rs").count(),
+            files.iter().filter(|f| **f == "src/cli/mod.rs").count(),
             2,
             "{hits:?}"
         );

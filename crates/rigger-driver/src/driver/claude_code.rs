@@ -10,7 +10,7 @@
 //! criterion 1 (THE LAUNCH IS TYPED) owns argv, cwd, environment and the open half of the
 //! launch record. THE STREAM (criterion 2, this module's addition below `Launch`) reads
 //! what criterion 1 starts: one reader per child, line by line, closing
-//! `impl AgentDriver for Driver`. The composition-root swap - `rigger run` (`src/main.rs`)
+//! `impl AgentDriver for Driver`. The composition-root swap - `rigger run` (`src/cli/run.rs`)
 //! launching its agents through this host instead of `cli::Driver` - is DEFERRED to spec
 //! 105 (`d-u104-stream-defer-composition-swap`): `tests/cli.rs`'s existing fixtures assume
 //! `cli::Driver`'s argv/stdio contract, and this host has no failure-class relaunch or hold

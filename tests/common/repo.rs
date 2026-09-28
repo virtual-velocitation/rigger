@@ -139,13 +139,30 @@ pub fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
     }
 }
 
-/// The production source of the CLI composition root (`src/main.rs`), with the trailing
-/// `#[cfg(test)] mod tests { ... }` unit-test module stripped: a rule that governs SHIPPING code
+/// The production source of the CLI composition root (`src/main.rs` and its `src/cli/` command
+/// modules), each file with its trailing `#[cfg(test)] mod tests { ... }` unit-test module
+/// stripped: a rule that governs SHIPPING code
 /// must not count the test code that legitimately opens throwaway stores and projections
 /// directly. Falls back to the whole source when the marker is absent, so a future reshaping
 /// never makes a scan pass by silently scanning nothing.
 pub fn production_main_rs() -> String {
-    production_part(&repo_text("src/main.rs")).to_string()
+    [
+        "src/main.rs",
+        "src/cli/mod.rs",
+        "src/cli/dashboard.rs",
+        "src/cli/eval.rs",
+        "src/cli/graph.rs",
+        "src/cli/guard.rs",
+        "src/cli/hygiene.rs",
+        "src/cli/observe.rs",
+        "src/cli/run.rs",
+        "src/cli/setup.rs",
+        "src/cli/validate.rs",
+    ]
+    .iter()
+    .map(|rel| production_part(&repo_text(rel)).to_string())
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 /// `src` up to its trailing `#[cfg(test)]\nmod tests {` unit-test module (this tree keeps the

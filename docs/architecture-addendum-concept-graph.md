@@ -1,7 +1,7 @@
 # Reference Architecture Addendum — Project-Agnostic Concept Knowledge Graph
 
 **Status:** design, approved for planning. Current-state facts are grounded in the code as of
-2026-07-21 (`src/main.rs` `cmd_graph`, `crates/rigger-conductor/src/conductor.rs` `ingest_project_into_graph`, the
+2026-07-21 (`src/cli/graph.rs` `cmd_graph`, `crates/rigger-conductor/src/conductor.rs` `ingest_project_into_graph`, the
 `crates/rigger-grounder/src/grounder/symbols` tree-sitter extractor); figures marked *(est.)* are not measured.
 **Scope:** an addendum to `docs/architecture.md`, building on the unified event-sourced
 knowledge graph established in the context-management addendum (its §6). It makes that graph a
@@ -154,7 +154,7 @@ checkout, with no run required.
   The existing seeded `rigger graph --around` becomes one query over the result.
 
 _Code:_ `crates/rigger-grounder/src/grounder/symbols/` (the tree-sitter extractor, re-expressed as an
-event-emitting ingest that folds into the projection), `src/main.rs` `cmd_graph` (a `build`
+event-emitting ingest that folds into the projection), `src/cli/graph.rs` `cmd_graph` (a `build`
 subcommand + cold-checkout entry), `src/contextgraph/` fold arms.
 
 ## 4. Workstream B — Concept extraction: the semantic layer
@@ -277,7 +277,7 @@ cross-axis drill in the inline SVG renderer).
 - **Provenance preserved (§2.4/2.5).** Every reported concept and edge carries its confidence
   tier and the event that produced it, so a `INFERRED` concept is never presented as ground truth.
 
-_Code:_ `src/main.rs` (`graph report`, concept args on `graph query/path/explain`), a report
+_Code:_ `src/cli/graph.rs` (`graph report`, concept args on `graph query/path/explain`), a report
 renderer over the projection.
 
 ---

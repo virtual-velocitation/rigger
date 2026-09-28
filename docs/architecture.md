@@ -1199,7 +1199,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
     a cargo feature.
   - R8 CLEAN ARCHITECTURE + DI: ports (EventStore/Projection/AgentDriver/Grounder/gate::Runner)
     are traits; the adapters depend inward; use cases depend only on ports; a single
-    composition root (`src/main.rs`) constructs the concrete adapters and injects them. No
+    composition root (`src/main.rs` and its `src/cli/` command modules) constructs the concrete adapters and injects them. No
     globals, no module-level singletons, no type building its own dependencies.
   - R9 PROJECT-SCOPED DATA, ONE MECHANISM: event streams and the knowledge graph are segregated
     per project by a single scoping decorator over the EventStore port, a project namespace

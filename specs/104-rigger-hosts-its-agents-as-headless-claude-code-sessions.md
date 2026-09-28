@@ -10,7 +10,7 @@ surface already carries all of it: a probe with an invalid credential emitted
 within one second. This spec ships the agent host of
 docs/architecture-addendum-claude-code-integration.md (section 4) behind the `AgentDriver`
 port (`crates/rigger-domain/src/agent.rs:130`). The swap of the `rigger run` composition root
-(`src/main.rs:3667`) onto this host, and the hold that consumes its failure classes, are
+(`src/cli/run.rs:1440`) onto this host, and the hold that consumes its failure classes, are
 spec 105's.
 
 ## Design
@@ -57,7 +57,7 @@ entries, one per error category, each invoking `rigger hook stop-failure --spawn
 --class <category>`, are criterion 5's, command, record and injection both. Criterion 1 passes
 the assembled `--settings` string on the argv and owns none of the hooks' content.
 
-THE COMPOSITION ROOT, decided here so no unit has to: `src/main.rs:3667` keeps `cli::Driver`
+THE COMPOSITION ROOT, decided here so no unit has to: `src/cli/run.rs:1440` keeps `cli::Driver`
 through this spec. Criterion 2 lands `impl AgentDriver for claude_code::Driver`, selectable by
 construction and exercised by its own tests through the `bin` fake; the swap that makes
 `rigger run` build `claude_code::Driver` is spec 105's first unit, landing with the hold that

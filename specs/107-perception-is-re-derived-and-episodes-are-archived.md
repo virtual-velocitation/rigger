@@ -12,7 +12,7 @@ events, 609 MB payload, 1.4 GB file): 2,443,614 events (97.9%) are the derived i
 incremental projection, no command rebuilds it from the log (only tests do,
 `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7177`), and `crates/rigger-domain/src/docs.rs:728` forbids deleting it. They are
 appended on every step (`conductor.rs:10557`), on every landed merge (`conductor.rs:9504`) and
-by `rigger graph build` (`src/main.rs:4737`); spec 60's guard against re-accumulation is a dedup
+by `rigger graph build` (`src/cli/graph.rs:568`); spec 60's guard against re-accumulation is a dedup
 inside the two ingest sinks (`project_scoped_replay_keys`, `crates/rigger-domain/src/ingest.rs:160`), and the store
 itself accepts any derived append. Spec 101 stops READING them;
 nothing stops WRITING them. 35,334 events are a run's own
@@ -23,7 +23,7 @@ mechanics and carry 333 MB, 55% of every byte: `SpawnRequested` alone is 6,729 e
 90,008 events and 12 MB. Every courier replays the whole file: `rigger status` peaks at 3.2 GB
 resident in 4.6 s, `rigger step` at 8.3 GB, and on 2026-09-24 15:13 the kernel's
 out-of-memory killer chose that step as the largest process on the machine. `rigger reset
---runs` (`src/main.rs:9154`) prunes the GRAPH of dead runs (`superseded_graph_nodes`,
+--runs` (`src/cli/hygiene.rs:703`) prunes the GRAPH of dead runs (`superseded_graph_nodes`,
 `main.rs:9231`) and leaves the log untouched, so no run's mechanics have ever left the live
 store; `read_stream` (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:897`) materializes the whole stream on every
 call and nearly every caller passes position 0.
@@ -53,15 +53,15 @@ content ingested and `extractor` the extraction version, and fold the extracted 
 workflow extractors) into `graph.db` through the same `apply`, keyed in the `applied` table by
 the ledger event's position and carrying the generation's replay key
 `<prefix>/<file>@<blob>#<i>` in each edge's `source`. The cold-build sink (`cmd_graph_build`,
-`src/main.rs:4670`) goes through the same seam. A
+`src/cli/graph.rs:501`) goes through the same seam. A
 deleted file appends `GenerationIngested { blob: "" }` and supersedes its live structural
-edges exactly as a new generation does. The offline passes (`cmd_graph_communities`, `src/main.rs:4774`, whose only event writer is
+edges exactly as a new generation does. The offline passes (`cmd_graph_communities`, `src/cli/graph.rs:605`, whose only event writer is
 `community::events`, `crates/rigger-domain/src/community.rs:363`; `cmd_graph_concepts`, `main.rs:4872`) append one
 `PassRecorded { pass, input_hash, resolution }` and fold their membership edges the same way. No derived payload is appended to the log by any path; the
 store's append seam rejects a `DERIVED_INDEX_TYPES` append outright.
 
 **REBUILD READS THE LEDGER AND THE TREE.** `rigger graph rebuild` is new: today `rigger graph
-build` (`src/main.rs:4717`) walks the tree and appends, and a log-to-graph rebuild exists only
+build` (`src/cli/graph.rs:548`) walks the tree and appends, and a log-to-graph rebuild exists only
 in tests. `graph.db` rebuilt from an empty file replays the
 knowledge and episodic events through `apply`, and for each ledger entry re-extracts the blob
 by id (`git cat-file blob`) and applies the result; for each pass record it re-runs the pass.
@@ -87,7 +87,7 @@ EPISODIC events, in position order, as one zstd-compressed JSONL blob under the 
 `refs/rigger/archive/<run-id>` in the project repository, appends
 `RunArchived { run_id, ref, events, bytes, digest }` to the log, then deletes exactly those
 events from the live store in one transaction. Knowledge events and `RunStarted` stay live.
-Archiving runs in two places: `rigger reset --runs` (`reset_runs`, `src/main.rs:9154`, which
+Archiving runs in two places: `rigger reset --runs` (`reset_runs`, `src/cli/hygiene.rs:703`, which
 keeps its graph prune and gains spec 101's liveness guard - it has none today) and the
 conductor at `RunStarted`, before the new run's first ingest, for every archivable predecessor.
 `BlastRadiusComputed` (`conductor.rs:10484`) and `FileTouched` (`conductor.rs:9475`) are

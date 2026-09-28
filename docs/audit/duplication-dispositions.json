@@ -15,17 +15,17 @@
     "reason": "`ids` lists a neighborhood view's node ids for a dash test while `light_reviewers_of` reads a review panel's light-tier roster; they share only the collect-into-a-Vec shape."
   },
   {
-    "id": "dup-4841cf90306e",
+    "id": "dup-bd75ff76a467",
     "disposition": "not-a-duplicate",
     "reason": "`usage` prints the CLI usage text to stderr while `print_scaffold_pointer` prints the post-setup starter-fleet pointer to stdout: one print call each, with different text and a different stream."
   },
   {
-    "id": "dup-8aae77675253",
+    "id": "dup-5e94519ad1f0",
     "disposition": "not-a-duplicate",
     "reason": "Two unit tests asserting substrings of two different constants (the workflow step schema and the no-runs message); only the assert shape is shared."
   },
   {
-    "id": "dup-b3f279a36f39",
+    "id": "dup-6b5ddf643eb6",
     "disposition": "not-a-duplicate",
     "reason": "Two one-line unit tests over two different functions (`order_signature_advisories` staying silent on an empty list, `parse_guard_write_roots` refusing one)."
   },
@@ -75,7 +75,7 @@
     "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
   },
   {
-    "id": "dup-2b2924a65629",
+    "id": "dup-360e8b87398d",
     "disposition": "not-a-duplicate",
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
@@ -115,7 +115,7 @@
     "reason": "Two unit tests over two different functions (`marker_filename` and `heading_level`) each asserting their own `None` boundary."
   },
   {
-    "id": "dup-abc5b2cd47c2",
+    "id": "dup-a8049539272a",
     "disposition": "not-a-duplicate",
     "reason": "Two platform-tolerance tests over two different functions (`leaked_process_advisories` and `processes_rooted_under`) on an absent directory."
   },
@@ -190,32 +190,32 @@
     "reason": "Four converters projecting two different ledger types (a duplication cluster, a dead-code candidate) onto their two different wire shapes (guarded line-free JSON, unguarded line sidecar); each maps a distinct field set, so only the struct-literal shape is shared."
   },
   {
-    "id": "dup-ca8ccf1b9f66",
+    "id": "dup-e9f78fd7efcc",
     "disposition": "not-a-duplicate",
     "reason": "Two one-line cwd adapters over two different resolvers: `project_identity` names the project that scopes the streams, `git_repo` returns the owning repository root."
   },
   {
-    "id": "dup-10bf3f3faab0",
+    "id": "dup-4e9eb933164b",
     "disposition": "not-a-duplicate",
     "reason": "Both already delegate to the shared `run_graph_pass`; each supplies a different derivation (community detection over the coupling layer vs concept derivation over the intent layer) and its own summary."
   },
   {
-    "id": "dup-f5d0a37113e0",
+    "id": "dup-c27eb10f0068",
     "disposition": "not-a-duplicate",
     "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
   },
   {
-    "id": "dup-39046faa7f9f",
+    "id": "dup-2cd309ca2b08",
     "disposition": "not-a-duplicate",
     "reason": "Both build their fixture through the shared `linear_history`; they test two different git queries (ancestry order vs commit distance) with different expectations."
   },
   {
-    "id": "dup-2e3d71bbeb25",
+    "id": "dup-03a673792149",
     "disposition": "not-a-duplicate",
     "reason": "Both seed through the shared `db_with_one_result`; one proves an unanswered spawn id reads as unreported, the other proves the read is scoped to its own project namespace."
   },
   {
-    "id": "dup-0214889fec22",
+    "id": "dup-4a813209194e",
     "disposition": "not-a-duplicate",
     "reason": "Both use the shared `reset_modes_of`/`reset_refusal`; they pin two different flags' rules (`--force-live` never implying a mode vs `--build-cache` composing with other modes)."
   },
@@ -385,7 +385,7 @@
     "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
   },
   {
-    "id": "dup-e33cc9f09356",
+    "id": "dup-ade95ee9ca8e",
     "disposition": "not-a-duplicate",
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
@@ -480,7 +480,7 @@
     "reason": "`SpawnResult::liveness_fault` is the product constructor, and the test fixture calls it and encodes the result as an event for a fold input."
   },
   {
-    "id": "dup-3aa9191927e8",
+    "id": "dup-178d86dd6b19",
     "disposition": "not-a-duplicate",
     "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
   },
@@ -500,7 +500,7 @@
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
   {
-    "id": "dup-d82ba3558c88",
+    "id": "dup-5d4b1e693e51",
     "disposition": "not-a-duplicate",
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
   },
@@ -545,7 +545,7 @@
     "reason": "Two different workflows built from the already-shared config fixtures: `critique_cfg` wires an adversary into the plan-critique gate while `two_episode_cfg` runs it with no adversary and a different agent roster."
   },
   {
-    "id": "dup-1f030cd524f7",
+    "id": "dup-350b699ef042",
     "disposition": "not-a-duplicate",
     "reason": "`is_empty`/`is_any` report emptiness of three different types (a config section, a failure filter, a CLI selection) over their own fields."
   },
@@ -555,7 +555,7 @@
     "reason": "Three word-character predicates with different domains: a byte-level config scanner, a char-level alphabetic-only kill-word audit, and a char-level identifier test that also admits digits."
   },
   {
-    "id": "dup-6f0fcb54c987",
+    "id": "dup-947acd1ae58d",
     "disposition": "not-a-duplicate",
     "reason": "Unit tests of three different parsers (emit-payload literal binding, uuid8 recognition, error-shaping detection) with their own inputs and expectations."
   },
@@ -590,7 +590,7 @@
     "reason": "Two projector tests with different seeded event orders and different assertions (inferred-tier order independence versus no demotion of an extracted reference)."
   },
   {
-    "id": "dup-941c45a14b87",
+    "id": "dup-243e06cfa6ec",
     "disposition": "not-a-duplicate",
     "reason": "`edge_desc` renders a graph edge while `runs_menu_line` renders a run-menu row; they format different fields into different lines."
   },
@@ -650,17 +650,17 @@
     "reason": "`derived_key_parts` is the production splitter while the periphery `split` is the test's independent oracle that must not reuse it."
   },
   {
-    "id": "dup-1a78461a4b17",
+    "id": "dup-a5bfac770233",
     "disposition": "not-a-duplicate",
     "reason": "Two injectivity tests over different functions (liveness marker filenames, origin-URL normalization) with different inputs."
   },
   {
-    "id": "dup-e110574b66dc",
+    "id": "dup-b7ec46dde247",
     "disposition": "not-a-duplicate",
     "reason": "`find_store_dir_from` walks up ancestors for a store while `scan_target_files` walks down a tree collecting source files."
   },
   {
-    "id": "dup-3dfc1455ab14",
+    "id": "dup-7b4605d9ccc9",
     "disposition": "not-a-duplicate",
     "reason": "`dir_size_bytes` is the production measure while the periphery `dir_bytes` is the test's independent oracle with its own symlink handling."
   },
@@ -845,12 +845,12 @@
     "reason": "Struct builders for different types and fields: a sonnet agent with tools, a fan-out stage with needs and gates, and an agent with a model ladder."
   },
   {
-    "id": "dup-66f6002153cf",
+    "id": "dup-41d8b1c33d44",
     "disposition": "not-a-duplicate",
     "reason": "Unrelated tests sharing only the assert-contains shape: the spec-lint next-step line, and two checks on the native driver's source text."
   },
   {
-    "id": "dup-f43cc4afc6a2",
+    "id": "dup-da72fb2d69f3",
     "disposition": "not-a-duplicate",
     "reason": "The two sides of the reclaim guard: a dirty worktree the workflow still declares is spared (and reclaimed once clean), while an undeclared dirty one is removed; different declared sets, outcomes and follow-up checks."
   },
