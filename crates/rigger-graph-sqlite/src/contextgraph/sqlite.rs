@@ -43,13 +43,13 @@ CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
 CREATE TABLE IF NOT EXISTS aliases (alias TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applied (position INTEGER PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS pending_proof (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project TEXT NOT NULL DEFAULT '',
-  name TEXT NOT NULL,
-  evidence TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS proofs (
+  project TEXT NOT NULL, name TEXT NOT NULL, file TEXT NOT NULL, evidence TEXT NOT NULL,
+  source INTEGER NOT NULL, target TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_pending_proof_name ON pending_proof(project, name);
+CREATE INDEX IF NOT EXISTS idx_proofs_name ON proofs(project, name);
+CREATE INDEX IF NOT EXISTS idx_proofs_file ON proofs(project, file);
+CREATE INDEX IF NOT EXISTS idx_proofs_target ON proofs(project, target);
 CREATE TABLE IF NOT EXISTS generations (
   project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL, prior TEXT,
   PRIMARY KEY (project, identity)
@@ -109,6 +109,8 @@ DROP TABLE IF EXISTS edge_assertions;
 DROP TABLE IF EXISTS retired_nodes;
 DROP TABLE IF EXISTS detached_attachments;
 DROP TABLE IF EXISTS relabel_owed;
+DROP TABLE IF EXISTS pending_proof;
+DROP TABLE IF EXISTS proofs;
 ";
 
 /// The fold-state tables a cold [`Projector::rebuild`] empties before it refolds the log.
@@ -117,7 +119,7 @@ const FOLD_TABLES: [&str; 11] = [
     "edges",
     "aliases",
     "applied",
-    "pending_proof",
+    "proofs",
     "generations",
     "node_assertions",
     "edge_assertions",
@@ -1382,8 +1384,9 @@ fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<S
 /// "convergences undo with their definition"), the inverse of the definition arm's two
 /// convergences: every live cross-file reference to `name` tiered INFERRED because a definition of
 /// it existed is demoted to AMBIGUOUS when no other definition remains ([`reference_tier`]'s own
-/// rule), and the test proof that landed on `id` returns to `pending_proof`, in the order it was
-/// recorded, so the next definition of `name` receives it ([`reconcile_pending_proof`]).
+/// rule), and the test proofs of `name` are resolved again without it ([`resolve_proofs`]): what
+/// landed on `id` waits for, or moves to, the definition that now answers the name, and a retired
+/// `id` keeps no proof to come back with.
 fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> Result<(), Error> {
     tx.execute(
         "UPDATE edges SET tier = ?1
@@ -1405,32 +1408,8 @@ fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> 
         ],
     )
     .map_err(be)?;
-    let proof_keys: BTreeSet<String> = ["proof_evidence", "proven_by"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    for table in ["nodes", "retired_nodes"] {
-        let evidence: Option<String> = tx
-            .query_row(
-                &format!(
-                    "SELECT json_extract(attrs, '$.proof_evidence') FROM {table}
-                      WHERE id = ?1 AND project = ?2"
-                ),
-                params![id, project],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(be)?
-            .flatten();
-        let list: Vec<String> = evidence
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default();
-        for entry in &list {
-            stage_pending_proof(tx, name, entry, project)?;
-        }
-        remove_attr_keys(tx, table, id, &proof_keys, project)?;
-    }
+    remove_attr_keys(tx, "retired_nodes", id, &proof_keys(), project)?;
+    resolve_proofs(tx, name, project)?;
     Ok(())
 }
 
@@ -1893,7 +1872,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // reached) names it now - transfer it onto `entity` and clear the stage. Same
             // convergence point as the tier upgrade just above (this definition folding is what
             // makes both resolvable), never a second timing authority.
-            reconcile_pending_proof(tx, &entity, &c.name, project)?;
+            resolve_proofs(tx, &c.name, project)?;
         }
         TYPE_EDGE_INFERRED => {
             // Spec 29a criterion 1: one reference the extraction pass emitted. Fold it into a
@@ -1914,7 +1893,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // evidence exactly as it holds for the exclusion itself. See `fold_test_evidence`'s own
             // doc for the target-resolution and merge-not-replace mechanics.
             if r.is_test {
-                return fold_test_evidence(tx, &r, project);
+                return fold_test_evidence(tx, &r, e.position, project);
             }
             let file = resolve_in_tx(tx, &r.file);
             // Supersede-on-re-extract (spec 29a criterion 3): a refs-only file (no definitions)
@@ -2812,37 +2791,18 @@ fn reference_tier(
     }
 }
 
-/// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): fold one TEST-ORIGIN reference (`r.is_test`)
-/// entirely as evidence, never as a structural fact. When `r.fresh` marks this as the FIRST
-/// is_test reference of the referencing file's own batch, first retract that file's own PRIOR
-/// evidence contribution via [`supersede_file_proof`] (round 2,
-/// adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references) - this
-/// criterion's OWN supersession boundary for evidence, mirroring `supersede_file_edges`'s boundary
-/// for structural edges, never criterion 3's mechanism. Then resolves the PRODUCT entity `r` is
-/// evidence FOR via [`resolve_proof_target`] (same-file first, else the UNIQUE cross-file name
-/// match) and, when found, folds the evidence onto it via [`record_proof`]; when not yet
-/// resolvable (a forward reference to a file the sorted ingest has not reached, or an ambiguous
-/// name), stages it in `pending_proof` via [`stage_pending_proof`] for the
-/// `TYPE_CODE_ENTITY_EXTRACTED` arm's [`reconcile_pending_proof`] to pick up the moment a matching,
-/// UNAMBIGUOUS definition folds. Deliberately creates NO `file` node and NO edge of any kind -
-/// unlike the ordinary `TYPE_EDGE_INFERRED` arm, this reference's own referencing file is never
-/// even alias-resolved into a graph node beyond what supersession needs, because criterion 1's
-/// "never a node and never an edge on the canvas" promise for excluded/test-origin content extends
-/// to its evidence too.
-///
-/// Round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-forever): an EMPTY `r.name` marks
-/// [`crate::grounder::symbols::events::proof_events`]'s own empty-boundary sentinel - the file's
-/// WHOLE evidence batch when its is_test reference set drops to zero. The supersede above (which
-/// runs on `r.fresh`, unconditionally of `r.name`) IS that sentinel's entire job: it retracts this
-/// file's own stale `proof_evidence` contribution, exactly as it does on an ordinary re-extraction.
-/// There is no real reference here to resolve or stage - `""` is never a genuine symbol name - so
-/// this returns immediately after the supersede rather than falling through to
-/// `resolve_proof_target`/`stage_pending_proof`, which would otherwise stage a bogus pending row
-/// under the empty name for `reconcile_pending_proof` to later hand to whichever entity happens to
-/// (mis)fold with an empty name of its own.
+/// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): fold one TEST-ORIGIN reference (`r.is_test`,
+/// recorded at `source`) entirely as evidence, never as a structural fact - no `file` node and no
+/// edge of any kind, since criterion 1's "never a node and never an edge on the canvas" promise for
+/// test-origin content extends to its evidence. When `r.fresh` marks the first test reference of its
+/// file's batch, the file's prior evidence is superseded first ([`supersede_file_proof`]). An EMPTY
+/// `r.name` is the file's empty-boundary sentinel (its test reference set dropped to zero): the
+/// supersession is its whole job. Otherwise the reference is recorded in `proofs` and the proofs of
+/// its name are resolved ([`resolve_proofs`]).
 fn fold_test_evidence(
     tx: &Transaction,
     r: &super::EdgeInferred,
+    source: Position,
     project: &str,
 ) -> Result<(), Error> {
     let file = resolve_in_tx(tx, &r.file);
@@ -2852,279 +2812,162 @@ fn fold_test_evidence(
     if r.name.is_empty() {
         return Ok(());
     }
-    let evidence = format!("{file}:{}", r.line);
-    let same_file = code_entity_id(&file, &r.name);
-    match resolve_proof_target(tx, &same_file, &r.name, project)? {
-        Some(id) => record_proof(tx, &id, &evidence, project),
-        None => stage_pending_proof(tx, &r.name, &evidence, project),
-    }
+    tx.execute(
+        "INSERT INTO proofs (project, name, file, evidence, source) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            project,
+            r.name,
+            file,
+            format!("{file}:{}", r.line),
+            source as i64
+        ],
+    )
+    .map_err(be)?;
+    resolve_proofs(tx, &r.name, project)
 }
 
-/// Spec 86 criterion 2, round 2 (adv-u86c2-r-test-file-re-extraction-double-counts-its-own-
-/// unchanged-references): supersede-on-re-extract for EVIDENCE, mirroring
-/// [`supersede_file_edges`]'s per-file boundary discipline but over node ATTRS - evidence has no
-/// edge of its own to invalidate (criterion 1's "never a node and never an edge" promise holds for
-/// it too). Runs on the FIRST test-origin reference of a re-extracted file's own batch
-/// (`EdgeInferred::fresh`, stamped by [`crate::grounder::symbols::events::proof_events`]), BEFORE
-/// any evidence from the new batch folds: retracts every `<file>:<line>` entry THIS file
-/// previously contributed to any entity's `proof_evidence` - recomputing `proven_by` from the
-/// remaining list's length (never a naive decrement, so a count that ever drifted from the list
-/// can't drift further) - and drops any of this file's still-`pending_proof` rows the same way.
-/// The read-then-write per entity mirrors [`record_proof`]'s own documented reason for avoiding a
-/// nested `json_set`/`json_insert` write (a subtype-tagged json1 return value would store a bare
-/// array where a JSON-STRING is required).
-///
-/// A re-extraction of an UNCHANGED reference set therefore nets to the SAME `proven_by`/
-/// `proof_evidence` it started with (retract, then re-add via the fold below), and a reference an
-/// edit REMOVED simply stops being counted - never accretes, never lingers. A no-op on a file's
-/// very first extraction (nothing to retract yet).
+/// Supersede-on-re-extract for EVIDENCE (spec 86 criterion 2, round 2): a test file's re-extracted
+/// batch replaces every proof its prior batch recorded, so an unchanged reference set nets to the
+/// same proof and a reference the edit removed is gone from whatever it proved.
 fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(), Error> {
-    let prefix = format!("{file}:");
-    let rows: Vec<(String, String)> = {
+    let targets: Vec<String> = {
         let mut stmt = tx
             .prepare(
-                "SELECT id, json_extract(attrs, '$.proof_evidence')
-                   FROM nodes
-                  WHERE kind = ?1 AND project = ?2
-                    AND json_extract(attrs, '$.proof_evidence') IS NOT NULL",
-            )
-            .map_err(be)?;
-        let out = stmt
-            .query_map(params![KIND_CODE_ENTITY, project], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
-            .map_err(be)?;
-        out.collect::<Result<_, _>>().map_err(be)?
-    };
-    for (id, evidence_json) in rows {
-        let list: Vec<String> = serde_json::from_str(&evidence_json).unwrap_or_default();
-        let had = list.len();
-        let keep: Vec<String> = list
-            .into_iter()
-            .filter(|e| !e.starts_with(&prefix))
-            .collect();
-        if keep.len() != had {
-            let count = keep.len().to_string();
-            let list_json = serde_json::to_string(&keep).map_err(be)?;
-            tx.execute(
-                "UPDATE nodes SET attrs = json_set(
-                     attrs, '$.proven_by', ?2, '$.proof_evidence', ?3
-                 ) WHERE id = ?1 AND project = ?4",
-                params![id, count, list_json, project],
-            )
-            .map_err(be)?;
-        }
-    }
-    // This file's own still-unresolved forward-staged evidence (substr-prefix match, mirroring
-    // the community/concept grain-scoped supersession idiom elsewhere in this file - never a
-    // LIKE/GLOB whose wildcards a path could carry).
-    tx.execute(
-        "DELETE FROM pending_proof
-          WHERE project = ?1 AND substr(evidence, 1, length(?2)) = ?2",
-        params![project, prefix],
-    )
-    .map_err(be)?;
-    Ok(())
-}
-
-/// Spec 86 criterion 2: resolve the entity a test-origin reference named `name` (from `same_file`,
-/// the referencing file's own would-be `<file>::<name>` id) is evidence FOR. Same-file first - the
-/// overwhelmingly common `#[cfg(test)] mod tests` idiom, where `same_file` already carries a
-/// `name` attr because a product file's own definitions fold before its own test module's
-/// references (defs emit before refs, spec 29a) - else the UNIQUE OTHER code-entity anywhere in
-/// `project` that defines this exact name. `None` when no definition is known YET (a forward
-/// reference to a file the sorted ingest has not reached, or a name genuinely undefined anywhere)
-/// OR when the name is AMBIGUOUS (2+ candidates) - honest by construction, never confidently
-/// wrong: this never manufactures a placeholder entity merely to carry evidence about something
-/// that may not exist, and never picks an arbitrary winner among several.
-///
-/// Round 2 (adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity): the
-/// original cross-file fallback mirrored [`reference_tier`]'s own `LIMIT 1` lookup verbatim, but
-/// the consequences differ in kind, not just degree. `reference_tier` only ever nudges a per-edge
-/// CONFIDENCE TIER - each reference keeps its own identity, and an under-confident tier is merely
-/// a weaker signal, never a wrong one. This fold AGGREGATES a count and an evidence list onto ONE
-/// shared node identity: two same-named entities in unrelated files could make the LIMIT-1 pick
-/// hand real credit to an unreferenced entity while the entity a test genuinely reaches renders
-/// the spec's own "no test reaches this entity" state - a confidently WRONG answer criterion 2's
-/// Done-when forbids. So this fold does NOT reuse `reference_tier`'s pattern: it requires the name
-/// to be UNIQUE among all project code-entities before resolving cross-file, staying unresolved
-/// (via `stage_pending_proof`, [`reconcile_pending_proof`]'s own ambiguity guard) rather than ever
-/// guessing.
-fn resolve_proof_target(
-    tx: &Transaction,
-    same_file: &str,
-    name: &str,
-    project: &str,
-) -> Result<Option<String>, Error> {
-    let same_file_def = tx
-        .query_row(
-            "SELECT 1 FROM nodes
-              WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
-            params![same_file, project],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(be)?
-        .is_some();
-    if same_file_def {
-        return Ok(Some(same_file.to_string()));
-    }
-    let mut stmt = tx
-        .prepare(
-            "SELECT id FROM nodes
-              WHERE substr(id, instr(id, '::') + 2) = ?3
-                AND kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3",
-        )
-        .map_err(be)?;
-    let mut candidates = stmt
-        .query_map(params![KIND_CODE_ENTITY, project, name], |r| {
-            r.get::<_, String>(0)
-        })
-        .map_err(be)?
-        .collect::<Result<Vec<String>, _>>()
-        .map_err(be)?;
-    Ok(if candidates.len() == 1 {
-        candidates.pop()
-    } else {
-        None
-    })
-}
-
-/// Spec 86 criterion 2: fold one test-origin reference's evidence onto entity `id`'s attrs -
-/// INCREMENT `proven_by` and APPEND `evidence` (a `file:line` string) to its `proof_evidence` list -
-/// by reading the current values, computing the new ones IN RUST, then writing them back via
-/// `json_set` MERGED over the node's EXISTING attrs, never `ensure_node`'s whole-attrs
-/// COALESCE-REPLACE (which would silently wipe the entity's `name`/`kind`/`line` the moment a
-/// SECOND test proved it, since `ensure_node` replaces the whole attrs blob rather than merging one
-/// key). Mirrors the SAME merge-not-replace idiom the `ReviewFinding` upheld-disposition mark
-/// already uses (`json_set(COALESCE(attrs, '{}'), ...)`).
-///
-/// Both `proven_by` and `proof_evidence` are written as JSON STRINGS (a decimal-digit string, and a
-/// JSON-array-shaped string respectively) - NEVER a bare JSON number or array - because
-/// `Node::attrs` is `BTreeMap<String, String>` (spec 29a) and [`row_to_node`] deserializes the
-/// WHOLE attrs blob through that map in ONE `serde_json::from_str` call: a single non-string value
-/// anywhere in the object fails that deserialize and `.ok()` silently degrades to an EMPTY map,
-/// erasing every OTHER attr the entity carries (`name`, `kind`, `line`, ...), not just this new one.
-///
-/// The read-then-write (rather than one `json_set(attrs, '$.k', json_insert(...))` statement) is
-/// deliberate, not merely simpler: SQLite's json1 functions tag their OWN return value with an
-/// internal JSON subtype, and `json_set` embeds a subtype-tagged VALUE argument AS JSON
-/// (unquoted) rather than treating it as a plain scalar to quote - so nesting `json_insert(...)`
-/// directly as `json_set`'s value silently stores a BARE JSON ARRAY, not the JSON-STRING this
-/// function's own contract requires. A plain Rust-computed `String` bound as an ordinary parameter
-/// carries no such subtype tag, so `json_set` correctly quotes it - which is what makes the
-/// round-trip through [`Card`](crate::contextgraph::query::Card)'s own `usize`/`Vec<String>` parse (`str::parse`,
-/// `serde_json::from_str`) symmetric with how it is written here.
-fn record_proof(tx: &Transaction, id: &str, evidence: &str, project: &str) -> Result<(), Error> {
-    let existing: Option<(Option<i64>, Option<String>)> = tx
-        .query_row(
-            "SELECT CAST(json_extract(attrs, '$.proven_by') AS INTEGER),
-                    json_extract(attrs, '$.proof_evidence')
-             FROM nodes WHERE id = ?1 AND project = ?2",
-            params![id, project],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(be)?;
-    let (count, evidence_json) = existing.unwrap_or((None, None));
-    let new_count = (count.unwrap_or(0) + 1).to_string();
-    let mut list: Vec<String> = evidence_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    list.push(evidence.to_string());
-    let list_json = serde_json::to_string(&list).map_err(be)?;
-    tx.execute(
-        "UPDATE nodes SET attrs = json_set(
-             COALESCE(attrs, '{}'),
-             '$.proven_by', ?2,
-             '$.proof_evidence', ?3
-         )
-         WHERE id = ?1 AND project = ?4",
-        params![id, new_count, list_json, project],
-    )
-    .map_err(be)?;
-    Ok(())
-}
-
-/// Spec 86 criterion 2: stage a test-origin reference's evidence whose target definition has not
-/// folded yet - the SAME eventual-consistency shape [`reference_tier`]'s `AMBIGUOUS` tier already
-/// accepts for structural edges (spec 29a criterion 2's convergent upgrade), so proof completeness
-/// is never bound to fold order. Reconciled by [`reconcile_pending_proof`] the moment a matching
-/// definition folds. A plain append-only row, never a node - `pending_proof` is fold-internal
-/// bookkeeping, never returned by `subgraph`/`resolve` and never itself "on the canvas".
-fn stage_pending_proof(
-    tx: &Transaction,
-    name: &str,
-    evidence: &str,
-    project: &str,
-) -> Result<(), Error> {
-    tx.execute(
-        "INSERT INTO pending_proof (project, name, evidence) VALUES (?1, ?2, ?3)",
-        params![project, name, evidence],
-    )
-    .map_err(be)?;
-    Ok(())
-}
-
-/// Spec 86 criterion 2: the convergent half of [`stage_pending_proof`] - called from the
-/// `TYPE_CODE_ENTITY_EXTRACTED` arm the moment `entity` (whose defined name is `name`) folds,
-/// right beside that arm's OWN `AMBIGUOUS`->`INFERRED` tier convergence (spec 29a criterion 2), so
-/// a forward-referenced test's evidence is never silently lost to fold order. Every staged row for
-/// this name transfers onto `entity` (via [`record_proof`], preserving the merge-not-replace
-/// discipline) and is removed from the stage - UNLESS `name` is currently AMBIGUOUS (round 2,
-/// adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity): this fires on
-/// EVERY fold of a matching definition, including a LATER re-extraction of one that already
-/// exists, so without this guard it would blindly hand a still-pending, genuinely ambiguous
-/// evidence entry to whichever same-named definition happens to (re-)fold next - reopening the
-/// exact misattribution [`resolve_proof_target`]'s OWN ambiguity guard refuses on the resolved
-/// path. Applies the SAME uniqueness rule: claim only when `entity` is the ONE code-entity of this
-/// name in `project` right now (checked by querying for any OTHER `id`), leaving the stage
-/// untouched otherwise. A no-op (nothing queried, nothing deleted) when no evidence is pending for
-/// `name`, the overwhelming common case.
-fn reconcile_pending_proof(
-    tx: &Transaction,
-    entity: &str,
-    name: &str,
-    project: &str,
-) -> Result<(), Error> {
-    let ambiguous: bool = tx
-        .query_row(
-            "SELECT 1 FROM nodes
-              WHERE substr(id, instr(id, '::') + 2) = ?4
-                AND kind = ?1 AND project = ?2 AND id != ?3
-                AND json_extract(attrs, '$.name') = ?4
-              LIMIT 1",
-            params![KIND_CODE_ENTITY, project, entity, name],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(be)?
-        .is_some();
-    if ambiguous {
-        return Ok(());
-    }
-    let evidences: Vec<String> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT evidence FROM pending_proof WHERE project = ?1 AND name = ?2 ORDER BY id",
+                "SELECT DISTINCT target FROM proofs
+                  WHERE project = ?1 AND file = ?2 AND target IS NOT NULL
+                  ORDER BY target",
             )
             .map_err(be)?;
         let rows = stmt
-            .query_map(params![project, name], |r| r.get::<_, String>(0))
+            .query_map(params![project, file], |r| r.get(0))
+            .map_err(be)?
+            .collect::<Result<_, _>>()
             .map_err(be)?;
-        rows.collect::<Result<_, _>>().map_err(be)?
+        rows
     };
-    for evidence in &evidences {
-        record_proof(tx, entity, evidence, project)?;
+    tx.execute(
+        "DELETE FROM proofs WHERE project = ?1 AND file = ?2",
+        params![project, file],
+    )
+    .map_err(be)?;
+    for target in &targets {
+        write_proof(tx, target, project)?;
     }
-    if !evidences.is_empty() {
-        tx.execute(
-            "DELETE FROM pending_proof WHERE project = ?1 AND name = ?2",
-            params![project, name],
-        )
-        .map_err(be)?;
+    Ok(())
+}
+
+/// Resolve every recorded test reference to `name` against the definitions of `name` the graph
+/// holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"): the
+/// reference's own file's definition when there is one (the `#[cfg(test)] mod tests` idiom), else
+/// the ONE definition of `name` in the project, else none - a reference waits, never guessing among
+/// several same-named definitions. Run whenever a reference is recorded and whenever a definition of
+/// `name` folds or stops being one, so where a proof lands is a pure function of the live
+/// definitions and references - the same whichever order they folded in, and the same for a log
+/// and its compacted form.
+fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Error> {
+    let definitions: BTreeSet<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id FROM nodes
+                  WHERE substr(id, instr(id, '::') + 2) = ?3
+                    AND kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![KIND_CODE_ENTITY, project, name], |r| r.get(0))
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+        rows
+    };
+    let only = match definitions.len() {
+        1 => definitions.first().cloned(),
+        _ => None,
+    };
+    let recorded: Vec<(i64, String, Option<String>)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT rowid, file, target FROM proofs
+                  WHERE project = ?1 AND name = ?2 ORDER BY rowid",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, name], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+        rows
+    };
+    let mut touched: BTreeSet<String> = BTreeSet::new();
+    for (row, file, target) in recorded {
+        let same_file = code_entity_id(&file, name);
+        let resolved = if definitions.contains(&same_file) {
+            Some(same_file)
+        } else {
+            only.clone()
+        };
+        if resolved != target {
+            tx.execute(
+                "UPDATE proofs SET target = ?2 WHERE rowid = ?1",
+                params![row, resolved],
+            )
+            .map_err(be)?;
+            touched.extend(target);
+            touched.extend(resolved);
+        }
     }
+    for id in &touched {
+        write_proof(tx, id, project)?;
+    }
+    Ok(())
+}
+
+/// The attrs keys a proof writes onto the entity it proves.
+fn proof_keys() -> BTreeSet<String> {
+    ["proof_evidence", "proven_by"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
+/// Write onto entity `id` the proof its resolved references give it: `proven_by`, their count, and
+/// `proof_evidence`, their `file:line`s in the order they were recorded - or neither key when none
+/// resolves to it. Both are JSON STRINGS merged over the entity's other attrs (`Node::attrs` is a
+/// `String` map, so a bare number or array would fail its whole deserialize); the list is computed
+/// here and bound as a plain parameter, because a json1 function's return value nested as
+/// `json_set`'s value would be stored as a bare array.
+fn write_proof(tx: &Transaction, id: &str, project: &str) -> Result<(), Error> {
+    let evidence: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT evidence FROM proofs
+                  WHERE project = ?1 AND target = ?2 ORDER BY source, evidence",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, id], |r| r.get(0))
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+        rows
+    };
+    if evidence.is_empty() {
+        return remove_attr_keys(tx, "nodes", id, &proof_keys(), project);
+    }
+    tx.execute(
+        "UPDATE nodes SET attrs = json_set(
+             COALESCE(attrs, '{}'), '$.proven_by', ?2, '$.proof_evidence', ?3
+         ) WHERE id = ?1 AND project = ?4",
+        params![
+            id,
+            evidence.len().to_string(),
+            serde_json::to_string(&evidence).map_err(be)?,
+            project
+        ],
+    )
+    .map_err(be)?;
     Ok(())
 }
 

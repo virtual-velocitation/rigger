@@ -521,9 +521,10 @@ fn plan_derived_prune(
     let mut facts: HashMap<Fact, FactRun> = HashMap::new();
     // (stream, type, key) of a surviving re-asserting row -> (its run, the earliest valid-time of
     // the key's recordings in that run): the exact-key carry, blind to how a payload is spelled.
-    let mut keys: HashMap<(String, String, String), (usize, i64)> = HashMap::new();
+    type Key = (String, String, String);
+    let mut keys: HashMap<Key, (usize, i64)> = HashMap::new();
     // position of a surviving re-asserting row -> (its own valid-time, its fact, its key).
-    let mut survivors: Vec<(i64, i64, Fact, (String, String, String))> = Vec::new();
+    let mut survivors: Vec<(i64, i64, Fact, Key)> = Vec::new();
     let mut plan = DerivedPrunePlan {
         rows: 0,
         deletes: Vec::new(),
