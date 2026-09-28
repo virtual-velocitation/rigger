@@ -520,7 +520,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ecc6e3c18c91",
+    "id": "dup-a74a72df63e6",
     "classification": "semantic",
     "sites": [
       {
@@ -657,6 +657,11 @@
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
         "name": "Command::new",
         "content_hash": "d89e0fac03d16933"
+      },
+      {
+        "file": "tests/checkin_mutation_diff_base_periphery.rs",
+        "name": "Command::new",
+        "content_hash": "144b93f7a5a14fb2"
       },
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
@@ -945,7 +950,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 84 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 85 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
