@@ -445,8 +445,12 @@ fn head(name: &str, line: u32, partial: bool) -> Vec<u8> {
 /// Fold `events` whole, compact the log with the shipped policy, fold it again, and require the
 /// two live projections to be identical and to hold exactly `nodes` as `(id, kind)`. The live
 /// `graph.db` a run keeps is folded incrementally - one event per batch, the projector reopened
-/// between them - and must be that same projection before the log is compacted.
-fn compaction_rebuilds_the_whole_logs_graph(events: Vec<Event>, nodes: &[(&str, &str)]) {
+/// between them - and must be that same projection before the log is compacted. Returns that
+/// projection so a case can pin a node's attrs too.
+fn compaction_rebuilds_the_whole_logs_graph(
+    events: Vec<Event>,
+    nodes: &[(&str, &str)],
+) -> rigger::contextgraph::Graph {
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
     let before = rebuilt_whole(&backend, &dir.path().join("before.db"));
@@ -477,6 +481,7 @@ fn compaction_rebuilds_the_whole_logs_graph(events: Vec<Event>, nodes: &[(&str, 
         .map(|n| (n.id.as_str(), n.kind.as_str()))
         .collect();
     assert_eq!(held, nodes, "the whole log's live nodes; graph: {before}");
+    graph
 }
 
 rigger::test_cases! {
@@ -615,6 +620,23 @@ rigger::test_cases! {
             ("src/f.rs::gone", "artifact"),
         ],
     );
+    /// A design link that names a definition only AFTER the generation that dropped it: the node
+    /// comes back as the link's artifact, never as the definition the shed generation made - the
+    /// restore takes the kind of whatever re-asserts it, a derived asserter as much as a decision.
+    a_link_naming_an_already_dropped_entity_names_an_artifact: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 10),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("gone", 9), "gc/src/f.rs@h1#1", 10),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 2, false), "gc/src/f.rs@h2#0", 20),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/f.rs::gone"), "gd/docs/f.md@h1#0", 25),
+        ],
+        &[
+            ("docs/f.md", "artifact"),
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::gone", "artifact"),
+        ],
+    );
     /// Three generations of one file's code and design batches, each dropping or adding a fact:
     /// only what the third asserts (and what a decision holds) is live.
     three_generations_fold_to_the_latest_ones_facts: compaction_rebuilds_the_whole_logs_graph(
@@ -637,6 +659,91 @@ rigger::test_cases! {
             ("src/f.rs::alpha", "code-entity"),
             ("src/g.rs", "artifact"),
         ],
+    );
+}
+
+/// A test file's proof reference to `name` at `line`: test-origin evidence heading its file's batch.
+fn proof(name: &str, line: u32) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "file": "tests/t.rs", "name": name, "lang": "rust", "fresh": true, "line": line,
+        "is_test": true,
+    }))
+    .unwrap()
+}
+
+/// Proof a test recorded on a definition is another fold's word, not the generation's: when a
+/// later generation drops the definition the node retires WITH that proof and WITHOUT the
+/// definition's own attrs, and when a still later generation defines it again it comes back as
+/// that generation says it is, still proven by the test - exactly what the compacted log folds,
+/// where the reference waits for the definition and lands on it the moment it folds.
+#[test]
+fn a_tests_proof_survives_its_entitys_retirement_and_returns_with_it() {
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                head("alpha", 1, false),
+                "gc/src/f.rs@h1#0",
+                10,
+            ),
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                entity("gone", 9),
+                "gc/src/f.rs@h1#1",
+                10,
+            ),
+            keyed(
+                TYPE_EDGE_INFERRED,
+                proof("gone", 3),
+                "gc/tests/t.rs@h1#0",
+                12,
+            ),
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                head("alpha", 2, false),
+                "gc/src/f.rs@h2#0",
+                20,
+            ),
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                head("alpha", 3, false),
+                "gc/src/f.rs@h3#0",
+                30,
+            ),
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                entity("gone", 7),
+                "gc/src/f.rs@h3#1",
+                30,
+            ),
+        ],
+        &[
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::gone", "code-entity"),
+        ],
+    );
+    let gone = graph
+        .nodes
+        .iter()
+        .find(|n| n.id == "src/f.rs::gone")
+        .unwrap();
+    let attrs: Vec<(&str, &str)> = gone
+        .attrs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(
+        attrs,
+        vec![
+            ("kind", "function"),
+            ("lang", "rust"),
+            ("line", "7"),
+            ("name", "gone"),
+            ("proof_evidence", r#"["tests/t.rs:3"]"#),
+            ("proven_by", "1"),
+        ],
+        "the returned definition carries h3's attrs and the test's proof, nothing of h1's"
     );
 }
 
