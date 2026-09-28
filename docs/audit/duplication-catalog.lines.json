@@ -5215,7 +5215,7 @@
     ]
   },
   {
-    "id": "dup-b4b352b24320",
+    "id": "dup-c96af18ba7b8",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5234,8 +5234,13 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1829,
-        "end_line": 1829
+        "start_line": 1720,
+        "end_line": 1720
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "start_line": 1871,
+        "end_line": 1871
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
