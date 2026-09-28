@@ -151,7 +151,8 @@ that step-wide assertion. Neither unit builds the other's half.
   log once on its next open, and `--derived` refuses to compact it until then. A cross-file
   reference or test proof whose definition a generation drops is demoted, or returned to pending,
   as that definition retires, so a later definition of the name converges it identically in both
-  rebuilds.
+  rebuilds. A dropped entity touched only by a community or concept edge retires, with that edge,
+  in both rebuilds.
 - *Concurrent step and status:* status reads the boundary and the typed carry-over and takes no
   step lock; the step's lookups read committed rows only. A `rigger graph build` running beside a
   step can record one generation twice, as it can today, and criterion 4's dedup collapses it.
@@ -180,8 +181,8 @@ fact live is a defect of the fold, and this spec closes it. When a newer generat
 newer generation does not re-assert is retired (`valid_to` stamped, never deleted), exactly as the
 code half already retires a prior generation's edges: the design half's links
 (`DocLinkExtracted`) and concepts (`DocConceptExtracted`) exactly as the code half's edges. A node
-that no live generation asserts and no live edge touches is retired the same way; a node that a
-live decision, lesson or finding edge still touches stays live. The mechanism is the fold's, at
+that no live generation asserts is retired the same way; only a live decision, lesson or finding
+edge (the knowledge edges) still touching it keeps it live. The mechanism is the fold's, at
 the single fold authority for each arm (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`
 and the domain rules in `crates/rigger-domain/src/contextgraph.rs`), never a second pass or a
 post-fold sweep. This is what makes criterion 4's identity hold whenever a later generation DROPS
@@ -223,6 +224,25 @@ a fact, not only when it adds or moves one.
   edges get the same identity-empty asserter record nodes already have, and compaction never selects
   unkeyed rows. The two rebuilds therefore agree on a log that mixes unkeyed and keyed recordings of
   the same fact, which is the shape of every store written before replay keys.
+- *Only knowledge holds a node.* The edges that hold a node whose asserting generation retired
+  are exactly the knowledge edges, folded from `DecisionMade`, `LessonLearned` and `ReviewFinding`;
+  nothing else holds. A graph-derived attachment - the `IN_COMMUNITY` edge from `CommunityAssigned`
+  and the `REALIZES` edge from `ConceptRealized` - is not a derived index type, survives
+  compaction, and never holds a node: when the last live generation asserting the node retires,
+  those edges retire with it (`valid_to` stamped), and the retired node keeps none of the retired
+  generation's attributes, the same retraction the code half applies to any superseded generation
+  (an early return on an unsettled kind is not this rule). An attachment folded onto a node the
+  graph does not hold (the compacted log replays one whose node's generation was shed) is recorded
+  retired at fold time, never creates a node and never stays live; a knowledge edge folded onto an
+  absent node creates the held node as the whole-log fold leaves it, so the two rebuilds agree node
+  for node and edge for edge. The authority is the fold's own arms in
+  `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` (the community arm, the concept arm and
+  the node-retirement rule), no sweep and no second pass. Criterion 4's fixture MUST seed a
+  community assignment and a concept realization on an entity a later generation drops, and a
+  knowledge edge on another dropped entity, and assert both rebuilds agree on every node and edge
+  including the retired-node record; the review verifies criterion 4 by a rebuild-identity check
+  over a subset of a real log (every non-derived event plus the derived events of a bounded set of
+  identities), not by the synthetic fixture alone.
 - *Ownership.* Criterion 4's unit owns the fold change, and its blast radius grows to
   `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` and
   `crates/rigger-domain/src/contextgraph.rs`, because the compaction's correctness argument IS
