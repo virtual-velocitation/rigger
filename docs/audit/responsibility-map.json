@@ -6885,7 +6885,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"footprint\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "34ead10e815b3199"
+    "content_hash": "fa9fd25d83494d52"
   },
   {
     "file": "src/cli/mod.rs",
@@ -6897,11 +6897,11 @@
   },
   {
     "file": "src/cli/mod.rs",
-    "name": "dead_spawn_leaf_bytes",
+    "name": "dead_spawn_leaves",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "a6aac952328115fd"
+    "content_hash": "bbb0be80835b52c7"
   },
   {
     "file": "src/cli/mod.rs",
@@ -6917,7 +6917,7 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"scratch\" (project setup); grouped under `main::setup`.",
-    "content_hash": "52800f13560bf9da"
+    "content_hash": "0e8a4132746fcb52"
   },
   {
     "file": "src/cli/mod.rs",
@@ -6925,7 +6925,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"footprint\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "1025c3e14094b72a"
+    "content_hash": "70bebef70fa0d3fd"
   },
   {
     "file": "src/cli/mod.rs",
@@ -6934,6 +6934,22 @@
     "proposed_module": "main::store",
     "reason": "name contains \"footprint\" (store hygiene); grouped under `main::store`.",
     "content_hash": "552118dc591b1542"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "reclaim_dead_footprint",
+    "is_test": false,
+    "proposed_module": "main::store",
+    "reason": "name contains \"reclaim_\" (store hygiene); grouped under `main::store`.",
+    "content_hash": "13d86802a6240418"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "footprint_reclaim_lines",
+    "is_test": false,
+    "proposed_module": "main::store",
+    "reason": "name contains \"reclaim_\" (store hygiene); grouped under `main::store`.",
+    "content_hash": "5ed8047dd146bbcc"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7557,7 +7573,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "41732ef907ea20c7"
+    "content_hash": "93c25c444113711a"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7573,7 +7589,15 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "bc4f5e6e577b1712"
+    "content_hash": "b9d5259e7b8421c0"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "footprint_advisories_name_reset_build_cache_for_every_class_it_reclaims",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6ce71af530485e6d"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7581,7 +7605,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e48d2839889edce3"
+    "content_hash": "4be81c6a7b432ee1"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7589,7 +7613,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d977922ab19faafb"
+    "content_hash": "bb3c2214f8440edf"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7597,7 +7621,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "bceb07dba2c0a612"
+    "content_hash": "bf16b5b60fdd64a6"
   },
   {
     "file": "src/cli/mod.rs",

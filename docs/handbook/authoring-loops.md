@@ -103,6 +103,17 @@ Review is per unit, not a downstream stage. Each unit runs its own complete cycl
 
 Consequence worth knowing: units run as overlapping pipelines, so an earlier unit's review can complete while a later unit is still building. Progress displays group by per-unit phase labels (`u3:Build`, `u3:Review`) precisely so this does not read as stages running out of order.
 
+### The check-in mutation sweep: bounds, scope and budget
+
+The `checkin` stage runs the `mutation` gate once, after every implement unit has integrated: `cargo mutants` over the whole spec diff, one remediation round for its survivors, then the sweep again. Its logic lives in `.rigger/gates/mutation.sh` (`rigger init` writes the same script into your project; point your `mutation` gate at `sh .rigger/gates/mutation.sh` for a Rust workspace). What it guarantees:
+
+- **Scope.** Mutants come from every package the diff touches (`--workspace` with `--in-diff`), and each mutant runs only the tests of those packages plus the root package's, never the whole workspace's (`--test-package`, never `--test-workspace`). The package of a file is the nearest `Cargo.toml` that declares a `[package]`. A survivor this exposes is closed with a test in the right crate, never by widening the test scope.
+- **Memory bound.** The sweep runs in its own transient systemd scope with `MemoryMax` at half of `MemAvailable` when it starts, so a runaway mutant can exhaust only the sweep's own memory - never the step that launched the gate or the operator's session. `-j` comes from the same bound: one job is budgeted at 6 GiB, so jobs = bound / 6 GiB, at least 1 and at most 3. With no systemd user manager (a CI container) the sweep runs unbounded and the gate prints an advisory saying so. Separately, every test process runs under a 4 GiB address-space cap (`.cargo/pidns-runner.sh`), sized for a sweep's many concurrent test processes rather than for one.
+- **Budget.** A typical unit diff sweeps in minutes, not hours: the baseline tests only the mutated packages (seconds), each job's first mutant pays one build of the root package in its copy, and each caught mutant stops at its first failing test (nextest). Each mutant's test run is bounded at 300 s, and nextest ends any single hung test at 240 s; a timeout counts as a detection. Re-sweeps are incremental: only mutants in code changed since the last swept tree, earlier survivors, and catches whose catching test changed are examined again.
+- **The instrument is the gate's.** A unit that adds an exclusion or examine key to `.cargo/mutants.toml`, or a skip attribute in the code, fails the gate before any sweep runs.
+
+`rigger reset --build-cache` reclaims every class of dead scratch `rigger validate`'s footprint names with that verb - dead per-unit caches, dead spawns' registered scratch, unowned agent scratch, and the shared gate build cache - and leaves any entry a live process still holds (its working directory or an open file) where it is.
+
 ## The four drivers
 
 Same loop, four entry points - pick by where you are sitting:

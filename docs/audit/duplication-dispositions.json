@@ -595,7 +595,7 @@
     "reason": "`edge_desc` renders a graph edge while `runs_menu_line` renders a run-menu row; they format different fields into different lines."
   },
   {
-    "id": "dup-a249dbf31ece",
+    "id": "dup-a2973e00918e",
     "disposition": "not-a-duplicate",
     "reason": "Tests that each assert a different property of a different served page or shipped file; only the fetch-then-contains shape is shared."
   },

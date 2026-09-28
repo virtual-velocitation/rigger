@@ -520,7 +520,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b4f0730492db",
+    "id": "dup-ecc6e3c18c91",
     "classification": "semantic",
     "sites": [
       {
@@ -577,6 +577,11 @@
         "file": "crates/rigger-process/src/budget.rs",
         "name": "Command::new",
         "content_hash": "f8f2847ad0299c84"
+      },
+      {
+        "file": "crates/rigger-process/src/holders.rs",
+        "name": "Command::new",
+        "content_hash": "da3ee123d4540dd7"
       },
       {
         "file": "crates/rigger-process/src/subprocess.rs",
@@ -656,12 +661,7 @@
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
+        "content_hash": "1f01b7aba566e9fb"
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
@@ -849,6 +849,11 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
+        "file": "tests/mutation_runner_pdeathsig_periphery.rs",
+        "name": "Command::new",
+        "content_hash": "0d93b60562d266df"
+      },
+      {
         "file": "tests/native_driver_pipelining_behavior.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
@@ -940,11 +945,11 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 83 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 84 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-503802fc1f1c",
+    "id": "dup-ce83655c125c",
     "classification": "semantic",
     "sites": [
       {
@@ -1380,6 +1385,11 @@
       {
         "file": "src/cli/mod.rs",
         "name": "\".rigger\"",
+        "content_hash": "d61ae8ace1b4d383"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "\".rigger\"",
         "content_hash": "0a68549443b7c66d"
       },
       {
@@ -1484,6 +1494,11 @@
       },
       {
         "file": "src/cli/setup.rs",
+        "name": "\"scaffolded .rigger/gates/mutation.sh\"",
+        "content_hash": "dba909280155025d"
+      },
+      {
+        "file": "src/cli/setup.rs",
         "name": "\"scaffolded .rigger/agents/{{{}}}\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
@@ -1509,8 +1524,13 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\\n\\\n# review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\\n\\\n# adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\\n\\\n# Replace the gate commands with your own.\\n\\\n\\n\\\ndefaults:\\n  \\\nautonomy: auto_notify   # manual | auto_notify | silent\\n  \\\ngrounder: symbols       # symbols (default; the structural symbol index) | grep | nop\\n  \\\n# The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\\n  \\\n# run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\\n  \\\n# so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\\n  \\\nbudget: 60\\n  \\\n# The remediation depth: how many attempts a failed unit gets before it escalates\\n  \\\n# to a human. This is the REFINEMENT-depth knob, not a review-rigor one - raise it\\n  \\\n# to give a subtle unit room to CONVERGE under the full strict review instead of\\n  \\\n# escalating prematurely. It loosens the depth limit, never the review bar. Absent\\n  \\\n# falls back to 3 (the historical default); bounded by `budget` above.\\n  \\\nmax_retries: 3\\n  \\\n# How many implement units build at once (spec 102, per-unit pipelining). Each\\n  \\\n# live unit owns its own build cache, and unbounded parallelism can fill disk on\\n  \\\n# a wide fan-out. 0 (the default) is unbounded, unchanged until you set this; 2\\n  \\\n# bounds the worst case to two live per-unit build caches at a time.\\n  \\\nmax_parallel_units: 2\\n  \\\n# The three-tier review panel applied to EVERY implement unit. Declared once\\n  \\\n# here, inherited by the implement stage and every planner-proposed unit.\\n  \\\nreview:\\n    \\\nlenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses\\n    \\\nadversary: adversary           # tier 2: reviews the lenses and refutes them\\n    \\\nadjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\\n\\\n\\n\\\n# The compilation-cache wrapper (spec 65): `auto` probes PATH for a known wrapper\\n\\\n# (sccache, ccache) and uses it when present, so a machine that already has one\\n\\\n# installed benefits with no further config; `off` disables the shared-cache\\n\\\n# layer entirely. See `rigger validate` for the resolved wrapper/cache dir/budget.\\n\\\nbuild:\\n  \\\nwrapper: auto\\n\\\n\\n\\\ngates:                    # a reusable library of commands, referenced by name\\n  \\\nbuild: { run: \\\"echo build ok; true\\\", kind: core }\\n  \\\ntest:  { run: \\\"echo test ok; true\\\",  kind: core }\\n  \\\nlint:  { run: \\\"echo lint ok; true\\\",  kind: elevated }\\n  \\\n# The check-in-stage mutation sweep (spec 91): runs ONCE, after every implement\\n  \\\n# unit has integrated - never per implementer round. Replace with a real\\n  \\\n# `cargo mutants --in-diff` invocation for a Rust project (see this crate's own\\n  \\\n# .rigger/workflow.yml for the worked example); declaring a gate under this\\n  \\\n# exact id requires `cargo-mutants` on PATH (rigger validate checks at run start).\\n  \\\nmutation: { run: \\\"echo mutation ok; true\\\", kind: core }\\n\\\n# The boundary gate: Clean Architecture made mechanical. Replace with your\\n  \\\n# project's own check that dependencies point inward and adapters are constructed\\n  \\\n# only in the composition root (see this crate's tests/boundary_audit.rs for the\\n  \\\n# worked example). A red boundary gate is non-negotiable: the adjudicator\\n  \\\n# rejects, never balances it against other evidence.\\n  \\\nboundary: { run: \\\"echo boundary ok; true\\\", kind: core }\\n\\\n# The audit gate: DRY and YAGNI as a red gate. Replace with your project's own\\n  \\\n# duplication and dead-code check; if it keeps a generated catalog, regenerate it\\n  \\\n# before asserting so a unit is never red on a stale catalog alone.\\n  \\\naudit: { run: \\\"echo audit ok; true\\\", kind: core }\\n\\\n# The red-before-green gate: TDD made mechanical. Replace with a check that a\\n  \\\n# unit's first source commit is preceded by (or carries) a test change (see this\\n  \\\n# crate's .rigger/gates/red-before-green.sh for the worked example).\\n  \\\nred-before-green: { run: \\\"echo red-before-green ok; true\\\", kind: core }\\n\\\n\\n\\\nstages:\\n  \\\n# The conductor creates one baseline implement unit per acceptance criterion (the\\n  \\\n# deterministic decomposition); this planner REFINES that baseline via UnitProposed.\\n  \\\n# A produces stage decomposes the whole spec, so it has no single coverage criterion\\n  \\\n# - it grounds on the spec's acceptance criteria, not a `coverage` label.\\n  \\\nplan:\\n    \\\nagent: planner\\n    \\\nproduces: dag           # refine the spec's unit DAG at runtime\\n\\\n\\n  \\\n# The adversarial plan-critique gate: BEFORE any implementer spawns, the adversary +\\n  \\\n# adjudicator review the PROPOSED unit DAG for the cross-unit hazards per-unit review\\n  \\\n# cannot see: ambiguous mitigation ownership and open dispositions (a shared blast\\n  \\\n# radius is informational only - partition: by-blast-radius serializes it). A reject\\n  \\\n# feeds back to the\\n  \\\n# planner (bounded by max_retries); an approve releases the fan-out. Review-only (no\\n  \\\n# agent) - it critiques the plan, it does not implement.\\n  \\\nplan-critique:\\n    \\\nneeds: [plan]\\n    \\\nadversary: adversary        # tier 2: reviews the DAG and refutes it\\n    \\\nadjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out\\n\\\n\\n  \\\n# Each unit implements, three-tier-reviews ITSELF (via defaults.review), and\\n  \\\n# integrates in one lifecycle. A reject or a gate failure feeds back into that\\n  \\\n# same unit's remediation loop; it does NOT integrate until approved + green.\\n  \\\nimplement:\\n    \\\nneeds: [plan-critique]\\n    \\\nagent: rust-engineer\\n    \\\nstrategy: fan-out       # one worker per ready unit, in isolated worktrees\\n    \\\npartition: by-blast-radius\\n    \\\ngates: [build, audit, test, lint, boundary, red-before-green]  # red -> green enforced around the change\\n    \\\non_pass: merge          # land + reindex + record, per unit, once reviewed\\n    \\\ncoverage: \\\"each unit is implemented, reviews itself, and integrates green\\\"\\n\\\n\\n  \\\n# 3. Check in ONCE, after every implement unit has integrated (spec 91): a\\n  \\\n# `needs` entry naming the fan-out `implement` TEMPLATE is satisfied exactly when\\n  \\\n# every unit it expanded into has integrated - never per implementer round, and\\n  \\\n# never before every unit has landed. Re-verifies the whole gate suite against\\n  \\\n# the merged tree, then sweeps mutants; one remediation round (max_retries: 2),\\n  \\\n# then integrate or escalate with the accounting already on record.\\n  \\\ncheckin:\\n    \\\nneeds: [implement]\\n    \\\nagent: rust-engineer\\n    \\\nmax_retries: 2          # attempt bound: the sweep, one remediation round, the sweep again\\n    \\\ngates: [build, audit, test, lint, boundary, mutation]\\n    \\\non_pass: merge\\n    \\\ncoverage: \\\"mutation efficacy of the whole spec diff\\\"\\n\"",
+        "name": "\"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\\n\\\n# review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\\n\\\n# adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\\n\\\n# Replace the gate commands with your own.\\n\\\n\\n\\\ndefaults:\\n  \\\nautonomy: auto_notify   # manual | auto_notify | silent\\n  \\\ngrounder: symbols       # symbols (default; the structural symbol index) | grep | nop\\n  \\\n# The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\\n  \\\n# run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\\n  \\\n# so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\\n  \\\nbudget: 60\\n  \\\n# The remediation depth: how many attempts a failed unit gets before it escalates\\n  \\\n# to a human. This is the REFINEMENT-depth knob, not a review-rigor one - raise it\\n  \\\n# to give a subtle unit room to CONVERGE under the full strict review instead of\\n  \\\n# escalating prematurely. It loosens the depth limit, never the review bar. Absent\\n  \\\n# falls back to 3 (the historical default); bounded by `budget` above.\\n  \\\nmax_retries: 3\\n  \\\n# How many implement units build at once (spec 102, per-unit pipelining). Each\\n  \\\n# live unit owns its own build cache, and unbounded parallelism can fill disk on\\n  \\\n# a wide fan-out. 0 (the default) is unbounded, unchanged until you set this; 2\\n  \\\n# bounds the worst case to two live per-unit build caches at a time.\\n  \\\nmax_parallel_units: 2\\n  \\\n# The three-tier review panel applied to EVERY implement unit. Declared once\\n  \\\n# here, inherited by the implement stage and every planner-proposed unit.\\n  \\\nreview:\\n    \\\nlenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses\\n    \\\nadversary: adversary           # tier 2: reviews the lenses and refutes them\\n    \\\nadjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\\n\\\n\\n\\\n# The compilation-cache wrapper (spec 65): `auto` probes PATH for a known wrapper\\n\\\n# (sccache, ccache) and uses it when present, so a machine that already has one\\n\\\n# installed benefits with no further config; `off` disables the shared-cache\\n\\\n# layer entirely. See `rigger validate` for the resolved wrapper/cache dir/budget.\\n\\\nbuild:\\n  \\\nwrapper: auto\\n\\\n\\n\\\ngates:                    # a reusable library of commands, referenced by name\\n  \\\nbuild: { run: \\\"echo build ok; true\\\", kind: core }\\n  \\\ntest:  { run: \\\"echo test ok; true\\\",  kind: core }\\n  \\\nlint:  { run: \\\"echo lint ok; true\\\",  kind: elevated }\\n  \\\n# The check-in-stage mutation sweep (spec 91): runs ONCE, after every implement\\n  \\\n# unit has integrated - never per implementer round. For a Rust project, run the\\n  \\\n# sweep `rigger init` wrote beside this file: `run: \\\"sh .rigger/gates/mutation.sh\\\"`\\n  \\\n# (diff-scoped, in its own memory-bounded scope; its header explains each clause).\\n  \\\n# Declaring a gate under this exact id requires `cargo-mutants` on PATH (rigger\\n  \\\n# validate checks at run start).\\n  \\\nmutation: { run: \\\"echo mutation ok; true\\\", kind: core }\\n\\\n# The boundary gate: Clean Architecture made mechanical. Replace with your\\n  \\\n# project's own check that dependencies point inward and adapters are constructed\\n  \\\n# only in the composition root (see this crate's tests/boundary_audit.rs for the\\n  \\\n# worked example). A red boundary gate is non-negotiable: the adjudicator\\n  \\\n# rejects, never balances it against other evidence.\\n  \\\nboundary: { run: \\\"echo boundary ok; true\\\", kind: core }\\n\\\n# The audit gate: DRY and YAGNI as a red gate. Replace with your project's own\\n  \\\n# duplication and dead-code check; if it keeps a generated catalog, regenerate it\\n  \\\n# before asserting so a unit is never red on a stale catalog alone.\\n  \\\naudit: { run: \\\"echo audit ok; true\\\", kind: core }\\n\\\n# The red-before-green gate: TDD made mechanical. Replace with a check that a\\n  \\\n# unit's first source commit is preceded by (or carries) a test change (see this\\n  \\\n# crate's .rigger/gates/red-before-green.sh for the worked example).\\n  \\\nred-before-green: { run: \\\"echo red-before-green ok; true\\\", kind: core }\\n\\\n\\n\\\nstages:\\n  \\\n# The conductor creates one baseline implement unit per acceptance criterion (the\\n  \\\n# deterministic decomposition); this planner REFINES that baseline via UnitProposed.\\n  \\\n# A produces stage decomposes the whole spec, so it has no single coverage criterion\\n  \\\n# - it grounds on the spec's acceptance criteria, not a `coverage` label.\\n  \\\nplan:\\n    \\\nagent: planner\\n    \\\nproduces: dag           # refine the spec's unit DAG at runtime\\n\\\n\\n  \\\n# The adversarial plan-critique gate: BEFORE any implementer spawns, the adversary +\\n  \\\n# adjudicator review the PROPOSED unit DAG for the cross-unit hazards per-unit review\\n  \\\n# cannot see: ambiguous mitigation ownership and open dispositions (a shared blast\\n  \\\n# radius is informational only - partition: by-blast-radius serializes it). A reject\\n  \\\n# feeds back to the\\n  \\\n# planner (bounded by max_retries); an approve releases the fan-out. Review-only (no\\n  \\\n# agent) - it critiques the plan, it does not implement.\\n  \\\nplan-critique:\\n    \\\nneeds: [plan]\\n    \\\nadversary: adversary        # tier 2: reviews the DAG and refutes it\\n    \\\nadjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out\\n\\\n\\n  \\\n# Each unit implements, three-tier-reviews ITSELF (via defaults.review), and\\n  \\\n# integrates in one lifecycle. A reject or a gate failure feeds back into that\\n  \\\n# same unit's remediation loop; it does NOT integrate until approved + green.\\n  \\\nimplement:\\n    \\\nneeds: [plan-critique]\\n    \\\nagent: rust-engineer\\n    \\\nstrategy: fan-out       # one worker per ready unit, in isolated worktrees\\n    \\\npartition: by-blast-radius\\n    \\\ngates: [build, audit, test, lint, boundary, red-before-green]  # red -> green enforced around the change\\n    \\\non_pass: merge          # land + reindex + record, per unit, once reviewed\\n    \\\ncoverage: \\\"each unit is implemented, reviews itself, and integrates green\\\"\\n\\\n\\n  \\\n# 3. Check in ONCE, after every implement unit has integrated (spec 91): a\\n  \\\n# `needs` entry naming the fan-out `implement` TEMPLATE is satisfied exactly when\\n  \\\n# every unit it expanded into has integrated - never per implementer round, and\\n  \\\n# never before every unit has landed. Re-verifies the whole gate suite against\\n  \\\n# the merged tree, then sweeps mutants; one remediation round (max_retries: 2),\\n  \\\n# then integrate or escalate with the accounting already on record.\\n  \\\ncheckin:\\n    \\\nneeds: [implement]\\n    \\\nagent: rust-engineer\\n    \\\nmax_retries: 2          # attempt bound: the sweep, one remediation round, the sweep again\\n    \\\ngates: [build, audit, test, lint, boundary, mutation]\\n    \\\non_pass: merge\\n    \\\ncoverage: \\\"mutation efficacy of the whole spec diff\\\"\\n\"",
         "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"../../.rigger/gates/mutation.sh\"",
+        "content_hash": "a33f8f9c3076ad1b"
       },
       {
         "file": "src/cli/setup.rs",
@@ -3198,6 +3218,26 @@
         "content_hash": "c2ea6b4829cb254f"
       },
       {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\"sh .rigger/gates/mutation.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/gates/mutation.sh\"",
+        "content_hash": "e981a879dccfe37c"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/gates/mutation.sh\"",
+        "content_hash": "367fe62fa1fa2d00"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\"rigger init must write .rigger/gates/mutation.sh\"",
+        "content_hash": "6330ce3a5a38ef8d"
+      },
+      {
         "file": "tests/projections_stay_local.rs",
         "name": "\"the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \\\n         (`Projector::open(&db_path(\\\"graph.db\\\") ...)`); the canonical local construction is gone\"",
         "content_hash": "25597419b8dbb616"
@@ -3664,7 +3704,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 543 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 550 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4028,7 +4068,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7e2f6f11edbf",
+    "id": "dup-478ddc23181e",
     "classification": "semantic",
     "sites": [
       {
@@ -4065,6 +4105,16 @@
         "file": "crates/rigger-dash/src/dash.rs",
         "name": "\"/proc\"",
         "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "crates/rigger-process/src/holders.rs",
+        "name": "\"/proc\"",
+        "content_hash": "e8f24cc59335ae47"
+      },
+      {
+        "file": "crates/rigger-process/src/holders.rs",
+        "name": "\"/proc\"",
+        "content_hash": "3f788c6ba3f9c32d"
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
@@ -4172,6 +4222,11 @@
         "content_hash": "e24c26c0d9d4cbdb"
       },
       {
+        "file": "tests/mutation_runner_pdeathsig_periphery.rs",
+        "name": "\"cat /proc/self/limits\"",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
         "file": "tests/simplification_audit.rs",
         "name": "\"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions\"",
         "content_hash": "e24c1bc0d9d4b92a"
@@ -4273,7 +4328,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 51 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4301,7 +4356,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a249dbf31ece",
+    "id": "dup-a2973e00918e",
     "classification": "near",
     "sites": [
       {
@@ -4313,11 +4368,6 @@
         "file": "crates/rigger-dash/src/dash.rs",
         "name": "the_landing_view_lists_instances_and_threads_the_attach_selector",
         "content_hash": "3084b69297f01150"
-      },
-      {
-        "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "name": "the_shipped_mutation_gate_guards_on_rigger_run_base_never_a_merge_base",
-        "content_hash": "f3ff49e3f09ecb9d"
       },
       {
         "file": "tests/console_palette_periphery.rs",
@@ -4335,7 +4385,7 @@
         "content_hash": "f3ff49e3f09ecb9d"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-dash/src/dash.rs, tests/checkin_mutation_diff_base_periphery.rs, tests/console_palette_periphery.rs, tests/projections_stay_local.rs, tests/store_resolution.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/projections_stay_local.rs, tests/store_resolution.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

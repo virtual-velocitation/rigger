@@ -24,6 +24,7 @@
 
 mod common;
 
+use common::fixtures::write_file;
 use common::git::{git_commit_all, git_ok, git_out, init_repo};
 use common::repo::repo_root;
 use std::path::{Path, PathBuf};
@@ -148,9 +149,7 @@ fn run_gate(
 
 /// Write `content` to `rel` under `repo`, creating parent directories.
 fn write(repo: &Path, rel: &str, content: &str) {
-    let path = repo.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, content).unwrap();
+    write_file(&repo.join(rel), content.as_bytes());
 }
 
 /// A three-package workspace (`fixture-root` at the root, `alpha` and `beta` under crates/)

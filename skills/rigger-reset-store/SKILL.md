@@ -17,7 +17,8 @@ rigger keeps three stores under `.rigger/`, and only one of them holds anything 
 
 - `rigger reset --runs` prunes dead-run rows and superseded edges out of `graph.db`. It works over ANY event-store backend (the graph is always a local file); rerun it any time, especially before a large run. When no driver is alive (no `rigger step` holds the lock, no spawn awaits a result, no `run`/`serve` is registered), it also closes the current run's units whose branch work is already landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the conductor mints, so `rigger status` stops reporting the finished run as working. It only appends; a live run is left untouched.
 - `rigger reset --derived` compacts `events.db`: it keeps the LATEST event per replay key of each derived project-ingest type, deletes the superseded duplicates, and vacuums so the file shrinks on disk. Every other event - every decision, finding, lesson, gate verdict, the whole run history - survives byte-for-byte. Only the embedded sqlite backend can compact this way, and it refuses (unless overridden with `--force-live`) while a run is live against the store.
-- The two flags compose: `rigger reset --runs --derived` sheds both accumulations in one pass.
+- `rigger reset --build-cache` reclaims the rebuildable scratch beside the stores: every dead class `rigger validate`'s footprint names with this verb (dead per-unit caches, dead spawns' registered scratch, unowned agent scratch) and the shared gate build cache. It checks each entry for a live holder first - a process whose working directory or open file is inside - and leaves a held entry where it is. It needs no event-store backend.
+- The flags compose: `rigger reset --runs --derived` sheds both store accumulations in one pass.
 
 ## Anti-move
 

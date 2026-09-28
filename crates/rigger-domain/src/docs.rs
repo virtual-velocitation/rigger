@@ -694,7 +694,13 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              byte-for-byte. Only the embedded sqlite backend can compact this way, and it \
              refuses (unless overridden with `--force-live`) while a run is live against the \
              store.",
-            "- The two flags compose: `rigger reset --runs --derived` sheds both \
+            "- `rigger reset --build-cache` reclaims the rebuildable scratch beside the \
+             stores: every dead class `rigger validate`'s footprint names with this verb (dead \
+             per-unit caches, dead spawns' registered scratch, unowned agent scratch) and the \
+             shared gate build cache. It checks each entry for a live holder first - a process \
+             whose working directory or open file is inside - and leaves a held entry where it \
+             is. It needs no event-store backend.",
+            "- The flags compose: `rigger reset --runs --derived` sheds both store \
              accumulations in one pass.\n",
         ],
         "Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any \
