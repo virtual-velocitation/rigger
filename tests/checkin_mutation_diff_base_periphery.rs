@@ -310,6 +310,10 @@ fn the_sweep_mutates_the_workspace_and_tests_only_the_touched_packages_plus_the_
     );
     assert!(sweep.contains("--test-tool nextest "), "{sweep}");
     assert!(
+        sweep.contains("--timeout 300 ") && !sweep.contains("--timeout-multiplier"),
+        "the baseline tests only the mutated packages, so each mutant's bound is absolute: {sweep}"
+    );
+    assert!(
         !sweep.contains("--baseline skip"),
         "nothing proves the scoped packages green on this tree, so the baseline stays on: {sweep}"
     );

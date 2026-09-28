@@ -97,6 +97,8 @@ struct ScaffoldReport {
     minted_id: Option<String>,
     /// True when this run newly wrote `.rigger/instructions/README.md` (it was absent).
     wrote_instructions_readme: bool,
+    /// True when this run newly wrote `.rigger/gates/mutation.sh` (it was absent).
+    wrote_mutation_gate: bool,
 }
 
 impl ScaffoldReport {
@@ -110,6 +112,7 @@ impl ScaffoldReport {
             || !self.gitignore_added.is_empty()
             || self.minted_id.is_some()
             || self.wrote_instructions_readme
+            || self.wrote_mutation_gate
     }
 }
 
@@ -128,6 +131,10 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         &instructions_dir.join(config_store::INSTRUCTIONS_README),
         SCAFFOLD_INSTRUCTIONS_README,
     )?;
+    let gates_dir = rigger_dir.join("gates");
+    std::fs::create_dir_all(&gates_dir)?;
+    let wrote_mutation_gate =
+        write_if_absent(&gates_dir.join("mutation.sh"), SCAFFOLD_MUTATION_GATE)?;
 
     // 1b. Mint the durable project identity when absent (spec 09, Gap 20): a tracked
     // `.rigger/project.id` line so the identity survives directory renames and machine
@@ -251,6 +258,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         gitignore_added,
         minted_id,
         wrote_instructions_readme,
+        wrote_mutation_gate,
     })
 }
 
@@ -414,6 +422,9 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
     }
     if report.wrote_instructions_readme {
         lines.push("scaffolded .rigger/instructions/README.md".to_string());
+    }
+    if report.wrote_mutation_gate {
+        lines.push("scaffolded .rigger/gates/mutation.sh".to_string());
     }
     if !report.new_agents.is_empty() {
         lines.push(format!(
@@ -1216,10 +1227,11 @@ build: { run: \"echo build ok; true\", kind: core }\n  \
 test:  { run: \"echo test ok; true\",  kind: core }\n  \
 lint:  { run: \"echo lint ok; true\",  kind: elevated }\n  \
 # The check-in-stage mutation sweep (spec 91): runs ONCE, after every implement\n  \
-# unit has integrated - never per implementer round. Replace with a real\n  \
-# `cargo mutants --in-diff` invocation for a Rust project (see this crate's own\n  \
-# .rigger/workflow.yml for the worked example); declaring a gate under this\n  \
-# exact id requires `cargo-mutants` on PATH (rigger validate checks at run start).\n  \
+# unit has integrated - never per implementer round. For a Rust project, run the\n  \
+# sweep `rigger init` wrote beside this file: `run: \"sh .rigger/gates/mutation.sh\"`\n  \
+# (diff-scoped, in its own memory-bounded scope; its header explains each clause).\n  \
+# Declaring a gate under this exact id requires `cargo-mutants` on PATH (rigger\n  \
+# validate checks at run start).\n  \
 mutation: { run: \"echo mutation ok; true\", kind: core }\n\
 # The boundary gate: Clean Architecture made mechanical. Replace with your\n  \
 # project's own check that dependencies point inward and adapters are constructed\n  \
@@ -1282,6 +1294,11 @@ max_retries: 2          # attempt bound: the sweep, one remediation round, the s
 gates: [build, audit, test, lint, boundary, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n";
+
+/// The check-in mutation gate `rigger init` writes to `.rigger/gates/mutation.sh`: this
+/// repository's own gate script, included verbatim so the sweep a consumer runs is the one this
+/// repository runs (one home - `tests/principle_gates_wiring.rs` pins the two identical).
+const SCAFFOLD_MUTATION_GATE: &str = include_str!("../../.rigger/gates/mutation.sh");
 
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
 /// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
