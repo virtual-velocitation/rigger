@@ -769,13 +769,14 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     match lookup_hook {
         InstallOutcome::Installed => println!(
             "installed the graph-first lookup hook - a Grep tool call or `grep` command over \
-             src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (add \
-             --literal to a `grep` command to proceed anyway)"
+             src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (end \
+             a `grep` command with a `# --literal` comment to proceed anyway)"
         ),
         InstallOutcome::Refreshed => println!(
             "installed the graph-first lookup hook into the existing settings.json - a Grep \
              tool call or `grep` command over src/, tests/, or workflows/ now bounces toward \
-             rigger_ground/rigger_graph (add --literal to a `grep` command to proceed anyway)"
+             rigger_ground/rigger_graph (end a `grep` command with a `# --literal` comment to \
+             proceed anyway)"
         ),
         InstallOutcome::AlreadyCurrent => {}
     }

@@ -25503,28 +25503,19 @@ fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_j
     run_hook_verb(process_cwd, &args, payload)
 }
 
-/// Asserts `out` (a [`run_grep_guard`] result) is an "allow" verdict carrying an
-/// `updatedInput` whose `command` has the `--literal` marker genuinely REMOVED - not the
-/// bare `{}` earlier rounds wrongly settled for, which passed the marker through unchanged
-/// to a real shell (reject-fix arch-u92c4r5-literal-escape-hatch-never-strips-marker: GNU
-/// grep really does reject it, `unrecognized option '--literal'`, exit 2). Returns the
-/// stripped command so a caller can pin further properties of it.
-fn assert_grep_guard_allows_with_literal_stripped(out: &serde_json::Value) -> String {
+/// Asserts `out` (a [`run_grep_guard`] result) is the empty object `{}`: the hook passes a
+/// grep carrying the `# --literal` comment through with no verdict and no `updatedInput`.
+/// Claude Code runs every matching PreToolUse hook in parallel on the original input and keeps
+/// whichever `updatedInput` arrives last, so a rewrite of ours could be overwritten by a sibling
+/// rewriting hook (lesson-u101c2r3-grep-guard-literal-not-stripped); the comment marker needs
+/// no rewrite because the shell itself discards it.
+fn assert_grep_guard_passes_untouched(out: &serde_json::Value) {
     assert_eq!(
-        out["hookSpecificOutput"]["permissionDecision"], "allow",
-        "--literal must still pass the hook through, now via an explicit allow verdict \
-         carrying the rewritten command, never the old untouched `{{}}`; got:\n{out}"
+        *out,
+        serde_json::json!({}),
+        "a grep ending in the # --literal comment must pass with no verdict and no rewrite; \
+         got:\n{out}"
     );
-    let stripped = out["hookSpecificOutput"]["updatedInput"]["command"]
-        .as_str()
-        .unwrap_or_else(|| panic!("updatedInput must carry a string command; got:\n{out}"))
-        .to_string();
-    assert!(
-        !stripped.contains("--literal"),
-        "the marker must be genuinely removed from the command a real shell will run; \
-         got:\n{stripped:?}"
-    );
-    stripped
 }
 
 /// `rigger grep-guard` (the command the installed PreToolUse hook runs) bounces a `Bash`
@@ -25532,8 +25523,8 @@ fn assert_grep_guard_allows_with_literal_stripped(out: &serde_json::Value) -> St
 /// Design amended after round 5 to retire the guarded-tree apparatus): a tree the old rule
 /// guarded (`src/`), one it never covered (`docs/`), a single unrelated file (`README.md`),
 /// and the whole-project convention (`.`) are all denied with the stated message - and the
-/// SAME command with `--literal` passes for every one of them too, marker stripped - end to
-/// end through the compiled binary reading real PreToolUse JSON from stdin.
+/// SAME command ending in the `# --literal` comment passes for every one of them too,
+/// untouched - end to end through the compiled binary reading real PreToolUse JSON from stdin.
 #[test]
 fn grep_guard_bounces_every_bash_grep_target_and_passes_literal() {
     let dir = temp_project();
@@ -25561,18 +25552,13 @@ fn grep_guard_bounces_every_bash_grep_target_and_passes_literal() {
             "the denial must carry the stated message; got: {reason:?}"
         );
 
-        let literal_command = format!("grep --literal -rn TODO {target}");
+        let literal_command = format!("grep -rn TODO {target} # --literal");
         let allowed = run_grep_guard(
             root,
             &serde_json::json!({"tool_name": "Bash", "tool_input": {"command": literal_command}})
                 .to_string(),
         );
-        let stripped = assert_grep_guard_allows_with_literal_stripped(&allowed);
-        assert_eq!(
-            stripped, command,
-            "the marker and its one adjacent space must be removed, nothing else rewritten, \
-             for target {target:?}"
-        );
+        assert_grep_guard_passes_untouched(&allowed);
     }
 
     let unrelated = run_grep_guard(
@@ -26057,7 +26043,7 @@ fn assert_grep_guard_lets_through(payload: &str, why: &str) {
 }
 
 rigger::test_cases! {
-    /// The false-positive EXEMPTION `command_invokes_grep` states in its own doc comment,
+    /// The false-positive EXEMPTION the guard's invocation check states in its own doc comment,
     /// proven only at the pure-function unit level (main.rs's own tests) before this - never at
     /// the boundary `rigger grep-guard` actually reads and writes JSON over: `zgrep` (the literal
     /// word "grep" only as a substring of a longer tool name) must never be bounced, whatever it
@@ -26151,18 +26137,10 @@ fn assert_grep_guard_denies_each(commands: &[&str], why: &str) {
     }
 }
 
-/// Every Bash command in `commands` carries `--literal` and is allowed through, the marker and
-/// its one adjacent space removed; when given, the rewritten command is exactly `stripped` -
-/// nothing else rewritten.
-fn assert_grep_guard_passes_literal(commands: &[&str], stripped: Option<&str>) {
+/// Every Bash command in `commands` ends in the `# --literal` comment and passes untouched.
+fn assert_grep_guard_passes_literal(commands: &[&str]) {
     for command in commands {
-        let rewritten = assert_grep_guard_allows_with_literal_stripped(&grep_guard_bash(command));
-        if let Some(stripped) = stripped {
-            assert_eq!(
-                rewritten, stripped,
-                "the marker and its one adjacent space must be removed, nothing else rewritten"
-            );
-        }
+        assert_grep_guard_passes_untouched(&grep_guard_bash(command));
     }
 }
 
@@ -26215,6 +26193,18 @@ rigger::test_cases! {
             ],
             "a path-qualified grep",
         );
+    /// A bare `--literal` argv word reaches grep itself whenever a sibling PreToolUse hook's
+    /// rewrite wins (lesson-u101c2r3-grep-guard-literal-not-stripped), so only the comment
+    /// spelling passes; the bare word is bounced with the hint that names the comment.
+    grep_guard_bounces_a_bare_literal_argv_word_end_to_end:
+        assert_grep_guard_denies_each(
+            &[
+                "grep --literal -rn TODO src/",
+                "grep -rn TODO src/ --literal",
+                "grep -rn --literal TODO src | head -5",
+            ],
+            "a grep carrying --literal as an argv word rather than a comment",
+        );
     /// SDET periphery gap closed (round-5 accounting, sdet-u92c4r4-backslash-newline-continuation-
     /// still-bypasses-the-guard): an ordinary bash line continuation - a backslash immediately
     /// followed by a newline, which a real shell removes with no separator - must not let `grep`
@@ -26226,56 +26216,44 @@ rigger::test_cases! {
              coverage)",
         );
     /// SDET periphery gap closed: the round-3 fix's own end-to-end test proves a FUSED grep is
-    /// denied, but never that `--literal` still escapes a fused command through the compiled
+    /// denied, but never that `# --literal` still escapes a fused command through the compiled
     /// binary - only `grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep`
     /// (a pure-function unit test in `src/main.rs`) does. Without this, a regression that broke
     /// `--literal` specifically for a fused command - while leaving the fused denial intact -
     /// would pass every currently-committed periphery test.
     grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_end:
-        assert_grep_guard_passes_literal(
-            &["true;grep --literal pattern src/main.rs"],
-            Some("true;grep pattern src/main.rs"),
-        );
-    /// SDET periphery gap closed (round-4 accounting): the round-4 fix's own end-to-end coverage
-    /// never proves `--literal` survives quote/escape normalization when the escape hatch flag
-    /// itself is quoted too - only the pure-function unit test
-    /// (`grep_guard_decision_literal_survives_a_quoted_literal_on_a_quoted_grep` in `src/main.rs`)
-    /// does.
-    grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end:
-        assert_grep_guard_passes_literal(
-            &[r#""grep" "--literal" pattern src/main.rs"#],
-            // The whole quoted marker token is excised, not merely its interior.
-            Some(r#""grep" pattern src/main.rs"#),
-        );
-    /// The same path-qualified shapes with `--literal` added must still pass through end to end,
+        assert_grep_guard_passes_literal(&["true;grep pattern src/main.rs # --literal"]);
+    /// SDET periphery gap closed (round-4 accounting): the escape hatch must survive
+    /// quote/escape normalization of the grep word itself, mirroring
+    /// `grep_guard_decision_literal_survives_a_quoted_grep` at the compiled-binary boundary.
+    grep_guard_still_allows_literal_on_a_quoted_grep_end_to_end:
+        assert_grep_guard_passes_literal(&[r#""grep" pattern src/main.rs # --literal"#]);
+    /// The same path-qualified shapes with `# --literal` added must still pass through end to end,
     /// mirroring `grep_guard_decision_literal_survives_a_path_qualified_grep` (`src/main.rs`)
     /// at the compiled-binary boundary.
     grep_guard_still_allows_literal_on_a_path_qualified_grep_end_to_end:
-        assert_grep_guard_passes_literal(
-            &[
-                "/usr/bin/grep --literal pattern src/main.rs",
-                "./grep --literal pattern src/main.rs",
-                "bin/grep --literal pattern src/main.rs",
-            ],
-            None,
-        );
-    /// The same line-continuation-split shape with `--literal` added must still pass through end
+        assert_grep_guard_passes_literal(&[
+            "/usr/bin/grep pattern src/main.rs # --literal",
+            "./grep pattern src/main.rs # --literal",
+            "bin/grep pattern src/main.rs # --literal",
+        ]);
+    /// The same line-continuation-split shape with `# --literal` added must still pass through end
     /// to end, mirroring `grep_guard_decision_literal_survives_a_line_continuation_split_grep`
     /// (`src/main.rs`) at the compiled-binary boundary.
     grep_guard_still_allows_literal_on_a_line_continuation_split_grep_end_to_end:
-        assert_grep_guard_passes_literal(&["gr\\\nep --literal pattern src/main.rs"], None);
+        assert_grep_guard_passes_literal(&["gr\\\nep pattern src/main.rs # --literal"]);
 }
 
 /// SDET periphery gap (round-9 accounting): the round's own pure-function test
 /// (`grep_guard_decision_denies_every_bash_grep_target_and_passes_literal` /
 /// `grep_guard_decision_denies_every_grep_tool_path`, `main.rs`) proves an ancestor target
-/// (`..`) is denied, and that `--literal` still escapes a Bash grep targeting it - but only
+/// (`..`) is denied, and that `# --literal` still escapes a Bash grep targeting it - but only
 /// in-process, against the pure decision function. Neither shape reaches the compiled binary
 /// anywhere else in this suite: the end-to-end "every target" test above pins `src/`, `docs/`,
 /// `README.md`, and `.`, never `..`; the end-to-end `Grep`-tool test pins `src/`, `docs/`, an
 /// omitted path, and an unrelated absolute path, never `..` either. This drives the exact
 /// ancestor shape through `rigger grep-guard` itself for both call forms, plus the
-/// `--literal` escape on the Bash form.
+/// `# --literal` escape on the Bash form.
 #[test]
 fn grep_guard_denies_an_ancestor_target_end_to_end_and_passes_literal() {
     assert_grep_guard_denies(
@@ -26286,7 +26264,7 @@ fn grep_guard_denies_an_ancestor_target_end_to_end_and_passes_literal() {
         &grep_guard_bash("grep -rn TODO .."),
         "a Bash grep targeting ..",
     );
-    assert_grep_guard_passes_literal(&["grep --literal -rn TODO .."], Some("grep -rn TODO .."));
+    assert_grep_guard_passes_literal(&["grep -rn TODO .. # --literal"]);
 }
 
 /// SDET periphery gap (round-6 accounting, generalized past d-spec92-hook-no-target-axis):
@@ -26301,12 +26279,8 @@ fn grep_guard_bounces_an_output_redirect_metacharacter_fused_grep_end_to_end() {
         &grep_guard_bash("grep pattern file.txt >output.log"),
         "a grep invocation redirecting its output",
     );
-    // --literal must still pass an output-redirect-carrying command through, the redirection
-    // itself surviving the marker's removal untouched.
-    assert_grep_guard_passes_literal(
-        &["grep --literal pattern file.txt >output.log"],
-        Some("grep pattern file.txt >output.log"),
-    );
+    // The # --literal comment must still pass an output-redirect-carrying command through.
+    assert_grep_guard_passes_literal(&["grep pattern file.txt >output.log # --literal"]);
 }
 
 rigger::test_cases! {
@@ -26324,7 +26298,7 @@ rigger::test_cases! {
 /// d-spec92-hook-no-target-axis: a redirection fused directly to the command name with no
 /// whitespace (`grep<file.txt`, a real shell equivalent of `grep <file.txt`) would otherwise
 /// merge into one word that never equals the bare basename `grep`, hiding the invocation
-/// from `command_invokes_grep` entirely - independent of what the command targets.
+/// from the invocation check entirely - independent of what the command targets.
 #[test]
 fn grep_guard_bounces_a_redirect_metacharacter_fused_grep_end_to_end() {
     let dir = temp_project();
@@ -26345,49 +26319,43 @@ fn grep_guard_bounces_a_redirect_metacharacter_fused_grep_end_to_end() {
         );
     }
 
-    // --literal must still pass a redirect-fused command through, the redirection itself
-    // surviving the marker's removal untouched.
+    // The # --literal comment must still pass a redirect-fused command through.
     let literal_out = run_grep_guard(
         root,
-        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal pattern <src/main.rs"}}"#,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep pattern <src/main.rs # --literal"}}"#,
     );
-    let stripped = assert_grep_guard_allows_with_literal_stripped(&literal_out);
-    assert_eq!(
-        stripped, "grep pattern <src/main.rs",
-        "only the marker and its one adjacent space must be removed"
-    );
+    assert_grep_guard_passes_untouched(&literal_out);
 }
 
-/// The strongest possible proof of the `--literal` escape hatch (spec 92's HOOK SCOPE
-/// amendment): not merely that the hook's JSON says "allow" with the marker gone from
-/// `updatedInput`, but that the REWRITTEN command, handed to a real shell exactly as an
-/// agent's tool call would be, actually SUCCEEDS - where the round-5 binary's `--literal`
-/// left in place genuinely failed (`grep --literal`: `unrecognized option '--literal'`,
-/// exit 2, empirically confirmed by the adjudicator on this same machine).
+/// The strongest possible proof of the `# --literal` escape hatch: not merely that the hook
+/// passes the command with no verdict and no rewrite, but that the command exactly as the
+/// agent wrote it - which is what runs whichever PreToolUse hook's `updatedInput` wins, since
+/// ours supplies none - actually SUCCEEDS under a real shell, where a bare `--literal` argv
+/// word genuinely fails (`unrecognized option '--literal'`, exit 2).
 #[test]
-fn grep_guard_stripped_literal_command_actually_runs_via_a_real_shell() {
+fn grep_guard_literal_comment_command_actually_runs_via_a_real_shell() {
     let dir = temp_project();
     let root = dir.path();
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/main.rs"), "needle in the haystack\n").unwrap();
 
+    let command = "grep needle src/main.rs # --literal";
     let out = run_grep_guard(
         root,
-        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal needle src/main.rs"}}"#,
+        &serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}}).to_string(),
     );
-    let stripped = assert_grep_guard_allows_with_literal_stripped(&out);
+    assert_grep_guard_passes_untouched(&out);
 
     let real_run = Command::new("sh")
         .arg("-c")
-        .arg(&stripped)
+        .arg(command)
         .current_dir(root)
         .output()
-        .expect("spawn a real shell to run the stripped command");
+        .expect("spawn a real shell to run the command");
     assert!(
         real_run.status.success(),
-        "the stripped command must actually succeed under a real shell (the original, \
-         unstripped {stripped:?} plus --literal, does not - grep has no such flag); \
+        "the command with its # --literal comment must succeed under a real shell; \
          stderr:\n{}",
         String::from_utf8_lossy(&real_run.stderr)
     );
