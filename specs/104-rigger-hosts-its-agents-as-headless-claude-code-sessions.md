@@ -78,7 +78,7 @@ then the run halts naming the class and the spawn.
 
 STOP, decided: the host enforces `max_wall_clock` against stream silence. Expiry closes the
 session's input, waits 30 s, then ends the child through the sanctioned lifecycle helper
-(`src/reap.rs`) on the child's own handle; the launch ends `stopped` and the existing
+(`crates/rigger-process/src/reap.rs`) on the child's own handle; the launch ends `stopped` and the existing
 liveness-fault result is recorded. The helper ends the child's own descendants too, found by
 a parent-pid walk snapshotted before the first signal, never by working directory (a sibling
 spawn shares the worktree, not the process tree); and every join on the session's pipe

@@ -1,8 +1,8 @@
 //! Spec 78 criterion 3, THE AUDIT TEST: the whole-tree twin of the diff-scoped `no-os-kill`
 //! gate declared in `.rigger/workflow.yml`. That gate only judges a unit's OWN diff against
-//! the run base; this test walks EVERY `.rs` file under `src/` and `tests/` in the checked-out
+//! the run base; this test walks EVERY `.rs` file under `src/`, `crates/` and `tests/` in the checked-out
 //! tree and fails, naming file and line, on any of the gate's forbidden shapes found outside
-//! the two sanctioned lifecycle helpers (`src/reap.rs`, `tests/common/mod.rs`) - or on a
+//! the two sanctioned lifecycle helpers (`crates/rigger-process/src/reap.rs`, `tests/common/mod.rs`) - or on a
 //! shell-out / `--` argv separator / negative-pid `format!` found INSIDE those two files,
 //! where calling the internal signal API directly is exactly the point and must NOT be
 //! flagged. It runs under plain `cargo test`, so unlike the shell gate it also covers CI
@@ -224,11 +224,11 @@ fn has_marker_shape(line: &str, (marker, tail): MarkerShape) -> bool {
     })
 }
 
-/// The two files spec 78 sanctions to call the signal API directly (`src/reap.rs`'s
+/// The two files spec 78 sanctions to call the signal API directly (`crates/rigger-process/src/reap.rs`'s
 /// `send_signal`, `tests/common/mod.rs`'s `terminate_pid`/`is_alive`) - this audit's own
 /// record of the boundary, checked against each scanned file's REPO-RELATIVE, forward-slash
 /// path, independent of `.rigger/workflow.yml`'s copy.
-const SANCTIONED_FILES: [&str; 2] = ["src/reap.rs", "tests/common/mod.rs"];
+const SANCTIONED_FILES: [&str; 2] = ["crates/rigger-process/src/reap.rs", "tests/common/mod.rs"];
 
 /// Every forbidden shape found in one line of a file that is NOT one of the two sanctioned
 /// lifecycle helpers - the gate's full nine-shape ban.
@@ -275,13 +275,13 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
     hits
 }
 
-/// Scan every `.rs` file under `root/src` and `root/tests`, deterministically ordered by
+/// Scan every `.rs` file under `root/src`, `root/crates` and `root/tests`, deterministically ordered by
 /// (file, line), applying [`general_hits`] outside [`SANCTIONED_FILES`] and
 /// [`sanctioned_hits`] inside them - the whole-tree twin of the diff-scoped `no-os-kill`
 /// gate (spec 78, THE AUDIT TEST).
 fn scan_tree(root: &Path) -> Vec<Finding> {
     let mut files = Vec::new();
-    for top in ["src", "tests"] {
+    for top in ["src", "crates", "tests"] {
         collect_rs_files(&root.join(top), &mut files);
     }
     let mut findings = Vec::new();
@@ -452,7 +452,7 @@ mod tests {
         kill_process_is_never_flagged_inside_either_sanctioned_file: never_flagged(
             &[
                 (
-                    "src/reap.rs",
+                    "crates/rigger-process/src/reap.rs",
                     &format!(
                         "    let _ = rustix::process::{}rpid, signal);\n",
                         kill_process_open()
@@ -470,7 +470,7 @@ mod tests {
         );
         /// A shell-out remains banned even inside a sanctioned file.
         a_shell_out_inside_a_sanctioned_file_is_still_caught: caught_in(
-            "src/reap.rs",
+            "crates/rigger-process/src/reap.rs",
             &format!(
                 "let _ = std::process::Command::new(\"{}\");\n",
                 suffixed_kill("all")
@@ -483,10 +483,10 @@ mod tests {
         );
         /// A negative-pid format! remains banned even inside a sanctioned file.
         a_negative_pid_format_inside_a_sanctioned_file_is_still_caught: caught_in(
-            "src/reap.rs",
+            "crates/rigger-process/src/reap.rs",
             &format!("let arg = format!(\"{}\", pgid);\n", join("-", "{}")),
         );
-        /// The same violation, rooted outside src/ and tests/ entirely, must be invisible.
+        /// The same violation, rooted outside src/, crates/ and tests/ entirely, must be invisible.
         a_shape_outside_src_and_tests_is_never_scanned: never_flagged(
             &[(
                 "scripts/somewhere.rs",
@@ -495,13 +495,13 @@ mod tests {
                     prefixed_kill("p")
                 ),
             )],
-            "a .rs file outside src/ and tests/ must never be scanned",
+            "a .rs file outside src/, crates/ and tests/ must never be scanned",
         );
     }
 
     rigger::test_cases! {
         /// The Done-when-c3 acceptance test itself: `tests/no_os_kill_audit.rs` scans the REAL,
-        /// currently checked-out `src/` and `tests/` trees (resolved from `CARGO_MANIFEST_DIR`,
+        /// currently checked-out `src/`, `crates/` and `tests/` trees (resolved from `CARGO_MANIFEST_DIR`,
         /// never the process CWD) and finds zero forbidden shapes - proving criteria 1 and 2
         /// (THE TEST HELPER, THE REAPER) actually converted every prior unsafe termination site,
         /// and that no other `#[cfg(test)]` module or integration suite introduced a new one.

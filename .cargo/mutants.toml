@@ -11,7 +11,7 @@
 # u78c2r2-mutants-toml-exclude-re-latent-noop): cargo-mutants matches exclude_re against the
 # mutant NAME string, "<file>:<line>:<col>: replace <fn> ...", which never contains a
 # `reap::`-qualified path. Exclude the file itself instead - the whole module is the reaper.
-exclude_globs = ["src/reap.rs"]
+exclude_globs = ["crates/rigger-process/src/reap.rs"]
 
 # Copy `.git` into the build directory cargo-mutants tests in (default: false). Without this,
 # the baseline (unmutated) check fails outright before any mutant is tested:

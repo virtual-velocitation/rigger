@@ -618,7 +618,7 @@ pub fn reap_processes_rooted_under(base_dir: &Path, authorized_root: &Path) {
 }
 
 /// The reap's termination sequence for an ALREADY-AUTHORIZED `base` (SIGTERM every match,
-/// wait a short grace, then SIGKILL whatever is STILL rooted inside) - `pub(crate)` so a
+/// wait a short grace, then SIGKILL whatever is STILL rooted inside) - `pub` so a
 /// caller with its OWN independent authorization can reuse the ONE implementation rather
 /// than a second, parallel one (the charter's "never a second parallel implementation
 /// reconciled after the fact"). [`reap_processes_rooted_under`] is exactly
@@ -648,7 +648,7 @@ pub fn reap_processes_rooted_under(base_dir: &Path, authorized_root: &Path) {
 /// removed out from under a still-running process is exactly the case this reaps).
 /// Best-effort and platform-tolerant throughout - where `/proc` is absent the scan finds
 /// nothing and this is a graceful no-op.
-pub(crate) fn reap_authorized(base: PathBuf) {
+pub fn reap_authorized(base: PathBuf) {
     let self_pid = std::process::id();
     let self_ancestors = ancestor_pids(self_pid);
 

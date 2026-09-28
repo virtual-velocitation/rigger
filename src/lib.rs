@@ -21,7 +21,7 @@ pub use rigger_domain::blocker;
 /// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
 /// slots bound builds, never agents.
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod budget;
+pub use rigger_process::budget;
 pub mod canary;
 /// The write half of [`canary`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -73,17 +73,17 @@ pub mod liveness;
 pub mod mcpserver;
 pub mod metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod parallel;
+pub use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
 pub mod progress;
+pub use rigger_domain::run;
+pub use rigger_domain::safety;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::reap;
 /// The write half of [`progress`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_store_sqlite::progress_store;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod reap;
-pub use rigger_domain::run;
-pub use rigger_domain::safety;
 /// Machine-global instance registry (spec 50): credential-free discovery metadata so a single
 /// machine-level dash can find every local project's runs (and any configured shared store)
 /// without a coordination protocol. Discovery only - never a source of truth, never a credential.
@@ -97,18 +97,18 @@ pub mod sidecar;
 pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_domain::spec;
+/// The driver-independent watchdog (spec 69, criterion 2): `rigger watch`'s pure
+/// domain core - the five `rigger-watch-a-run` signals plus a store-integrity check,
+/// folded from already-gathered inputs into one line per anomaly, with in-process
+/// streaming dedup. Never touches the driver.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::subprocess;
 /// The write half of [`spawn`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_store_sqlite::spawn_store;
 /// The one opener every SQLite store connection goes through: see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_store_sqlite::sqlite;
-/// The driver-independent watchdog (spec 69, criterion 2): `rigger watch`'s pure
-/// domain core - the five `rigger-watch-a-run` signals plus a store-integrity check,
-/// folded from already-gathered inputs into one line per anomaly, with in-process
-/// streaming dedup. Never touches the driver.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod subprocess;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod watch;
 #[cfg(any(feature = "store", not(feature = "core")))]

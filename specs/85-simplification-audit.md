@@ -7,7 +7,7 @@ functions. `tests/` is 97,633 lines in 153 files, roughly one periphery file per
 with `tests/cli.rs` alone at 26,930 lines and 2,804 `#[test]`s overall. There are 76 separate
 `Command::new` sites. The loop adds and reviews per unit and never consolidates, so duplication
 accumulates without any single bad commit; the review panel has already caught instances left
-standing (`src/dash.rs` reimplementing `src/reap.rs`'s `/proc` pid scan, upheld at spec 62's
+standing (`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s `/proc` pid scan, upheld at spec 62's
 capstone). Operator rule (2026-09-06): DRY is STRICT - any logic present in more than one place
 anywhere in the codebase is a violation, with no "small enough to duplicate" exemption. This
 spec produces the audit REPORT that the refactoring specs will be derived from. It changes no

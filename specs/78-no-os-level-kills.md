@@ -1,8 +1,8 @@
 # 78 - No OS-level kills: handle-bound process lifecycle, and a gate that keeps it so
 
 **Goal:** rigger's own code signals processes by COMPUTED identity and shells out to kill(1).
-Four sites exist: `src/budget.rs:265` (test `slot_releases_when_its_holder_process_exits_abnormally`
-runs `kill -9 -- -<pgid>` - the only process-group kill in the tree), `src/reap.rs:153`
+Four sites exist: `crates/rigger-process/src/budget.rs:265` (test `slot_releases_when_its_holder_process_exits_abnormally`
+runs `kill -9 -- -<pgid>` - the only process-group kill in the tree), `crates/rigger-process/src/reap.rs:153`
 (`send_signal` shells out `kill -TERM`/`-KILL` to every pid whose `/proc` cwd lies under a
 computed base dir), `tests/cli.rs:20476` (`reap_pid`: `kill -9 <pid read from a marker>`, 13
 call sites) and `tests/reset_build_cache_periphery.rs:419,434` (`kill -0`/`kill -9` on a pid
@@ -31,7 +31,7 @@ command, anywhere in `src/` or `tests/`. `rustix::process::Pid::from_raw` accept
 values, so "pid > 1" is an explicit guard at both sanctioned sites, never an assumption.
 
 SANCTIONED SITES, decided: exactly two functions may call the signal API. Production:
-`src/reap.rs::send_signal`. Test fixtures: `tests/common/mod.rs::terminate_pid` (and its probe
+`crates/rigger-process/src/reap.rs::send_signal`. Test fixtures: `tests/common/mod.rs::terminate_pid` (and its probe
 `is_alive`). Everything else ends a process only through `std::process::Child::kill()` +
 `wait()` on a child it spawned itself, or through the helper. The `no-os-kill` gate (landed in
 `.rigger/workflow.yml`, wired into the implement stage) fails any unit whose ADDED lines in
@@ -43,7 +43,7 @@ the old shell-out in prose ("the shell-out to kill(1)"), never paste the command
 code comment in `src/` or `tests/`. Prose in `docs/`, `specs/` and `.rigger/` is out of the
 gate's scope and may name the rule literally.
 
-THE REAPER (`src/reap.rs`), decided: identification stays cwd-based - rigger holds no handle to
+THE REAPER (`crates/rigger-process/src/reap.rs`), decided: identification stays cwd-based - rigger holds no handle to
 the processes that root inside a worktree (an agent's `cargo`, `rustc`, test binaries, a dash
 it started), which is the only reason a scan exists - but the kill step becomes safe by
 construction:
@@ -100,7 +100,7 @@ construction:
   excluded or not, and `reap::reap_authorized` (round 2, the termination sequence factored out
   of `reap_processes_rooted_under`) carries the identical rationale.
 
-THE BUDGET FIXTURE (`src/budget.rs` test), decided: the holder is ONE process that holds the
+THE BUDGET FIXTURE (`crates/rigger-process/src/budget.rs` test), decided: the holder is ONE process that holds the
 lock itself - `flock --no-fork -x <slot> sleep 300` (util-linux `-F` execs the command in place
 of forking, so `sleep` owns the locked fd). Abnormal death is `holder.kill()` + `holder.wait()`
 on the `Child` handle; no `process_group(0)`, no negative pid, no `--`. If the host's `flock`
@@ -127,7 +127,7 @@ runner is the reason a regression or a mutant can no longer take the machine dow
 rule is enforced.
 
 THE AUDIT TEST, decided: `tests/no_os_kill_audit.rs` walks every `.rs` file under `src/` and
-`tests/` and fails naming file and line if any file other than `src/reap.rs` and
+`tests/` and fails naming file and line if any file other than `crates/rigger-process/src/reap.rs` and
 `tests/common/mod.rs` contains the gate's forbidden patterns, or if either sanctioned file
 contains a shell-out, `--` separator or negative-pid format. It is the whole-tree twin of the
 diff-scoped gate and runs in CI where the gate does not.
@@ -151,7 +151,7 @@ in `.github/workflows/rust.yml`.
 DOCUMENTED SCOPE BOUNDARY (decided in unit u78c4, discharging the disposition round 2 of
 u78c2 left REQUIRED - decision `u78c2r2-verdict-approve-with-scoped-out-followup` - via the
 class statement below rather than a site enumeration, per the binding operator scope decision
-`d-u78c4-reap-coverage-scope-split-v2`): `src/reap.rs`'s module doc claims that before rigger
+`d-u78c4-reap-coverage-scope-split-v2`): `crates/rigger-process/src/reap.rs`'s module doc claims that before rigger
 removes a dir it owns, it finds every process rooted inside and reaps it. That is an
 unqualified reap COVERAGE claim, not a claim scoped to signalling form - read the same way by
 this run's own `adj-u78c2r2-verdict-approve-with-scoped-out-followup`, which found it
@@ -163,7 +163,7 @@ test. A removal path that does not reap a process rooted inside it before deleti
 keeps its pre-78 behavior unchanged by this spec either way - and since a removal path that
 never reaps also never signals anything, it cannot violate this spec's rule no matter how many
 such paths exist or where they live. Which removal paths reap before they remove, and which
-don't yet - i.e. closing the gap between `src/reap.rs`'s doc comment and reality - is
+don't yet - i.e. closing the gap between `crates/rigger-process/src/reap.rs`'s doc comment and reality - is
 `specs/79-reap-before-removal.md`'s scope: it owns the complete inventory (re-grounded at
 implementation time, since site names, line numbers and call counts drift - the exact defect
 that cost this unit three rounds of prose churn here) and the criteria that rewire each one
@@ -207,11 +207,11 @@ class, the gate removes the recurrence, the runner removes the blast radius.
   logged no-op for a base that is the repo root, `$HOME`, `/`, a nonexistent dir, `.rigger/tmp`
   itself, or a symlink under `.rigger/tmp` resolving outside it - while a SIGTERM-ignoring child
   rooted under a valid base is still reaped by the SIGKILL pass and a pid whose cwd changed
-  between scan and signal is skipped. This criterion OWNS `src/reap.rs`; fixtures are
+  between scan and signal is skipped. This criterion OWNS `crates/rigger-process/src/reap.rs`; fixtures are
   criterion 1's, NOT this one's.
 - [ ] a test proves THE TREE ASSERTS THE RULE: `tests/no_os_kill_audit.rs` scans every `.rs`
   file under `src/` and `tests/`, fails naming file and line on any forbidden pattern outside
-  `src/reap.rs` and `tests/common/mod.rs` or on a shell-out inside them, and passes on the
+  `crates/rigger-process/src/reap.rs` and `tests/common/mod.rs` or on a shell-out inside them, and passes on the
   finished tree. This criterion OWNS the audit and introduces no signalling code of its own;
   it depends on criteria 1 and 2 having landed.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`), and

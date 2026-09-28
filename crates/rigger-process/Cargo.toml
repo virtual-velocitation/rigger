@@ -1,0 +1,35 @@
+[package]
+name = "rigger-process"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's process adapters: the one process-spawn port, the directory-rooted reaper, the machine-wide build-slot budget and the ordered parallel map."
+
+[lib]
+name = "rigger_process"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = []
+core = []
+
+# The native-only adapter dependencies, target-gated exactly as in the root manifest: the
+# `wasm32` core lane never builds them.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
+# (spec 78); see the root manifest for why the 1.x line with only `std` + `process`.
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
+# The build budget's cross-process advisory slot lock (`flock` under the hood).
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+# The parameterised-test macro the moved unit tests expand.
+rigger-domain = { path = "../rigger-domain", default-features = false }
+
+[lints]
+workspace = true

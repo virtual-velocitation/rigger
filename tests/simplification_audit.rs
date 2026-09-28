@@ -2078,10 +2078,11 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 3] = [
+const SPLIT_CRATES: [&str; 4] = [
     "crates/rigger-domain",
     "crates/rigger-store-sqlite",
     "crates/rigger-graph-sqlite",
+    "crates/rigger-process",
 ];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
@@ -2228,7 +2229,7 @@ const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/subprocess.rs",
+        "crates/rigger-process/src/subprocess.rs",
         "detach_process_group",
         SampleVerdict::NoDuplicate,
     ),
@@ -2354,7 +2355,7 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
      model already uses; every flag now skips through `Not::not`",
     "`src/eventstore/mod.rs` `one` was bypassed by the concurrent contract append's \
      `.last().expect(..)`; it now calls `Appended::one`",
-    "`src/eventstore/sqlite.rs` `a_rerun_reclaims_the_space_a_failed_reclamation_left_behind` \
+    "`crates/rigger-store-sqlite/src/eventstore/sqlite.rs` `a_rerun_reclaims_the_space_a_failed_reclamation_left_behind` \
      carried its own copies of the periphery suite's `plant_free_pages` and `pragma_i64`; both \
      now live once in the shared store fixtures",
     "`src/grounder/workflowdef.rs` `full_reviewers_of` repeated the head of \
@@ -2362,12 +2363,12 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
      adversary/adjudicator pair goes through `config::push_reviewers`",
     "`tests/common/fixtures/graph.rs` `summarized_node` was re-rolled as an inline closure by \
      `tests/rationale_overlay_data.rs`; it now calls it",
-    "`src/contextgraph/sqlite.rs` `tier_default_matches_the_extracted_const` was repeated inline \
+    "`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` `tier_default_matches_the_extracted_const` was repeated inline \
      by `tests/code_ingest_events.rs`; the one test now pins all three tier consts",
     "`src/worktree.rs` `remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside` \
      and `tests/reap_before_removal_periphery.rs` `reaps_before_removing` each re-rolled the \
      spawn/wait/teardown/assert reap proof, as did five siblings in `src/main.rs`, \
-     `src/reap.rs`, `src/worktree.rs` and the relocated-scratch periphery suite; all now call \
+     `crates/rigger-process/src/reap.rs`, `src/worktree.rs` and the relocated-scratch periphery suite; all now call \
      `assert_teardown_reaps_what_is_rooted_inside`",
     "`tests/heartbeat_write_read_agree_periphery.rs` \
      `watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolves_from_the_owning_root_with_no_agents_fleet` \
@@ -3235,7 +3236,7 @@ fn sweep_cluster_named<'a>(clusters: &'a [DupCluster], name: &str) -> Option<&'a
 
 /// The process-spawn port: the ONE production module that constructs a `Command`. Every other
 /// production spawn routes through it, so the `Command::new` sweep can never reopen in `src/`.
-const PROCESS_SPAWN_PORT: &str = "src/subprocess.rs";
+const PROCESS_SPAWN_PORT: &str = "crates/rigger-process/src/subprocess.rs";
 
 /// Every `Command::new` call site in production code outside [`PROCESS_SPAWN_PORT`]: a site in a
 /// production source file, not in a wholly-test file (`whole_file_test`) and not inside a test
@@ -3271,7 +3272,7 @@ fn build_sweep_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupCluster> {
         sweep_cluster(
             MANDATORY_SWEEPS[1],
             find_literal_containing(files, "/proc"),
-            "src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already \
+            "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already \
              duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - \
              see the report's worked example)",
         ),
@@ -3294,7 +3295,7 @@ fn build_sweep_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupCluster> {
 }
 
 /// Every function that reads a `/proc/<pid>/stat` or `/proc/<pid>/status` path (spec 85 Goal's
-/// own named example: "`src/dash.rs` reimplementing `src/reap.rs`'s `/proc` pid scan, upheld at
+/// own named example: "`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s `/proc` pid scan, upheld at
 /// spec 62's capstone"). Verified by reading (not merely inferred from the sweep above, which
 /// is call-SITE not function granularity): `dash.rs::process_state` and `reap.rs::pid_starttime`
 /// both do `std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?` then
@@ -3535,7 +3536,7 @@ fn build_extra_semantic_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupC
         sweep_cluster(
             PROC_STAT_READERS_SWEEP,
             find_proc_stat_or_status_readers(files, refs),
-            "src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning \
+            "crates/rigger-process/src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning \
              whichever field each caller needs, so dash.rs::process_state and \
              reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split",
         ),
@@ -3990,7 +3991,11 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
          excluded this criterion's own citation-guard periphery file from the draw's population \
          (see this subsection's opening paragraph); that exclusion still applies unchanged.",
         cite_fn(real_files(), "src/dash.rs", "process_state"),
-        cite_fn(real_files(), "src/reap.rs", "pid_starttime"),
+        cite_fn(
+            real_files(),
+            "crates/rigger-process/src/reap.rs",
+            "pid_starttime"
+        ),
     );
     let _ = writeln!(out);
     out
@@ -4298,7 +4303,7 @@ fn render_section_3(files: &[FileScan]) -> String {
     let _ = writeln!(
         out,
         "- `eventstore::EventStore` concretion reach (`rusqlite::Connection::open` \
-        outside the SQLite adapters and `src/sqlite.rs`, the one opener every store \
+        outside the SQLite adapters and `crates/rigger-store-sqlite/src/sqlite.rs`, the one opener every store \
         connection goes through): in production, only doc-comment mentions \
         (`{MAIN}:{}`); the one call is a deliberate, explicitly-commented test-only \
         raw-connection bypass (`{MAIN}:{raw_open}`, inside `#[cfg(test)] mod tests` \
@@ -4377,7 +4382,7 @@ fn render_section_3(files: &[FileScan]) -> String {
     let _ = writeln!(
         out,
         "A second mutation authority for one domain: the one previously-known \
-        instance in this codebase (`src/dash.rs` reimplementing `src/reap.rs`'s \
+        instance in this codebase (`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s \
         `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \
         is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \
         is section 2's finding (`u85c2-proc-stat-worked-example`, \
@@ -5511,8 +5516,8 @@ fn render_section_6() -> String {
     ));
     out.push_str(&format!(
         "- Scope: the production half is done - `src/dash.rs::process_state` and \
-        `src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through \
-        `src/reap.rs::stat_field_after_comm`, the one parser of the kernel's \
+        `crates/rigger-process/src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through \
+        `crates/rigger-process/src/reap.rs::stat_field_after_comm`, the one parser of the kernel's \
         `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What \
         remains is the test-only readers (`{readers_id}`, {readers_sites} sites across \
         {proc_reader_files}, such as the shared `tests/common/fixtures/host.rs::pgid_of` \
@@ -5697,8 +5702,8 @@ fn render_section_6() -> String {
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
-        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, \
-        `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
+        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
+        `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
         - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \
@@ -5739,7 +5744,8 @@ fn render_section_6() -> String {
     ));
     out.push_str(&format!(
         "- Scope: one sqlite-connection-opening adapter function (the cluster's own \
-        `proposed_home`) spanning `src/contextgraph/sqlite.rs`, `src/eventstore/sqlite.rs` \
+        `proposed_home`) spanning `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, \
+        `crates/rigger-store-sqlite/src/eventstore/sqlite.rs` \
         and `src/main.rs`, plus several `tests/` files.\n\
         - Files: full site list in `docs/audit/duplication-catalog.json` under `{conn_id}`.\n\
         - Expected line delta: negative - {conn_n} open calls collapse toward one function.\n\
@@ -11150,7 +11156,7 @@ mod tests {
 
     rigger::test_cases! {
         /// The real bug this fixture pins: `.map_err(be)` (found live in
-        /// `src/contextgraph/sqlite.rs`) passes `be` BY NAME with no call syntax, `.`, or `::`
+        /// `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) passes `be` BY NAME with no call syntax, `.`, or `::`
         /// of its own at all. THE RULE (round 3) makes this one case among many value-position
         /// shapes below - no dedicated argument-slot rule is left to name.
         a_fn_passed_by_value_as_a_bare_call_argument_counts_as_a_reference: assert_candidates(

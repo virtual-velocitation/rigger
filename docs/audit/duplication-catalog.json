@@ -92,7 +92,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c4ed262956e5",
+    "id": "dup-74a558056b71",
     "classification": "semantic",
     "sites": [
       {
@@ -124,6 +124,16 @@
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "\".rigger/workflow.yml\"",
         "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "\".rigger\"",
+        "content_hash": "c2dfa05b7c5ac948"
+      },
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "\"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \\\n             must still authorize the reap\"",
+        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "crates/rigger-store-sqlite/src/registry.rs",
@@ -749,16 +759,6 @@
         "file": "src/main.rs",
         "name": "\".rigger\"",
         "content_hash": "6f737e98b475978b"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "\".rigger\"",
-        "content_hash": "c2dfa05b7c5ac948"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "\"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \\\n             must still authorize the reap\"",
-        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/worktree.rs",
@@ -2532,7 +2532,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \\\n        `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \\\n        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, \\\n        `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing {rigger_n} sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\"",
+        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \\\n        `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \\\n        `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \\\n        `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing {rigger_n} sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3979,204 +3979,28 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-183455104b30",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "name": "append_assigns_revisions",
-        "content_hash": "6c6e84f1920c4dda"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "name": "backward_stream_read_reverses_set",
-        "content_hash": "74608c5c9c7570c0"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "name": "forward_stream_read_honors_nonzero_from",
-        "content_hash": "d1393e6afaf0cbe3"
-      }
-    ],
-    "proposed_home": "contract::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-d32a420335cb",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
-        "name": "no_credential_fragment_ever_survives",
-        "content_hash": "76f737610a4ec43f"
-      },
-      {
-        "file": "src/console/map.rs",
-        "name": "module_of_never_returns_a_string_carrying_a_dot_or_a_slash",
-        "content_hash": "84dc1535e1142804"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/mod.rs, src/console/map.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-2586d99fb4f1",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "factor",
-        "content_hash": "e8cdb779abbfeffa"
-      },
-      {
-        "file": "src/metrics.rs",
-        "name": "cost_per_upheld",
-        "content_hash": "e8cdb779abbfeffa"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/metrics.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-a87f9002607d",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "key_expr",
-        "content_hash": "14b162c1828e22af"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "unit_branch",
-        "content_hash": "9c80ca639aa5a725"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/conductor.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-20c2938a0805",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "direction_sql",
-        "content_hash": "93065e93693e5696"
-      },
-      {
-        "file": "src/grounder/symbols/events.rs",
-        "name": "kind_str",
-        "content_hash": "356013c71e3aa4fe"
-      },
-      {
-        "file": "src/grounder/symbols/events.rs",
-        "name": "lang_str",
-        "content_hash": "5e060abaf3ab9226"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/grounder/symbols/events.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-831910355599",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "measure_derived_duplication_on_a_clean_log_reports_no_duplication",
-        "content_hash": "c1d84a97e647d8f1"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects",
-        "content_hash": "ea3d528b149d081c"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-09fd5c38b65b",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "name": "record_launch",
-        "content_hash": "c5e4fbc342916169"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/progress_store.rs",
-        "name": "record_stop_failure",
-        "content_hash": "9012a79dd3c973af"
-      }
-    ],
-    "proposed_home": "progress_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-10504155864a",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "name": "ensure_started_adopts_the_same_criteria_run_without_re_minting",
-        "content_hash": "33f3cafa5b4ba2a4"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "name": "ensure_started_mints_a_new_run_when_the_criteria_change",
-        "content_hash": "14f0794fa0ac140a"
-      }
-    ],
-    "proposed_home": "run_store::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-7dfa0dd1a6a8",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/blast_radius_eval.rs",
-        "name": "width_threshold_is_the_tier_width_nearest_rank_percentile",
-        "content_hash": "6024287d9ff89272"
-      },
-      {
-        "file": "src/blast_radius_eval.rs",
-        "name": "full_fraction_spans_all_light_to_collapse",
-        "content_hash": "be8aacc92349b7ba"
-      }
-    ],
-    "proposed_home": "blast_radius_eval::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-0dd9875ec72a",
+    "id": "dup-23f2b06a699b",
     "classification": "semantic",
     "sites": [
       {
-        "file": "src/budget.rs",
+        "file": "crates/rigger-process/src/budget.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
       },
       {
-        "file": "src/budget.rs",
+        "file": "crates/rigger-process/src/budget.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
       },
       {
-        "file": "src/budget.rs",
+        "file": "crates/rigger-process/src/budget.rs",
         "name": "Command::new",
         "content_hash": "f8f2847ad0299c84"
+      },
+      {
+        "file": "crates/rigger-process/src/subprocess.rs",
+        "name": "Command::new",
+        "content_hash": "b1ad5143fd332b66"
       },
       {
         "file": "src/conductor.rs",
@@ -4272,11 +4096,6 @@
         "file": "src/main.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/subprocess.rs",
-        "name": "Command::new",
-        "content_hash": "b1ad5143fd332b66"
       },
       {
         "file": "src/worktree.rs",
@@ -4581,6 +4400,509 @@
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
     "note": "mandatory sweep: Command::new call sites - 83 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-af816213608d",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "\"/proc\"",
+        "content_hash": "1fe3084c4a98803e"
+      },
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "\"/proc/{pid}/stat\"",
+        "content_hash": "c1710d72a76fd26c"
+      },
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "\"/proc/{pid}/status\"",
+        "content_hash": "c1710d72a76fd26c"
+      },
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "\"/proc\"",
+        "content_hash": "e8f24cc59335ae47"
+      },
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "\"/proc/{}/cwd\"",
+        "content_hash": "0e13eeda4dab6a69"
+      },
+      {
+        "file": "src/dash.rs",
+        "name": "\"/proc/net/tcp\"",
+        "content_hash": "d45527801d55e5c0"
+      },
+      {
+        "file": "src/dash.rs",
+        "name": "\"/proc\"",
+        "content_hash": "1fe3084c4a98803e"
+      },
+      {
+        "file": "src/dash.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "src/dash.rs",
+        "name": "\"the /proc scan must find THIS process as the holder of its own listener\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "src/dash.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "src/dash.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "src/dash.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "src/main.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "src/main.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "a7a33a1965d403d6"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "a7a33a1965d403d6"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "a7a33a1965d403d6"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "a7a33a1965d403d6"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "a7a33a1965d403d6"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "a7a33a1965d403d6"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"held_port_holder's message half and describe_held_port_if_confirmed's own return \\\n             must agree (scheduler-state letter normalized away since each call independently \\\n             re-reads /proc and can observe a state flap) - they are documented as sharing one \\\n             discovery\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/proc\"",
+        "content_hash": "a7a33a1965d403d6"
+      },
+      {
+        "file": "tests/common/fixtures/host.rs",
+        "name": "\"/proc/{pid}/stat has a pgrp field after comm\"",
+        "content_hash": "6856f69bec49452d"
+      },
+      {
+        "file": "tests/duplication_catalog_contract_periphery.rs",
+        "name": "\"/proc-path string literals\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions\"",
+        "content_hash": "e24c1bc0d9d4b92a"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"/proc-path string literals\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"/proc\"",
+        "content_hash": "aa9b79838224af65"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already \\\n             duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - \\\n             see the report's worked example)\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"/proc\"",
+        "content_hash": "8bb751f7deda7856"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"crates/rigger-process/src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning \\\n             whichever field each caller needs, so dash.rs::process_state and \\\n             reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"Two real recall gaps surfaced this way and were closed by widening the mechanical \\\n         sweep with a new generalizable detector each - not a one-off citation - so the fix \\\n         catches every present and future instance of its class, each pinned by a real-tree \\\n         regression test: `find_proc_stat_or_status_readers` (decision \\\n         `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or \\\n         `/proc/<pid>/status` literal, closing the spec's own named worked example - \\\n         `{}` `process_state` next to `{}` `pid_starttime`, the \\\n         same job on the same file with a different field/shape, upheld at spec 62's capstone; \\\n         `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) \\\n         groups 2+ non-test functions per `(file, Self type)` that build a `Self {{ .. }}` / \\\n         `TypeName {{ .. }}` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` \\\n         reading MISSING from its own `ok`/`failed` cluster even though all three are parallel \\\n         constructors for one struct. A third worked example, `exploration_graph` (independently \\\n         defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and \\\n         `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass \\\n         with no sweep needed - confirming the mechanical pass itself has real recall, not only \\\n         the two widened sweeps. Two further real defects, found on review rather than in this \\\n         draw, were closed the same way: a RECALL gap the architecture lens routed to this \\\n         criterion by name across two prior review rounds - this file's own bespoke source-text \\\n         lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter \\\n         extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, \\\n         architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision \\\n         `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the \\\n         adversary found by reading every `same-named helper` cluster against \\\n         `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying \\\n         REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/\\\n         `subscribe_stream` across the `EventStore` trait's three backend adapters plus a test \\\n         double, `blast_radius` across the `Grounder` trait's own default method, its override, \\\n         and a test double) - closed by excluding members whose extracted Self type differs \\\n         across the group when at least one comes from an actual `\\\" for \\\"` trait impl (decision \\\n         `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring \\\n         `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. \\\n         Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \\\n         excluded this criterion's own citation-guard periphery file from the draw's population \\\n         (see this subsection's opening paragraph); that exclusion still applies unchanged.\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"A second mutation authority for one domain: the one previously-known \\\n        instance in this codebase (`src/dash.rs` reimplementing `crates/rigger-process/src/reap.rs`'s \\\n        `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \\\n        is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \\\n        is section 2's finding (`u85c2-proc-stat-worked-example`, \\\n        `find_proc_stat_or_status_readers`), not re-counted here to avoid \\\n        double-charging one defect to two sections. Checked process spawning as the \\\n        one other plausible second-authority candidate: production code constructs \\\n        every process through the one process-spawn port (`{PROCESS_SPAWN_PORT}`), so \\\n        production `conductor.rs` never builds a git command of its own. \\\n        `src/worktree.rs` is the sole git-worktree-mutation authority OUTSIDE the \\\n        composition root. Inside it, `{MAIN}` (exempt from the port-concretion-reach \\\n        check above, not from this one) holds two more git-worktree-mutation sites: \\\n        `reap_then_remove_worktree` (`{}`), the sanctioned worktree half of the \\\n        spec-34/spec-79 orphan-sweep and extensively reviewed across those specs - a \\\n        deliberate design choice, not a gap; and `materialize_config_at_rev` (`{}`), \\\n        a real, already-known, non-blocking gap \\\n        (`arch-u13-config-checkout-bypasses-worktree-authority` / \\\n        `arch-u2r-config-checkout-shells-git` / \\\n        `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the \\\n        `Worktree` API is branch-creating and exposes no detach-at-rev checkout, so \\\n        this is a gap in that authority rather than a competing abstraction). No \\\n        second mutation authority found beyond the already-cited, \\\n        already-catalogued `/proc` case and this already-dispositioned \\\n        `materialize_config_at_rev` gap.\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"#### 3. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\\n\\n\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"- Scope: the production half is done - `src/dash.rs::process_state` and \\\n        `crates/rigger-process/src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through \\\n        `crates/rigger-process/src/reap.rs::stat_field_after_comm`, the one parser of the kernel's \\\n        `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What \\\n        remains is the test-only readers (`{readers_id}`, {readers_sites} sites across \\\n        {proc_reader_files}, such as the shared `tests/common/fixtures/host.rs::pgid_of` \\\n        fixture) and {literal_sites} raw `/proc`-path string literals across {literal_files} \\\n        files (`{literals_id}`), most of them assertion messages and this audit's own sweep \\\n        names rather than reads.\\n\\\n        - Files: the test-only readers `{readers_id}` names.\\n\\\n        - Expected line delta: small and negative - a test fixture reads its field through one \\\n        shared helper instead of re-splitting the stat line.\\n\\\n        - Risk: low - test-only; nothing this touches can signal or end a process, so it \\\n        carries none of the no-os-kill gate's own risk surface.\\n\\\n        - Unblocks: retires the last copies of the \\\"duplicate implementation reconciled \\\n        after the fact\\\" pattern the operator's strict-DRY rule targets - the concrete \\\n        precedent spec 85's own Goal cites.\\n\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\\n}\\n\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"fn starttime_of(pid: u32) -> Option<u64> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\\n}\\n\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"fn ppid_of(pid: u32) -> Option<u32> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\\n}\\n\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"fn a() {\\n    let _ = std::fs::read_to_string(\\\"/proc/1/stat\\\");\\n    let _ = \\\"hello\\\";\\n}\\n\"",
+        "content_hash": "7f4a94053b0af79e"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"/proc\"",
+        "content_hash": "3bb526a630811942"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"/proc\"",
+        "content_hash": "8657f3a48d42585c"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    s.chars().next()\\n}\\nfn ppid_of(pid: u32) -> Option<u32> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/status\\\")).ok()?;\\n    s.parse().ok()\\n}\\nfn unrelated() -> u32 {\\n    1\\n}\\n\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"the /proc reader sweep is catalogued\"",
+        "content_hash": "6330ce3a5a38ef8d"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "\"the /proc reader sweep {:?} must carry the one stat parser and neither former \\\n             re-deriver, found: {names:?}\"",
+        "content_hash": "25597419b8dbb616"
+      }
+    ],
+    "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
+    "note": "mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-004f71d209e8",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "stat_field_after_comm",
+        "content_hash": "6453bffff9338dbc"
+      },
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "read_ppid",
+        "content_hash": "f0d7d18a695764c7"
+      },
+      {
+        "file": "tests/common/fixtures/host.rs",
+        "name": "pgid_of",
+        "content_hash": "715d3775f343a725"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "build_sweep_clusters",
+        "content_hash": "02b0fe9ad9e4c086"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "build_extra_semantic_clusters",
+        "content_hash": "86ca89c1a0be116d"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "render_adversarial_sample",
+        "content_hash": "4bacd30be7f09bc4"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "render_section_6",
+        "content_hash": "911d7c1a3738a05d"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home",
+        "content_hash": "0844610cdb1d5b80"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one",
+        "content_hash": "0e0d9924452d6280"
+      }
+    ],
+    "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning whichever field each caller needs, so dash.rs::process_state and reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split",
+    "note": "mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functions - 9 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-abc5b2cd47c2",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-process/src/reap.rs",
+        "name": "processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent",
+        "content_hash": "a95a1169bc53bc2b"
+      },
+      {
+        "file": "src/main.rs",
+        "name": "leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent",
+        "content_hash": "a95a1169bc53bc2b"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-process/src/reap.rs, src/main.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-183455104b30",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "name": "append_assigns_revisions",
+        "content_hash": "6c6e84f1920c4dda"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "name": "backward_stream_read_reverses_set",
+        "content_hash": "74608c5c9c7570c0"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+        "name": "forward_stream_read_honors_nonzero_from",
+        "content_hash": "d1393e6afaf0cbe3"
+      }
+    ],
+    "proposed_home": "contract::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-d32a420335cb",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
+        "name": "no_credential_fragment_ever_survives",
+        "content_hash": "76f737610a4ec43f"
+      },
+      {
+        "file": "src/console/map.rs",
+        "name": "module_of_never_returns_a_string_carrying_a_dot_or_a_slash",
+        "content_hash": "84dc1535e1142804"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/mod.rs, src/console/map.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-2586d99fb4f1",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "factor",
+        "content_hash": "e8cdb779abbfeffa"
+      },
+      {
+        "file": "src/metrics.rs",
+        "name": "cost_per_upheld",
+        "content_hash": "e8cdb779abbfeffa"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/metrics.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-a87f9002607d",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "key_expr",
+        "content_hash": "14b162c1828e22af"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "unit_branch",
+        "content_hash": "9c80ca639aa5a725"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/conductor.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-20c2938a0805",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "direction_sql",
+        "content_hash": "93065e93693e5696"
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "name": "kind_str",
+        "content_hash": "356013c71e3aa4fe"
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "name": "lang_str",
+        "content_hash": "5e060abaf3ab9226"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/eventstore/sqlite.rs, src/grounder/symbols/events.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-831910355599",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "measure_derived_duplication_on_a_clean_log_reports_no_duplication",
+        "content_hash": "c1d84a97e647d8f1"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects",
+        "content_hash": "ea3d528b149d081c"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-09fd5c38b65b",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/progress_store.rs",
+        "name": "record_launch",
+        "content_hash": "c5e4fbc342916169"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/progress_store.rs",
+        "name": "record_stop_failure",
+        "content_hash": "9012a79dd3c973af"
+      }
+    ],
+    "proposed_home": "progress_store::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-10504155864a",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "name": "ensure_started_adopts_the_same_criteria_run_without_re_minting",
+        "content_hash": "33f3cafa5b4ba2a4"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/run_store.rs",
+        "name": "ensure_started_mints_a_new_run_when_the_criteria_change",
+        "content_hash": "14f0794fa0ac140a"
+      }
+    ],
+    "proposed_home": "run_store::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-7dfa0dd1a6a8",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "src/blast_radius_eval.rs",
+        "name": "width_threshold_is_the_tier_width_nearest_rank_percentile",
+        "content_hash": "6024287d9ff89272"
+      },
+      {
+        "file": "src/blast_radius_eval.rs",
+        "name": "full_fraction_spans_all_light_to_collapse",
+        "content_hash": "be8aacc92349b7ba"
+      }
+    ],
+    "proposed_home": "blast_radius_eval::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4989,255 +5311,6 @@
     ],
     "proposed_home": "map::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-7e2622206b71",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "src/dash.rs",
-        "name": "\"/proc/net/tcp\"",
-        "content_hash": "d45527801d55e5c0"
-      },
-      {
-        "file": "src/dash.rs",
-        "name": "\"/proc\"",
-        "content_hash": "1fe3084c4a98803e"
-      },
-      {
-        "file": "src/dash.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "src/dash.rs",
-        "name": "\"the /proc scan must find THIS process as the holder of its own listener\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/dash.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "src/dash.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "src/dash.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "\"/proc\"",
-        "content_hash": "1fe3084c4a98803e"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "\"/proc/{pid}/stat\"",
-        "content_hash": "c1710d72a76fd26c"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "\"/proc/{pid}/status\"",
-        "content_hash": "c1710d72a76fd26c"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "\"/proc\"",
-        "content_hash": "e8f24cc59335ae47"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "\"/proc/{}/cwd\"",
-        "content_hash": "0e13eeda4dab6a69"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "a7a33a1965d403d6"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "a7a33a1965d403d6"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "a7a33a1965d403d6"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "f0618eb3e7c2b6b0"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "a7a33a1965d403d6"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "a7a33a1965d403d6"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "a7a33a1965d403d6"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"held_port_holder's message half and describe_held_port_if_confirmed's own return \\\n             must agree (scheduler-state letter normalized away since each call independently \\\n             re-reads /proc and can observe a state flap) - they are documented as sharing one \\\n             discovery\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"/proc\"",
-        "content_hash": "a7a33a1965d403d6"
-      },
-      {
-        "file": "tests/common/fixtures/host.rs",
-        "name": "\"/proc/{pid}/stat has a pgrp field after comm\"",
-        "content_hash": "6856f69bec49452d"
-      },
-      {
-        "file": "tests/duplication_catalog_contract_periphery.rs",
-        "name": "\"/proc-path string literals\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions\"",
-        "content_hash": "e24c1bc0d9d4b92a"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"/proc-path string literals\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"/proc\"",
-        "content_hash": "aa9b79838224af65"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already \\\n             duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - \\\n             see the report's worked example)\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"/proc\"",
-        "content_hash": "8bb751f7deda7856"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning \\\n             whichever field each caller needs, so dash.rs::process_state and \\\n             reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"Two real recall gaps surfaced this way and were closed by widening the mechanical \\\n         sweep with a new generalizable detector each - not a one-off citation - so the fix \\\n         catches every present and future instance of its class, each pinned by a real-tree \\\n         regression test: `find_proc_stat_or_status_readers` (decision \\\n         `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or \\\n         `/proc/<pid>/status` literal, closing the spec's own named worked example - \\\n         `{}` `process_state` next to `{}` `pid_starttime`, the \\\n         same job on the same file with a different field/shape, upheld at spec 62's capstone; \\\n         `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) \\\n         groups 2+ non-test functions per `(file, Self type)` that build a `Self {{ .. }}` / \\\n         `TypeName {{ .. }}` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` \\\n         reading MISSING from its own `ok`/`failed` cluster even though all three are parallel \\\n         constructors for one struct. A third worked example, `exploration_graph` (independently \\\n         defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and \\\n         `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass \\\n         with no sweep needed - confirming the mechanical pass itself has real recall, not only \\\n         the two widened sweeps. Two further real defects, found on review rather than in this \\\n         draw, were closed the same way: a RECALL gap the architecture lens routed to this \\\n         criterion by name across two prior review rounds - this file's own bespoke source-text \\\n         lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter \\\n         extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, \\\n         architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision \\\n         `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the \\\n         adversary found by reading every `same-named helper` cluster against \\\n         `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying \\\n         REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/\\\n         `subscribe_stream` across the `EventStore` trait's three backend adapters plus a test \\\n         double, `blast_radius` across the `Grounder` trait's own default method, its override, \\\n         and a test double) - closed by excluding members whose extracted Self type differs \\\n         across the group when at least one comes from an actual `\\\" for \\\"` trait impl (decision \\\n         `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring \\\n         `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. \\\n         Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \\\n         excluded this criterion's own citation-guard periphery file from the draw's population \\\n         (see this subsection's opening paragraph); that exclusion still applies unchanged.\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"A second mutation authority for one domain: the one previously-known \\\n        instance in this codebase (`src/dash.rs` reimplementing `src/reap.rs`'s \\\n        `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \\\n        is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \\\n        is section 2's finding (`u85c2-proc-stat-worked-example`, \\\n        `find_proc_stat_or_status_readers`), not re-counted here to avoid \\\n        double-charging one defect to two sections. Checked process spawning as the \\\n        one other plausible second-authority candidate: production code constructs \\\n        every process through the one process-spawn port (`{PROCESS_SPAWN_PORT}`), so \\\n        production `conductor.rs` never builds a git command of its own. \\\n        `src/worktree.rs` is the sole git-worktree-mutation authority OUTSIDE the \\\n        composition root. Inside it, `{MAIN}` (exempt from the port-concretion-reach \\\n        check above, not from this one) holds two more git-worktree-mutation sites: \\\n        `reap_then_remove_worktree` (`{}`), the sanctioned worktree half of the \\\n        spec-34/spec-79 orphan-sweep and extensively reviewed across those specs - a \\\n        deliberate design choice, not a gap; and `materialize_config_at_rev` (`{}`), \\\n        a real, already-known, non-blocking gap \\\n        (`arch-u13-config-checkout-bypasses-worktree-authority` / \\\n        `arch-u2r-config-checkout-shells-git` / \\\n        `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the \\\n        `Worktree` API is branch-creating and exposes no detach-at-rev checkout, so \\\n        this is a gap in that authority rather than a competing abstraction). No \\\n        second mutation authority found beyond the already-cited, \\\n        already-catalogued `/proc` case and this already-dispositioned \\\n        `materialize_config_at_rev` gap.\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"#### 3. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\\n\\n\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"- Scope: the production half is done - `src/dash.rs::process_state` and \\\n        `src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through \\\n        `src/reap.rs::stat_field_after_comm`, the one parser of the kernel's \\\n        `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What \\\n        remains is the test-only readers (`{readers_id}`, {readers_sites} sites across \\\n        {proc_reader_files}, such as the shared `tests/common/fixtures/host.rs::pgid_of` \\\n        fixture) and {literal_sites} raw `/proc`-path string literals across {literal_files} \\\n        files (`{literals_id}`), most of them assertion messages and this audit's own sweep \\\n        names rather than reads.\\n\\\n        - Files: the test-only readers `{readers_id}` names.\\n\\\n        - Expected line delta: small and negative - a test fixture reads its field through one \\\n        shared helper instead of re-splitting the stat line.\\n\\\n        - Risk: low - test-only; nothing this touches can signal or end a process, so it \\\n        carries none of the no-os-kill gate's own risk surface.\\n\\\n        - Unblocks: retires the last copies of the \\\"duplicate implementation reconciled \\\n        after the fact\\\" pattern the operator's strict-DRY rule targets - the concrete \\\n        precedent spec 85's own Goal cites.\\n\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\\n}\\n\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"fn starttime_of(pid: u32) -> Option<u64> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\\n}\\n\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"fn ppid_of(pid: u32) -> Option<u32> {\\n    let stat = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\\n}\\n\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"fn a() {\\n    let _ = std::fs::read_to_string(\\\"/proc/1/stat\\\");\\n    let _ = \\\"hello\\\";\\n}\\n\"",
-        "content_hash": "7f4a94053b0af79e"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"/proc\"",
-        "content_hash": "3bb526a630811942"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"/proc\"",
-        "content_hash": "8657f3a48d42585c"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"fn state_of(pid: u32) -> Option<char> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/stat\\\")).ok()?;\\n    s.chars().next()\\n}\\nfn ppid_of(pid: u32) -> Option<u32> {\\n    let s = std::fs::read_to_string(format!(\\\"/proc/{pid}/status\\\")).ok()?;\\n    s.parse().ok()\\n}\\nfn unrelated() -> u32 {\\n    1\\n}\\n\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"the /proc reader sweep is catalogued\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "\"the /proc reader sweep {:?} must carry the one stat parser and neither former \\\n             re-deriver, found: {names:?}\"",
-        "content_hash": "25597419b8dbb616"
-      }
-    ],
-    "proposed_home": "src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6119,25 +6192,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-bf2e56140b6c",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "src/main.rs",
-        "name": "leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent",
-        "content_hash": "a95a1169bc53bc2b"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent",
-        "content_hash": "a95a1169bc53bc2b"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/main.rs, src/reap.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-8aae77675253",
     "classification": "exact",
     "sites": [
@@ -6336,60 +6390,6 @@
     ],
     "proposed_home": "metrics::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-d818ca2d4c56",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "src/reap.rs",
-        "name": "stat_field_after_comm",
-        "content_hash": "6453bffff9338dbc"
-      },
-      {
-        "file": "src/reap.rs",
-        "name": "read_ppid",
-        "content_hash": "f0d7d18a695764c7"
-      },
-      {
-        "file": "tests/common/fixtures/host.rs",
-        "name": "pgid_of",
-        "content_hash": "715d3775f343a725"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "build_sweep_clusters",
-        "content_hash": "02b0fe9ad9e4c086"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "build_extra_semantic_clusters",
-        "content_hash": "86ca89c1a0be116d"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "render_adversarial_sample",
-        "content_hash": "4bacd30be7f09bc4"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "render_section_6",
-        "content_hash": "911d7c1a3738a05d"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home",
-        "content_hash": "0844610cdb1d5b80"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one",
-        "content_hash": "0e0d9924452d6280"
-      }
-    ],
-    "proposed_home": "src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning whichever field each caller needs, so dash.rs::process_state and reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split",
-    "note": "mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functions - 9 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
