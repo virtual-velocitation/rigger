@@ -147,7 +147,11 @@ that step-wide assertion. Neither unit builds the other's half.
   re-asserts that generation's facts as the newest generation, so retired facts return live under
   the newer valid-time and the compaction keeps only that newest recording. A generation that
   drops EVERY fact of a file leaves the file's node live only while a live decision, lesson or
-  finding edge touches it.
+  finding edge touches it. An existing `graph.db` folded before the rule is cold-rebuilt from the
+  log once on its next open, and `--derived` refuses to compact it until then. A cross-file
+  reference or test proof whose definition a generation drops is demoted, or returned to pending,
+  as that definition retires, so a later definition of the name converges it identically in both
+  rebuilds.
 - *Concurrent step and status:* status reads the boundary and the typed carry-over and takes no
   step lock; the step's lookups read committed rows only. A `rigger graph build` running beside a
   step can record one generation twice, as it can today, and criterion 4's dedup collapses it.
@@ -182,14 +186,43 @@ the single fold authority for each arm (`crates/rigger-graph-sqlite/src/contextg
 and the domain rules in `crates/rigger-domain/src/contextgraph.rs`), never a second pass or a
 post-fold sweep. This is what makes criterion 4's identity hold whenever a later generation DROPS
 a fact, not only when it adds or moves one.
-- *The identity.* "`graph.db` rebuilt ... byte-identical" is the LIVE PROJECTION: the public wire
-  form of `Projector::whole()` (every node, every live edge, every column, deterministically
-  ordered) of `graph.db` rebuilt from the compacted log versus from the original log. The
-  `graph.db` FILE differs by construction (the applied ledger records every folded position, and
-  retired rows are history the compacted log no longer replays), so file bytes are not the
-  identity. A test asserting this identity MUST seed at least one generation that drops a design
-  link and one that drops a code entity, besides the ordinary add-and-move generations, and MUST
-  NOT except any node or edge from the equality.
+- *Convergences undo with their definition.* Every name-resolution convergence the fold keeps is
+  two-way. A reference tier promoted because a definition of its name existed (AMBIGUOUS to
+  INFERRED, or its CALLS twin) is demoted again when the last live definition of that name retires,
+  and a test proof that landed on a definition returns to the pending state when that definition
+  retires, so a later definition of the same name receives it. The projection is a pure function of
+  the log, so folding a log and folding its compacted form reach the same state on EVERY future
+  event, not only at the point compared. The single authority is the fold's own sites in
+  `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`: the definition arm's tier promotion and
+  the pending-proof reconcile. No sweep and no second pass.
+- *The identity.* Criterion 4 compares the LIVE PROJECTION (the public wire form of
+  `Projector::whole()`: every node, every live edge, every column, deterministically ordered) PLUS
+  the fold state that decides future folds: the pending proofs, the restored-attribute record of
+  retired nodes, and the assertion ledgers restricted to live generations, of `graph.db` rebuilt
+  from the compacted log versus from the original log. Everything else in the `graph.db` file
+  differs by construction (the applied-position ledger records every folded position, and retired
+  history rows are history the compacted log no longer replays) and is excluded, so file bytes are
+  not the identity. The test compares those tables row for row, then folds at least one further
+  event into both rebuilds and compares again, so a latent divergence cannot pass. Its fixture MUST
+  seed at least one generation that drops a design link and one that drops a code entity, besides
+  the ordinary add-and-move generations, plus a cross-file reference to a dropped name, a test proof
+  consumed by a definition a later generation sheds, and a log mixing unkeyed and keyed recordings
+  of the same fact; it MUST NOT except any node or edge from the equality.
+- *Existing graph.db files.* The fold rule ships with a projection version recorded in `graph.db`. A
+  `graph.db` whose recorded version predates the rule (its generation and assertion ledgers empty or
+  absent) is rebuilt cold from the log on the next open, before any incremental fold, and the new
+  version is recorded so the rebuild happens once; incremental folding never resumes on a
+  ledger-less file. `rigger reset --derived` refuses to compact a store whose `graph.db` is at the
+  old version until that rebuild has happened, and says so. A test folds into a `graph.db` lacking
+  the ledger tables and asserts the cold rebuild. Without this, every store folded before this spec
+  keeps facts a pre-upgrade generation asserted, and a compacted such store disagrees with every
+  future rebuild.
+- *Unkeyed recordings are permanent asserters.* A derived recording without a replay key (written
+  before replay keys existed) is an asserter in its own right for the nodes AND edges it folds: a
+  keyed generation's retirement never retires a node or edge an unkeyed recording still asserts,
+  edges get the same identity-empty asserter record nodes already have, and compaction never selects
+  unkeyed rows. The two rebuilds therefore agree on a log that mixes unkeyed and keyed recordings of
+  the same fact, which is the shape of every store written before replay keys.
 - *Ownership.* Criterion 4's unit owns the fold change, and its blast radius grows to
   `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` and
   `crates/rigger-domain/src/contextgraph.rs`, because the compaction's correctness argument IS
