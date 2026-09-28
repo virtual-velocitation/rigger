@@ -26,12 +26,25 @@ server-backed KurrentDB store (`crates/rigger-store-sqlite/src/eventstore/kurren
 backward read that stops at the first match. No caller derives the boundary by scanning forward from 0.
 
 **THREE READ CLASSES.** (i) The run's own events, from the boundary forward, are read and
-folded whole - they are the run. (ii) Carried-over knowledge - `LessonLearned`,
-`DecisionMade`, `ReviewFinding` and the playbook events the fold consults across runs - is
-read BY TYPE over the whole stream through a new `EventStore::read_stream_typed` port method
-backed by a type index; `Filter` carries only a `stream_prefix` today, so no by-type read
-exists to reuse. Its cost is bounded by its own count (about 22,000 events today), never by the derived
-types. (iii) The derived ingest types (`ingest::DERIVED_INDEX_TYPES`, `crates/rigger-domain/src/ingest.rs:36`) are NEVER materialized
+folded whole - they are the run. (ii) The typed carry-over has two parts, both read BY TYPE over
+the whole stream through a new `EventStore::read_stream_typed` port method backed by a type
+index; `Filter` carries only a `stream_prefix` today, so no by-type read exists to reuse. (a) The
+knowledge types: `LessonLearned`, `DecisionMade`, `ReviewFinding` and the playbook events the fold
+consults across runs. (b) The criterion-adoption lifecycle types: `RunStarted`, `UnitStarted`,
+`UnitIntegrated`, `UnitFailed` and `UnitStatus` of every run, read `Only` by type and ONLY by a
+step that starts a criterion unit in a repo, because criterion adoption consults every prior
+run's outcome by contract; a step that starts no criterion unit, and every other one-shot
+command, performs no adoption read. Each part is one constant list declared once, side by side,
+in the domain (no second spelling anywhere), read as `Only(list)`, never `Except(derived)` and
+never a whole-stream read; each is bounded by its own count (the knowledge types about 22,000
+events today), never by the derived types, and neither ever materializes a derived event. "The
+typed carry-over" in criterion 2's cost bound means both parts: a repo step that does not ingest
+costs exactly the run's events plus the knowledge types plus the adoption lifecycle types, and
+nothing else. So the counting-double step test covers a stage with a repo and a criterion id and
+asserts the adoption read through the double, and the binary poisoned-log step test runs a REPO
+step against a log whose superseded runs' events outside both parts and every derived event are
+undecodable, so a step that materializes one fails while the adoption read of the superseded
+runs' lifecycle events passes. (iii) The derived ingest types (`ingest::DERIVED_INDEX_TYPES`, `crates/rigger-domain/src/ingest.rs:36`) are NEVER materialized
 by a one-shot command: `graph.db` is their fold, and the only question a command asks of
 them - a file's latest recorded generation (today `ingest::project_scoped_latest_generations`,
 `crates/rigger-domain/src/ingest.rs:174`, over a whole-stream read) - is answered per identity by
@@ -154,7 +167,8 @@ that step-wide assertion. Neither unit builds the other's half.
   rebuilds. A dropped entity touched only by a community or concept edge retires, with that edge,
   in both rebuilds.
 - *Concurrent step and status:* status reads the boundary and the typed carry-over and takes no
-  step lock; the step's lookups read committed rows only. A `rigger graph build` running beside a
+  step lock; the step's lookups read committed rows only. A repo step that adopts a prior
+  criterion branch reads the adoption lifecycle types by type and nothing else cross-run. A `rigger graph build` running beside a
   step can record one generation twice, as it can today, and criterion 4's dedup collapses it.
 - *Crash-resume:* on sqlite the stamp commits with its event; on KurrentDB a crash leaves at most a
   dangling link, which the lookup skips. A step that crashed mid-walk leaves the files it appended
