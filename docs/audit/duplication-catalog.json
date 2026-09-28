@@ -5396,25 +5396,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-28aabff55c4b",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "retire_grain",
-        "content_hash": "d028a9e088b7c1dd"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "stage_pending_proof",
-        "content_hash": "3f70eb0d3fb21ba3"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-c650c3e62b50",
     "classification": "exact",
     "sites": [

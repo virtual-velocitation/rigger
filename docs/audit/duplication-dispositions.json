@@ -913,10 +913,5 @@
     "id": "dup-19f9cf9e5fab",
     "disposition": "not-a-duplicate",
     "reason": "Payload builders for two different event types (a `CommunityAssigned` membership versus a `CodeEntityExtracted` definition) whose only shared shape is serializing a `json!` literal."
-  },
-  {
-    "id": "dup-28aabff55c4b",
-    "disposition": "not-a-duplicate",
-    "reason": "Different fold writes that share only the shape of a parameterized statement: `retire_grain` retires a community or concept grain's attachments and releases its detached ones, `stage_pending_proof` records one test reference awaiting its definition."
   }
 ]
