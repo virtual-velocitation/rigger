@@ -165,8 +165,8 @@ that step-wide assertion. Neither unit builds the other's half.
   reference or test proof whose definition a generation drops is demoted, or returned to pending,
   as that definition retires, so a later definition of the name converges it identically in both
   rebuilds. A dropped entity touched only by a community or concept edge retires, with that edge,
-  in both rebuilds. A pre-rule `graph.db` is rebuilt only by `rigger setup`, folding commands refuse
-  until then, and no concurrent open can undo the rebuild.
+  in both rebuilds. A pre-rule `graph.db` is rebuilt only by `rigger setup`, fold-dependent commands
+  refuse until then and emits append without folding, and no concurrent open can undo the rebuild.
 - *Concurrent step and status:* status reads the boundary and the typed carry-over and takes no
   step lock; the step's lookups read committed rows only. A repo step that adopts a prior
   criterion branch reads the adoption lifecycle types by type and nothing else cross-run. A `rigger graph build` running beside a
@@ -231,16 +231,19 @@ a fact, not only when it adds or moves one.
   is; no folding command ever rebuilds implicitly. The rebuild is ONE write transaction taken
   immediately: the version is re-read under the lock, and the ledger drop, the refold and the new
   version stamp all happen inside it, so no racing open of either kind can drop rebuilt ledgers or
-  observe a half-rebuilt file. A folding command (emit, mcp, step, run, graph build - any command
-  that would apply an event to `graph.db`) that opens a `graph.db` at the old version refuses at
-  once with a message naming `rigger setup`; it never waits on another opener's transaction, never
-  rebuilds and never fails with "database is locked". A read-only open (dash, validate, graph
-  inspection) writes nothing: it answers from the projection as it stands and says the rebuild is
-  owed. Incremental folding never resumes on a ledger-less file. `rigger reset --derived` refuses to
+  observe a half-rebuilt file. `rigger emit`, and every command whose job is to append to the log,
+  always appends and never opens `graph.db` first; while the rebuild is owed it skips the
+  incremental fold into `graph.db` and says so, since the rebuild re-derives every fold from the
+  log and nothing is lost. A command whose answer depends on the fold (step, run, graph build, the
+  MCP graph and grounding tools) that opens a `graph.db` at the old version refuses at once with a
+  message naming `rigger setup`; it never waits on another opener's transaction, never rebuilds and
+  never fails with "database is locked". A read-only open (dash, validate, graph inspection) writes
+  nothing: it answers from the projection as it stands and says the rebuild is owed. Incremental folding never resumes on a ledger-less file. `rigger reset --derived` refuses to
   compact a store whose `graph.db` is at the old version until that rebuild has happened, and says
   so. A test folds into a `graph.db` lacking the ledger tables through `rigger setup` and asserts the
-  cold rebuild and the stamped version; a test asserts a folding open at the old version refuses
-  naming `rigger setup` without writing; a concurrency test pins that a read-only open racing the
+  cold rebuild and the stamped version; a test asserts an emit at the old version appends and
+  skips the fold, through the log and an unchanged `graph.db`; a test asserts a fold-dependent
+  command at the old version refuses naming `rigger setup` without writing; a concurrency test pins that a read-only open racing the
   rebuild leaves the rebuilt ledgers intact and that a folding open during the rebuild refuses
   rather than failing locked. Without this, every store folded before this spec keeps facts a
   pre-upgrade generation asserted, and a compacted such store disagrees with every future rebuild.
