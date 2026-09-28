@@ -403,6 +403,148 @@ fn a_fact_that_returns_after_a_generation_dropped_it_is_dated_from_its_return() 
     );
 }
 
+/// An event outside the generation rule: a `DecisionMade` governing `path`, valid from `secs`.
+fn governs(path: &str, secs: u64) -> Event {
+    Event::new(
+        "DecisionMade",
+        serde_json::to_vec(&serde_json::json!({
+            "id": "d1", "summary": "s", "governs": [path], "supersedes": "",
+        }))
+        .unwrap(),
+    )
+    .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+}
+
+/// A code batch head: `CodeEntityExtracted` for `name` at `line`, carrying the `fresh` boundary
+/// and, when `partial`, the degraded-parse marker.
+fn head(name: &str, line: u32, partial: bool) -> Vec<u8> {
+    let mut v: serde_json::Value = serde_json::from_slice(&entity(name, line)).unwrap();
+    v["fresh"] = serde_json::Value::Bool(true);
+    if partial {
+        v["partial"] = serde_json::Value::Bool(true);
+    }
+    serde_json::to_vec(&v).unwrap()
+}
+
+/// Fold `events` whole, compact the log with the shipped policy, fold it again, and require the
+/// two live projections to be identical and to hold exactly `nodes` as `(id, kind)`.
+fn compaction_rebuilds_the_whole_logs_graph(events: Vec<Event>, nodes: &[(&str, &str)]) {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
+    let before = rebuilt_whole(&backend, &dir.path().join("before.db"));
+    backend
+        .prune_derived_index(
+            &Namespaced::prefix_for(PROJECT),
+            &rigger::ingest::derived_index_identity(),
+        )
+        .unwrap();
+    let after = rebuilt_whole(&backend, &dir.path().join("after.db"));
+    assert_eq!(
+        after, before,
+        "the graph rebuilt from the compacted log must be the whole log's"
+    );
+    let graph: rigger::contextgraph::Graph = serde_json::from_str(&before).unwrap();
+    let held: Vec<(&str, &str)> = graph
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.kind.as_str()))
+        .collect();
+    assert_eq!(held, nodes, "the whole log's live nodes; graph: {before}");
+}
+
+rigger::test_cases! {
+    /// A definition a later generation drops while a decision still governs it stays live as the
+    /// artifact the decision names: the definition's own kind and attrs went with its generation.
+    a_dropped_entity_a_decision_governs_is_the_decisions_artifact: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 10),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("gone", 9), "gc/src/f.rs@h1#1", 10),
+            governs("src/f.rs::gone", 15),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 2, false), "gc/src/f.rs@h2#0", 20),
+        ],
+        &[
+            ("d1", "decision"),
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/f.rs::gone", "artifact"),
+        ],
+    );
+    /// A file whose extraction empties (the structural sentinel) while a decision governs it is
+    /// the decision's artifact, no longer a parsed source file.
+    an_emptied_file_a_decision_governs_is_the_decisions_artifact: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 10),
+            governs("src/f.rs", 15),
+            keyed(
+                TYPE_EDGE_INFERRED,
+                serde_json::to_vec(&serde_json::json!({
+                    "file": "src/f.rs", "name": "", "lang": "rust", "fresh": true,
+                }))
+                .unwrap(),
+                "gc/src/f.rs@h2#0",
+                20,
+            ),
+        ],
+        &[("d1", "decision"), ("src/f.rs", "artifact")],
+    );
+    /// A design link a later generation drops to a file the code half still holds leaves the
+    /// file as the code half says it is.
+    a_dropped_link_to_a_parsed_file_leaves_the_file: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 10),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/f.rs"), "gd/docs/f.md@h1#0", 10),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/g.rs"), "gd/docs/f.md@h1#1", 10),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/g.rs"), "gd/docs/f.md@h2#0", 20),
+        ],
+        &[
+            ("docs/f.md", "artifact"),
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+            ("src/g.rs", "artifact"),
+        ],
+    );
+    /// A degraded-parse marker the newer generation no longer carries is gone from the file.
+    a_partial_marker_a_later_generation_drops_is_retracted: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, true), "gc/src/f.rs@h1#0", 10),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 2, false), "gc/src/f.rs@h2#0", 20),
+        ],
+        &[("src/f.rs", "file"), ("src/f.rs::alpha", "code-entity")],
+    );
+    /// A decision naming a definition between two generations of its file: the definition is a
+    /// code entity whether the decision folded after the first generation or before the latest.
+    a_decision_between_generations_names_the_code_entity: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 10),
+            governs("src/f.rs::alpha", 15),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 2, false), "gc/src/f.rs@h2#0", 20),
+        ],
+        &[
+            ("d1", "decision"),
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "code-entity"),
+        ],
+    );
+    /// A design concept a later generation drops is retired with it.
+    a_dropped_design_concept_is_retired: compaction_rebuilds_the_whole_logs_graph(
+        vec![
+            keyed(
+                TYPE_DOC_CONCEPT_EXTRACTED,
+                serde_json::to_vec(&serde_json::json!({
+                    "kind": rigger::contextgraph::KIND_DESIGN_DOC, "id": "docs/f.md#old",
+                    "title": "Old", "doc": "docs/f.md",
+                }))
+                .unwrap(),
+                "gd/docs/f.md@h1#0",
+                10,
+            ),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/a.rs"), "gd/docs/f.md@h1#1", 10),
+            keyed(TYPE_DOC_LINK_EXTRACTED, link("src/a.rs"), "gd/docs/f.md@h2#0", 20),
+        ],
+        &[("docs/f.md", "artifact"), ("src/a.rs", "artifact")],
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // 2. Identity is per stream and per prefix
 // ---------------------------------------------------------------------------------------
