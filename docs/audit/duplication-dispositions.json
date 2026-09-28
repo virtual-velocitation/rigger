@@ -1,5 +1,15 @@
 [
   {
+    "id": "dup-dc79af9af1c6",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
+  },
+  {
+    "id": "dup-02b6d2bbb967",
+    "disposition": "not-a-duplicate",
+    "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
+  },
+  {
     "id": "dup-252bfd2c826c",
     "disposition": "not-a-duplicate",
     "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity); the shared token shape is a one-line `format!`."
@@ -200,11 +210,6 @@
     "reason": "Both already delegate to the shared `run_graph_pass`; each supplies a different derivation (community detection over the coupling layer vs concept derivation over the intent layer) and its own summary."
   },
   {
-    "id": "dup-c27eb10f0068",
-    "disposition": "not-a-duplicate",
-    "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
-  },
-  {
     "id": "dup-2cd309ca2b08",
     "disposition": "not-a-duplicate",
     "reason": "Both build their fixture through the shared `linear_history`; they test two different git queries (ancestry order vs commit distance) with different expectations."
@@ -383,11 +388,6 @@
     "id": "dup-6741e1f3023b",
     "disposition": "not-a-duplicate",
     "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
-  },
-  {
-    "id": "dup-ade95ee9ca8e",
-    "disposition": "not-a-duplicate",
-    "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
     "id": "dup-6bdc4cb72e31",

@@ -1400,7 +1400,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:369-371` `compensation_queued_key`
 - `crates/rigger-conductor/src/conductor.rs:922-924` `conflict_regenerate_key`
 - `crates/rigger-domain/src/spawn.rs:118-120` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:983-991` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:984-992` `stop_message`
 - `tests/common/fixtures/graph.rs:152-154` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
@@ -1582,8 +1582,8 @@ mandatory sweep: Command::new call sites - 83 site(s), collected mechanically re
 - `src/cli/run.rs:3120-3120` `Command::new`
 - `src/cli/run.rs:3164-3164` `Command::new`
 - `src/cli/run.rs:3233-3233` `Command::new`
-- `src/cli/validate.rs:1395-1395` `Command::new`
-- `src/cli/validate.rs:1672-1672` `Command::new`
+- `src/cli/validate.rs:1416-1416` `Command::new`
+- `src/cli/validate.rs:1693-1693` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:2063-2063` `Command::new`
 - `tests/checkin_mutation_diff_base_periphery.rs:158-158` `Command::new`
@@ -1969,9 +1969,9 @@ __END__
 - `src/cli/setup.rs:661-661` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
 - `src/cli/setup.rs:711-711` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
              package-lock.json and ran npm install)"`
-- `src/cli/setup.rs:990-990` `"kept existing .rigger/agents/{name} (import never overwrites)"`
-- `src/cli/setup.rs:1018-1018` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:1188-1188` `"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
+- `src/cli/setup.rs:979-979` `"kept existing .rigger/agents/{name} (import never overwrites)"`
+- `src/cli/setup.rs:1007-1007` `"imported .rigger/agents/{name} (id: {id})"`
+- `src/cli/setup.rs:1177-1177` `"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
 # adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\n\
 # Replace the gate commands with your own.\n\
@@ -2079,48 +2079,48 @@ max_retries: 2          # attempt bound: the sweep, one remediation round, the s
 gates: [build, audit, test, lint, boundary, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n"`
-- `src/cli/setup.rs:1772-1772` `".rigger/agents/"`
-- `src/cli/setup.rs:1825-1825` `".rigger/dash.url"`
-- `src/cli/setup.rs:1826-1826` `".rigger/dash.marker"`
-- `src/cli/setup.rs:1827-1827` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:1836-1836` `".rigger/store.conn"`
-- `src/cli/setup.rs:1853-1853` `".rigger/\n"`
-- `src/cli/setup.rs:1859-1859` `".rigger/dash.url"`
-- `src/cli/setup.rs:1862-1862` `".rigger/dash.marker"`
-- `src/cli/setup.rs:1865-1865` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:1866-1866` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:1752-1752` `".rigger/agents/"`
+- `src/cli/setup.rs:1805-1805` `".rigger/dash.url"`
+- `src/cli/setup.rs:1806-1806` `".rigger/dash.marker"`
+- `src/cli/setup.rs:1807-1807` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:1816-1816` `".rigger/store.conn"`
+- `src/cli/setup.rs:1833-1833` `".rigger/\n"`
+- `src/cli/setup.rs:1839-1839` `".rigger/dash.url"`
+- `src/cli/setup.rs:1842-1842` `".rigger/dash.marker"`
+- `src/cli/setup.rs:1845-1845` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:1846-1846` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:1874-1874` `".rigger/dash.url"`
-- `src/cli/setup.rs:1875-1875` `".rigger/dash.marker"`
-- `src/cli/setup.rs:1876-1876` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:1877-1877` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:1854-1854` `".rigger/dash.url"`
+- `src/cli/setup.rs:1855-1855` `".rigger/dash.marker"`
+- `src/cli/setup.rs:1856-1856` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:1857-1857` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:1887-1887` `".rigger/dash.url"`
-- `src/cli/setup.rs:1890-1890` `".rigger/dash.marker"`
-- `src/cli/setup.rs:1893-1893` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2237-2237` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:2266-2266` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:2296-2296` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:2374-2374` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2599-2599` `".rigger"`
-- `src/cli/setup.rs:2618-2618` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:2695-2695` `".rigger/agents/rust-engineer.md"`
-- `src/cli/setup.rs:2718-2718` `".rigger/agents/sdet-author.md"`
-- `src/cli/validate.rs:817-817` `"warning: tracked .rigger/ files have uncommitted modifications:"`
-- `src/cli/validate.rs:1235-1235` `" M .rigger/workflow.yml\n\
+- `src/cli/setup.rs:1867-1867` `".rigger/dash.url"`
+- `src/cli/setup.rs:1870-1870` `".rigger/dash.marker"`
+- `src/cli/setup.rs:1873-1873` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2217-2217` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:2246-2246` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:2276-2276` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:2354-2354` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2579-2579` `".rigger"`
+- `src/cli/setup.rs:2598-2598` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:2675-2675` `".rigger/agents/rust-engineer.md"`
+- `src/cli/setup.rs:2698-2698` `".rigger/agents/sdet-author.md"`
+- `src/cli/validate.rs:838-838` `"warning: tracked .rigger/ files have uncommitted modifications:"`
+- `src/cli/validate.rs:1256-1256` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
                          A  .rigger/agents/new.md\n\
                          D  .rigger/agents/gone.md\n\
                          ?? .rigger/events.db\n\
                          !! .rigger/shim/node_modules\n"`
-- `src/cli/validate.rs:1245-1245` `".rigger/workflow.yml"`
-- `src/cli/validate.rs:1246-1246` `".rigger/agents/sdet.md"`
-- `src/cli/validate.rs:1247-1247` `".rigger/agents/new.md"`
-- `src/cli/validate.rs:1248-1248` `".rigger/agents/gone.md"`
-- `src/cli/validate.rs:2051-2051` `".rigger"`
-- `src/cli/validate.rs:2105-2105` `".rigger"`
-- `src/main.rs:148-148` `"rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
+- `src/cli/validate.rs:1266-1266` `".rigger/workflow.yml"`
+- `src/cli/validate.rs:1267-1267` `".rigger/agents/sdet.md"`
+- `src/cli/validate.rs:1268-1268` `".rigger/agents/new.md"`
+- `src/cli/validate.rs:1269-1269` `".rigger/agents/gone.md"`
+- `src/cli/validate.rs:2072-2072` `".rigger"`
+- `src/cli/validate.rs:2126-2126` `".rigger"`
+- `src/main.rs:179-179` `"rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
 rigger step [--spec <path>]      advance the run one frontier via the replay driver\n            \
@@ -2880,7 +2880,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-config-files/src/config_store.rs:944-946` `rejects_missing_frontmatter`
 - `crates/rigger-domain/src/contextgraph/query.rs:1937-1939` `graph_load_rejects_malformed_json_without_panicking`
 - `crates/rigger-domain/src/spec.rs:986-988` `empty_when_no_criteria`
-- `src/cli/validate.rs:1256-1258` `dirty_tracked_paths_on_a_clean_tree_is_empty`
+- `src/cli/validate.rs:1277-1279` `dirty_tracked_paths_on_a_clean_tree_is_empty`
 
 #### `dup-f61039476fc4` (near, 3 sites)
 
@@ -3551,14 +3551,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-driver/src/driver/replay.rs:2003-2051` `an_emit_only_approve_gating_persona_hard_errors_on_the_replay_driver`
 - `crates/rigger-driver/src/driver/replay.rs:2127-2176` `a_parked_unanswered_sibling_does_not_suppress_this_units_own_approve_backstop`
 
-#### `dup-ade95ee9ca8e` (semantic, 2 sites)
+#### `dup-02b6d2bbb967` (semantic, 2 sites)
 
 Proposed home: `one shared `install_status_line` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-driver/src/hooks.rs:137-154` `install_status_line`
-- `src/cli/setup.rs:873-877` `install_status_line`
+- `crates/rigger-driver/src/hooks.rs:232-249` `install_status_line`
+- `src/cli/setup.rs:862-866` `install_status_line`
 
 #### `dup-a5bfac770233` (near, 2 sites)
 
@@ -3567,7 +3567,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:762-776` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:1600-1614` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:1580-1594` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-c0f477204b6e` (near, 2 sites)
 
@@ -3860,7 +3860,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-process/s
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-process/src/reap.rs:854-861` `processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent`
-- `src/cli/validate.rs:1718-1725` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
+- `src/cli/validate.rs:1739-1746` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
 
 #### `dup-183455104b30` (near, 3 sites)
 
@@ -3951,7 +3951,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/guard.rs, src/c
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/guard.rs:1368-1370` `parse_guard_write_roots_requires_at_least_one`
-- `src/cli/validate.rs:1894-1896` `order_signature_advisories_is_empty_when_no_signatures_are_given`
+- `src/cli/validate.rs:1915-1917` `order_signature_advisories_is_empty_when_no_signatures_are_given`
 
 #### `dup-4a813209194e` (near, 2 sites)
 
@@ -4042,16 +4042,16 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/setup.rs, src/m
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/setup.rs:263-270` `print_scaffold_pointer`
-- `src/main.rs:332-334` `usage`
+- `src/main.rs:363-365` `usage`
 
-#### `dup-c27eb10f0068` (near, 2 sites)
+#### `dup-dc79af9af1c6` (near, 2 sites)
 
 Proposed home: `setup::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/setup.rs:819-823` `install_lookup_hook`
-- `src/cli/setup.rs:873-877` `install_status_line`
+- `src/cli/setup.rs:810-818` `install_lookup_hook`
+- `src/cli/setup.rs:862-866` `install_status_line`
 
 #### `dup-2cd309ca2b08` (near, 2 sites)
 
@@ -4059,8 +4059,8 @@ Proposed home: `validate::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/validate.rs:1423-1444` `git_is_ancestor_decides_commit_order_in_a_real_repo`
-- `src/cli/validate.rs:1447-1468` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
+- `src/cli/validate.rs:1444-1465` `git_is_ancestor_decides_commit_order_in_a_real_repo`
+- `src/cli/validate.rs:1468-1489` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
 
 #### `dup-5f516fce9f0b` (near, 2 sites)
 
@@ -4633,7 +4633,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 6865 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 6887 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13753-13775` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17726-17779` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -4645,7 +4645,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-domain/src/contextgraph/query.rs:2056-2060` `assert_sole_member_is_w` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/metrics.rs:1417-1424` `model_id_base` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:1953-1960` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-driver/src/driver/claude_code.rs:1472-1507` `launch_applies_opts_env_and_inherits_the_ambient_credential_untouched` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-driver/src/driver/claude_code.rs:1516-1551` `launch_applies_opts_env_and_inherits_the_ambient_credential_untouched` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:535-547` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/ingest.rs:48-88` `append_and_fold_batch` - caught: `dup-7a935e08967c`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:333-352` `placement_of_ack` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

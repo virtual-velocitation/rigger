@@ -5279,7 +5279,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ade95ee9ca8e",
+    "id": "dup-02b6d2bbb967",
     "classification": "semantic",
     "sites": [
       {
@@ -5290,7 +5290,7 @@
       {
         "file": "src/cli/setup.rs",
         "name": "install_status_line",
-        "content_hash": "3ec8cee125ad6515"
+        "content_hash": "ce0ac20a86ed04d2"
       }
     ],
     "proposed_home": "one shared `install_status_line` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
@@ -6470,18 +6470,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c27eb10f0068",
+    "id": "dup-dc79af9af1c6",
     "classification": "near",
     "sites": [
       {
         "file": "src/cli/setup.rs",
         "name": "install_lookup_hook",
-        "content_hash": "146a7b03ebb74fee"
+        "content_hash": "8e72395eb622a1a3"
       },
       {
         "file": "src/cli/setup.rs",
         "name": "install_status_line",
-        "content_hash": "3ec8cee125ad6515"
+        "content_hash": "ce0ac20a86ed04d2"
       }
     ],
     "proposed_home": "setup::support (consolidate these 2 sites into one function in this file)",
