@@ -282,12 +282,12 @@ resultPromise
 /// shelled-out OS-level signal, and never a signal to any pid this test did not itself spawn -
 /// so a defect that leaves the harness's own promise chain unsettled (a dropped `.then`, a
 /// forgotten `setTimeout` clear) fails the test loudly instead of hanging the suite.
-fn run_pipelining_harness() -> (bool, String, String) {
+fn run_driver_harness(harness: &str) -> (bool, String, String) {
     let driver_body = rigger_js_driver_body();
     let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
     let harness_path = dir.path().join("harness.js");
     let driver_path = dir.path().join("driver-body.js");
-    std::fs::write(&harness_path, HARNESS).expect("write the runtime harness");
+    std::fs::write(&harness_path, harness).expect("write the runtime harness");
     std::fs::write(&driver_path, driver_body).expect("write the driver body");
 
     let mut child = Command::new("node")
@@ -297,7 +297,7 @@ fn run_pipelining_harness() -> (bool, String, String) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn node to drive the pipelining behavior harness");
+        .expect("spawn node to drive the driver behavior harness");
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
@@ -308,8 +308,8 @@ fn run_pipelining_harness() -> (bool, String, String) {
             let _ = child.kill();
             let _ = child.wait();
             panic!(
-                "the pipelining behavior harness did not finish within 20s (scripted worker \
-                 delays total well under 1s) - it likely hung on an unsettled promise; killed \
+                "the driver behavior harness did not finish within 20s (scripted worker \
+                 delays total well under 2s) - it likely hung on an unsettled promise; killed \
                  via the spawned Child handle"
             );
         }
@@ -352,7 +352,7 @@ fn fast_units_review_runs_while_the_slow_sibling_still_builds() {
         );
         return;
     }
-    let (ok, stdout, stderr) = run_pipelining_harness();
+    let (ok, stdout, stderr) = run_driver_harness(HARNESS);
     assert!(
         ok,
         "the pipelining behavior harness must drive the real driver body to the expected \
@@ -361,5 +361,169 @@ fn fast_units_review_runs_while_the_slow_sibling_still_builds() {
     assert!(
         stdout.contains("OK per-unit-pipelining-reviews-the-fast-unit-while-the-slow-one-still-builds"),
         "the harness must confirm the criterion held:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
+/// Node harness for a worker settling WHILE the `rigger step` courier is still running. Each
+/// scenario runs the real driver body in a fresh `vm` context with a courier that takes 100ms per
+/// step, so a worker scripted to finish inside that window settles during the step - before the
+/// loop builds its wait over `inFlight`.
+///
+/// WAKE-UP: step 1 parks `a` (20ms), `c` (60ms) and `b` (1000ms). `a` settling wakes step 2; `c`
+/// settles during step 2, whose wave holds only `b`. The loop must step again at once to fold
+/// `c`'s result - step 3 must start long before `b` resolves - never wait on `b` alone.
+///
+/// NO FALSE STOP: step 1 parks `a` (20ms) and `c` (60ms). `a` settling wakes step 2; `c` - the
+/// last worker - settles during step 2, which returns an empty, not-done wave. The loop must step
+/// again (step 3 reports `done`) instead of stopping as "nothing is in flight, yet is not done".
+const SETTLE_DURING_STEP_HARNESS: &str = r#"
+"use strict";
+const vm = require("vm");
+const fs = require("fs");
+
+const driverBody = fs.readFileSync(process.argv[2], "utf8");
+const COURIER_MS = 100;
+
+function sleep(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+async function runScenario(name, workers, steps) {
+  const T0 = Date.now();
+  const events = [];
+  const record = function (what) { events.push({ t: Date.now() - T0, what: what }); };
+  let stepIdx = 0;
+  async function agent(prompt, opts) {
+    const label = (opts && opts.label) || "";
+    if (label === "resolve-repo") return { path: "/repo" };
+    if (label.indexOf("step#") === 0) {
+      if (stepIdx >= steps.length) {
+        throw new Error(name + ": the courier was invoked more times than scripted (call " + (stepIdx + 1) + ")");
+      }
+      const resp = steps[stepIdx];
+      stepIdx += 1;
+      record("step-start:" + stepIdx);
+      await sleep(COURIER_MS);
+      record("step-return:" + stepIdx);
+      return resp;
+    }
+    const m = /^You are the rigger worker for spawn (\S+) \(unit /.exec(prompt);
+    if (m && workers[m[1]] !== undefined) {
+      record("worker-start:" + m[1]);
+      await sleep(workers[m[1]]);
+      record("worker-resolve:" + m[1]);
+      return {};
+    }
+    throw new Error(name + ": unexpected agent() call - opts=" + JSON.stringify(opts) + " prompt=" + prompt.slice(0, 160));
+  }
+  const sandbox = {
+    args: { repo: "/repo", spec: "spec.md", outer_wall_clock: 5 },
+    agent: agent,
+    parallel: async function () { throw new Error(name + ": parallel() must never be invoked"); },
+    log: function (msg) { record("log:" + String(msg)); },
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
+  };
+  vm.createContext(sandbox);
+  const src = "(async () => {\n" + driverBody + "\n})()";
+  let error = null;
+  try {
+    await vm.runInContext(src, sandbox, { filename: "rigger-driver-" + name + "-harness.js" });
+  } catch (e) {
+    error = e;
+  }
+  return { events: events, stepIdx: stepIdx, error: error };
+}
+
+function fail(name, msg, run) {
+  console.error(name + ": " + msg);
+  if (run && run.error) console.error("driver error: " + String((run.error && run.error.stack) || run.error));
+  if (run) {
+    console.error("driver events (chronological):");
+    for (const e of run.events) console.error("  +" + e.t + "ms " + e.what);
+  }
+  process.exit(1);
+}
+
+function at(run, what) {
+  const e = run.events.find(function (x) { return x.what === what; });
+  return e ? e.t : undefined;
+}
+
+(async function () {
+  const wake = await runScenario(
+    "wake-up",
+    { "a/implementer#1": 20, "c/implementer#1": 60, "b/implementer#1": 1000 },
+    [
+      {
+        wave: [
+          { id: "a/implementer#1", unit: "a", stage: "build" },
+          { id: "c/implementer#1", unit: "c", stage: "build" },
+          { id: "b/implementer#1", unit: "b", stage: "build" },
+        ],
+        done: false,
+      },
+      { wave: [{ id: "b/implementer#1", unit: "b", stage: "build" }], done: false },
+      { wave: [{ id: "b/implementer#1", unit: "b", stage: "build" }], done: false },
+      { wave: [], done: true },
+    ]
+  );
+  if (wake.error) fail("wake-up", "the driver stopped instead of reaching its fixpoint", wake);
+  const step3 = at(wake, "step-start:3");
+  const bDone = at(wake, "worker-resolve:b/implementer#1");
+  if (step3 === undefined || bDone === undefined) fail("wake-up", "expected step 3 and b's resolve in the event log", wake);
+  if (!(step3 < bDone)) {
+    fail(
+      "wake-up",
+      "a worker that settled during step 2 must wake step 3 at once (step 3 started @" + step3 +
+        "ms, after b resolved @" + bDone + "ms) - the loop waited on another worker instead",
+      wake
+    );
+  }
+
+  const last = await runScenario(
+    "no-false-stop",
+    { "a/implementer#1": 20, "c/implementer#1": 60 },
+    [
+      {
+        wave: [
+          { id: "a/implementer#1", unit: "a", stage: "build" },
+          { id: "c/implementer#1", unit: "c", stage: "build" },
+        ],
+        done: false,
+      },
+      { wave: [], done: false },
+      { wave: [], done: true },
+    ]
+  );
+  if (last.error) {
+    fail("no-false-stop", "the last worker settling during a step with an empty wave must not stop the run", last);
+  }
+  if (last.stepIdx !== 3) fail("no-false-stop", "expected 3 courier calls, the driver made " + last.stepIdx, last);
+
+  console.log("OK a-settle-during-the-courier-step-steps-again-at-once");
+})().catch(function (err) {
+  fail("harness", String((err && err.stack) || err), null);
+});
+"#;
+
+/// RUNTIME guard: a worker that settles while the `rigger step` courier is still running wakes
+/// the loop - the next step runs at once instead of waiting on a different worker - and the last
+/// worker settling during a step whose wave is empty never reads as the "nothing is in flight,
+/// yet is not done" stop.
+#[test]
+fn a_worker_settling_during_the_courier_step_wakes_the_loop_and_never_reads_as_a_false_stop() {
+    if !tool_available("node", "--version") {
+        eprintln!(
+            "SKIP a_worker_settling_during_the_courier_step_wakes_the_loop_and_never_reads_as_a_false_stop: \
+             no `node` runtime on PATH; install node to run it."
+        );
+        return;
+    }
+    let (ok, stdout, stderr) = run_driver_harness(SETTLE_DURING_STEP_HARNESS);
+    assert!(
+        ok && stdout.contains("OK a-settle-during-the-courier-step-steps-again-at-once"),
+        "a settle during the courier step must step again at once and never stop the run:\n\
+         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 }

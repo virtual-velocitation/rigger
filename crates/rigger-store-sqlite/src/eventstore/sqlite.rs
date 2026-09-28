@@ -32,7 +32,13 @@ CREATE TABLE IF NOT EXISTS events (
   UNIQUE(stream, revision)
 );
 CREATE INDEX IF NOT EXISTS idx_events_stream ON events(stream);
+CREATE INDEX IF NOT EXISTS idx_events_stream_type ON events(stream, type, position);
 ";
+
+/// The boundary lookup behind [`EventStore::last_position`]: one seek of
+/// `idx_events_stream_type` to the stream-and-type run's highest position.
+const LAST_POSITION_SQL: &str =
+    "SELECT revision FROM events WHERE stream = ?1 AND type = ?2 ORDER BY position DESC LIMIT 1";
 
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
 
@@ -1038,6 +1044,13 @@ impl EventStore for Store {
             },
         ))
     }
+
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(LAST_POSITION_SQL, params![stream, event_type], |r| r.get(0))
+            .optional()
+            .map_err(be)
+    }
 }
 
 /// The watermark a subscription's polling thread advances as it delivers events.
@@ -1112,6 +1125,27 @@ mod tests {
     #[test]
     fn passes_the_contract() {
         crate::eventstore::contract::assert_contract(&Store::open(":memory:").unwrap());
+    }
+
+    /// THE BOUNDARY IS A QUERY, on this backend an INDEXED LOOKUP (spec 101): sqlite's own plan
+    /// for the lookup is one search of the stream-and-type index, never a scan of the table, so
+    /// its cost does not grow with the derived events the stream holds.
+    #[test]
+    fn the_boundary_lookup_is_one_seek_of_the_stream_and_type_index() {
+        let s = Store::open(":memory:").unwrap();
+        let conn = s.conn.lock().unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {LAST_POSITION_SQL}"))
+            .unwrap()
+            .query_map(params!["rigger", "RunStarted"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            plan,
+            ["SEARCH events USING INDEX idx_events_stream_type (stream=? AND type=?)"],
+            "the lookup must be a single index search with no scan and no sort step"
+        );
     }
 
     #[test]

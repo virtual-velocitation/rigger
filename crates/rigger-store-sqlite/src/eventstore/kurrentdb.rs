@@ -546,6 +546,46 @@ impl EventStore for Store {
         });
         Ok(Subscription::new(rx, err, stop, handle))
     }
+
+    /// A backward read from the stream's end that stops at the first event of `event_type`:
+    /// the server has no index over event types, so the bound is that first match, and only
+    /// the events after it are ever read. Each record is pulled from the server only when
+    /// [`newest_of_type`] asks for it, so the read ends where the scan does.
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        let opts = ReadStreamOptions::default()
+            .position(StreamPosition::End)
+            .backwards();
+        match self.rt.block_on(self.client.read_stream(stream, &opts)) {
+            Err(e) => newest_of_type([Err(e)], event_type),
+            Ok(mut rs) => {
+                let records = std::iter::from_fn(|| self.rt.block_on(rs.next()).transpose())
+                    .filter_map(|pulled| {
+                        pulled
+                            .map(|ev| original(&ev).map(|r| (r.event_type.clone(), r.revision)))
+                            .transpose()
+                    });
+                newest_of_type(records, event_type)
+            }
+        }
+    }
+}
+
+/// The boundary scan over a newest-first read's `(event type, revision)` records: the revision
+/// of the FIRST record of `event_type`, pulling nothing past it. A stream the server does not
+/// know - at the open or mid-read - has no boundary; any other server failure is an error.
+fn newest_of_type<I>(records: I, event_type: &str) -> Result<Option<Revision>, Error>
+where
+    I: IntoIterator<Item = Result<(String, u64), kurrentdb::Error>>,
+{
+    for record in records {
+        match record {
+            Ok((t, revision)) if t == event_type => return Ok(Some(revision as Revision)),
+            Ok(_) => {}
+            Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
+            Err(e) => return Err(Error::Backend(format!("kurrentdb: last position: {e}"))),
+        }
+    }
+    Ok(None)
 }
 
 fn current_thread_rt(err: &Arc<Mutex<Option<String>>>) -> Option<tokio::runtime::Runtime> {
@@ -718,6 +758,99 @@ mod tests {
         let _ = rt.block_on(container.rm());
         if let Err(e) = result {
             std::panic::resume_unwind(e);
+        }
+    }
+
+    /// The records a backward read hands back, newest first, as `(event type, revision)`.
+    fn newest_first<'a>(
+        records: &'a [(&'a str, u64)],
+    ) -> impl Iterator<Item = Result<(String, u64), kurrentdb::Error>> + 'a {
+        records.iter().map(|(t, r)| Ok((t.to_string(), *r)))
+    }
+
+    /// Spec 101 criterion 1, the KurrentDB half: the boundary scan answers the FIRST match of the
+    /// newest-first read and pulls nothing past it - a record after the match panics - so the
+    /// server read it drives stops there instead of walking the stream.
+    #[test]
+    fn the_boundary_scan_answers_the_first_match_and_pulls_nothing_past_it() {
+        let read = newest_first(&[("Work", 7), ("Work", 6), ("RunStarted", 5)]).chain(
+            std::iter::from_fn(|| -> Option<Result<(String, u64), kurrentdb::Error>> {
+                panic!("the scan pulled a record past the first match")
+            }),
+        );
+        assert_eq!(newest_of_type(read, "RunStarted").unwrap(), Some(5));
+        assert_eq!(
+            newest_of_type(newest_first(&[("RunStarted", 9)]), "RunStarted").unwrap(),
+            Some(9),
+            "the newest record itself is a match"
+        );
+        assert_eq!(
+            newest_of_type(
+                newest_first(&[("Work", 4), ("RunStarted", 3), ("RunStarted", 0)]),
+                "Work"
+            )
+            .unwrap(),
+            Some(4),
+            "any type answers its own newest revision"
+        );
+    }
+
+    /// A stream that never recorded the type, an empty stream, and a stream the server does not
+    /// know (at the open or mid-read) all have no boundary; any other server failure is an error
+    /// naming the lookup, never a fabricated boundary.
+    #[test]
+    fn the_boundary_scan_answers_none_for_an_absent_type_or_stream_and_errors_on_a_failure() {
+        assert_eq!(
+            newest_of_type(newest_first(&[("Work", 1), ("Work", 0)]), "RunStarted").unwrap(),
+            None
+        );
+        assert_eq!(
+            newest_of_type(newest_first(&[]), "RunStarted").unwrap(),
+            None
+        );
+        assert_eq!(
+            newest_of_type([Err(kurrentdb::Error::ResourceNotFound)], "RunStarted").unwrap(),
+            None
+        );
+        let mid_read_gone = newest_first(&[("Work", 3)])
+            .chain([Err(kurrentdb::Error::ResourceNotFound)])
+            .chain(newest_first(&[("RunStarted", 1)]));
+        assert_eq!(newest_of_type(mid_read_gone, "RunStarted").unwrap(), None);
+        let failed = newest_first(&[("Work", 3)])
+            .chain([Err(kurrentdb::Error::AccessDenied)])
+            .chain(newest_first(&[("RunStarted", 1)]));
+        match newest_of_type(failed, "RunStarted") {
+            Err(Error::Backend(msg)) => {
+                assert_eq!(msg, "kurrentdb: last position: Access denied error")
+            }
+            other => panic!("a server failure must be a backend error, got {other:?}"),
+        }
+    }
+
+    /// The adapter's lookup reaches the server and reports its failure: over a server that never
+    /// answers it is an error naming the lookup, never a fabricated `None` or revision.
+    #[test]
+    fn the_boundary_lookup_reports_an_unreachable_server_as_an_error() {
+        // One thread, not a worker per core: the test runner caps the address space.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let settings = Store::client_settings(
+            "kurrentdb://127.0.0.1:1?tls=false&maxDiscoverAttempts=1&discoveryInterval=10&gossipTimeout=200&defaultDeadline=2000",
+        )
+        .unwrap();
+        let client = {
+            let _guard = rt.enter();
+            Client::new(settings).unwrap()
+        };
+        let store = Store { client, rt };
+        match store.last_position("run", "RunStarted") {
+            Err(Error::Backend(msg)) => assert!(
+                msg.starts_with("kurrentdb: last position: "),
+                "the error names the lookup: {msg}"
+            ),
+            other => panic!("an unreachable server must be a backend error, got {other:?}"),
         }
     }
 

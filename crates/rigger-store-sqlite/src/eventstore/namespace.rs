@@ -7,11 +7,6 @@
 //! Because it depends only on the port, it is written once and wraps every
 //! backend - dependency inversion buying the single implementation.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use super::{
     Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
     Subscription,
@@ -134,39 +129,21 @@ impl EventStore for Namespaced<'_> {
         let inner = self.inner.subscribe_stream(&self.scoped(stream), from)?;
         Ok(strip_subscription(inner, self.prefix.clone()))
     }
+
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        self.inner.last_position(&self.scoped(stream), event_type)
+    }
 }
 
 /// Wrap a subscription so each delivered event has the namespace prefix stripped
 /// from its stream. Owns the inner subscription; dropping the wrapper stops both.
 fn strip_subscription(inner: Subscription, prefix: String) -> Subscription {
-    let (tx, rx) = channel();
-    let err = Arc::new(Mutex::new(None));
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_thread = Arc::clone(&stop);
-    let err_thread = Arc::clone(&err);
-    let handle = std::thread::spawn(move || {
-        // The inner subscription is owned here; it stops when this thread ends.
-        while !stop_thread.load(Ordering::Relaxed) {
-            match inner.recv_timeout(Duration::from_millis(50)) {
-                Some(mut e) => {
-                    if let Some(rest) = e.stream.strip_prefix(&prefix) {
-                        e.stream = rest.to_string();
-                    }
-                    if tx.send(e).is_err() {
-                        return;
-                    }
-                }
-                None => {
-                    if let Some(msg) = inner.err() {
-                        *err_thread.lock().unwrap() = Some(msg);
-                        return;
-                    }
-                    // a quiet timeout: the inner is still live; re-check stop
-                }
-            }
+    inner.map(move |mut e| {
+        if let Some(rest) = e.stream.strip_prefix(&prefix) {
+            e.stream = rest.to_string();
         }
-    });
-    Subscription::new(rx, err, stop, handle)
+        e
+    })
 }
 
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))] // Namespaced's own tests need a real EventStore backend (sqlite); the wrapper itself stays pure/ungated above
@@ -216,6 +193,36 @@ mod tests {
         assert_eq!(a_run.len(), 1);
         assert_eq!(a_run[0].type_, "A1");
         assert_eq!(a_run[0].stream, "run");
+    }
+
+    /// The boundary lookup is scoped like every other read: each project answers its OWN
+    /// stream's newest match, never a sibling project's same-named stream.
+    #[test]
+    fn the_boundary_lookup_answers_within_the_namespace() {
+        let backend = Store::open(":memory:").unwrap();
+        let alpha = Namespaced::new(&backend, "alpha");
+        let beta = Namespaced::new(&backend, "beta");
+        let ev = |t: &str| Event::new(t, b"{}".to_vec());
+        alpha
+            .append("run", ExpectedRevision::Any, &[ev("RunStarted"), ev("W")])
+            .unwrap();
+        beta.append(
+            "run",
+            ExpectedRevision::Any,
+            &[ev("W"), ev("W"), ev("RunStarted")],
+        )
+        .unwrap();
+
+        assert_eq!(alpha.last_position("run", "RunStarted").unwrap(), Some(0));
+        assert_eq!(beta.last_position("run", "RunStarted").unwrap(), Some(2));
+        assert_eq!(
+            backend
+                .last_position("proj-beta-run", "RunStarted")
+                .unwrap(),
+            Some(2),
+            "the decorator asks the backend for the prefixed stream"
+        );
+        assert_eq!(backend.last_position("run", "RunStarted").unwrap(), None);
     }
 
     #[test]

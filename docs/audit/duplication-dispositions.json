@@ -520,9 +520,9 @@
     "reason": "`unit_branch` names a unit's git branch while `key_expr` builds a SQL key expression; both are one-line `format!` calls over different templates."
   },
   {
-    "id": "dup-f5ed8c200bec",
+    "id": "dup-ebee743f02de",
     "disposition": "not-a-duplicate",
-    "reason": "Accessors that each clone a different recorded field of a different test double or channel (spawn ids, calls, targets, mutants dirs, store fences, build-cache guards, placements, receiver, error); the lock-and-clone line is the whole body."
+    "reason": "Accessors that each clone a different recorded field of a different test double or channel (spawn ids, calls, targets, mutants dirs, store fences, build-cache guards, placements, receiver, error, counted reads); the lock-and-clone line is the whole body."
   },
   {
     "id": "dup-60da41568392",

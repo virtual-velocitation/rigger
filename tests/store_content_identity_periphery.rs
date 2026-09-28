@@ -203,6 +203,13 @@ impl EventStore for PortDouble {
     fn subscribe_stream(&self, _stream: &str, _from: Revision) -> Result<Subscription, StoreError> {
         Err(unreadable())
     }
+    fn last_position(
+        &self,
+        _stream: &str,
+        _event_type: &str,
+    ) -> Result<Option<Revision>, StoreError> {
+        Err(unreadable())
+    }
 }
 
 // ---------------------------------------------------------------------------

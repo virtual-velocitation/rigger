@@ -125,6 +125,7 @@ from the implement-stage prompt**.
    BEFORE (push, capped)                        AFTER (hybrid)
    ┌───────────────────────────────┐            ┌───────────────────────────────┐
    │ prior-failure block           │            │ prior-failure block           │
+   │                               │            │ UNIT + verbatim criterion     │
    │ code neighborhood (depth-2)   │            │ code neighborhood (compact)   │
    │ DESIGN INTENT     ~2.8 KiB  ◄──┼ guaranteed │ DESIGN INTENT     ~2.8 KiB  ◄──┼ guaranteed
    │ decisions   ┐                 │            │ » query the graph for prior   │
@@ -138,6 +139,11 @@ from the implement-stage prompt**.
 - **Reclaims ~80 KiB of prompt per spawn and eliminates the 85% arbitrary truncation.** The
   reference bulk is no longer rendered-then-thrown-away; it is retrieved on demand, in full, scoped
   to the sub-problem.
+- **Every non-planner spawn is told its task first.** Right after the prior-failure block (which
+  leads a retry so the fix list is read first), the prompt names the unit and quotes its acceptance
+  criterion verbatim - the exact text the review tiers judge the unit against, which they receive
+  in the same block. The grounding below it is context for that task, never a substitute for it.
+  The planner's refine protocol already lists every criterion, so it gets no per-unit block.
 - **The guaranteed layer is unchanged.** `write_design_intent` already renders exactly the bound
   governing intent, deterministically ordered; it stays. This is the measured, immediate-ROI step.
 

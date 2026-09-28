@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
@@ -494,6 +494,40 @@ impl Subscription {
     pub fn err(&self) -> Option<String> {
         self.err.lock().unwrap().clone()
     }
+
+    /// This subscription's events, each passed through `f` in delivery order, as a new
+    /// subscription: the one relay a decorator reshapes or observes a backend's deliveries
+    /// through. The relay owns this subscription, so dropping the result stops both; this
+    /// subscription's terminal error carries over once its events are relayed.
+    pub fn map<F>(self, mut f: F) -> Subscription
+    where
+        F: FnMut(Event) -> Event + Send + 'static,
+    {
+        let (tx, rx) = channel();
+        let err = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_relay = Arc::clone(&stop);
+        let err_relay = Arc::clone(&err);
+        let handle = std::thread::spawn(move || {
+            while !stop_relay.load(Ordering::Relaxed) {
+                match self.recv_timeout(Duration::from_millis(50)) {
+                    Some(e) => {
+                        if tx.send(f(e)).is_err() {
+                            return;
+                        }
+                    }
+                    None => {
+                        if let Some(msg) = self.err() {
+                            *err_relay.lock().unwrap() = Some(msg);
+                            return;
+                        }
+                        // a quiet timeout: the inner is still live; re-check stop
+                    }
+                }
+            }
+        });
+        Subscription::new(rx, err, stop, handle)
+    }
 }
 
 /// EventStore is the append-only, bi-temporal log port (KurrentDB-shaped).
@@ -581,6 +615,15 @@ pub trait EventStore: Send + Sync {
     /// (**inclusive**): it replays that stream's events from `from` onward, then
     /// delivers new ones live.
     fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error>;
+
+    /// The per-stream revision of the NEWEST event of type `event_type` on `stream`, or `None`
+    /// when the stream holds no such event (or does not exist). The answer is the inclusive
+    /// `from` [`read_stream`](EventStore::read_stream) takes, so a read from it starts AT that
+    /// event: with `RunStarted` it is the current run's boundary (spec 101).
+    ///
+    /// A backend answers from its own index, or by a backward read that stops at the first
+    /// match - never by reading the stream forward, and never by materializing it.
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error>;
 }
 
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.
@@ -649,5 +692,68 @@ mod appended_one_tests {
             "and it must not silently hand back the last of several positions as though it \
              were the one: {message}"
         );
+    }
+}
+
+#[cfg(test)]
+mod subscription_map_tests {
+    use super::{Event, Subscription};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::channel;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// A subscription fed `types` in order, ending in the terminal error `end` once they are
+    /// sent - or, with no error, kept open until it is stopped.
+    fn fed(types: &[&str], end: Option<&str>) -> Subscription {
+        let (tx, rx) = channel();
+        let err = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (err_t, stop_t) = (Arc::clone(&err), Arc::clone(&stop));
+        let types: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+        let end = end.map(str::to_string);
+        let handle = std::thread::spawn(move || {
+            for t in types {
+                tx.send(Event::new(&t, b"{}".to_vec())).unwrap();
+            }
+            if let Some(msg) = end {
+                *err_t.lock().unwrap() = Some(msg);
+                return;
+            }
+            while !stop_t.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        Subscription::new(rx, err, stop, handle)
+    }
+
+    /// Every delivered event passes through the map, in order, and the inner subscription's
+    /// terminal error carries over to the mapped one once its events are drained.
+    #[test]
+    fn a_mapped_subscription_delivers_each_event_reshaped_in_order_then_the_inner_error() {
+        let mapped = fed(&["a", "b", "c"], Some("gone")).map(|mut e| {
+            e.type_.push('!');
+            e
+        });
+        let got: Vec<String> = (0..3)
+            .map(|_| mapped.recv_timeout(Duration::from_secs(10)).unwrap().type_)
+            .collect();
+        assert_eq!(got, ["a!", "b!", "c!"]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while mapped.err().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(mapped.err(), Some("gone".to_string()));
+        assert!(mapped.recv_timeout(Duration::from_millis(200)).is_none());
+    }
+
+    /// A live inner subscription with nothing to deliver keeps the mapped one open and error-free,
+    /// and dropping the mapped subscription stops both relay and inner (the drop returns).
+    #[test]
+    fn a_quiet_live_inner_keeps_the_mapped_subscription_open_until_it_is_dropped() {
+        let mapped = fed(&[], None).map(|e| e);
+        assert!(mapped.recv_timeout(Duration::from_millis(200)).is_none());
+        assert_eq!(mapped.err(), None);
+        drop(mapped);
     }
 }

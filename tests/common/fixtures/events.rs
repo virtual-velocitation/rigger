@@ -32,7 +32,7 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
     events
 }
 
-/// The four read and subscribe methods of an `EventStore` decorator that intercepts only
+/// The read, subscribe and boundary-lookup methods of an `EventStore` decorator that intercepts only
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
 /// decorator's `impl EventStore` block.
 #[macro_export]
@@ -67,6 +67,13 @@ macro_rules! delegate_event_store_reads {
             from: rigger::eventstore::Revision,
         ) -> Result<rigger::eventstore::Subscription, rigger::eventstore::Error> {
             self.inner.subscribe_stream(stream, from)
+        }
+        fn last_position(
+            &self,
+            stream: &str,
+            event_type: &str,
+        ) -> Result<Option<rigger::eventstore::Revision>, rigger::eventstore::Error> {
+            self.inner.last_position(stream, event_type)
         }
     };
 }
@@ -119,5 +126,182 @@ impl EventStore for SilentStore {
         Err(Error::Backend(
             "the silent double answers appends only".into(),
         ))
+    }
+    fn last_position(&self, _stream: &str, _event_type: &str) -> Result<Option<Revision>, Error> {
+        Ok(None)
+    }
+}
+
+/// One call a [`ReadCountingStore`] forwarded, with how many events it handed back - the unit a
+/// one-shot command's read cost is asserted in (spec 101). A call is recorded before it is
+/// forwarded, so one that fails stays recorded, having handed back nothing; a subscription counts
+/// each event it delivers after the call returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CountedRead {
+    Stream {
+        stream: String,
+        from: Revision,
+        forward: bool,
+        materialized: usize,
+    },
+    All {
+        from: Position,
+        forward: bool,
+        materialized: usize,
+    },
+    SubscribeStream {
+        stream: String,
+        from: Revision,
+        delivered: usize,
+    },
+    SubscribeAll {
+        from: Position,
+        delivered: usize,
+    },
+    LastPosition {
+        stream: String,
+        event_type: String,
+    },
+}
+
+impl CountedRead {
+    /// The events this call handed back to its caller so far.
+    pub fn materialized(&self) -> usize {
+        match self {
+            CountedRead::Stream { materialized, .. } | CountedRead::All { materialized, .. } => {
+                *materialized
+            }
+            CountedRead::SubscribeStream { delivered, .. }
+            | CountedRead::SubscribeAll { delivered, .. } => *delivered,
+            CountedRead::LastPosition { .. } => 0,
+        }
+    }
+
+    /// Add `n` handed-back events to this call's count; a lookup hands back none.
+    fn add(&mut self, n: usize) {
+        match self {
+            CountedRead::Stream { materialized, .. } | CountedRead::All { materialized, .. } => {
+                *materialized += n
+            }
+            CountedRead::SubscribeStream { delivered, .. }
+            | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
+            CountedRead::LastPosition { .. } => {}
+        }
+    }
+}
+
+/// The shared call log a [`ReadCountingStore`] and the subscriptions it hands back count into.
+type CallLog = std::sync::Arc<std::sync::Mutex<Vec<CountedRead>>>;
+
+/// THE COUNTING STORE DOUBLE (spec 101): a real store behind a decorator that records every read
+/// it forwards and how many events each one materialized, so a test asserts a command's read
+/// cost at the store seam instead of measuring resident memory. Appends pass through uncounted.
+/// The one shared instance of this instrument: every criterion that asserts a read cost uses it,
+/// and a new port method gains its forwarding and its [`CountedRead`] here.
+pub struct ReadCountingStore<'a> {
+    inner: &'a dyn EventStore,
+    reads: CallLog,
+}
+
+impl<'a> ReadCountingStore<'a> {
+    /// Count the reads made through this decorator over `inner`.
+    pub fn new(inner: &'a dyn EventStore) -> Self {
+        ReadCountingStore {
+            inner,
+            reads: CallLog::default(),
+        }
+    }
+
+    /// Every read forwarded so far, in call order.
+    pub fn reads(&self) -> Vec<CountedRead> {
+        self.reads.lock().unwrap().clone()
+    }
+
+    /// The total events every read so far handed back.
+    pub fn materialized(&self) -> usize {
+        self.reads().iter().map(CountedRead::materialized).sum()
+    }
+
+    /// Record `read` before it is forwarded, answering its index in the call log.
+    fn record(&self, read: CountedRead) -> usize {
+        let mut reads = self.reads.lock().unwrap();
+        reads.push(read);
+        reads.len() - 1
+    }
+
+    /// Count the `events` call `at` handed back, then hand them on.
+    fn handed_back(&self, at: usize, events: Vec<Event>) -> Vec<Event> {
+        self.reads.lock().unwrap()[at].add(events.len());
+        events
+    }
+
+    /// `sub` relayed so each event it delivers is counted into call `at` before it is handed on.
+    fn counted(&self, at: usize, sub: Subscription) -> Subscription {
+        let reads = std::sync::Arc::clone(&self.reads);
+        sub.map(move |e| {
+            reads.lock().unwrap()[at].add(1);
+            e
+        })
+    }
+}
+
+impl EventStore for ReadCountingStore<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        self.inner.append(stream, expected, events)
+    }
+    fn read_stream(
+        &self,
+        stream: &str,
+        from: Revision,
+        dir: Direction,
+    ) -> Result<Vec<Event>, Error> {
+        let at = self.record(CountedRead::Stream {
+            stream: stream.to_string(),
+            from,
+            forward: matches!(dir, Direction::Forward),
+            materialized: 0,
+        });
+        let events = self.inner.read_stream(stream, from, dir)?;
+        Ok(self.handed_back(at, events))
+    }
+    fn read_all(
+        &self,
+        from: Position,
+        dir: Direction,
+        filter: &Filter,
+    ) -> Result<Vec<Event>, Error> {
+        let at = self.record(CountedRead::All {
+            from,
+            forward: matches!(dir, Direction::Forward),
+            materialized: 0,
+        });
+        let events = self.inner.read_all(from, dir, filter)?;
+        Ok(self.handed_back(at, events))
+    }
+    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
+        let at = self.record(CountedRead::SubscribeAll { from, delivered: 0 });
+        let sub = self.inner.subscribe_all(from, filter)?;
+        Ok(self.counted(at, sub))
+    }
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error> {
+        let at = self.record(CountedRead::SubscribeStream {
+            stream: stream.to_string(),
+            from,
+            delivered: 0,
+        });
+        let sub = self.inner.subscribe_stream(stream, from)?;
+        Ok(self.counted(at, sub))
+    }
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        self.record(CountedRead::LastPosition {
+            stream: stream.to_string(),
+            event_type: event_type.to_string(),
+        });
+        self.inner.last_position(stream, event_type)
     }
 }
