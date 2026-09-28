@@ -575,11 +575,6 @@
     "reason": "Two property tests over different functions and invariants (module names never carry a dot or slash; credential fragments never survive redaction)."
   },
   {
-    "id": "dup-cc43c38b38ca",
-    "disposition": "not-a-duplicate",
-    "reason": "Fold helpers that each build a different event type or payload (inferred edges with and without evidence, doc concepts, doc links, batch refs, unit integration, concept realization, lang-less refs) over the shared `apply_json`."
-  },
-  {
     "id": "dup-b5bd50de3e2a",
     "disposition": "not-a-duplicate",
     "reason": "`apply_code_entity_partial` and `apply_community` fold two different event types with different payload fields over the shared `apply_json`."
@@ -708,16 +703,6 @@
     "id": "dup-c99581d3e41e",
     "disposition": "not-a-duplicate",
     "reason": "`write_workflow` and `write_store_conn` write different files (the committed workflow versus the per-machine secret)."
-  },
-  {
-    "id": "dup-38bcd5cba1f7",
-    "disposition": "not-a-duplicate",
-    "reason": "Non-boundary tests for two different layers (community assignment versus concept derivation) with different event types and folds."
-  },
-  {
-    "id": "dup-29092fe5ff01",
-    "disposition": "not-a-duplicate",
-    "reason": "Serialized-literal stability tests for two different layers (community versus concept) with different literals."
   },
   {
     "id": "dup-515218e72204",
@@ -908,5 +893,30 @@
     "id": "dup-78c48ff4c88e",
     "disposition": "not-a-duplicate",
     "reason": "Two levels of one rule, not two copies: `ReviewPanel::gating_agent_ids` names one panel's gating agents, and the config-level `gating_agent_ids` unions that method over the default panel and every stage's panel plus each stage's standalone adjudicator. The workspace split put the panel method in the domain crate and the Config-level fold beside `Config`, so the two same-named functions now sit in different files."
+  },
+  {
+    "id": "dup-49b57537de27",
+    "disposition": "not-a-duplicate",
+    "reason": "Fold helpers that each build a different event type or payload (inferred edges with and without evidence, doc concepts, doc links, batch refs, unit integration, lang-less refs) over the shared `apply_json`."
+  },
+  {
+    "id": "dup-c51171ae2133",
+    "disposition": "not-a-duplicate",
+    "reason": "Non-boundary tests for two different layers (community assignment versus concept derivation) with different event types and folds."
+  },
+  {
+    "id": "dup-ddaf372936d3",
+    "disposition": "not-a-duplicate",
+    "reason": "Serialized-literal stability tests for two different layers (community versus concept) with different literals."
+  },
+  {
+    "id": "dup-19f9cf9e5fab",
+    "disposition": "not-a-duplicate",
+    "reason": "Payload builders for two different event types (a `CommunityAssigned` membership versus a `CodeEntityExtracted` definition) whose only shared shape is serializing a `json!` literal."
+  },
+  {
+    "id": "dup-28aabff55c4b",
+    "disposition": "not-a-duplicate",
+    "reason": "Different fold writes that share only the shape of a parameterized statement: `retire_grain` retires a community or concept grain's attachments and releases its detached ones, `stage_pending_proof` records one test reference awaiting its definition."
   }
 ]

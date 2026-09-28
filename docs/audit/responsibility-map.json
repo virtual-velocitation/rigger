@@ -6257,6 +6257,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "open_graph",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "4adb05c26eafe217"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "env_conn",
     "is_test": false,
     "proposed_module": null,
