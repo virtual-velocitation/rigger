@@ -1036,6 +1036,27 @@ mod tests {
         crate::eventstore::contract::assert_contract(&Store::open(":memory:").unwrap());
     }
 
+    /// THE BOUNDARY IS A QUERY, on this backend an INDEXED LOOKUP (spec 101): sqlite's own plan
+    /// for the lookup is one search of the stream-and-type index, never a scan of the table, so
+    /// its cost does not grow with the derived events the stream holds.
+    #[test]
+    fn the_boundary_lookup_is_one_seek_of_the_stream_and_type_index() {
+        let s = Store::open(":memory:").unwrap();
+        let conn = s.conn.lock().unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {LAST_POSITION_SQL}"))
+            .unwrap()
+            .query_map(params!["rigger", "RunStarted"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            plan,
+            ["SEARCH events USING INDEX idx_events_stream_type (stream=? AND type=?)"],
+            "the lookup must be a single index search with no scan and no sort step"
+        );
+    }
+
     #[test]
     fn assigns_per_stream_revisions() {
         let s = Store::open(":memory:").unwrap();

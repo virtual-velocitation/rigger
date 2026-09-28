@@ -218,6 +218,36 @@ mod tests {
         assert_eq!(a_run[0].stream, "run");
     }
 
+    /// The boundary lookup is scoped like every other read: each project answers its OWN
+    /// stream's newest match, never a sibling project's same-named stream.
+    #[test]
+    fn the_boundary_lookup_answers_within_the_namespace() {
+        let backend = Store::open(":memory:").unwrap();
+        let alpha = Namespaced::new(&backend, "alpha");
+        let beta = Namespaced::new(&backend, "beta");
+        let ev = |t: &str| Event::new(t, b"{}".to_vec());
+        alpha
+            .append("run", ExpectedRevision::Any, &[ev("RunStarted"), ev("W")])
+            .unwrap();
+        beta.append(
+            "run",
+            ExpectedRevision::Any,
+            &[ev("W"), ev("W"), ev("RunStarted")],
+        )
+        .unwrap();
+
+        assert_eq!(alpha.last_position("run", "RunStarted").unwrap(), Some(0));
+        assert_eq!(beta.last_position("run", "RunStarted").unwrap(), Some(2));
+        assert_eq!(
+            backend
+                .last_position("proj-beta-run", "RunStarted")
+                .unwrap(),
+            Some(2),
+            "the decorator asks the backend for the prefixed stream"
+        );
+        assert_eq!(backend.last_position("run", "RunStarted").unwrap(), None);
+    }
+
     #[test]
     fn passes_the_contract() {
         let backend = Store::open(":memory:").unwrap();

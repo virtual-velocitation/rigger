@@ -26,6 +26,90 @@ pub fn assert_contract(store: &dyn EventStore) {
     append_reports_every_event_at_the_position_the_store_holds_it(store);
     append_of_one_event_answers_the_position_the_store_holds_it(store);
     append_of_no_events_reports_nothing(store);
+    last_position_answers_the_newest_boundary_without_reading_the_stream(store);
+}
+
+/// THE BOUNDARY IS A QUERY (spec 101): the newest event of a type on a stream is answered by the
+/// backend's own lookup - an index seek or a backward read that stops at the first match - never
+/// by materializing the stream. Pinned here so every backend owes it: the answer is the NEWEST
+/// match (not the first), of THAT type (not the newest event), on THAT stream (not another
+/// stream's later match), and the counting double proves the lookup handed back no event and
+/// issued no read at all.
+fn last_position_answers_the_newest_boundary_without_reading_the_stream(store: &dyn EventStore) {
+    let run = |t: &str| Event::new(t, b"{}".to_vec());
+    store
+        .append(
+            "c-boundary",
+            ExpectedRevision::NoStream,
+            &[
+                run("RunStarted"),
+                run("Work"),
+                run("Work"),
+                run("RunStarted"),
+                run("Work"),
+            ],
+        )
+        .expect("the fixture run stream appends");
+    // A sibling stream whose own boundary is recorded LATER and at a HIGHER revision.
+    store
+        .append(
+            "c-boundary-sibling",
+            ExpectedRevision::NoStream,
+            &[
+                run("Work"),
+                run("Work"),
+                run("Work"),
+                run("Work"),
+                run("Work"),
+                run("RunStarted"),
+            ],
+        )
+        .expect("the sibling stream appends");
+
+    let counted = crate::event_fixtures::ReadCountingStore::new(store);
+    let lookup = |stream: &str, t: &str| {
+        counted
+            .last_position(stream, t)
+            .unwrap_or_else(|e| panic!("the boundary lookup on {stream:?} must succeed: {e}"))
+    };
+    assert_eq!(
+        lookup("c-boundary", "RunStarted"),
+        Some(3),
+        "the boundary is the revision of the NEWEST RunStarted on the stream"
+    );
+    assert_eq!(lookup("c-boundary-sibling", "RunStarted"), Some(5));
+    assert_eq!(
+        lookup("c-boundary", "Work"),
+        Some(4),
+        "any type answers its own newest revision"
+    );
+    assert_eq!(
+        lookup("c-boundary", "Absent"),
+        None,
+        "a type the stream never recorded has no boundary"
+    );
+    assert_eq!(
+        lookup("c-boundary-never-written", "RunStarted"),
+        None,
+        "a stream that does not exist has no boundary"
+    );
+    assert_eq!(
+        counted.materialized(),
+        0,
+        "the lookup hands back no event: {:?}",
+        counted.reads()
+    );
+    let lookups_only = counted.reads().iter().all(|r| {
+        matches!(
+            r,
+            crate::event_fixtures::CountedRead::LastPosition { .. }
+        )
+    });
+    assert!(
+        lookups_only && counted.reads().len() == 5,
+        "the lookup issues no stream or $all read, so no forward read from 0 ever happens: {:?}",
+        counted.reads()
+    );
 }
 
 /// THE HONESTY OBLIGATION, and the reason it is pinned HERE rather than in one
