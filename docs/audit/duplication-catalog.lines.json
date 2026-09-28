@@ -5215,7 +5215,7 @@
     ]
   },
   {
-    "id": "dup-a890a813b3ae",
+    "id": "dup-b4b352b24320",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5286,6 +5286,11 @@
         "file": "tests/common/fixtures/sqlite.rs",
         "start_line": 22,
         "end_line": 22
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "start_line": 80,
+        "end_line": 80
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",

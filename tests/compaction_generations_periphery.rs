@@ -23,6 +23,7 @@
 mod common;
 
 use common::cli::keyed;
+use common::cli::nanos;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
@@ -36,7 +37,6 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{ContentIdentity, Event, EventStore, ExpectedRevision};
 use std::path::Path;
-use std::time::Duration;
 
 // ---------------------------------------------------------------------------------------
 // Harness
@@ -96,10 +96,6 @@ fn keyed_rows(db: &str) -> Vec<Kept> {
         .filter_map(|(p, s, t, m, v)| meta_replay_key(&m).map(|k| (p, s, t, k, v)))
         .collect();
     out
-}
-
-fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
 }
 
 /// The four derived types, in the shipped policy's declared order, with the given counts.
@@ -339,114 +335,62 @@ fn key_parts_answers_only_through_the_parser_the_policy_declared() {
     );
 }
 
+/// Where no generation is known - the policy declares no parser, or the declared parser rejects
+/// the key - nothing is shed as superseded: exact-key semantics keep each key's latest recording.
+/// An unparseable key therefore survives beside a later well-formed generation of what LOOKS
+/// like the same file (the fail-safe direction).
 #[test]
-fn a_policy_that_declares_no_key_parser_keeps_every_generations_latest_recording() {
-    let dir = tempfile::tempdir().unwrap();
-    let (backend, db) = store_with(
-        dir.path(),
-        &[(
-            rigger::conductor::STREAM,
-            vec![
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("a", 1),
-                    "gc/src/f.rs@h1#0",
-                    1,
-                ),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("a", 1),
-                    "gc/src/f.rs@h1#0",
-                    2,
-                ),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("a", 2),
-                    "gc/src/f.rs@h2#0",
-                    3,
-                ),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("a", 2),
-                    "gc/src/f.rs@h2#0",
-                    4,
-                ),
-            ],
-        )],
-    );
-    let identity = identity_without_key_parts();
-    let prefix = Namespaced::prefix_for(PROJECT);
-
-    assert_eq!(
-        backend
-            .count_derived_duplicates(&prefix, &identity)
-            .unwrap(),
-        per_type(2, 0, 0, 0)
-    );
-    let pruned = backend.prune_derived_index(&prefix, &identity).unwrap();
-    assert_eq!(pruned.removed, per_type(2, 0, 0, 0));
-    assert_eq!(
-        pruned.superseded_generations, 0,
-        "without a parser no generation is known, so nothing is shed as superseded"
-    );
-    let kept: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
-    assert_eq!(
-        kept,
+fn a_key_with_no_parsed_generation_is_only_deduplicated_and_never_shed_as_superseded() {
+    let no_parser = (
+        identity_without_key_parts(),
         vec![
-            ("gc/src/f.rs@h1#0".to_string(), nanos(2)),
-            ("gc/src/f.rs@h2#0".to_string(), nanos(4)),
+            ("gc/src/f.rs@h1#0", 1, 1),
+            ("gc/src/f.rs@h1#0", 1, 2),
+            ("gc/src/f.rs@h2#0", 2, 3),
+            ("gc/src/f.rs@h2#0", 2, 4),
         ],
-        "exact-key semantics: each key keeps its latest recording"
+        2,
+        vec![("gc/src/f.rs@h1#0", 2), ("gc/src/f.rs@h2#0", 4)],
     );
-}
-
-#[test]
-fn a_key_the_parser_rejects_is_its_own_identity_and_is_never_shed_as_superseded() {
-    let dir = tempfile::tempdir().unwrap();
-    let (backend, db) = store_with(
-        dir.path(),
-        &[(
-            rigger::conductor::STREAM,
-            vec![
-                // No `#<index>` tail: the shipped parser rejects this key.
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("a", 1),
-                    "gc/src/f.rs@h1",
-                    1,
-                ),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("a", 1),
-                    "gc/src/f.rs@h1",
-                    2,
-                ),
-                // A later, well-formed generation of what LOOKS like the same file.
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    entity("a", 2),
-                    "gc/src/f.rs@h2#0",
-                    3,
-                ),
-            ],
-        )],
-    );
-    let identity = rigger::ingest::derived_index_identity();
-    let prefix = Namespaced::prefix_for(PROJECT);
-
-    let pruned = backend.prune_derived_index(&prefix, &identity).unwrap();
-    assert_eq!(pruned.removed, per_type(1, 0, 0, 0));
-    assert_eq!(pruned.superseded_generations, 0);
-    let kept: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
-    assert_eq!(
-        kept,
+    // No `#<index>` tail on h1: the shipped parser rejects that key.
+    let rejected_key = (
+        rigger::ingest::derived_index_identity(),
         vec![
-            ("gc/src/f.rs@h1".to_string(), nanos(2)),
-            ("gc/src/f.rs@h2#0".to_string(), nanos(3)),
+            ("gc/src/f.rs@h1", 1, 1),
+            ("gc/src/f.rs@h1", 1, 2),
+            ("gc/src/f.rs@h2#0", 2, 3),
         ],
-        "the unparseable key is only deduplicated: its latest recording survives beside the \
-         later well-formed generation (the fail-safe direction)"
+        1,
+        vec![("gc/src/f.rs@h1", 2), ("gc/src/f.rs@h2#0", 3)],
     );
+    for (identity, recorded, removed, kept) in [no_parser, rejected_key] {
+        let dir = tempfile::tempdir().unwrap();
+        let events = recorded
+            .iter()
+            .map(|&(key, line, secs)| {
+                keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("a", line), key, secs)
+            })
+            .collect();
+        let (backend, db) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
+        let prefix = Namespaced::prefix_for(PROJECT);
+
+        assert_eq!(
+            backend
+                .count_derived_duplicates(&prefix, &identity)
+                .unwrap(),
+            per_type(removed, 0, 0, 0),
+            "the preview must count exactly what the prune removes"
+        );
+        let pruned = backend.prune_derived_index(&prefix, &identity).unwrap();
+        assert_eq!(pruned.removed, per_type(removed, 0, 0, 0));
+        assert_eq!(pruned.superseded_generations, 0);
+        let actual: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
+        let expected: Vec<(String, i64)> = kept
+            .iter()
+            .map(|&(key, secs)| (key.to_string(), nanos(secs)))
+            .collect();
+        assert_eq!(actual, expected, "each key keeps only its latest recording");
+    }
 }
 
 /// A parser of a key shape the store has never seen: `<identity>:<generation>`.
