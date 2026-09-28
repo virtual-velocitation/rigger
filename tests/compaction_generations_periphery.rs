@@ -2214,3 +2214,202 @@ fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
         "the prior generation's retired link stays revivable"
     );
 }
+
+/// The fold rule a `graph.db` records (its `user_version`).
+fn user_version(db: &Path) -> i64 {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap()
+}
+
+/// The fold rule a `graph.db` records after an open of it, and whether that open owes a rebuild.
+fn version_and_owed(db: &Path) -> (i64, bool) {
+    use rigger::contextgraph::sqlite::Projector;
+    let owed = Projector::open(db.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .rebuild_owed();
+    (user_version(db), owed)
+}
+
+/// Opening a pre-rule `graph.db` never pays its rebuild by itself: every open until
+/// [`Projector::rebuild`] owes it again and leaves the file at its old fold rule, so a command
+/// that opens and refuses (`rigger reset --derived`) cannot let the next one fold onto it. A file
+/// at the old rule that never folded anything holds nothing a rebuild could change: its open owes
+/// nothing and records the current rule.
+#[test]
+fn an_open_owes_the_rebuild_until_it_is_paid_and_an_unfolded_file_owes_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let log = run_events(&backend, PROJECT);
+    let folded = dir.path().join("folded.db");
+    a_pre_rule_graph_db(&folded, &log[..3], "");
+    assert_eq!(
+        version_and_owed(&folded),
+        (0, true),
+        "the first open owes it"
+    );
+    assert_eq!(
+        version_and_owed(&folded),
+        (0, true),
+        "an open that did not rebuild leaves the rebuild owed"
+    );
+
+    let unfolded = dir.path().join("unfolded.db");
+    a_pre_rule_graph_db(&unfolded, &[], "");
+    assert_eq!(
+        version_and_owed(&unfolded),
+        (1, false),
+        "a file that folded nothing owes nothing and records the current rule"
+    );
+    assert_eq!(version_and_owed(&unfolded), (1, false), "and stays current");
+}
+
+/// The `graph.db` schema of the release before the generation rule: no ledgers, no `proofs`, and
+/// the `pending_proof` table that rule replaced.
+const RELEASE_ERA_SCHEMA: &str = "
+CREATE TABLE nodes (
+  id TEXT NOT NULL, kind TEXT NOT NULL, attrs TEXT,
+  project TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (id, project)
+);
+CREATE TABLE edges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_id TEXT NOT NULL, to_id TEXT NOT NULL, rel TEXT NOT NULL,
+  valid_from INTEGER NOT NULL, valid_to INTEGER, source INTEGER NOT NULL,
+  project TEXT NOT NULL DEFAULT '',
+  tier TEXT NOT NULL DEFAULT 'extracted'
+);
+CREATE INDEX idx_edges_from ON edges(from_id);
+CREATE INDEX idx_edges_to ON edges(to_id);
+CREATE TABLE aliases (alias TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
+CREATE TABLE applied (position INTEGER PRIMARY KEY);
+CREATE TABLE pending_proof (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  evidence TEXT NOT NULL
+);
+CREATE INDEX idx_pending_proof_name ON pending_proof(project, name);
+";
+
+/// Given an operator store whose `graph.db` the release before the generation rule folded - it
+/// still holds the definition and the design link a superseded generation asserted, and a test's
+/// proof waiting in `pending_proof` - when the operator's next command that folds (`rigger emit`)
+/// runs, then that `graph.db` is rebuilt cold from the log first: the superseded facts are gone,
+/// the old table is dropped, the file records the current rule, and the emitted decision lands
+/// on exactly the graph a fresh fold of the whole log reaches.
+#[test]
+fn the_next_command_that_folds_rebuilds_a_release_era_graph_db_from_the_log() {
+    use rigger::contextgraph::sqlite::Projector;
+    let dir = temp_store_project();
+    let root = dir.path();
+    let project = run_stream_identity(root);
+    let mut log = two_generations_dropping_facts();
+    log.push(keyed(
+        TYPE_EDGE_INFERRED,
+        proof("alpha", 3),
+        "gc/tests/t.rs@k1#0",
+        30,
+    ));
+    let events_db = rigger_file(root, "events.db");
+    let graph_db = rigger_file(root, "graph.db");
+    let appended = {
+        let backend = Store::open(events_db.to_str().unwrap()).unwrap();
+        Namespaced::new(&backend, &project)
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &log)
+            .unwrap();
+        run_events(&backend, &project)
+    };
+    let _ = std::fs::remove_file(&graph_db);
+    {
+        let conn = rusqlite::Connection::open(&graph_db).unwrap();
+        conn.execute_batch(RELEASE_ERA_SCHEMA).unwrap();
+        for e in &appended {
+            conn.execute("INSERT INTO applied (position) VALUES (?1)", [e.position])
+                .unwrap();
+        }
+        for (id, kind) in [
+            ("src/f.rs", "file"),
+            ("src/f.rs::alpha", "function"),
+            ("src/f.rs::gone", "function"),
+            ("docs/f.md", "artifact"),
+            ("src/old.rs", "artifact"),
+        ] {
+            conn.execute(
+                "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, NULL, ?3)",
+                [id, kind, project.as_str()],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+             VALUES ('docs/f.md', 'src/old.rs', ?1, 10000000000, NULL, 3, ?2, 'extracted')",
+            [rigger::contextgraph::REL_SPECIFIES, project.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pending_proof (project, name, evidence) VALUES (?1, 'gone', 'tests/t.rs:3')",
+            [project.as_str()],
+        )
+        .unwrap();
+    }
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d-up","summary":"s","governs":["src/f.rs::alpha"],"supersedes":""}"#,
+        ],
+    );
+    assert!(ok, "the emit must succeed; stdout: {out} stderr: {err}");
+
+    let pending_proof_tables: i64 = rusqlite::Connection::open(&graph_db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'pending_proof'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        (user_version(&graph_db), pending_proof_tables),
+        (1, 0),
+        "the rebuilt file records the current rule and no longer holds the old table"
+    );
+    let rebuilt = Projector::open(graph_db.to_str().unwrap(), &project).unwrap();
+    assert!(!rebuilt.rebuild_owed(), "the rebuild was paid");
+    let whole = rebuilt.whole().unwrap();
+    drop(rebuilt);
+    assert_eq!(
+        (
+            whole.nodes.iter().any(|n| n.id == "src/f.rs::gone"),
+            whole.edges.iter().any(|e| e.to == "src/old.rs"),
+        ),
+        (false, false),
+        "the superseded generation's definition and design link are gone"
+    );
+
+    let full_log = run_events(&Store::open(events_db.to_str().unwrap()).unwrap(), &project);
+    assert_eq!(
+        full_log.len(),
+        appended.len() + 1,
+        "the log holds the seeded events and the emitted decision"
+    );
+    let fresh = root.join("fresh.db");
+    assert_eq!(
+        (
+            serde_json::to_string(&whole).unwrap(),
+            fold_state(&graph_db)
+        ),
+        (
+            fold_in_batches(&fresh, &project, &[full_log]),
+            fold_state(&fresh)
+        ),
+        "the emit folded onto the graph the whole log rebuilds, fold state included"
+    );
+}
