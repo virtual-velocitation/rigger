@@ -48,7 +48,7 @@
 //! implementer's own 5 new tests already integration-test that PARITY property, on fixtures and
 //! on the real tree. What none of them pin is the COMMITTED ARTIFACT itself: a future edit to the
 //! generator's call site, or a stale regeneration, could reintroduce spec 87's own Goal-named
-//! misclassification (`src/eventstore/contract.rs`, `src/blast_radius_eval.rs` counted as
+//! misclassification (`src/eventstore/contract.rs`, `crates/rigger-conductor/src/blast_radius_eval.rs` counted as
 //! production) even while the two resolvers still agree with each other in isolation. The tests
 //! after the byte-for-byte round-trip proof below close that gap and pin round 0's concrete fixed
 //! regressions (`adj-u87c2-r0-verdict-reject`) against the real committed file,
@@ -93,8 +93,8 @@
 //! Mechanism A - a struct-literal field VALUE or a UFCS path used as a value on a
 //! `DispatchCategory::Method` fn, exactly the two round-2 upheld classes, now genuinely fixed for
 //! their reported instances AND for further real instances neither round 2 nor the operator's
-//! ruling named: the 10 `src/docs.rs` `skill_registry()` `render_*` fns (struct-literal field
-//! value, e.g. `render_body: render_planning_a_spec_skill,` at `src/docs.rs:1211`) and
+//! ruling named: the 10 `crates/rigger-domain/src/docs.rs` `skill_registry()` `render_*` fns (struct-literal field
+//! value, e.g. `render_body: render_planning_a_spec_skill,` at `crates/rigger-domain/src/docs.rs:1211`) and
 //! `src/config.rs`'s `to_rule` (UFCS value, `.map(FailureRuleDef::to_rule)` at
 //! `src/config.rs:766`) are the 11 the operator's ruling explicitly named. `is_grep_fallback`
 //! (`src/progress.rs`, UFCS value `.filter(crate::progress::AgentProgress::is_grep_fallback)` at
@@ -392,7 +392,7 @@ rigger::test_cases! {
 
 /// The real tree's own out-of-line test files, named explicitly rather than re-derived through
 /// the production pipeline's public API: spec 87's own Goal text names exactly these two
-/// (`src/eventstore/contract.rs`, `src/blast_radius_eval.rs`) as the worked misclassification
+/// (`src/eventstore/contract.rs`, `crates/rigger-conductor/src/blast_radius_eval.rs`) as the worked misclassification
 /// example. Since spec 93 criterion 1, both declarations carry a wider, store-only compound
 /// predicate rather than the original bare `#[cfg(test)]` - `src/eventstore/mod.rs` declares
 /// `#[cfg(all(test, any(feature = "store", not(feature = "core"))))] pub mod contract;`,
@@ -409,7 +409,7 @@ rigger::test_cases! {
 /// still be caught here.
 const KNOWN_OUT_OF_LINE_TEST_FILES: [&str; 2] = [
     "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-    "src/blast_radius_eval.rs",
+    "crates/rigger-conductor/src/blast_radius_eval.rs",
 ];
 
 /// Round 1 class 3 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`): the
@@ -500,18 +500,18 @@ rigger::test_cases! {
     value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from_the_committed_file:
         assert_absent_from_dead_code(
             &[
-                // src/docs.rs skill_registry()'s 10 render_body: render_*_skill struct-literal
-                // field values (src/docs.rs:1207-1243) - the fnptr-struct-field-value class.
-                ("render_using_rigger_skill", Some("src/docs.rs")),
-                ("render_planning_a_spec_skill", Some("src/docs.rs")),
-                ("render_reset_store_skill", Some("src/docs.rs")),
-                ("render_build_graph_skill", Some("src/docs.rs")),
-                ("render_reindex_skill", Some("src/docs.rs")),
-                ("render_resume_a_run_skill", Some("src/docs.rs")),
-                ("render_handle_an_escalation_skill", Some("src/docs.rs")),
-                ("render_watch_a_run_skill", Some("src/docs.rs")),
-                ("render_restore_the_dash_skill", Some("src/docs.rs")),
-                ("render_diagnose_churn_skill", Some("src/docs.rs")),
+                // crates/rigger-domain/src/docs.rs skill_registry()'s 10 render_body: render_*_skill struct-literal
+                // field values (crates/rigger-domain/src/docs.rs:1207-1243) - the fnptr-struct-field-value class.
+                ("render_using_rigger_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_planning_a_spec_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_reset_store_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_build_graph_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_reindex_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_resume_a_run_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_handle_an_escalation_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_watch_a_run_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_restore_the_dash_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_diagnose_churn_skill", Some("crates/rigger-domain/src/docs.rs")),
                 // src/config.rs's .map(FailureRuleDef::to_rule) at src/config.rs:766 - the
                 // Method-category-UFCS-value class.
                 ("to_rule", Some("src/config.rs")),

@@ -1764,10 +1764,28 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/main.rs` and 
 - **Command::new call sites**: 83 site(s) - `dup-9f07a7bf395a`
 - **/proc-path string literals**: 48 site(s) - `dup-6174e7208ef3`
 - **sqlite Connection::open call sites**: 34 site(s) - `dup-f4557659a212`
-- **.rigger-path string literals**: 539 site(s) - `dup-b9abcf6afc4e`
+- **.rigger-path string literals**: 539 site(s) - `dup-1e8420f911f8`
 - **error-shaping helper functions**: 10 site(s) - `dup-be3f13e37fd5`
 
 ### Clusters (33 exact, 124 near, 25 semantic)
+
+#### `dup-49d4d9f335fc` (near, 2 sites)
+
+Proposed home: `blast_radius_eval::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-conductor/src/blast_radius_eval.rs:216-231` `width_threshold_is_the_tier_width_nearest_rank_percentile`
+- `crates/rigger-conductor/src/blast_radius_eval.rs:234-242` `full_fraction_spans_all_light_to_collapse`
+
+#### `dup-be7f6094aaff` (exact, 2 sites)
+
+Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor/src/canary_store.rs, crates/rigger-grounder/src/grounder/design/extract.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-conductor/src/canary_store.rs:822-824` `any_finding_is_critical`
+- `crates/rigger-grounder/src/grounder/design/extract.rs:157-159` `is_handbook_path`
 
 #### `dup-252bfd2c826c` (near, 9 sites)
 
@@ -2023,7 +2041,7 @@ mandatory sweep: Command::new call sites - 83 site(s), collected mechanically re
 - `tests/turbovec_retired_cargo_boundary.rs:50-50` `Command::new`
 - `tests/validate_behind_the_tree_periphery.rs:128-128` `Command::new`
 
-#### `dup-b9abcf6afc4e` (semantic, 539 sites)
+#### `dup-1e8420f911f8` (semantic, 539 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
@@ -2049,37 +2067,7 @@ mandatory sweep: .rigger-path string literals - 539 site(s), collected mechanica
 - `crates/rigger-dash/src/dash.rs:3820-3820` `"{root}/.rigger/events.db"`
 - `crates/rigger-dash/src/dash.rs:3869-3869` `"/.rigger/events.db"`
 - `crates/rigger-domain/src/config.rs:20-20` `".rigger"`
-- `crates/rigger-domain/src/instructions.rs:61-61` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
-- `crates/rigger-gates-shell/src/gate.rs:319-319` `".rigger-cache-probe-{}"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4352-4352` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4360-4360` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4368-4368` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4376-4376` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4384-4384` `".rigger/workflow.yml"`
-- `crates/rigger-grounder/src/grounder/mod.rs:333-333` `".rigger"`
-- `crates/rigger-grounder/src/grounder/workflowdef.rs:481-481` `".rigger"`
-- `crates/rigger-grounder/src/grounder/workflowdef.rs:568-568` `"this project's own .rigger/workflow.yml must extract at least one event"`
-- `crates/rigger-grounder/src/ingest.rs:475-475` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:477-477` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:486-486` `"gw/.rigger/workflow.yml@"`
-- `crates/rigger-grounder/src/ingest.rs:504-504` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
-             must both advance the shared batch count; got {}"`
-- `crates/rigger-grounder/src/ingest.rs:533-533` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:535-535` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:569-569` `".rigger"`
-- `crates/rigger-process/src/reap.rs:731-731` `".rigger"`
-- `crates/rigger-process/src/reap.rs:1073-1073` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
-             must still authorize the reap"`
-- `crates/rigger-store-sqlite/src/registry.rs:323-323` `"/home/dev/proj/.rigger/events.db"`
-- `crates/rigger-store-sqlite/src/registry.rs:332-332` `"/home/dev/proj/.rigger/events.db"`
-- `crates/rigger-store-sqlite/src/registry.rs:349-349` `"/home/dev/proj/.rigger/events.db"`
-- `crates/rigger-store-sqlite/src/registry.rs:356-356` `"/home/dev/proj/.rigger/events.db"`
-- `crates/rigger-store-sqlite/src/registry.rs:370-370` `"/home/dev/proj-b/.rigger/events.db"`
-- `crates/rigger-store-sqlite/src/registry.rs:388-388` `"/a/.rigger/events.db"`
-- `crates/rigger-store-sqlite/src/registry.rs:389-389` `"/b/.rigger/events.db"`
-- `crates/rigger-store-sqlite/src/registry.rs:415-415` `"/home/dev/proj/.rigger/events.db"`
-- `crates/rigger-store-sqlite/src/registry.rs:433-433` `"/home/dev/proj/.rigger/events.db"`
-- `src/docs.rs:220-220` `"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \
+- `crates/rigger-domain/src/docs.rs:220-220` `"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \
          reset --derived`. Each run's project-ingest pass records the project's derived index - \
          the code entities, inferred edges, design links, and doc concepts folded from your \
          sources - and a log written before that pass deduplicated across runs holds the WHOLE \
@@ -2128,29 +2116,59 @@ mandatory sweep: .rigger-path string literals - 539 site(s), collected mechanica
          driver registration for this store is still live, naming what it found. `--force-live` \
          overrides the refusal for an operator certain no writer is using the store; it checks \
          nothing.\n"`
-- `src/docs.rs:662-662` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
+- `crates/rigger-domain/src/docs.rs:662-662` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
          the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
          Read this before running `rigger reset` or touching any store file by hand."`
-- `src/docs.rs:666-666` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
+- `crates/rigger-domain/src/docs.rs:666-666` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
              durable:\n"`
-- `src/docs.rs:722-722` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
+- `crates/rigger-domain/src/docs.rs:722-722` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
              no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n"`
-- `src/docs.rs:732-732` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
+- `crates/rigger-domain/src/docs.rs:732-732` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
          truth that no rebuild can get back, and deleting only the graph is unnecessary work \
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n"`
-- `src/docs.rs:756-756` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+- `crates/rigger-domain/src/docs.rs:756-756` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
              the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
              for an index that has drifted from files you just changed (a unit's own commit, a \
              rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
              store from the structural context graph, so it costs only the named files, never a \
              walk of the whole tree.\n"`
+- `crates/rigger-domain/src/instructions.rs:61-61` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
+- `crates/rigger-gates-shell/src/gate.rs:319-319` `".rigger-cache-probe-{}"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4352-4352` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4360-4360` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4368-4368` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4376-4376` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4384-4384` `".rigger/workflow.yml"`
+- `crates/rigger-grounder/src/grounder/mod.rs:333-333` `".rigger"`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:481-481` `".rigger"`
+- `crates/rigger-grounder/src/grounder/workflowdef.rs:568-568` `"this project's own .rigger/workflow.yml must extract at least one event"`
+- `crates/rigger-grounder/src/ingest.rs:475-475` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:477-477` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:486-486` `"gw/.rigger/workflow.yml@"`
+- `crates/rigger-grounder/src/ingest.rs:504-504` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
+             must both advance the shared batch count; got {}"`
+- `crates/rigger-grounder/src/ingest.rs:533-533` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:535-535` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:569-569` `".rigger"`
+- `crates/rigger-process/src/reap.rs:731-731` `".rigger"`
+- `crates/rigger-process/src/reap.rs:1073-1073` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
+             must still authorize the reap"`
+- `crates/rigger-store-sqlite/src/registry.rs:323-323` `"/home/dev/proj/.rigger/events.db"`
+- `crates/rigger-store-sqlite/src/registry.rs:332-332` `"/home/dev/proj/.rigger/events.db"`
+- `crates/rigger-store-sqlite/src/registry.rs:349-349` `"/home/dev/proj/.rigger/events.db"`
+- `crates/rigger-store-sqlite/src/registry.rs:356-356` `"/home/dev/proj/.rigger/events.db"`
+- `crates/rigger-store-sqlite/src/registry.rs:370-370` `"/home/dev/proj-b/.rigger/events.db"`
+- `crates/rigger-store-sqlite/src/registry.rs:388-388` `"/a/.rigger/events.db"`
+- `crates/rigger-store-sqlite/src/registry.rs:389-389` `"/b/.rigger/events.db"`
+- `crates/rigger-store-sqlite/src/registry.rs:415-415` `"/home/dev/proj/.rigger/events.db"`
+- `crates/rigger-store-sqlite/src/registry.rs:433-433` `"/home/dev/proj/.rigger/events.db"`
 - `src/main.rs:600-600` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
          secret file"`
@@ -3109,7 +3127,7 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
         `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \
-        `crates/rigger-dash/src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
+        `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
         `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
         `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \
@@ -3661,6 +3679,44 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:59-61` `is_word_char`
 - `tests/simplification_audit.rs:204-206` `is_ident_char`
 
+#### `dup-08ca12f5868a` (near, 2 sites)
+
+Proposed home: `docs::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/docs.rs:94-112` `render_using_rigger_skill`
+- `crates/rigger-domain/src/docs.rs:116-127` `render_handbook_discipline`
+
+#### `dup-ece6988d7484` (near, 2 sites)
+
+Proposed home: `docs::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/docs.rs:447-449` `render_planning_a_spec_skill`
+- `crates/rigger-domain/src/docs.rs:618-620` `render_planning_field_guide`
+
+#### `dup-c5777007a33f` (near, 4 sites)
+
+Proposed home: `docs::support (consolidate these 4 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/docs.rs:714-742` `render_build_graph_skill`
+- `crates/rigger-domain/src/docs.rs:747-774` `render_reindex_skill`
+- `crates/rigger-domain/src/docs.rs:779-813` `render_resume_a_run_skill`
+- `crates/rigger-domain/src/docs.rs:942-992` `render_restore_the_dash_skill`
+
+#### `dup-3d5ea11431d3` (near, 2 sites)
+
+Proposed home: `docs::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `crates/rigger-domain/src/docs.rs:820-855` `render_handle_an_escalation_skill`
+- `crates/rigger-domain/src/docs.rs:1001-1050` `render_diagnose_churn_skill`
+
 #### `dup-bb7aa56f67d8` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs)`
@@ -4069,15 +4125,6 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:56-58` `project_batches`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:224-231` `project_batches`
 
-#### `dup-7727a9cc5ba0` (exact, 2 sites)
-
-Proposed home: `a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/design/extract.rs, src/canary_store.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `crates/rigger-grounder/src/grounder/design/extract.rs:157-159` `is_handbook_path`
-- `src/canary_store.rs:822-824` `any_finding_is_critical`
-
 #### `dup-4b942d7302a6` (near, 2 sites)
 
 Proposed home: `model::support (consolidate these 2 sites into one function in this file)`
@@ -4268,53 +4315,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-worktree-git/src/worktree.rs:2623-2626` `scratch_root_from_env`
 - `crates/rigger-worktree-git/src/worktree.rs:2630-2633` `scratch_root_path_from_env`
-
-#### `dup-7dfa0dd1a6a8` (near, 2 sites)
-
-Proposed home: `blast_radius_eval::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/blast_radius_eval.rs:216-231` `width_threshold_is_the_tier_width_nearest_rank_percentile`
-- `src/blast_radius_eval.rs:234-242` `full_fraction_spans_all_light_to_collapse`
-
-#### `dup-6a2acacd5cf0` (near, 2 sites)
-
-Proposed home: `docs::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/docs.rs:94-112` `render_using_rigger_skill`
-- `src/docs.rs:116-127` `render_handbook_discipline`
-
-#### `dup-bcc850364281` (near, 2 sites)
-
-Proposed home: `docs::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/docs.rs:447-449` `render_planning_a_spec_skill`
-- `src/docs.rs:618-620` `render_planning_field_guide`
-
-#### `dup-fd7990caad07` (near, 4 sites)
-
-Proposed home: `docs::support (consolidate these 4 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/docs.rs:714-742` `render_build_graph_skill`
-- `src/docs.rs:747-774` `render_reindex_skill`
-- `src/docs.rs:779-813` `render_resume_a_run_skill`
-- `src/docs.rs:942-992` `render_restore_the_dash_skill`
-
-#### `dup-3e586352db43` (near, 2 sites)
-
-Proposed home: `docs::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/docs.rs:820-855` `render_handle_an_escalation_skill`
-- `src/docs.rs:1001-1050` `render_diagnose_churn_skill`
 
 #### `dup-ca8ccf1b9f66` (exact, 2 sites)
 
@@ -5035,18 +5035,18 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-domain/src/contextgraph/query.rs:2056-2060` `assert_sole_member_is_w` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/metrics.rs:1417-1424` `model_id_base` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:1953-1960` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-driver/src/driver/claude_code.rs:1472-1507` `launch_applies_opts_env_and_inherits_the_ambient_credential_untouched` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:535-547` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/ingest.rs:48-88` `append_and_fold_batch` - caught: `dup-7a935e08967c`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:333-352` `placement_of_ack` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-worktree-git/src/worktree.rs:1720-1744` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/canary_store.rs:822-824` `any_finding_is_critical` - caught: `dup-7727a9cc5ba0`
-- `src/canary_store.rs:1761-1777` `score_item_reports_no_resolved_model_for_a_tier_whose_driver_leaves_it_empty` - no duplicate found by reading
 - `src/main.rs:8607-8613` `runs_menu_line` - caught: `dup-941c45a14b87`
 - `src/main.rs:9735-9750` `reclaim_spawn_scratch` - no duplicate found by reading
 - `src/main.rs:10489-10523` `workflow_drift_advisory` - no duplicate found by reading
 - `tests/cli.rs:10348-10372` `workflow_accepts_a_spec_and_a_base_flag` - no duplicate found by reading
 - `tests/cli.rs:11912-11927` `validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off` - duplicate found by reading and closed: it re-rolled `assert_validate_reports` inline; it now calls it, which returns the stdout for its extra no-cache-dir check
 - `tests/cli.rs:18712-18795` `setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger` - duplicate found by reading and closed: it re-rolled `fresh_committed_skill`, `committed_skill` and `commit_a_code_change` inline; it now calls them, with the commit half split out as `commit_staged`
+- `tests/cli.rs:25644-25664` `guard_write_under_a_root` - no duplicate found by reading
 - `tests/cli.rs:25791-25808` `guard_write_exits_the_blocking_code_on_every_transport_failure` - duplicate found by reading and closed: it and `guard_write_without_a_root_fails_loudly_rather_than_allowing_everything` re-rolled `run_hook_verb`'s piped-stdin spawn; all three now call `pipe_into_rigger`, the blocking checks through `assert_blocks`
 - `tests/common/audit_record.rs:8-13` `read_audit_record` - duplicate found by reading and closed: `tests/gitsemver_path_inclusion_accounting_periphery.rs` re-rolled it to read the stage1 record; it now includes and calls it
 - `tests/compiler_pass_stage1_audit.rs:50-104` `stage1_record_has_the_shape_every_consumer_relies_on` - no duplicate found by reading
@@ -5056,7 +5056,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `tests/step_attention_periphery.rs:89-135` `hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary` - no duplicate found by reading
 - `tests/worker_persona_label_periphery.rs:222-243` `the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation` - duplicate found by reading and closed: it re-rolled `assert_worker_label` inline; it now calls it
 
-Reading pass 2026-09-27: 16 of the 30 drawn functions read by hand (a caught row too, to judge whether its duplicate reaches past the cluster); 26 duplicate(s) found by reading, each closed.
+Reading pass 2026-09-27: 15 of the 30 drawn functions read by hand (a caught row too, to judge whether its duplicate reaches past the cluster); 26 duplicate(s) found by reading, each closed.
 - closed before the redraw: `tests/kurrentdb_always_available.rs` `architecture_blueprint_has_no_retired_kurrentdb_feature_reference` re-rolled the manifest-relative read `common::repo::repo_text` owns, as did thirteen sibling reads across eleven suites; every one now calls `repo_text`
 - closed before the redraw: `tests/replan_episode_identity.rs` `serving` had two inline copies of its scan in its own file; both now call it
 - closed before the redraw: `crates/rigger-conductor/src/conductor.rs` `integrate_and_emit` repeated `catch_up_owed_regeneration`'s regenerate/record/clear sequence twice; all three now call `regenerate_and_record`
@@ -5090,7 +5090,7 @@ Violation 1 (`AgentDriver`): `crates/rigger-conductor/src/conductor.rs:8137-8144
 
 Violation 2 (`Grounder`): `crates/rigger-grounder/src/ingest.rs:157-193` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `crates/rigger-conductor/src/conductor.rs:10230`, itself called from `crates/rigger-conductor/src/conductor.rs:10221` above the `13022` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 167 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 173 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-28bd24c1f93d`: `crates/rigger-grounder/src/grounder/design/events.rs:99-123`, `crates/rigger-grounder/src/grounder/symbols/events.rs:56-58`, and `crates/rigger-grounder/src/grounder/workflowdef.rs:224-231` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`crates/rigger-domain/src/grounder.rs:64`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (167) and the concrete `design` module (173) directly. Same missing-port defect class as violation 1. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
 
-Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-grounder/src/ingest.rs:358` and `src/canary_store.rs:153`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`src/canary_store.rs:131`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:67`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
+Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-grounder/src/ingest.rs:358` and `crates/rigger-conductor/src/canary_store.rs:153`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`crates/rigger-conductor/src/canary_store.rs:131`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:67`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
 
 CHECKED AND CLEAN (three of five ports fully clean; the other two, `AgentDriver` and `Grounder`, are this section's two violations above - each search recorded so a clean result is not merely assumed):
 - `eventstore::EventStore` concretion reach (`rusqlite::Connection::open` outside the SQLite adapters and `crates/rigger-store-sqlite/src/sqlite.rs`, the one opener every store connection goes through): in production, only doc-comment mentions (`src/main.rs:3356,4967`); the one call is a deliberate, explicitly-commented test-only raw-connection bypass (`src/main.rs:26101`, inside `#[cfg(test)] mod tests` opened at `src/main.rs:14670`) that reproduces a pre-append-guard corruption shape `Store::append` itself refuses to construct - a documented test technique, not a boundary violation.
@@ -5306,10 +5306,10 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 Each entry is one of section 2's five named mandatory sweeps - collected mechanically regardless of the Jaccard pass, per spec 85's own Design.
 
-#### 10. Consolidate the 539 `.rigger`-path string-literal sites (`dup-b9abcf6afc4e`) - the single largest cluster in the entire catalog by site count
+#### 10. Consolidate the 539 `.rigger`-path string-literal sites (`dup-1e8420f911f8`) - the single largest cluster in the entire catalog by site count
 
 - Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 539 sites routes through instead of building its own literal.
-- Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `crates/rigger-dash/src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-b9abcf6afc4e` for the follow-up spec to consume directly, not re-enumerated here.
+- Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-1e8420f911f8` for the follow-up spec to consume directly, not re-enumerated here.
 - Expected line delta: negative - 539 literal compositions collapse toward one helper's call sites; the helper itself is small.
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 539 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
@@ -5389,7 +5389,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 120 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 182 clusters, 55 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-9f07a7bf395a`, `dup-b9abcf6afc4e`, `dup-f4557659a212`, `dup-6174e7208ef3`, `dup-cc7d493486f5`, `dup-28bd24c1f93d`, `dup-be3f13e37fd5`); the remaining 120 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-252bfd2c826c`, `dup-59ab8e8cdb6e`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 182 clusters, 55 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-9f07a7bf395a`, `dup-1e8420f911f8`, `dup-f4557659a212`, `dup-6174e7208ef3`, `dup-cc7d493486f5`, `dup-28bd24c1f93d`, `dup-be3f13e37fd5`); the remaining 120 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.

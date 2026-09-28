@@ -22,11 +22,15 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 # `Config::validate`'s build-wrapper and mutation-binary probes (a same-ring edge).
 rigger-gates-shell = { path = "../rigger-gates-shell", default-features = false }
 serde = { version = "1", features = ["derive"] }
+# The playbook pool renders each playbook's YAML frontmatter.
+serde_yaml = "0.9"
 
 [dev-dependencies]
 tempfile = "3"
 # The tests parse workflow and agent fixtures straight through the YAML deserializer.
 serde_yaml = "0.9"
+# The playbook pool's tests build `LessonLearned` payloads with `json!`.
+serde_json = "1"
 
 [lints]
 workspace = true

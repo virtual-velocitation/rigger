@@ -51,6 +51,8 @@ rigger-grounder = { path = "../rigger-grounder", default-features = false }
 rigger-config-files = { path = "../rigger-config-files", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The canary corpus items are YAML-frontmatter files.
+serde_yaml = "0.9"
 
 # Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -87,14 +87,14 @@ not change because a new run started.
   `--derived` is implemented there and, on any other configured backend, FAILS LOUDLY naming the
   backend it needs. Never a silent no-op: reporting a prune that did not happen is the one
   outcome an operator cannot detect.
-- **Docs** (`docs/architecture.md` + the handbook prose rendered by `src/docs.rs`): whatever
+- **Docs** (`docs/architecture.md` + the handbook prose rendered by `crates/rigger-domain/src/docs.rs`): whatever
   prose describes the ingest dedup or `rigger reset` re-renders to the new truth, so the drift
   gates stay green. Each prose site is named with its OWNER, so no unit inherits another's
   paragraph and none is left for a reviewer to demand of whoever is nearest: the content-keyed
   skip paragraph in `docs/architecture.md` (section 5.5) states the dedup rule and belongs to
-  the criterion that changes that rule; the `rigger reset` prose rendered by `src/docs.rs` -
+  the criterion that changes that rule; the `rigger reset` prose rendered by `crates/rigger-domain/src/docs.rs` -
   which today names `--runs` as THE prune command, and whose own drift assertions in that file
-  check that wording - belongs to the criterion that adds `--derived`, and `src/docs.rs` is that
+  check that wording - belongs to the criterion that adds `--derived`, and `crates/rigger-domain/src/docs.rs` is that
   criterion's file to edit, nobody else's. A paragraph lands in the SAME unit as the code it
   describes, never in a later one.
 
@@ -198,8 +198,8 @@ not change because a new run started.
   derived events keeps the latest event per distinct key, preserves every non-derived event,
   shrinks the file, and leaves a store that `rigger validate` reads clean and whose fold yields
   the unchanged live graph. This criterion OWNS the `rigger reset` prose rendered by
-  `src/docs.rs` and its drift assertions there (they name `--runs` as THE prune command today),
-  so `src/docs.rs` is this criterion's file to change and no other's.
+  `crates/rigger-domain/src/docs.rs` and its drift assertions there (they name `--runs` as THE prune command today),
+  so `crates/rigger-domain/src/docs.rs` is this criterion's file to change and no other's.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`).
   This criterion OWNS the second lane end to end: it runs the sweep over the INTEGRATED change
   set of the five criteria above, records the transcript as the evidence (no gate in this

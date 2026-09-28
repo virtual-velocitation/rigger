@@ -293,7 +293,7 @@ const DEFERRED_DOMAIN_ITEMS: &[(&str, &str, &str)] = &[
         "lesson-split-domain-ingest-key-batch",
     ),
     (
-        "src/blast_radius_eval.rs",
+        "crates/rigger-conductor/src/blast_radius_eval.rs",
         "corpus_gates",
         "lesson-split-domain-blast-radius-eval",
     ),
@@ -486,53 +486,7 @@ const ADAPTER_SRCS: &[&str] = &[
 /// conductor, a driver, the grounder), so it cannot compile in the adapter crate. The lesson
 /// records what it reaches for and the extraction that lets it move; the entry goes when the item
 /// leaves the file or lands in an adapter crate.
-const DEFERRED_ADAPTER_ITEMS: &[(&str, &str, &str)] = &[
-    (
-        "src/canary_store.rs",
-        "CanaryItem",
-        "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/canary_store.rs",
-        "load_corpus",
-        "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/canary_store.rs",
-        "corpus_hash",
-        "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/canary_store.rs",
-        "ModelPins",
-        "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/canary_store.rs",
-        "apply_model_pins",
-        "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/canary_store.rs",
-        "CanaryReport",
-        "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/canary_store.rs",
-        "record_header",
-        "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/canary_store.rs",
-        "run_canary",
-        "lesson-split-store-canary-runner",
-    ),
-    (
-        "src/canary_store.rs",
-        "default_jobs",
-        "lesson-split-store-canary-runner",
-    ),
-];
+const DEFERRED_ADAPTER_ITEMS: &[(&str, &str, &str)] = &[];
 
 /// Items placed in an adapter crate by their responsibility that still reach outward for
 /// something an adapter must not know (the conductor, a driver, the dash, the CLI),

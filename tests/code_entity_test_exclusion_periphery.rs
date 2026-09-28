@@ -1030,7 +1030,7 @@ rigger::test_cases! {
 /// per-file structural walk over that file's OWN parsed tree ([`preceded_by_test_attribute`] in
 /// `extract.rs`) can never see the attribute that excludes it - it lives in a DIFFERENT file. This
 /// is LIVE in rigger's own tree today, not a hypothetical: `src/lib.rs` declares `#[cfg(test)] mod
-/// blast_radius_eval;` (`src/blast_radius_eval.rs`), and this fixture is that exact shape, using a
+/// blast_radius_eval;` (`crates/rigger-conductor/src/blast_radius_eval.rs`), and this fixture is that exact shape, using a
 /// plain, unattributed `pub fn` in the declared file exactly like
 /// `blast_radius_eval.rs`'s own product functions. The declaring file here is deliberately named
 /// `lib.rs` (round 7, `op-u86c1-r7-out-of-line-module-resolution-follows-rust`): a

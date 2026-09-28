@@ -16,6 +16,8 @@ pub mod community;
 pub mod concepts;
 pub mod config;
 pub mod contextgraph;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod docs;
 pub mod eventstore;
 pub mod failure;
 /// The gate vocabulary the gate runner and the worktree reclaimer share.

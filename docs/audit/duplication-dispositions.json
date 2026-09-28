@@ -55,7 +55,7 @@
     "reason": "`real_files`, `real_workspace_files` and `real_map` memoize three different scans of the tree; the only shared shape is the standard `OnceLock` memoization idiom."
   },
   {
-    "id": "dup-7727a9cc5ba0",
+    "id": "dup-be7f6094aaff",
     "disposition": "not-a-duplicate",
     "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
   },
@@ -130,7 +130,7 @@
     "reason": "`code_default` and `concepts_default` build two different `Lens` variants at their own default-grain constants, the expected values the selector tests compare against."
   },
   {
-    "id": "dup-7dfa0dd1a6a8",
+    "id": "dup-49d4d9f335fc",
     "disposition": "not-a-duplicate",
     "reason": "Unit tests of two different functions, `width_threshold`'s nearest-rank split point over a width distribution and `full_fraction`'s strictly-greater share over a threshold; only the assert_eq shape is shared."
   },
@@ -330,22 +330,22 @@
     "reason": "Production code builds every .rigger path from the one `RIGGER_DIR` constant (config::RIGGER_DIR); the remaining literals are messages, documentation text, gitignore entries, shell-script text and test fixtures that name the directory rather than compose a path."
   },
   {
-    "id": "dup-6a2acacd5cf0",
+    "id": "dup-08ca12f5868a",
     "disposition": "not-a-duplicate",
     "reason": "`render_using_rigger_skill` renders the installable skill (frontmatter plus a front-door intro) while `render_handbook_discipline` renders the handbook chapter (a chapter title plus an operator-manual intro); the body they share already lives once in `discipline_body`."
   },
   {
-    "id": "dup-bcc850364281",
+    "id": "dup-ece6988d7484",
     "disposition": "not-a-duplicate",
     "reason": "Two one-line adapters fitting two different static documents (the planning-a-spec skill body and the planning field guide page) to the uniform `fn(&DocsContext) -> String` render signature; no logic is repeated."
   },
   {
-    "id": "dup-fd7990caad07",
+    "id": "dup-c5777007a33f",
     "disposition": "not-a-duplicate",
     "reason": "Four per-operation skill renders that each pass their own skill's name, description and paragraphs to the one shared `render_operation_skill` skeleton; only the content differs."
   },
   {
-    "id": "dup-3e586352db43",
+    "id": "dup-3d5ea11431d3",
     "disposition": "not-a-duplicate",
     "reason": "Two per-operation skill renders passing their own content, each interpolating a different code-derived fact (`max_retries` versus the reject-recurrence diagnose threshold), to the one shared `render_operation_skill` skeleton."
   },

@@ -1080,7 +1080,7 @@ const SHIPPED_DOCS: [&str; 2] = [
 
 /// The COMMITTED operator guidance, asserted on the bytes on disk with no render in the loop.
 ///
-/// This is not the render test in `src/docs.rs` restated. That test renders `discipline_body` from
+/// This is not the render test in `crates/rigger-domain/src/docs.rs` restated. That test renders `discipline_body` from
 /// a SENTINEL context (a placeholder base ref, port 65531, invented subcommand names); these two
 /// files are rendered from the REAL one. "The sentinel render carries the paragraph" and "the
 /// committed file equals a fresh real render" together still do not give "the committed file

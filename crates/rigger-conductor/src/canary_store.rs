@@ -1238,7 +1238,7 @@ mod tests {
         // The Done-when bar (spec 13, unit 5): the versioned corpus under `canaries/`
         // catalogs at least three planted defect classes, and every item is well-formed
         // (loads through the strict loader, names an anchor, and carries code to review).
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("canaries");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../canaries");
         let corpus = load_corpus(&dir).expect("the shipped canary corpus must load");
         assert!(!corpus.is_empty(), "the shipped corpus must have items");
         let classes: BTreeSet<&str> = corpus

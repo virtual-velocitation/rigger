@@ -8,8 +8,14 @@ pub mod config;
 /// The write half of [`config`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod config_store;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod playbooks;
 
 // The modules the moved code names by their historical `crate::` paths.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::contextgraph;
+#[cfg(any(feature = "store", not(feature = "core")))]
+use rigger_domain::eventstore;
 use rigger_domain::instructions;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::{failure, spawn, test_cases};

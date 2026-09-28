@@ -9,7 +9,3 @@
 //! `rigger::eventstore` path.
 
 pub use rigger_store_sqlite::eventstore::*;
-
-/// The append-only double the root's seam tests share, defined once with the fixtures.
-#[cfg(test)]
-pub(crate) use crate::test_support::SilentStore;

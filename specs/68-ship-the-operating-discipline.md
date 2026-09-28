@@ -12,7 +12,7 @@ poorly), and guardrails so the wrong move meets a refusal or a menu, not a myste
 ## Design
 
 - **The skill registry** (`src/main.rs`, generalizing the `install_skill` seam at :7685;
-  `src/docs.rs`): ONE registry of embedded skills - `using-rigger`, `planning-a-spec`, and
+  `crates/rigger-domain/src/docs.rs`): ONE registry of embedded skills - `using-rigger`, `planning-a-spec`, and
   the family below - each entry carrying rendered content, committed source path
   (`skills/<name>/SKILL.md`), and install path (`.claude/skills/<name>/`). `rigger docs`
   renders the set, `rigger setup` installs the set (drift-aware, non-destructive, overlay

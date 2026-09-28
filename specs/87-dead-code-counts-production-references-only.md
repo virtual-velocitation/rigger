@@ -12,7 +12,7 @@ production references, every one of them referenced from tests alone (e.g.
 builders `with_title`/`with_reviews`/`with_model`/`with_blast_radius` in `crates/rigger-domain/src/spawn.rs`;
 `src/worktree.rs` `expect_merged` and `is_dirty`). That pass is itself approximate in both
 directions: its `#[cfg(test)]` stripping over-counts `crates/rigger-dash/src/dash.rs`, and it misclassified
-`src/blast_radius_eval.rs` and `crates/rigger-store-sqlite/src/eventstore/contract.rs` as production when both are
+`crates/rigger-conductor/src/blast_radius_eval.rs` and `crates/rigger-store-sqlite/src/eventstore/contract.rs` as production when both are
 OUT-OF-LINE test modules (`src/lib.rs` declares `#[cfg(test)] mod blast_radius_eval;`,
 `crates/rigger-store-sqlite/src/eventstore/mod.rs` declares `#[cfg(test)] mod contract;`) - the module file carries no
 attribute of its own, so a per-file scan cannot see it. That is why the precise instrument

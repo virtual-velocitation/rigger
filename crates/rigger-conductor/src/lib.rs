@@ -5,6 +5,15 @@
 //! edge recorded in tests/boundary_audit.rs EDGE_ALLOWLIST); the root `rigger` crate re-exports
 //! it under its historical `rigger::conductor` path.
 
+/// Spec 16 unit 2 - the partitioning + routing SAFETY EVAL (architecture 5.5.8). A GATE, not a
+/// runtime surface: it is compiled ONLY under `cfg(test)`, adds no API and no event, and its
+/// quantified arms are feature-gated behind `symbols` internally. It authorizes unit 3 wiring
+/// `blast_radius` into the conductor by proving the safe view is a grep superset and that the
+/// safe-superset partitioning retains parallelism and a non-collapsed tier split.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+mod blast_radius_eval;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod canary_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod conductor;
 
@@ -14,7 +23,9 @@ use rigger_config_files::config;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_config_files::config_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_domain::{blocker, failure, instructions, ledger, metrics, playbooks, run, safety};
+use rigger_domain::{
+    blocker, canary, failure, instructions, ledger, metrics, playbooks, run, safety,
+};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::{spec, test_cases};
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -24,7 +35,7 @@ use rigger_gates_shell::gate;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_grounder::{grounder, ingest};
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_process::budget;
+use rigger_process::{budget, parallel};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::run_store;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
@@ -61,6 +72,10 @@ mod spawn {
 extern crate self as rigger;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/canary.rs"]
+mod canary_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/conductor.rs"]
 mod conductor_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
@@ -84,6 +99,7 @@ mod spawn_fixtures;
 use config_fixtures::{agent, gate_def, gate_def_inputs};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
+    pub use crate::canary_fixtures::*;
     pub use crate::conductor_fixtures::*;
     pub use crate::config_fixtures::*;
     pub use crate::event_fixtures::*;

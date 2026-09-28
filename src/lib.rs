@@ -15,18 +15,18 @@
 // by function: where a file mixed both (`spawn.rs`, `run.rs`, `progress.rs`), the impure
 // half moved to its own `_store` file (`spawn_store`, `run_store`, `progress_store`).
 
+/// The write half of [`canary`] (spec 93, criterion 1): see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_conductor::canary_store;
 pub use rigger_domain::blocker;
 pub use rigger_domain::canary;
+pub use rigger_domain::community;
 /// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
 /// caps how many actual compiler invocations run at once, across every rigger process on
 /// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
 /// slots bound builds, never agents.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::budget;
-/// The write half of [`canary`] (spec 93, criterion 1): see that module's own doc.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod canary_store;
-pub use rigger_domain::community;
 pub mod concepts;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_conductor::conductor;
@@ -46,7 +46,7 @@ pub use rigger_dash::dash;
 /// context rendered into the `using-rigger` skill and the handbook discipline chapter,
 /// so the operating discipline stays in lock-step with the code the binary runs on.
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod docs;
+pub use rigger_domain::docs;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::driver;
 pub mod eventstore;
@@ -55,6 +55,8 @@ pub use rigger_domain::failure;
 pub use rigger_gates_shell::gate;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_config_files::playbooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_dash::mcpserver;
 pub use rigger_domain::instructions;
@@ -68,8 +70,6 @@ pub use rigger_driver::liveness;
 pub use rigger_grounder::ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::parallel;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod playbooks;
 pub mod progress;
 pub use rigger_domain::run;
 pub use rigger_domain::safety;
@@ -110,14 +110,6 @@ pub mod worktree;
 
 /// Parameterised tests: one shared case helper, one generated `#[test]` per named case.
 pub use rigger_domain::test_cases;
-
-/// Spec 16 unit 2 - the partitioning + routing SAFETY EVAL (architecture 5.5.8). A GATE, not a
-/// runtime surface: it is compiled ONLY under `cfg(test)`, adds no API and no event, and its
-/// quantified arms are feature-gated behind `symbols` internally. It authorizes unit 3 wiring
-/// `blast_radius` into the conductor by proving the safe view is a grep superset and that the
-/// safe-superset partitioning retains parallelism and a non-collapsed tier split.
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-mod blast_radius_eval;
 
 /// The fixtures an inline `#[cfg(test)]` module shares with the integration suites: ONE source
 /// tree, `tests/common/fixtures/`, compiled into each test crate that needs it (the integration

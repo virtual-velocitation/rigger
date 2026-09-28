@@ -19,7 +19,7 @@
 //!
 //! The five signal NAMES below are pinned verbatim against `rigger-watch-a-run`
 //! (spec 69, criterion 1's own headline test, `watch_a_run_names_all_five_signals_
-//! each_mapped_to_its_response` in `src/docs.rs`) - the exact strings that skill's
+//! each_mapped_to_its_response` in `crates/rigger-domain/src/docs.rs`) - the exact strings that skill's
 //! rendered body contains, so the command and the skill can never silently drift
 //! apart on what a signal is called.
 
@@ -652,7 +652,7 @@ mod tests {
     fn the_four_named_responses_and_the_stall_directive_match_the_skills_own_pin_table() {
         // The exact five (signal, response) pairs `rigger-watch-a-run`'s own headline
         // test pins (spec 69 c1: watch_a_run_names_all_five_signals_each_mapped_to_
-        // its_response, src/docs.rs) - so this command and that skill cannot silently
+        // its_response, crates/rigger-domain/src/docs.rs) - so this command and that skill cannot silently
         // drift on what each signal is called or what it routes to.
         assert_eq!(Signal::Escalated.response(), "rigger-handle-an-escalation");
         assert_eq!(Signal::DeadDriver.response(), "rigger-resume-a-run");

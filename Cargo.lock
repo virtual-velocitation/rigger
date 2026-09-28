@@ -1926,6 +1926,7 @@ dependencies = [
  "rigger-worktree-git",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "uuid",
 ]
@@ -1937,6 +1938,7 @@ dependencies = [
  "rigger-domain",
  "rigger-gates-shell",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
 ]

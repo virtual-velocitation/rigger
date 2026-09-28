@@ -1,5 +1,35 @@
 [
   {
+    "id": "dup-49d4d9f335fc",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/blast_radius_eval.rs",
+        "start_line": 216,
+        "end_line": 231
+      },
+      {
+        "file": "crates/rigger-conductor/src/blast_radius_eval.rs",
+        "start_line": 234,
+        "end_line": 242
+      }
+    ]
+  },
+  {
+    "id": "dup-be7f6094aaff",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/canary_store.rs",
+        "start_line": 822,
+        "end_line": 824
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
+        "start_line": 157,
+        "end_line": 159
+      }
+    ]
+  },
+  {
     "id": "dup-252bfd2c826c",
     "sites": [
       {
@@ -850,7 +880,7 @@
     ]
   },
   {
-    "id": "dup-b9abcf6afc4e",
+    "id": "dup-1e8420f911f8",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -951,6 +981,36 @@
         "file": "crates/rigger-domain/src/config.rs",
         "start_line": 20,
         "end_line": 20
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 220,
+        "end_line": 220
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 662,
+        "end_line": 662
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 666,
+        "end_line": 666
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 722,
+        "end_line": 722
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 732,
+        "end_line": 732
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 756,
+        "end_line": 756
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
@@ -1091,36 +1151,6 @@
         "file": "crates/rigger-store-sqlite/src/registry.rs",
         "start_line": 433,
         "end_line": 433
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 220,
-        "end_line": 220
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 662,
-        "end_line": 662
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 666,
-        "end_line": 666
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 722,
-        "end_line": 722
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 732,
-        "end_line": 732
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 756,
-        "end_line": 756
       },
       {
         "file": "src/main.rs",
@@ -4425,6 +4455,76 @@
     ]
   },
   {
+    "id": "dup-08ca12f5868a",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 94,
+        "end_line": 112
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 116,
+        "end_line": 127
+      }
+    ]
+  },
+  {
+    "id": "dup-ece6988d7484",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 447,
+        "end_line": 449
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 618,
+        "end_line": 620
+      }
+    ]
+  },
+  {
+    "id": "dup-c5777007a33f",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 714,
+        "end_line": 742
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 747,
+        "end_line": 774
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 779,
+        "end_line": 813
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 942,
+        "end_line": 992
+      }
+    ]
+  },
+  {
+    "id": "dup-3d5ea11431d3",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 820,
+        "end_line": 855
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 1001,
+        "end_line": 1050
+      }
+    ]
+  },
+  {
     "id": "dup-bb7aa56f67d8",
     "sites": [
       {
@@ -5295,21 +5395,6 @@
     ]
   },
   {
-    "id": "dup-7727a9cc5ba0",
-    "sites": [
-      {
-        "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
-        "start_line": 157,
-        "end_line": 159
-      },
-      {
-        "file": "src/canary_store.rs",
-        "start_line": 822,
-        "end_line": 824
-      }
-    ]
-  },
-  {
     "id": "dup-4b942d7302a6",
     "sites": [
       {
@@ -5661,91 +5746,6 @@
         "file": "crates/rigger-worktree-git/src/worktree.rs",
         "start_line": 2630,
         "end_line": 2633
-      }
-    ]
-  },
-  {
-    "id": "dup-7dfa0dd1a6a8",
-    "sites": [
-      {
-        "file": "src/blast_radius_eval.rs",
-        "start_line": 216,
-        "end_line": 231
-      },
-      {
-        "file": "src/blast_radius_eval.rs",
-        "start_line": 234,
-        "end_line": 242
-      }
-    ]
-  },
-  {
-    "id": "dup-6a2acacd5cf0",
-    "sites": [
-      {
-        "file": "src/docs.rs",
-        "start_line": 94,
-        "end_line": 112
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 116,
-        "end_line": 127
-      }
-    ]
-  },
-  {
-    "id": "dup-bcc850364281",
-    "sites": [
-      {
-        "file": "src/docs.rs",
-        "start_line": 447,
-        "end_line": 449
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 618,
-        "end_line": 620
-      }
-    ]
-  },
-  {
-    "id": "dup-fd7990caad07",
-    "sites": [
-      {
-        "file": "src/docs.rs",
-        "start_line": 714,
-        "end_line": 742
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 747,
-        "end_line": 774
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 779,
-        "end_line": 813
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 942,
-        "end_line": 992
-      }
-    ]
-  },
-  {
-    "id": "dup-3e586352db43",
-    "sites": [
-      {
-        "file": "src/docs.rs",
-        "start_line": 820,
-        "end_line": 855
-      },
-      {
-        "file": "src/docs.rs",
-        "start_line": 1001,
-        "end_line": 1050
       }
     ]
   },

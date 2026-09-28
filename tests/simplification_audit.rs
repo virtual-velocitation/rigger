@@ -2174,12 +2174,12 @@ const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/canary_store.rs",
+        "crates/rigger-conductor/src/canary_store.rs",
         "any_finding_is_critical",
         SampleVerdict::NoDuplicate,
     ),
     (
-        "src/canary_store.rs",
+        "crates/rigger-conductor/src/canary_store.rs",
         "score_item_reports_no_resolved_model_for_a_tier_whose_driver_leaves_it_empty",
         SampleVerdict::NoDuplicate,
     ),
@@ -4293,11 +4293,11 @@ fn render_section_3(files: &[FileScan]) -> String {
     let _ = write!(
         out,
         "Also reaching `grounder::symbols::store::content_hash` from \
-        `{INGEST}:{}` and `src/canary_store.rs:{}`: DISPOSITIONED as legitimate \
+        `{INGEST}:{}` and `crates/rigger-conductor/src/canary_store.rs:{}`: DISPOSITIONED as legitimate \
         shared-primitive reuse, not a third violation. `content_hash` (`{}`) is \
         documented at its own definition as the content-identity primitive the \
         `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s \
-        own doc comment (`src/canary_store.rs:{}`) reuses it by deliberate author \
+        own doc comment (`crates/rigger-conductor/src/canary_store.rs:{}`) reuses it by deliberate author \
         intent rather than growing another open-coded FNV-1a copy - a generic hashing \
         utility that happens to live in the `symbols` module, not a grounding \
         operation reached through the port. The broader duplication this primitive \
@@ -4306,9 +4306,9 @@ fn render_section_3(files: &[FileScan]) -> String {
         refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's \
         concern.\n\n",
         line_of(INGEST, "store::content_hash("),
-        line_of("src/canary_store.rs", "store::content_hash("),
+        line_of("crates/rigger-conductor/src/canary_store.rs", "store::content_hash("),
         cite_fn(files, "crates/rigger-grounder/src/grounder/symbols/store.rs", "content_hash"),
-        line_of("src/canary_store.rs", "parallel"),
+        line_of("crates/rigger-conductor/src/canary_store.rs", "parallel"),
         line_of(
             "crates/rigger-domain/src/community.rs",
             "arch-u2i-fnv1a-fourth-parallel-copy",
@@ -5732,7 +5732,7 @@ fn render_section_6() -> String {
         `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \
-        `crates/rigger-dash/src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
+        `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \
         `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \
         `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
         is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \
@@ -6066,7 +6066,7 @@ fn sample_key(file: &str, name: &str, ordinal: usize) -> String {
 //
 // THE RULE (round 3, `op-u87c2-round-3-a-reference-is-any-token-not-a-shape`, replacing three
 // rounds of one-shape-at-a-time patching - a struct-literal field VALUE
-// (`render_body: render_x_skill,` in `src/docs.rs`'s `skill_registry`) and a UFCS value passed
+// (`render_body: render_x_skill,` in `crates/rigger-domain/src/docs.rs`'s `skill_registry`) and a UFCS value passed
 // to a combinator (`.map(FailureRuleDef::to_rule)` in `src/config.rs`) were each the NEXT
 // invisible shape, the expected failure mode of a scanner that enumerates shapes rather than
 // dropping the concept of shape entirely): A PRODUCTION REFERENCE TO FN F IS ANY IDENTIFIER
@@ -6645,7 +6645,7 @@ fn signature_declares_self(sig_toks: &[RawTok]) -> bool {
 /// empirically: this tree's own many `new()`s). Round 1
 /// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`) extends ambiguity to `Free` too - the
 /// ADVERSARY's `src/distiller.rs` `rebuild` finding (a genuinely dead free fn silently counted
-/// alive through an unrelated same-named `src/playbooks.rs` `rebuild`'s real caller) is exactly
+/// alive through an unrelated same-named `crates/rigger-config-files/src/playbooks.rs` `rebuild`'s real caller) is exactly
 /// the failure a bare-name-only free-fn resolution invites - superseding the prior
 /// `u87c2-ambiguous-method-rule` decision's Free exemption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -6696,7 +6696,7 @@ fn file_module_name(file: &str) -> String {
 /// Matched against a reference site's [`RefSite::qualifier`] (the token immediately before a
 /// `qualifier::name(`) to attribute a `::`-qualified call to ONE specific same-named `Free` fn
 /// (the real case: `src/distiller.rs`'s `rebuild`, qualifier `"distiller"`, versus
-/// `src/playbooks.rs`'s unrelated `rebuild`, qualifier `"playbooks"` - `main.rs`'s
+/// `crates/rigger-config-files/src/playbooks.rs`'s unrelated `rebuild`, qualifier `"playbooks"` - `main.rs`'s
 /// `playbooks::rebuild(..)` matches only the latter).
 fn free_fn_qualifier(f: &ScannedFn) -> String {
     f.enclosing_mods
@@ -11214,7 +11214,7 @@ mod tests {
     // -------------------------------------------------------------------------------------
 
     rigger::test_cases! {
-        /// Real production shape this pins: `src/docs.rs`'s `skill_registry()`, e.g.
+        /// Real production shape this pins: `crates/rigger-domain/src/docs.rs`'s `skill_registry()`, e.g.
         /// `SkillEntry { name: "x", render_body: render_x_skill }` - `render_x_skill` is a bare
         /// identifier VALUE in struct-literal field position, no call/dot/`::`/`<` of its own.
         a_fn_pointer_used_as_a_struct_literal_field_value_counts_as_a_reference: assert_candidates(
@@ -11298,7 +11298,7 @@ mod tests {
     fn the_real_tree_no_longer_flags_the_round_2_struct_field_and_ufcs_defects() {
         // Real-tree pin (operator ruling `op-u87c2-round-3-a-reference-is-any-token-not-a-
         // shape`): the exact production fns round 2's adjudication reject named as invisible -
-        // every `src/docs.rs` `skill_registry()` `render_*` entry point, and
+        // every `crates/rigger-domain/src/docs.rs` `skill_registry()` `render_*` entry point, and
         // `src/config.rs`'s `FailureRuleDef::to_rule` - must be ABSENT from the real
         // `dead-code.json`, never merely "no longer ambiguous" or "still present but fixed
         // elsewhere".

@@ -714,7 +714,7 @@ every marker file, marker-staleness watchdogs, the `/proc` kill path (scan demot
 advisory), stateless `watch` detection re-based off the retired inputs, and the generated
 consumer surfaces they backed (`rigger-restore-the-dash` retires into daemon ownership;
 `rigger-watch-a-run` and `rigger-reset-store` lose their interval/threshold text; residue
-and bloat advisories move from `validate` to arm 5 - all generated from `src/docs.rs` with
+and bloat advisories move from `validate` to arm 5 - all generated from `crates/rigger-domain/src/docs.rs` with
 content pins, so each migrates in the same change as its mechanism). Made impossible
 (regardless of whether a forgery is accidental or deliberate, because each guarantee rests on
 a mechanism that does not consult sender intent): a second driver (flock + epoch), signalling

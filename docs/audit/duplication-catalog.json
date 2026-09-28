@@ -1,5 +1,43 @@
 [
   {
+    "id": "dup-49d4d9f335fc",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/blast_radius_eval.rs",
+        "name": "width_threshold_is_the_tier_width_nearest_rank_percentile",
+        "content_hash": "6024287d9ff89272"
+      },
+      {
+        "file": "crates/rigger-conductor/src/blast_radius_eval.rs",
+        "name": "full_fraction_spans_all_light_to_collapse",
+        "content_hash": "be8aacc92349b7ba"
+      }
+    ],
+    "proposed_home": "blast_radius_eval::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-be7f6094aaff",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/canary_store.rs",
+        "name": "any_finding_is_critical",
+        "content_hash": "605edabf599dba5d"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
+        "name": "is_handbook_path",
+        "content_hash": "605edabf599dba5d"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/canary_store.rs, crates/rigger-grounder/src/grounder/design/extract.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-252bfd2c826c",
     "classification": "near",
     "sites": [
@@ -906,7 +944,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b9abcf6afc4e",
+    "id": "dup-1e8420f911f8",
     "classification": "semantic",
     "sites": [
       {
@@ -1008,6 +1046,36 @@
         "file": "crates/rigger-domain/src/config.rs",
         "name": "\".rigger\"",
         "content_hash": "bc20dd2902db1109"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "\"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \\\n         reset --derived`. Each run's project-ingest pass records the project's derived index - \\\n         the code entities, inferred edges, design links, and doc concepts folded from your \\\n         sources - and a log written before that pass deduplicated across runs holds the WHOLE \\\n         index once per run, which is re-derivable duplication rather than history. `rigger reset \\\n         --derived` keeps the LATEST event per replay key of each derived index type, deletes the \\\n         superseded re-recordings, and compacts the file so events.db shrinks on disk. Every \\\n         other event survives byte-for-byte - lessons, decisions, findings, gate verdicts, and \\\n         the whole run history `rigger stats` and replay read. The live graph is unchanged: every \\\n         recording of one key folds to the same rows, and the prune carries a pruned key's \\\n         EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps the \\\n         date it first became true rather than being re-dated to whichever recording survived. \\\n         WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at all: it only \\\n         ever sheds DUPLICATE recordings of one key, never the index itself. The last recording \\\n         of every key stays, so on a log that holds no key twice `rigger reset --derived` deletes \\\n         ZERO rows from it and reports so - that is the expected report on a clean log, not a \\\n         failure, and the derived index remains the bulk of the log by design because it is what \\\n         the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, because \\\n         a non-zero prune is otherwise read as a broken dedup: a log written since the dedup \\\n         existed holds one recording per distinct fact EXCEPT where a file's content has \\\n         RETURNED to a generation the log had already recorded - a revert, a branch switch, a \\\n         checkout back - which re-records that file's whole batch by design, since a dedup that \\\n         suppressed an already-recorded key would strand the graph on the version the file has \\\n         since moved past. A prune that sheds rows on such a log is shedding that duplication, \\\n         not covering for a defect; a log written BEFORE the dedup sheds the whole accumulated \\\n         pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \\\n         a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \\\n         space it needs is on whichever filesystem that resolves to rather than on the partition \\\n         holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \\\n         /usr/tmp, /tmp that exists and is writable, which on a Linux box with TMPDIR unset means \\\n         /var/tmp and NOT /tmp. Set TMPDIR yourself if the default lands somewhere too small for \\\n         a second copy of your log. It rewrites only when the FILE is holding reclaimable free \\\n         pages, which is not the same as this run having deleted something: a prune with nothing \\\n         to shed from an already-compact log leaves the file exactly as it found it and reports \\\n         reclaiming zero, while a prune that sheds nothing from a log still holding free pages \\\n         reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \\\n         the deletes have committed, the command still reports what it removed and names the \\\n         failure, and because the deletes are durable and the space they freed is still free in \\\n         the file, re-running it is both safe and the way to reclaim that space. The two flags \\\n         COMPOSE \\\n         and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \\\n         graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \\\n         BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: a \\\n         compaction leaves revision gaps by design, and a writer whose cursor was built before it \\\n         ran could reissue a gap and reorder the log, so it refuses while a `rigger step` holds \\\n         its lock, a unit in the current run is not yet terminal, a spawn is in flight, or a \\\n         driver registration for this store is still live, naming what it found. `--force-live` \\\n         overrides the refusal for an operator certain no writer is using the store; it checks \\\n         nothing.\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "\"Store hygiene for rigger's own state - growing .rigger/ disk usage, \\\n         the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \\\n         Read this before running `rigger reset` or touching any store file by hand.\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "\"rigger keeps three stores under `.rigger/`, and only one of them holds anything \\\n             durable:\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "\"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \\\n             no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \\\n             It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \\\n             REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \\\n             it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \\\n             standalone build and a run can never fold the same file under two different keys.\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "\"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \\\n         re-running `rigger graph build` on the empty result. Deleting the log throws away \\\n         truth that no rebuild can get back, and deleting only the graph is unnecessary work \\\n         `rigger graph build` already does FOR you, incrementally, without erasing anything \\\n         first. If lookups are empty, just run `rigger graph build`; only reach for \\\n         rigger-reset-store if you specifically mean to prune, not rebuild.\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "\"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \\\n             the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \\\n             for an index that has drifted from files you just changed (a unit's own commit, a \\\n             rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \\\n             store from the structural context graph, so it costs only the named files, never a \\\n             walk of the whole tree.\\n\"",
+        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
@@ -1148,36 +1216,6 @@
         "file": "crates/rigger-store-sqlite/src/registry.rs",
         "name": "\"/home/dev/proj/.rigger/events.db\"",
         "content_hash": "095a242a1ba6b733"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "\"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \\\n         reset --derived`. Each run's project-ingest pass records the project's derived index - \\\n         the code entities, inferred edges, design links, and doc concepts folded from your \\\n         sources - and a log written before that pass deduplicated across runs holds the WHOLE \\\n         index once per run, which is re-derivable duplication rather than history. `rigger reset \\\n         --derived` keeps the LATEST event per replay key of each derived index type, deletes the \\\n         superseded re-recordings, and compacts the file so events.db shrinks on disk. Every \\\n         other event survives byte-for-byte - lessons, decisions, findings, gate verdicts, and \\\n         the whole run history `rigger stats` and replay read. The live graph is unchanged: every \\\n         recording of one key folds to the same rows, and the prune carries a pruned key's \\\n         EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps the \\\n         date it first became true rather than being re-dated to whichever recording survived. \\\n         WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at all: it only \\\n         ever sheds DUPLICATE recordings of one key, never the index itself. The last recording \\\n         of every key stays, so on a log that holds no key twice `rigger reset --derived` deletes \\\n         ZERO rows from it and reports so - that is the expected report on a clean log, not a \\\n         failure, and the derived index remains the bulk of the log by design because it is what \\\n         the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, because \\\n         a non-zero prune is otherwise read as a broken dedup: a log written since the dedup \\\n         existed holds one recording per distinct fact EXCEPT where a file's content has \\\n         RETURNED to a generation the log had already recorded - a revert, a branch switch, a \\\n         checkout back - which re-records that file's whole batch by design, since a dedup that \\\n         suppressed an already-recorded key would strand the graph on the version the file has \\\n         since moved past. A prune that sheds rows on such a log is shedding that duplication, \\\n         not covering for a defect; a log written BEFORE the dedup sheds the whole accumulated \\\n         pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \\\n         a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \\\n         space it needs is on whichever filesystem that resolves to rather than on the partition \\\n         holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \\\n         /usr/tmp, /tmp that exists and is writable, which on a Linux box with TMPDIR unset means \\\n         /var/tmp and NOT /tmp. Set TMPDIR yourself if the default lands somewhere too small for \\\n         a second copy of your log. It rewrites only when the FILE is holding reclaimable free \\\n         pages, which is not the same as this run having deleted something: a prune with nothing \\\n         to shed from an already-compact log leaves the file exactly as it found it and reports \\\n         reclaiming zero, while a prune that sheds nothing from a log still holding free pages \\\n         reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \\\n         the deletes have committed, the command still reports what it removed and names the \\\n         failure, and because the deletes are durable and the space they freed is still free in \\\n         the file, re-running it is both safe and the way to reclaim that space. The two flags \\\n         COMPOSE \\\n         and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \\\n         graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \\\n         BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: a \\\n         compaction leaves revision gaps by design, and a writer whose cursor was built before it \\\n         ran could reissue a gap and reorder the log, so it refuses while a `rigger step` holds \\\n         its lock, a unit in the current run is not yet terminal, a spawn is in flight, or a \\\n         driver registration for this store is still live, naming what it found. `--force-live` \\\n         overrides the refusal for an operator certain no writer is using the store; it checks \\\n         nothing.\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "\"Store hygiene for rigger's own state - growing .rigger/ disk usage, \\\n         the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \\\n         Read this before running `rigger reset` or touching any store file by hand.\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "\"rigger keeps three stores under `.rigger/`, and only one of them holds anything \\\n             durable:\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "\"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \\\n             no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \\\n             It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \\\n             REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \\\n             it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \\\n             standalone build and a run can never fold the same file under two different keys.\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "\"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \\\n         re-running `rigger graph build` on the empty result. Deleting the log throws away \\\n         truth that no rebuild can get back, and deleting only the graph is unnecessary work \\\n         `rigger graph build` already does FOR you, incrementally, without erasing anything \\\n         first. If lookups are empty, just run `rigger graph build`; only reach for \\\n         rigger-reset-store if you specifically mean to prune, not rebuild.\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "\"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \\\n             the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \\\n             for an index that has drifted from files you just changed (a unit's own commit, a \\\n             rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \\\n             store from the structural context graph, so it costs only the named files, never a \\\n             walk of the whole tree.\\n\"",
-        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/main.rs",
@@ -3346,7 +3384,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \\\n        `crates/rigger-dash/src/dash.rs`, `src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \\\n        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \\\n        `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing {rigger_n} sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\"",
+        "name": "\"- Scope: one `.rigger`-relative path-composition helper (the cluster's own \\\n        `proposed_home`) every one of the {rigger_n} sites routes through instead of building its \\\n        own literal.\\n\\\n        - Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, \\\n        `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, \\\n        `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, \\\n        `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \\\n        is in the committed `docs/audit/duplication-catalog.json` under `{rigger_id}` for the \\\n        follow-up spec to consume directly, not re-enumerated here.\\n\\\n        - Expected line delta: negative - {rigger_n} literal compositions collapse toward one \\\n        helper's call sites; the helper itself is small.\\n\\\n        - Risk: medium - the largest surface-area sweep in this plan by site count, even \\\n        though each individual site is trivial; needs a mechanical rewrite pass plus a \\\n        full-suite green run, not hand-editing {rigger_n} sites.\\n\\\n        - Unblocks: the biggest single site-count reduction available anywhere in the \\\n        duplication catalog.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -4613,6 +4651,92 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-08ca12f5868a",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_using_rigger_skill",
+        "content_hash": "f5ae6222ac348cab"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_handbook_discipline",
+        "content_hash": "a2a64b0c9c5feab6"
+      }
+    ],
+    "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-ece6988d7484",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_planning_a_spec_skill",
+        "content_hash": "32f25aed00fff94c"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_planning_field_guide",
+        "content_hash": "2258b5edd93c6ece"
+      }
+    ],
+    "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-c5777007a33f",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_build_graph_skill",
+        "content_hash": "c910c048a51af261"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_reindex_skill",
+        "content_hash": "c910c048a51af261"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_resume_a_run_skill",
+        "content_hash": "eea0469949ed9598"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_restore_the_dash_skill",
+        "content_hash": "d78a0a8a3d3260e1"
+      }
+    ],
+    "proposed_home": "docs::support (consolidate these 4 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-3d5ea11431d3",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_handle_an_escalation_skill",
+        "content_hash": "c133b2996044ebbd"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_diagnose_churn_skill",
+        "content_hash": "a276a282b41249ad"
+      }
+    ],
+    "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-bb7aa56f67d8",
     "classification": "exact",
     "sites": [
@@ -5639,25 +5763,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7727a9cc5ba0",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
-        "name": "is_handbook_path",
-        "content_hash": "605edabf599dba5d"
-      },
-      {
-        "file": "src/canary_store.rs",
-        "name": "any_finding_is_critical",
-        "content_hash": "605edabf599dba5d"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/grounder/design/extract.rs, src/canary_store.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-4b942d7302a6",
     "classification": "near",
     "sites": [
@@ -6089,111 +6194,6 @@
       }
     ],
     "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-7dfa0dd1a6a8",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/blast_radius_eval.rs",
-        "name": "width_threshold_is_the_tier_width_nearest_rank_percentile",
-        "content_hash": "6024287d9ff89272"
-      },
-      {
-        "file": "src/blast_radius_eval.rs",
-        "name": "full_fraction_spans_all_light_to_collapse",
-        "content_hash": "be8aacc92349b7ba"
-      }
-    ],
-    "proposed_home": "blast_radius_eval::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-6a2acacd5cf0",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/docs.rs",
-        "name": "render_using_rigger_skill",
-        "content_hash": "f5ae6222ac348cab"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "render_handbook_discipline",
-        "content_hash": "a2a64b0c9c5feab6"
-      }
-    ],
-    "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-bcc850364281",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/docs.rs",
-        "name": "render_planning_a_spec_skill",
-        "content_hash": "32f25aed00fff94c"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "render_planning_field_guide",
-        "content_hash": "2258b5edd93c6ece"
-      }
-    ],
-    "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-fd7990caad07",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/docs.rs",
-        "name": "render_build_graph_skill",
-        "content_hash": "c910c048a51af261"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "render_reindex_skill",
-        "content_hash": "c910c048a51af261"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "render_resume_a_run_skill",
-        "content_hash": "eea0469949ed9598"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "render_restore_the_dash_skill",
-        "content_hash": "d78a0a8a3d3260e1"
-      }
-    ],
-    "proposed_home": "docs::support (consolidate these 4 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-3e586352db43",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/docs.rs",
-        "name": "render_handle_an_escalation_skill",
-        "content_hash": "c133b2996044ebbd"
-      },
-      {
-        "file": "src/docs.rs",
-        "name": "render_diagnose_churn_skill",
-        "content_hash": "a276a282b41249ad"
-      }
-    ],
-    "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
