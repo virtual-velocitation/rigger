@@ -75,7 +75,38 @@ const SUBCOMMANDS: &[&str] = &[
     "help",
 ];
 
+/// A reader that goes away early (`rigger prime | head -1`) closes stdout under the command
+/// still writing to it, and `println!` panics on the broken pipe. That is not a failure of the
+/// command: the reader has everything it asked for. So, for every command at once, a panic that
+/// is std's report of a failed stdout write on a broken pipe ends the process quietly with
+/// status 0; every other panic keeps the default report.
+fn exit_quietly_when_stdout_closes() {
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if is_closed_stdout_report(payload) {
+            std::process::exit(0);
+        }
+        report(info);
+    }));
+}
+
+/// Whether a panic `message` is std's report of a stdout write that failed on a broken pipe
+/// (`failed printing to stdout: Broken pipe (os error 32)`).
+fn is_closed_stdout_report(message: &str) -> bool {
+    message.starts_with("failed printing to stdout")
+        && message
+            .to_ascii_lowercase()
+            .contains(&std::io::ErrorKind::BrokenPipe.to_string())
+}
+
 fn main() {
+    exit_quietly_when_stdout_closes();
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         usage();
