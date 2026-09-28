@@ -349,11 +349,11 @@ fn mcp_peers(root: &Path) -> Value {
 /// `current` (the current run's further events, appended through the same namespace), and make
 /// every derived event and every superseded run's own event undecodable - so a command that
 /// materializes even one of them fails.
-fn seed_poisoned_project(root: &Path, current: impl FnOnce(&dyn EventStore)) {
+fn seed_poisoned_project(root: &Path, criteria: &[&str], current: impl FnOnce(&dyn EventStore)) {
     let fixture = {
         let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
         let store = Namespaced::new(&backend, &run_stream_identity(root));
-        let fixture = seed_one_shot_fixture(&store, STREAM, &["the current campaign"]);
+        let fixture = seed_one_shot_fixture(&store, STREAM, criteria);
         current(&store);
         fixture
     };
@@ -394,7 +394,7 @@ fn seed_poisoned_project(root: &Path, current: impl FnOnce(&dyn EventStore)) {
 fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_superseded_event() {
     let dir = temp_store_project();
     let root = dir.path();
-    seed_poisoned_project(root, |_| {});
+    seed_poisoned_project(root, &["the current campaign"], |_| {});
 
     // `rigger peers`: every run's decisions, lessons and findings, the current run's LIVE.
     assert_eq!(
@@ -492,7 +492,7 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
     let dir = temp_store_project();
     let root = dir.path();
     let spawn = "u/implementer#0";
-    seed_poisoned_project(root, |store| {
+    seed_poisoned_project(root, &["the current campaign"], |store| {
         rigger::spawn_store::park_in_run(
             store,
             &rigger::spawn::SpawnRequest {
@@ -564,4 +564,57 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
     );
     let resumed = rigger_ok(root, &["resume-unit", "uc"]);
     assert!(resumed.starts_with("resumed unit \"uc\""), "{resumed}");
+}
+
+/// Given a project that is NOT a git repo (so the step walks no tree and ingests nothing) whose
+/// `events.db` holds two superseded runs and 200,000 derived events before the current run's
+/// boundary, with every derived event and every superseded run's own event made undecodable, when
+/// the operator runs `rigger step`, then the step parks the stage's spawn in the current run, and
+/// after the spawn's result is recorded the next `rigger step` replays it and finishes the run -
+/// a step that read past the run's slice, or took the ingest seed's derived read without
+/// ingesting, would have materialized a poisoned event and failed.
+#[test]
+fn a_step_that_does_not_ingest_advances_the_run_without_materializing_a_derived_or_superseded_event(
+) {
+    let dir = common::cli::temp_repoless_project();
+    let root = dir.path();
+    common::cli::seed_store(root);
+    common::cli::write_workflow(root, "");
+    // Started over no criteria, as a step given no spec starts one, so the step adopts it.
+    seed_poisoned_project(root, &[], |_| {});
+
+    assert_eq!(
+        rigger_ok(root, &["step"]),
+        concat!(
+            r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
+            r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
+            r#""cargo_target_dir":null}],"done":false}"#,
+            "\n"
+        ),
+        "the first step parks the stage's spawn"
+    );
+    rigger_ok(root, &["result", "a/implementer#0", "done"]);
+    assert_eq!(
+        rigger_ok(root, &["step"]),
+        "{\"wave\":[],\"done\":true}\n",
+        "the second step replays the result and finishes the run"
+    );
+    assert_eq!(
+        rigger_ok(root, &["status"])
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>(),
+        ["run run-c", "a . 0/1 units . working"],
+        "the step advanced the run it adopted - no new run was minted (the stage's `on_pass: none` \
+         lands nothing, so its unit is not counted integrated)"
+    );
+
+    // Control: the step does materialize the run's own events, so poisoning one fails it - the
+    // poison is live for the step, not inert.
+    assert_eq!(poison(root, "type = 'RunNote'"), 2);
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        !ok,
+        "a step that materializes a poisoned run event fails: {err}"
+    );
 }
