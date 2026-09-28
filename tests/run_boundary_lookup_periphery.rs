@@ -305,3 +305,78 @@ fn the_counting_double_records_a_read_that_fails() {
     );
     assert_eq!(counted.materialized(), 0);
 }
+
+/// Given the shared counting double stacked on a project namespace over a file-backed store, when
+/// a stream subscription replays, goes live, and then the backend's log disappears, then every
+/// delivered event reaches the caller in order with the project prefix stripped and is counted
+/// into its call, and the backend's terminal failure is relayed through both relays with nothing
+/// delivered after it - the one `Subscription::map` relay both decorators observe through.
+#[test]
+fn a_subscription_through_the_double_and_a_namespace_counts_each_delivery_then_relays_the_failure()
+{
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let alpha = Namespaced::new(&backend, "alpha");
+    alpha
+        .append(
+            "run",
+            ExpectedRevision::NoStream,
+            &[ev("RunStarted", "{}"), ev("W", "{}")],
+        )
+        .unwrap();
+    let counted = ReadCountingStore::new(&alpha);
+
+    let sub = counted.subscribe_stream("run", 0).unwrap();
+    let next = || {
+        let e = sub
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the relay delivers the event");
+        (e.stream, e.revision, e.type_)
+    };
+    let replayed = [next(), next()];
+    assert_eq!(
+        replayed,
+        [
+            ("run".to_string(), 0, "RunStarted".to_string()),
+            ("run".to_string(), 1, "W".to_string()),
+        ],
+        "the replay reaches the caller in order, scoped back to the project's own stream name"
+    );
+    alpha
+        .append("run", ExpectedRevision::Exact(1), &[ev("Live", "{}")])
+        .unwrap();
+    assert_eq!(next(), ("run".to_string(), 2, "Live".to_string()));
+
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch("DROP TABLE events;")
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while sub.err().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        sub.err(),
+        Some("no such table: events".to_string()),
+        "the backend's terminal failure carries through the namespace and the double"
+    );
+    assert_eq!(
+        sub.recv_timeout(Duration::from_millis(200))
+            .map(|e| e.type_),
+        None,
+        "nothing is delivered after the terminal failure"
+    );
+    drop(sub);
+
+    assert_eq!(
+        counted.reads(),
+        [CountedRead::SubscribeStream {
+            stream: "run".to_string(),
+            from: 0,
+            delivered: 3,
+        }],
+        "the call records the caller's stream name and every event the relay handed on"
+    );
+    assert_eq!(counted.materialized(), 3);
+}
