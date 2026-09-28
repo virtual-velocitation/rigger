@@ -767,3 +767,182 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
         "the composed reset must refuse BEFORE running the --runs prune; got: {out:?}"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Spec 101, criterion 4: COMPACTION SHEDS SUPERSEDED GENERATIONS
+// ---------------------------------------------------------------------------------------
+
+/// How many times each generation's batch is recorded, so the latest generation also carries the
+/// exact-key duplication the prune already sheds beside the superseded generations.
+const GEN_RECORDINGS: u64 = 2;
+
+/// Seed three content generations of ONE file - its code batch (`gc/src/f.rs`) and its design
+/// batch (`gd/docs/f.md`) - each generation recorded [`GEN_RECORDINGS`] times, every recording at
+/// a later valid-time than the one before. Each generation keeps the entity set of the one before
+/// and moves its definition's line, the shape an ordinary edit leaves; the design batch asserts
+/// the SAME `SPECIFIES` fact in every generation (so the fold dates it from generation 1) and
+/// generation 3 adds a second fact of its own.
+fn seed_three_generations(root: &Path) {
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let mut events = vec![
+        Event::new("RunStarted", br#"{"run":"r1","criteria":["c"]}"#.to_vec())
+            .with_valid_from(UNIX_EPOCH + Duration::from_secs(10)),
+    ];
+    let mut secs = 100;
+    for generation in 1..=3u32 {
+        for _ in 0..GEN_RECORDINGS {
+            secs += 1;
+            let code = format!("gc/src/f.rs@h{generation}");
+            events.push(keyed(
+                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                code_entity("src/f.rs", "alpha", generation, true),
+                &format!("{code}#0"),
+                secs,
+            ));
+            events.push(keyed(
+                rigger::contextgraph::TYPE_EDGE_INFERRED,
+                edge_inferred("src/f.rs", "beta"),
+                &format!("{code}#1"),
+                secs,
+            ));
+            let design = format!("gd/docs/f.md@h{generation}");
+            events.push(keyed(
+                rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED,
+                doc_link("docs/f.md", "src/f.rs", rigger::contextgraph::REL_SPECIFIES),
+                &format!("{design}#0"),
+                secs,
+            ));
+            if generation == 3 {
+                events.push(keyed(
+                    rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED,
+                    doc_link("docs/f.md", "src/g.rs", rigger::contextgraph::REL_SPECIFIES),
+                    &format!("{design}#1"),
+                    secs,
+                ));
+            }
+        }
+    }
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .unwrap();
+}
+
+/// Rebuild `graph.db` from `events` into a fresh file at `path` and return the rebuilt
+/// projection's whole content in its public wire form: every node and every live edge, every
+/// column, as the bytes a consumer receives.
+fn rebuilt_graph_bytes(events: &[Event], project: &str, path: &Path) -> Vec<u8> {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    let p = Projector::open(path.to_str().unwrap(), project).unwrap();
+    p.apply_batch(events).unwrap();
+    serde_json::to_vec(&p.whole().unwrap()).unwrap()
+}
+
+#[test]
+fn reset_derived_sheds_every_superseded_generation_and_the_rebuilt_graph_is_byte_identical() {
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    let (_, ierr, iok) = run_rigger(root, &["init"]);
+    assert!(iok, "rigger init must scaffold the project; stderr: {ierr}");
+    seed_three_generations(root);
+    let id = run_stream_identity(root);
+    let scratch = tempfile::tempdir().unwrap();
+    let before_graph = rebuilt_graph_bytes(
+        &read_run_events(root),
+        &id,
+        &scratch.path().join("before.db"),
+    );
+    let before = rows(&rigger_file(root, "events.db"));
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
+    let after = rows(&rigger_file(root, "events.db"));
+
+    // Only the LATEST generation's recordings survive, and of each of its keys only the last
+    // recording (the exact-key dedup the prune already did).
+    let latest_recording = |key: &str| {
+        before
+            .iter()
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
+            .map(|r| r.0)
+            .max()
+            .unwrap()
+    };
+    let kept: Vec<(i64, String)> = after
+        .iter()
+        .filter(|r| derived(r))
+        .map(|r| (r.0, meta_replay_key(&r.5).unwrap()))
+        .collect();
+    let expected: Vec<(i64, String)> = [
+        "gc/src/f.rs@h3#0",
+        "gc/src/f.rs@h3#1",
+        "gd/docs/f.md@h3#0",
+        "gd/docs/f.md@h3#1",
+    ]
+    .iter()
+    .map(|k| (latest_recording(k), k.to_string()))
+    .collect::<std::collections::BTreeSet<_>>()
+    .into_iter()
+    .collect();
+    assert_eq!(
+        kept, expected,
+        "only the latest recording of each of the latest generation's keys may survive"
+    );
+
+    // The count shed, per type and in total, and how many of them were superseded generations:
+    // generations 1 and 2 are 2 recordings x 3 events each = 12 rows, the latest generation's
+    // exact-key duplicates are 4 more.
+    assert!(
+        out.contains("(CodeEntityExtracted 5, EdgeInferred 5, DocConceptExtracted 0, DocLinkExtracted 6)"),
+        "the report must name the rows shed per type; got: {out:?}"
+    );
+    assert!(
+        out.contains("pruned 16 redundant derived-index event(s)")
+            && out.contains("12 of them recordings of a superseded generation"),
+        "the report must name the total shed and the superseded-generation share; got: {out:?}"
+    );
+
+    // The design fact every generation asserted keeps the date it FIRST became true (generation
+    // 1's first recording, 101s), carried onto the recording that survives.
+    let spec_row = after
+        .iter()
+        .find(|r| meta_replay_key(&r.5).as_deref() == Some("gd/docs/f.md@h3#0"))
+        .unwrap();
+    assert_eq!(
+        spec_row.6,
+        Duration::from_secs(101).as_nanos() as i64,
+        "the surviving recording of a re-asserted design fact must carry its earliest valid-time"
+    );
+    // The fact only generation 3 asserts keeps generation 3's own first date (105s).
+    let new_row = after
+        .iter()
+        .find(|r| meta_replay_key(&r.5).as_deref() == Some("gd/docs/f.md@h3#1"))
+        .unwrap();
+    assert_eq!(
+        new_row.6,
+        Duration::from_secs(105).as_nanos() as i64,
+        "a fact first asserted by the latest generation keeps its own earliest valid-time"
+    );
+
+    // graph.db rebuilt from the compacted log is byte-identical to one rebuilt from the original.
+    let after_graph = rebuilt_graph_bytes(
+        &read_run_events(root),
+        &id,
+        &scratch.path().join("after.db"),
+    );
+    assert_eq!(
+        String::from_utf8(after_graph).unwrap(),
+        String::from_utf8(before_graph).unwrap(),
+        "the graph rebuilt from the compacted log must be byte-identical to the original's"
+    );
+
+    // A second pass has nothing left to shed.
+    let (again, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(ok, "a second reset --derived must succeed; stderr: {err}");
+    assert!(
+        again.contains("pruned 0 redundant derived-index event(s)")
+            && again.contains("0 of them recordings of a superseded generation"),
+        "a second pass over a compacted log must shed nothing; got: {again:?}"
+    );
+}
