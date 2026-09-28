@@ -27,7 +27,7 @@ use crate::agent::{
     classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
 };
 use crate::config::AgentDef;
-use crate::eventstore::{Direction, EventStore};
+use crate::eventstore::EventStore;
 use crate::hooks;
 use crate::liveness;
 use crate::progress::{self, SpawnLaunched};
@@ -641,24 +641,10 @@ impl Driver<'_> {
         last_api_retry_category: &Option<String>,
         stderr_tail: &[u8],
     ) -> Error {
-        let stop_failure_class = self
-            .progress_store
-            .read_stream(progress::STREAM, 0, Direction::Forward)
+        // THIS spawn's run's progress alone - its own stream, the one read `rigger status`
+        // folds too (spec 101).
+        let stop_failure_class = progress::read_run(self.progress_store, &opts.run_id)
             .ok()
-            .map(|events| {
-                // Same convention as `rigger status`'s own progress-event filter
-                // (`src/main.rs`): scope to THIS spawn's run before folding, an empty
-                // `run_id` (no run started yet - e.g. a bare unit test) matching every
-                // event unscoped.
-                events
-                    .into_iter()
-                    .filter(|e| {
-                        opts.run_id.is_empty()
-                            || e.meta.get(crate::run::META_RUN_ID).map(String::as_str)
-                                == Some(opts.run_id.as_str())
-                    })
-                    .collect::<Vec<_>>()
-            })
             .and_then(|events| progress::latest_stop_failure_class(&events, &opts.id));
         let class = classify_failure(
             stop_failure_class.as_deref(),
@@ -1367,6 +1353,12 @@ mod tests {
     /// `classify_no_result`'s read-only path, so they degrade the same inert way
     /// `SilentStore`'s own unused arms do.
     struct FailingReadStore;
+    impl FailingReadStore {
+        /// The one failure every read of this double answers.
+        fn read_failure() -> crate::eventstore::Error {
+            crate::eventstore::Error::Backend("simulated progress-store read failure".to_string())
+        }
+    }
     impl EventStore for FailingReadStore {
         fn append(
             &self,
@@ -1386,9 +1378,7 @@ mod tests {
             _from: crate::eventstore::Revision,
             _dir: Direction,
         ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
-            Err(crate::eventstore::Error::Backend(
-                "simulated progress-store read failure".to_string(),
-            ))
+            Err(FailingReadStore::read_failure())
         }
         fn read_all(
             &self,
@@ -1422,6 +1412,14 @@ mod tests {
             _event_type: &str,
         ) -> Result<Option<crate::eventstore::Revision>, crate::eventstore::Error> {
             Ok(None)
+        }
+        fn read_stream_typed(
+            &self,
+            _stream: &str,
+            _from: crate::eventstore::Revision,
+            _selection: crate::eventstore::TypeSelection,
+        ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
+            Err(FailingReadStore::read_failure())
         }
     }
 
@@ -1602,9 +1600,7 @@ mod tests {
         };
         assert!(err.0.contains("u104-launch/implementer#0"), "{}", err.0);
 
-        let recorded = store
-            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-            .unwrap();
+        let recorded = crate::progress::read_run(&store, "run-1").unwrap();
         assert_eq!(
             recorded.len(),
             1,
@@ -1786,9 +1782,7 @@ mod tests {
         second.child.wait().unwrap();
 
         assert_ne!(first.session_id, second.session_id);
-        let recorded = store
-            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
-            .unwrap();
+        let recorded = crate::progress::read_run(&store, &o.run_id).unwrap();
         assert_eq!(recorded.len(), 2);
         let launches: Vec<u32> = recorded
             .iter()

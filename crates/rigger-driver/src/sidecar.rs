@@ -1,18 +1,13 @@
-//! Live cross-agent awareness: a filtered catch-up subscription over the shared
-//! event log collects the decisions other agents make while one agent works, so
-//! no agent works blind to its peers. A background thread drains the subscription
-//! into `seen`. It never crosses the file-isolation boundary - worktrees isolate
-//! the files, the event stream shares the decisions.
-
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+//! Live cross-agent awareness: a read of the run's decisions, lessons and findings from the
+//! shared event log, so no agent works blind to its peers. It never crosses the
+//! file-isolation boundary - worktrees isolate the files, the event stream shares the
+//! decisions.
 
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::contextgraph;
-use crate::eventstore::{self, Event, EventStore, Filter, Position, StoppableThread};
+use crate::eventstore::{self, Event, EventStore};
 use crate::run;
 
 /// A peer's decision, as the side-car surfaces it to an agent.
@@ -26,7 +21,7 @@ pub struct PeerDecision {
     /// LIVE when this decision belongs to the ACTIVE run, HISTORICAL (a superseded run,
     /// or pre-boundary) otherwise (spec 21, unit 3). A DERIVED VIEW, not part of the
     /// event body: the side-car sets it from the single c1 run attribution
-    /// ([`run::run_attribution`] + [`run::current_run_id`] over the whole event stream)
+    /// ([`run::run_attribution`] + [`run::current_run_id`] over the side-car's read)
     /// so provenance is legible without scoping grounding to the active run. `#[serde(skip)]`
     /// keeps it out of (de)serialization and defaults it to `false` - the conservative
     /// HISTORICAL default - when a decision is decoded from an event body.
@@ -121,57 +116,37 @@ impl Peer for PeerLesson {
     const SCOPE: fn(&Self) -> &[String] = |l| &l.about;
 }
 
-/// Sidecar collects the events on a filtered catch-up subscription in the
-/// background while one agent works.
+/// Sidecar is ONE read of the run's peer records (spec 101): the run's own events from its
+/// boundary and every run's carried-over decisions, lessons and findings, exactly as
+/// [`crate::run::read::read_run`] hands them back - never a replay of the whole log from position 0, so
+/// a one-shot `rigger peers` or an MCP `rigger_peers` call costs the run and its carry-over, not
+/// the project's history. A caller that wants what peers recorded since reads again: each call
+/// sees every record committed before it.
 pub struct Sidecar {
-    // Declared first so it drops first: the collector is stopped and joined before the
-    // events it pushes into are released.
-    _collector: StoppableThread,
-    seen: Arc<Mutex<Vec<Event>>>,
+    seen: Vec<Event>,
 }
 
 impl Sidecar {
-    /// Open a filtered catch-up subscription from a position and begin collecting
-    /// matching events in the background.
-    pub fn start(
-        store: &dyn EventStore,
-        from: Position,
-        filter: Filter,
-    ) -> Result<Self, eventstore::Error> {
-        let sub = store.subscribe_all(from, &filter)?;
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let seen_thread = Arc::clone(&seen);
-        let stop_thread = Arc::clone(&stop);
-        let collector = std::thread::spawn(move || {
-            // The subscription is owned by this thread; it stops when the thread ends.
-            while !stop_thread.load(Ordering::Relaxed) {
-                if let Some(e) = sub.recv_timeout(Duration::from_millis(50)) {
-                    seen_thread.lock().unwrap().push(e);
-                }
-            }
-        });
+    /// Read the peer records of the current run on `stream`.
+    pub fn read(store: &dyn EventStore, stream: &str) -> Result<Self, eventstore::Error> {
         Ok(Sidecar {
-            _collector: StoppableThread::new(stop, collector),
-            seen,
+            seen: run::read::read_run(store, stream)?,
         })
     }
 
-    /// Every peer record of kind `T` seen so far ([`Peer::collect`] over the whole `seen`
-    /// stream): the concurrent decisions an agent should be aware of before it acts, the
-    /// findings a concurrent reviewer should be aware of before it renders its own, or the
-    /// lessons a prior run's escalations recorded about the files an agent is touching.
+    /// Every peer record of kind `T` this read holds ([`Peer::collect`] over the whole read):
+    /// the concurrent decisions an agent should be aware of before it acts, the findings a
+    /// concurrent reviewer should be aware of before it renders its own, or the lessons a prior
+    /// run's escalations recorded about the files an agent is touching.
     pub fn peers<T: Peer>(&self) -> Vec<T> {
-        T::collect(&self.seen.lock().unwrap())
+        T::collect(&self.seen)
     }
 
-    /// The peer records of kind `T` scoped to an agent's blast-radius (§5.3). The
-    /// side-car's catch-up subscription is filtered by stream prefix, but blast-radius
-    /// scoping lives in the record CONTENT: a peer record is relevant only when its
-    /// [`Peer::SCOPE`] files (a decision's `governs`, a finding's or lesson's `about`)
-    /// intersect the agent's blast-radius. An empty `blast_radius` means "no scope" and
-    /// returns every record (the unscoped [`Self::peers`] behavior), so a caller that does
-    /// not know its files still sees its peers.
+    /// The peer records of kind `T` scoped to an agent's blast-radius (§5.3): a peer record is
+    /// relevant only when its [`Peer::SCOPE`] files (a decision's `governs`, a finding's or
+    /// lesson's `about`) intersect the agent's blast-radius. An empty `blast_radius` means "no
+    /// scope" and returns every record (the unscoped [`Self::peers`] behavior), so a caller that
+    /// does not know its files still sees its peers.
     pub fn peers_for<T: Peer>(&self, blast_radius: &[String]) -> Vec<T> {
         let all = self.peers::<T>();
         if blast_radius.is_empty() {
@@ -183,15 +158,6 @@ impl Sidecar {
             .filter(|p| (T::SCOPE)(p).iter().any(|f| scope.contains(f.as_str())))
             .collect()
     }
-
-    /// How many events the side-car has collected so far.
-    pub fn len(&self) -> usize {
-        self.seen.lock().unwrap().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 #[cfg(test)]
@@ -199,13 +165,47 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::ExpectedRevision;
-    use std::time::Instant;
+    use crate::test_support::{seed_one_shot_fixture, ReadCountingStore};
+
+    /// THE SIDECAR BEHIND `rigger peers` READS FROM THE BOUNDARY (spec 101): over a log holding
+    /// 200,000 derived events and two superseded runs before the boundary, one read costs exactly
+    /// the run's events plus the typed carry-over, and still surfaces every run's decisions,
+    /// lessons and findings - the current run's decision LIVE, a superseded run's HISTORICAL.
+    #[test]
+    fn the_sidecar_reads_the_run_from_its_boundary_and_the_carry_over_by_type() {
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, "run", &[]);
+        let store = ReadCountingStore::new(&inner);
+        let sidecar = Sidecar::read(&store, "run").unwrap();
+        assert_eq!(store.reads(), fixture.read("run"));
+        assert_eq!(store.materialized(), fixture.cost());
+
+        let decisions: Vec<(String, bool)> = sidecar
+            .peers::<PeerDecision>()
+            .into_iter()
+            .map(|d| (d.id, d.live))
+            .collect();
+        assert_eq!(
+            decisions,
+            [("d-a".to_string(), false), ("d-c".to_string(), true)]
+        );
+        let lessons: Vec<String> = sidecar
+            .peers::<PeerLesson>()
+            .into_iter()
+            .map(|l| l.id)
+            .collect();
+        assert_eq!(lessons, ["l-a"]);
+        let findings: Vec<String> = sidecar
+            .peers::<PeerFinding>()
+            .into_iter()
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(findings, ["f-b", "f-c"]);
+    }
 
     #[test]
-    fn surfaces_decisions_from_the_subscription() {
+    fn surfaces_a_decision_recorded_before_the_read() {
         let store = Store::open(":memory:").unwrap();
-        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
-
         let data =
             serde_json::to_vec(&serde_json::json!({"id": "d1", "summary": "chose X"})).unwrap();
         store
@@ -215,57 +215,30 @@ mod tests {
                 &[Event::new(contextgraph::TYPE_DECISION_MADE, data)],
             )
             .unwrap();
-
-        // The subscription delivers the live append; wait for the collector.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if sidecar
-                .peers::<PeerDecision>()
-                .iter()
-                .any(|d| d.id == "d1" && d.summary == "chose X")
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the side-car never surfaced the decision"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let decisions = Sidecar::read(&store, "run")
+            .unwrap()
+            .peers::<PeerDecision>();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].id, "d1");
+        assert_eq!(decisions[0].summary, "chose X");
     }
 
     /// Appends two `type_` events built by `payload(id, file)` - `ids[0]` about a.rs, `ids[1]`
-    /// about b.rs - waits until the side-car surfaces both as `P` (`what` names them in the
-    /// timeout message), asserts an empty blast-radius returns both, and returns the peers
-    /// scoped to a.rs.
+    /// about b.rs - reads them back as `P`, asserts an empty blast-radius returns both, and
+    /// returns the peers scoped to a.rs.
     fn peers_scoped_to_a_rs<P: Peer>(
         type_: &str,
-        what: &str,
         ids: [&str; 2],
         payload: impl Fn(&str, &str) -> serde_json::Value,
     ) -> Vec<P> {
         let store = Store::open(":memory:").unwrap();
-        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
-
         for (id, file) in ids.into_iter().zip(["a.rs", "b.rs"]) {
             let data = serde_json::to_vec(&payload(id, file)).unwrap();
             store
                 .append("run", ExpectedRevision::Any, &[Event::new(type_, data)])
                 .unwrap();
         }
-
-        // Wait until both records have surfaced through the subscription.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if sidecar.peers::<P>().len() >= 2 {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the side-car never surfaced both {what}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let sidecar = Sidecar::read(&store, "run").unwrap();
 
         // An empty blast-radius returns every record.
         let all = sidecar.peers_for::<P>(&[]);
@@ -280,7 +253,6 @@ mod tests {
         decisions_for_scopes_to_the_blast_radius: {
             let scoped = peers_scoped_to_a_rs::<PeerDecision>(
                 contextgraph::TYPE_DECISION_MADE,
-                "decisions",
                 ["da", "db"],
                 |id, governs| serde_json::json!({"id": id, "summary": "x", "governs": [governs]}),
             );
@@ -288,13 +260,11 @@ mod tests {
             assert_eq!(scoped[0].id, "da");
         };
         /// A peer reviewer's ReviewFinding is surfaced by the side-car and scoped to a
-        /// reviewer's blast-radius the same way decisions are: a finding about a file
-        /// is returned by the blast-radius-scoped peers query (item 4), so concurrent
-        /// lenses see each other's findings live.
+        /// reviewer's blast-radius the same way decisions are, so concurrent lenses see each
+        /// other's findings on their next read.
         findings_for_scopes_to_the_blast_radius: {
             let scoped = peers_scoped_to_a_rs::<PeerFinding>(
                 contextgraph::TYPE_REVIEW_FINDING,
-                "findings",
                 ["fa", "fb"],
                 |id, about| {
                     serde_json::json!({"id": id, "by": "lens", "summary": "x", "about": [about]})
@@ -308,15 +278,11 @@ mod tests {
             assert_eq!(scoped[0].id, "fa");
         };
         /// A prior run's LessonLearned is surfaced by the side-car and scoped to a
-        /// blast-radius the same way decisions and findings are: a lesson about a file
-        /// comes back from the blast-radius-scoped peers query, so `rigger peers` can
-        /// recover the lessons elided from a capped prompt section (the recovery the
-        /// elision note names). Without this surface `rigger peers` would return zero
-        /// lessons and that note would be a dead promise (adj-u1gap17).
+        /// blast-radius the same way decisions and findings are, so `rigger peers` can
+        /// recover the lessons elided from a capped prompt section (adj-u1gap17).
         lessons_for_scopes_to_the_blast_radius: {
             let scoped = peers_scoped_to_a_rs::<PeerLesson>(
                 contextgraph::TYPE_LESSON_LEARNED,
-                "lessons",
                 ["la", "lb"],
                 |id, about| {
                     serde_json::json!({"id": id, "summary": "do not repeat x", "about": [about]})
@@ -330,70 +296,5 @@ mod tests {
             assert_eq!(scoped[0].id, "la");
             assert_eq!(scoped[0].summary, "do not repeat x");
         };
-    }
-
-    #[test]
-    fn decisions_are_labeled_live_from_the_active_run_and_historical_from_a_superseded_run() {
-        // spec 21, unit 3: `rigger peers` must tell a live decision from dead-run noise.
-        // Reusing the SINGLE c1 run attribution, a decision inside the ACTIVE run's
-        // [RunStarted, next RunStarted) window is LIVE; one from a superseded (earlier)
-        // run is HISTORICAL. The side-car derives the label over the WHOLE event stream,
-        // so the RunStarted boundaries must be present - they are, because Filter::default
-        // applies no type filter, exactly as production `cmd_peers` replays from position 0.
-        let store = Store::open(":memory:").unwrap();
-        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
-
-        let run_started = |run: &str| {
-            Event::new(
-                run::TYPE_RUN_STARTED,
-                serde_json::to_vec(&serde_json::json!({ "run": run })).unwrap(),
-            )
-        };
-        let decision = |id: &str| {
-            Event::new(
-                contextgraph::TYPE_DECISION_MADE,
-                serde_json::to_vec(&serde_json::json!({ "id": id, "summary": "x" })).unwrap(),
-            )
-        };
-        // The stream: run r1 opens and records a decision, then run r2 (the ACTIVE run)
-        // opens and records its own decision.
-        for e in [
-            run_started("r1"),
-            decision("d_old"),
-            run_started("r2"),
-            decision("d_new"),
-        ] {
-            store.append("run", ExpectedRevision::Any, &[e]).unwrap();
-        }
-
-        // Wait until both decisions have surfaced through the subscription. Delivery is in
-        // append order, so once d_new is seen its preceding r2 boundary is seen too.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if sidecar.peers::<PeerDecision>().len() >= 2 {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the side-car never surfaced both decisions"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        let decisions = sidecar.peers::<PeerDecision>();
-        let by_id = |id: &str| {
-            decisions
-                .iter()
-                .find(|d| d.id == id)
-                .unwrap_or_else(|| panic!("decision {id} must surface"))
-        };
-        assert!(
-            by_id("d_new").live,
-            "a decision from the active run (r2) must be LIVE"
-        );
-        assert!(
-            !by_id("d_old").live,
-            "a decision from a superseded run (r1) must be HISTORICAL"
-        );
     }
 }

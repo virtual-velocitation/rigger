@@ -12,7 +12,8 @@
 //! knows how to serialize.
 
 use crate::contextgraph::TYPE_DECISION_MADE;
-use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
+use crate::eventstore::{Error, Event, EventStore, ExpectedRevision};
+use crate::run::read::read_run;
 use crate::run::{
     current_run, effective_definition, RunStart, RunStarted, META_DEFINITION,
     META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_STARTED,
@@ -133,7 +134,7 @@ pub fn ensure_started_pinned(
     base_tip: &str,
     spec_path: &str,
 ) -> Result<RunStart, Error> {
-    let events = store.read_stream(STREAM, 0, Direction::Forward)?;
+    let events = read_run(store, STREAM)?;
     if let Some(run) = latest(&events) {
         if run.criteria.as_slice() == criteria {
             let pinned = effective_definition(current_run(&events));
@@ -236,8 +237,141 @@ pub fn start_fresh(
 mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
+    use crate::eventstore::Direction;
+    use crate::ingest::DERIVED_INDEX_TYPES;
+    use crate::run::read::CARRY_OVER_TYPES;
     use crate::run::{current_run_base, current_run_base_tip, current_run_id};
-    use crate::test_support::ev;
+    use crate::test_support::{ev, seed_one_shot_fixture, ReadCountingStore};
+
+    /// ONE-SHOT COMMANDS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 derived
+    /// events and two superseded runs before the boundary, one read of the run costs exactly the
+    /// boundary lookup, the carried-over knowledge by type and the run slice from the boundary
+    /// with the derived types refused at the store - and a fold over it sees the current run
+    /// exactly, each event once and in revision order, with every run's carried-over knowledge.
+    #[test]
+    fn read_run_costs_the_runs_own_events_plus_the_typed_carry_over() {
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, STREAM, &[]);
+        let store = ReadCountingStore::new(&inner);
+        let events = read_run(&store, STREAM).unwrap();
+        assert_eq!(store.reads(), fixture.read(STREAM));
+        assert_eq!(store.materialized(), fixture.cost());
+        assert_eq!(
+            CARRY_OVER_TYPES,
+            ["DecisionMade", "LessonLearned", "ReviewFinding"]
+        );
+        let types: Vec<&str> = events.iter().map(|e| e.type_.as_str()).collect();
+        assert_eq!(
+            types,
+            [
+                "DecisionMade",
+                "LessonLearned",
+                "ReviewFinding",
+                "RunStarted",
+                "RunNote",
+                "DecisionMade",
+                "ReviewFinding",
+                "RunNote",
+            ]
+        );
+        let revisions: Vec<i64> = events.iter().map(|e| e.revision).collect();
+        let mut sorted = revisions.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(revisions, sorted, "each event once, in log order");
+        assert_eq!(current_run(&events).len(), 5);
+        assert_eq!(current_run(&events)[0].revision, fixture.boundary);
+        assert_eq!(current_run_id(&events).as_deref(), Some("run-c"));
+    }
+
+    /// With no run started the whole stream is the run: one typed read from revision 0 refusing
+    /// only the derived types, after the boundary lookup found nothing.
+    #[test]
+    fn read_run_with_no_run_started_reads_every_non_derived_event() {
+        let inner = Store::open(":memory:").unwrap();
+        inner
+            .append(
+                STREAM,
+                ExpectedRevision::NoStream,
+                &[
+                    ev("UnitStarted", "{}"),
+                    ev("EdgeInferred", "{}"),
+                    ev("DecisionMade", "{}"),
+                    ev("CodeEntityExtracted", "{}"),
+                ],
+            )
+            .unwrap();
+        let store = ReadCountingStore::new(&inner);
+        let types: Vec<String> = read_run(&store, STREAM)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.type_)
+            .collect();
+        assert_eq!(types, ["UnitStarted", "DecisionMade"]);
+        assert_eq!(
+            store.reads(),
+            [
+                crate::test_support::CountedRead::LastPosition {
+                    stream: STREAM.to_string(),
+                    event_type: TYPE_RUN_STARTED.to_string(),
+                },
+                crate::test_support::CountedRead::Typed {
+                    stream: STREAM.to_string(),
+                    from: 0,
+                    only: false,
+                    types: DERIVED_INDEX_TYPES.iter().map(|t| t.to_string()).collect(),
+                    materialized: 2,
+                },
+            ]
+        );
+    }
+
+    /// The run reads in LOG order, with or without a boundary: rows a stale writer left at
+    /// revisions out of position order come back as the log recorded them (so `rigger watch`
+    /// still sees the disorder), never re-sorted into revision order.
+    #[test]
+    fn read_run_hands_the_run_back_in_log_order_with_and_without_a_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let revisions_read = |seed: &[&str], tail: [(&str, i64); 2]| -> Vec<i64> {
+            let path = dir.path().join(format!("{}.db", seed.len()));
+            let path = path.to_str().unwrap();
+            let store = Store::open(path).unwrap();
+            let events: Vec<Event> = seed.iter().map(|t| ev(t, "{}")).collect();
+            store
+                .append(STREAM, ExpectedRevision::NoStream, &events)
+                .unwrap();
+            let conn = rusqlite::Connection::open(path).unwrap();
+            for (type_, revision) in tail {
+                conn.execute(
+                    "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
+                     revision) VALUES (?1, ?2, ?3, X'7b7d', '{}', 0, 0, ?4)",
+                    rusqlite::params![STREAM, type_, format!("tail-{revision}"), revision],
+                )
+                .unwrap();
+            }
+            read_run(&store, STREAM)
+                .unwrap()
+                .iter()
+                .map(|e| e.revision)
+                .collect()
+        };
+        assert_eq!(
+            revisions_read(
+                &["UnitStarted", "UnitStatus"],
+                [("Note", 1005), ("Note", 1001)]
+            ),
+            [0, 1, 1005, 1001],
+            "no boundary: the whole non-derived stream, in log order"
+        );
+        assert_eq!(
+            revisions_read(
+                &["RunStarted", "DecisionMade", "Note"],
+                [("DecisionMade", 1005), ("Note", 1001)]
+            ),
+            [0, 1, 2, 1005, 1001],
+            "a boundary: the carry-over and the run slice merged in log order"
+        );
+    }
 
     /// How many `RunStarted` boundaries `events` holds.
     fn run_started_count(events: &[Event]) -> usize {

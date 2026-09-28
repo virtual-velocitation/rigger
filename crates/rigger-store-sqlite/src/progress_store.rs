@@ -7,7 +7,7 @@
 //! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
-use crate::progress::{AgentProgress, RunStamped, SpawnLaunched, StopFailure, STREAM};
+use crate::progress::{stream_of, AgentProgress, RunStamped, SpawnLaunched, StopFailure};
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
@@ -69,7 +69,8 @@ pub fn record_stop_failure(
     )
 }
 
-/// Append `report`, stamped with `run_id`, as the one event of the progress `store`'s stream:
+/// Append `report`, stamped with `run_id`, as the one event of its run's progress stream
+/// ([`stream_of`]):
 /// the append contract every record above shares. `what` names the record if the store wrote
 /// nothing ([`crate::eventstore::Appended::one`]).
 fn append_stamped<R: RunStamped>(
@@ -82,7 +83,11 @@ fn append_stamped<R: RunStamped>(
         .to_stamped_event(run_id)
         .map_err(|e| Error::Backend(format!("serialize {}: {e}", R::EVENT_TYPE)))?;
     store
-        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
+        .append(
+            &stream_of(run_id),
+            ExpectedRevision::Any,
+            std::slice::from_ref(&ev),
+        )?
         .one(what)
 }
 
@@ -92,7 +97,7 @@ mod tests {
     // The run stream, which the conductor re-exports as `conductor::STREAM`.
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Event};
-    use crate::progress::TYPE_AGENT_PROGRESS;
+    use crate::progress::{STREAM, TYPE_AGENT_PROGRESS};
     use crate::run as conductor;
     use crate::run::META_RUN_ID;
 
@@ -137,14 +142,16 @@ mod tests {
             "recording progress must not touch the run stream"
         );
         assert!(
-            run.read_stream(STREAM, 0, Direction::Forward)
+            run.read_stream(&stream_of("run-1"), 0, Direction::Forward)
                 .unwrap()
                 .is_empty(),
             "no AgentProgress may land in the run store"
         );
 
         // The report landed in the progress store's progress stream, stamped with its run.
-        let p = progress.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let p = progress
+            .read_stream(&stream_of("run-1"), 0, Direction::Forward)
+            .unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].type_, TYPE_AGENT_PROGRESS);
         assert_eq!(
@@ -223,12 +230,14 @@ mod tests {
         .unwrap();
 
         assert!(
-            run.read_stream(STREAM, 0, Direction::Forward)
+            run.read_stream(&stream_of("run-1"), 0, Direction::Forward)
                 .unwrap()
                 .is_empty(),
             "no SpawnLaunched may land in the run store"
         );
-        let p = progress.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let p = progress
+            .read_stream(&stream_of("run-1"), 0, Direction::Forward)
+            .unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].type_, crate::progress::TYPE_SPAWN_LAUNCHED);
         assert_eq!(
@@ -278,12 +287,14 @@ mod tests {
         .unwrap();
 
         assert!(
-            run.read_stream(STREAM, 0, Direction::Forward)
+            run.read_stream(&stream_of("run-1"), 0, Direction::Forward)
                 .unwrap()
                 .is_empty(),
             "no StopFailure may land in the run store"
         );
-        let p = progress.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let p = progress
+            .read_stream(&stream_of("run-1"), 0, Direction::Forward)
+            .unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].type_, crate::progress::TYPE_STOP_FAILURE);
         assert_eq!(

@@ -174,8 +174,7 @@ pub(crate) fn cmd_progress(args: &[String]) -> Res {
     // Resolve the current run READ-ONLY from the run store, only to scope the report.
     let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let events = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+    let (_, run_id) = read_current_run(&run_store)?;
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
@@ -255,9 +254,8 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // The current run's slice of the run stream, and its id.
     let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let all = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let run_events = runscope::current_run(&all);
-    let run_id = runscope::current_run_id(&all).unwrap_or_default();
+    let (run_slice, run_id) = read_current_run(&run_store)?;
+    let run_events = run_slice.as_slice();
 
     // Spec 94, criterion 5: `--line` needs only the run's event slice and the configured
     // remediation bound - console::fold's own three inputs (unit statuses, current blockers,
@@ -273,22 +271,10 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
         return Ok(());
     }
 
-    // This run's progress, from the SEPARATE store (absent/empty is fine - the store is
-    // created lazily by the first `rigger progress`).
+    // This run's progress, from the SEPARATE store's per-run stream (absent/empty is fine - the
+    // store is created lazily by the first `rigger progress`).
     let prog_events: Vec<Event> = match Store::open(&loc.file("progress.db")) {
-        Ok(backend) => {
-            let store = Namespaced::new(&backend, &loc.identity());
-            store
-                .read_stream(progress::STREAM, 0, Direction::Forward)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|e| {
-                    run_id.is_empty()
-                        || e.meta.get(runscope::META_RUN_ID).map(String::as_str)
-                            == Some(run_id.as_str())
-                })
-                .collect()
-        }
+        Ok(backend) => read_run_progress(&backend, &loc.identity(), &run_id),
         Err(_) => Vec::new(),
     };
 
@@ -513,9 +499,9 @@ pub(crate) fn cmd_watch(args: &[String]) -> Res {
 /// from the context graph scoped to the given files (or all if none), EXACTLY as the MCP
 /// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The store
 /// is RESOLVED by walking up to the project's existing `.rigger` (refusing to fabricate
-/// one, spec 05 - see [`require_store_dir`]); a side-car replays the `conductor::STREAM`
-/// backlog and this command waits for it to catch up before rendering one readable
-/// line per decision / lesson / finding. Rendering the lessons here is what makes the
+/// one, spec 05 - see [`require_store_dir`]); the side-car reads the `conductor::STREAM` run
+/// from its boundary with the carried-over knowledge by type, and this command renders one
+/// readable line per decision / lesson / finding. Rendering the lessons here is what makes the
 /// capped prompt sections' "recover the full set with `rigger peers <file>`" note honest
 /// for the lessons section, not just decisions and findings (adj-u1gap17).
 pub(crate) fn cmd_peers(args: &[String]) -> Res {
@@ -525,17 +511,10 @@ pub(crate) fn cmd_peers(args: &[String]) -> Res {
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
-    // The side-car replays the whole backlog from position 0; wait until it has
-    // drained every event currently in the store before reading, so a one-shot CLI
-    // call sees the full picture (the long-running serve path catches up live).
-    let peers = Sidecar::start(&store, 0, Filter::default())?;
-    let total = store
-        .read_all(0, Direction::Forward, &Filter::default())?
-        .len();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while peers.len() < total && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // The side-car reads the run from its boundary and the carried-over decisions, lessons and
+    // findings by type (spec 101) - every record committed before this call, never the whole
+    // log.
+    let peers = Sidecar::read(&store, conductor::STREAM)?;
 
     let result = mcpserver::peers_json(&peers, &files);
     let decisions = result["decisions"].as_array().cloned().unwrap_or_default();

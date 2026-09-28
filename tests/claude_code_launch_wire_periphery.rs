@@ -62,8 +62,7 @@ use std::sync::Mutex;
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::Driver;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore};
-use rigger::progress::{SpawnLaunched, STREAM, TYPE_SPAWN_LAUNCHED};
+use rigger::progress::{SpawnLaunched, TYPE_SPAWN_LAUNCHED};
 
 /// Resolve a checked-in fixture under `tests/fixtures/` by its file name - shared by both
 /// fixture accessors below so resolving a second, distinct fixture never re-duplicates the
@@ -157,9 +156,8 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
     // Second "process": a FRESH Store instance, same path - proves the write is durable
     // on disk, not merely alive in the first instance's own memory.
     let reopened = Store::open(&db_path).expect("reopen the same on-disk progress store");
-    let recorded = reopened
-        .read_stream(STREAM, 0, Direction::Forward)
-        .expect("read the progress stream back after reopening");
+    let recorded = rigger::progress::read_run(&reopened, "run-cold-start")
+        .expect("read the run's progress stream back after reopening");
     assert_eq!(
         recorded.len(),
         1,
@@ -188,9 +186,8 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
         .expect("second launch, from the reopened store, records and starts");
     reap(&mut second.child);
 
-    let recorded = reopened
-        .read_stream(STREAM, 0, Direction::Forward)
-        .expect("read both launches back");
+    let recorded =
+        rigger::progress::read_run(&reopened, "run-cold-start").expect("read both launches back");
     assert_eq!(
         recorded.len(),
         2,
@@ -424,9 +421,8 @@ fn launch_reaps_the_child_when_the_stdin_write_fails() {
     // The durable claim still landed - `launch()` records BEFORE it ever attempts to
     // start, let alone write to, the child (same ordering the other tests in this suite
     // and `crates/rigger-driver/src/driver/claude_code.rs`'s own suite already pin for the spawn-failure case).
-    let recorded = store
-        .read_stream(STREAM, 0, Direction::Forward)
-        .expect("read the progress stream");
+    let recorded = rigger::progress::read_run(&store, "run-stdin-failure")
+        .expect("read the run's progress stream");
     assert_eq!(
         recorded.len(),
         1,

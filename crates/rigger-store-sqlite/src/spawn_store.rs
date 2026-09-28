@@ -11,7 +11,7 @@
 //! knows how to serialize.
 
 // The run stream (the conductor re-exports the same constant as `conductor::STREAM`).
-use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Position};
+use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::run::STREAM;
 use crate::spawn::SpawnEvent;
 use crate::spawn::{SpawnRequest, SpawnResult};
@@ -91,13 +91,16 @@ pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Positi
 /// into one atomic operation closes that window.
 ///
 /// Atomicity rests on the store's optimistic concurrency (the port's only cross-backend
-/// primitive): read the stream, and if no [`crate::spawn::TYPE_SPAWN_RESULT`] for `res.id`
-/// is present, append under an [`ExpectedRevision`] pinned to the revision just read. A
-/// concurrent append that landed after the read (the racing self-report, or any other
-/// writer) makes that expectation CONFLICT; we re-read and re-decide, so the write lands
-/// at most once and a self-report that won the race is honored (the re-check now sees it
-/// and returns `None`). Only a genuine [`Error::Conflict`] retries; any other backend error
-/// surfaces.
+/// primitive): read the current run ([`crate::run::read::read_run`], spec 101 - never the
+/// whole log), and if no [`crate::spawn::TYPE_SPAWN_RESULT`] for `res.id` is present, append
+/// under an [`ExpectedRevision`] pinned to the newest revision just read. A concurrent append
+/// that landed after the read (the racing self-report, or any other writer - a derived event
+/// the run read never materializes included) makes that expectation CONFLICT, and the conflict
+/// names the stream's actual head; only a result among the events that landed can change the
+/// answer, so the results recorded past the pinned revision are read by type, re-decided, and
+/// the append is re-pinned to that head. The write lands at most once and a self-report that
+/// won the race is honored (the re-check sees it and returns `None`). Only a genuine
+/// [`Error::Conflict`] retries; any other backend error surfaces.
 pub fn record_result_if_absent(
     store: &dyn EventStore,
     res: &SpawnResult,
@@ -105,19 +108,20 @@ pub fn record_result_if_absent(
     let ev = res
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
-    loop {
-        let events = store.read_stream(STREAM, 0, Direction::Forward)?;
-        if crate::spawn::result_of(&events, &res.id)
+    let answered = |events: &[Event]| -> Result<bool, Error> {
+        Ok(crate::spawn::result_of(events, &res.id)
             .map_err(|e| Error::Backend(format!("decode results for {}: {e}", res.id)))?
-            .is_some()
-        {
-            // A result already exists - leave it untouched (the no-op the courier wants).
-            return Ok(None);
-        }
-        // Pin the append to the exact revision we just read: any event appended since
-        // (Forward reads ascending, so `.last()` is the current head) fails the check.
-        let expected = match events.last() {
-            Some(e) => ExpectedRevision::Exact(e.revision),
+            .is_some())
+    };
+    let run = crate::run::read::read_run(store, STREAM)?;
+    if answered(&run)? {
+        // A result already exists - leave it untouched (the no-op the courier wants).
+        return Ok(None);
+    }
+    let mut head = run.iter().map(|e| e.revision).max();
+    loop {
+        let expected = match head {
+            Some(revision) => ExpectedRevision::Exact(revision),
             None => ExpectedRevision::NoStream,
         };
         match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
@@ -126,9 +130,19 @@ pub fn record_result_if_absent(
             // different answer entirely, and the shared authority raises it as the failure
             // it is rather than letting it collapse into the no-op.
             Ok(appended) => return appended.one(&what(&ev.type_, &res.id)).map(Some),
-            // The stream moved under us; re-read and re-decide. If the racing writer
-            // recorded THIS id, the re-check returns `None` and nothing is clobbered.
-            Err(Error::Conflict { .. }) => continue,
+            // The stream moved under us: re-decide over the results recorded from the pinned
+            // revision on. If the racing writer recorded THIS id, nothing is clobbered.
+            Err(Error::Conflict { actual, .. }) => {
+                let landed = store.read_stream_typed(
+                    STREAM,
+                    head.unwrap_or(0),
+                    TypeSelection::Only(&[crate::spawn::TYPE_SPAWN_RESULT]),
+                )?;
+                if answered(&landed)? {
+                    return Ok(None);
+                }
+                head = Some(actual);
+            }
             Err(e) => return Err(e),
         }
     }
@@ -138,6 +152,7 @@ pub fn record_result_if_absent(
 mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
+    use crate::eventstore::Direction;
 
     use crate::spawn::{
         is_recorded, recorded, result_of, step_result, ROLE_IMPLEMENTER, TYPE_SPAWN_RESULT,
@@ -327,6 +342,65 @@ mod tests {
         assert!(
             result_of(&events, "other/implementer#0").unwrap().is_some(),
             "the concurrent writer's record must survive the retry"
+        );
+    }
+
+    /// A DERIVED EVENT AT THE HEAD (spec 101): the run read never materializes a derived event,
+    /// so on a stream whose newest events are derived the append is first pinned below the head;
+    /// the conflict names the head, the results recorded since the pin are re-read by type, and
+    /// the result lands exactly once - costing the run read plus one typed read of the results,
+    /// never a read of the whole stream.
+    #[test]
+    fn record_result_if_absent_records_past_a_derived_head_reading_only_the_run_and_the_results() {
+        use crate::test_support::{ev, CountedRead, ReadCountingStore};
+
+        let inner = Store::open(":memory:").unwrap();
+        inner
+            .append(
+                STREAM,
+                ExpectedRevision::NoStream,
+                &[
+                    ev("UnitStarted", r#"{"id":"u"}"#),
+                    ev("EdgeInferred", "{}"),
+                    ev("EdgeInferred", "{}"),
+                ],
+            )
+            .unwrap();
+        let store = ReadCountingStore::new(&inner);
+        let pos =
+            record_result_if_absent(&store, &SpawnResult::ok("u/implementer#0", "done")).unwrap();
+        assert_eq!(pos, Some(4), "recorded once, after the derived head");
+        let names = |types: &[&str]| types.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            store.reads(),
+            [
+                CountedRead::LastPosition {
+                    stream: STREAM.to_string(),
+                    event_type: "RunStarted".to_string(),
+                },
+                CountedRead::Typed {
+                    stream: STREAM.to_string(),
+                    from: 0,
+                    only: false,
+                    types: names(&crate::ingest::DERIVED_INDEX_TYPES),
+                    materialized: 1,
+                },
+                CountedRead::Typed {
+                    stream: STREAM.to_string(),
+                    from: 0,
+                    only: true,
+                    types: names(&[TYPE_SPAWN_RESULT]),
+                    materialized: 0,
+                },
+            ]
+        );
+        let events = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            result_of(&events, "u/implementer#0")
+                .unwrap()
+                .unwrap()
+                .output,
+            "done"
         );
     }
 

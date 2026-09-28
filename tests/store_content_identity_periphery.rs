@@ -206,8 +206,39 @@ impl EventStore for PortDouble {
     fn last_position(
         &self,
         _stream: &str,
-        _event_type: &str,
+        event_type: &str,
     ) -> Result<Option<Revision>, StoreError> {
+        if self.reads_empty {
+            return Ok(self
+                .replayed
+                .iter()
+                .rev()
+                .find(|e| e.type_ == event_type)
+                .map(|e| e.revision));
+        }
+        Err(unreadable())
+    }
+    fn read_stream_typed(
+        &self,
+        _stream: &str,
+        from: Revision,
+        selection: rigger::eventstore::TypeSelection,
+    ) -> Result<Vec<Event>, StoreError> {
+        if self.reads_empty {
+            return Ok(self
+                .replayed
+                .iter()
+                .filter(|e| {
+                    let named = |types: &[&str]| types.contains(&e.type_.as_str());
+                    e.revision >= from
+                        && match selection {
+                            rigger::eventstore::TypeSelection::Only(types) => named(types),
+                            rigger::eventstore::TypeSelection::Except(types) => !named(types),
+                        }
+                })
+                .cloned()
+                .collect());
+        }
         Err(unreadable())
     }
 }

@@ -158,40 +158,33 @@ fn watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly()
     );
 }
 
-/// Seed an out-of-order TAIL directly on a stream DISTINCT from the run stream
-/// (`"other"`, still namespaced to this project), rather than the run stream
-/// [`seed_order_signature`] itself uses - a store-wide corruption shape `watch_poll`'s
-/// `full_events` read picks up (it reads every stream under this project's namespace, spec
-/// 71's own scope: "a disordered stream is a store-wide fault, not a per-run one") without
-/// touching `run_events` (scoped to `conductor::STREAM` = `"run"` only). That separation is
-/// what lets this seed compose cleanly, in the SAME store, alongside [`seed_run_events`]'s
-/// legitimate run-scoped anomalies for the criterion's own combined scenario below - putting
-/// the tail on `"run"` too would work for `order_signatures` itself, but every revision 1..N
-/// there is already claimed by a real appended event, leaving no unused, still-disordering
-/// value the `UNIQUE(stream, revision)` constraint would accept. Mirrors
-/// [`seed_order_signature`]'s exact technique (three distinct revisions landing out of
-/// position order: 5, then 1, then 2 - two rows disagree with the running max of 5),
-/// parameterized onto a stream the four run-scoped signals never read.
-fn seed_out_of_order_tail(root: &Path, stream_suffix: &str) {
+/// Seed an out-of-order TAIL on the run stream - spec 71's own corruption signature, the shape
+/// a stale (pre-append-guard) writer leaves: delete the stream's revision-0 row (recorded before
+/// the run's boundary) and reissue it at the newest position, exactly the shape `Store::append`
+/// itself refuses, so it can only be reproduced around it with a raw connection. The reissued
+/// row now sits after the boundary in the log, so `watch_poll`'s read of the run holds it where
+/// the log recorded it (spec 101: a one-shot command reads the run, never the whole log) and the
+/// run's legitimate anomalies compose with it in the SAME store.
+fn seed_out_of_order_tail(root: &Path) {
     let db = root.join(".rigger").join("events.db");
     // The schema is already laid down by the `seed_run_events`/`seed_store` call this
     // combined scenario always makes first; opening again here is a no-op, kept for the same
     // self-contained-precondition reason `seed_order_signature` opens it.
     Store::open(db.to_str().unwrap()).unwrap();
-    let stream = format!(
-        "{}{stream_suffix}",
-        Namespaced::prefix_for(&run_stream_identity(root))
-    );
+    let stream = format!("{}run", Namespaced::prefix_for(&run_stream_identity(root)));
     let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute(
+        "DELETE FROM events WHERE stream = ?1 AND revision = 0",
+        [&stream],
+    )
+    .unwrap();
     let ts = now_nanos();
-    for revision in [5i64, 1, 2] {
-        conn.execute(
-            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
-             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', ?3, ?3, ?4)",
-            rusqlite::params![stream, format!("tail-{revision}"), ts, revision],
-        )
-        .unwrap();
-    }
+    conn.execute(
+        "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+         VALUES (?1, 'E', 'reissued', X'7b7d', '{}', ?2, ?2, 0)",
+        rusqlite::params![stream, ts],
+    )
+    .unwrap();
 }
 
 /// The shared consolidation's own periphery proof (spec 69 c2 round 2,
@@ -200,11 +193,10 @@ fn seed_out_of_order_tail(root: &Path, stream_suffix: &str) {
 /// (`tests/cli.rs::validate_detects_a_stream_whose_position_order_and_revision_order_disagree`)
 /// and this command's own store-integrity signal call - reachable from TWO DIFFERENT
 /// composition roots. Proving the algorithm through `rigger validate` says nothing about
-/// whether `main.rs::watch_poll`'s OWN wiring (the whole-log `full_events` read, `detect`'s
-/// signal-6 fold, `out_of_order_streams`' delegation) still reaches it correctly through THIS
-/// command - a regression here (e.g. the consolidation quietly narrowing `watch_poll`'s read
-/// to the run-scoped stream instead of the whole log, or `detect` dropping the signal-6 arm)
-/// would leave every pure `watch::` unit test green while `rigger watch` itself silently
+/// whether `watch_poll`'s OWN wiring (the read of the run it judges, `detect`'s signal-6 fold,
+/// `out_of_order_streams`' delegation) still reaches it correctly through THIS command - a
+/// regression here (e.g. a read that hands the run back in revision order, hiding the
+/// disorder, or `detect` dropping the signal-6 arm) would leave every pure `watch::` unit test green while `rigger watch` itself silently
 /// stopped reporting store corruption. Drives the REAL compiled binary against a REAL sqlite
 /// store carrying a genuine out-of-order revision (not an injected `WatchInputs`), pinned to
 /// the exact reported values like the validate counterpart, not a loose digit match.
@@ -441,8 +433,7 @@ fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
 /// headline test above: escalated + frontier-stall; the store-integrity test: that signal
 /// alone); this is the one place the whole combination is proven end to end rather than
 /// piecewise, closing the gap the module doc's own reasoning implies - a regression that
-/// narrowed `watch_poll`'s real read (e.g. dropping a signal arm, or scoping `full_events`
-/// down to the run stream) could leave every piecewise CLI test above green while the
+/// narrowed `watch_poll`'s real read (e.g. dropping a signal arm) could leave every piecewise CLI test above green while the
 /// combined shape a real operator's store actually presents silently lost a line.
 #[test]
 fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real_compiled_binary() {
@@ -451,6 +442,9 @@ fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real
     seed_run_events(
         root,
         &[
+            // Revision 0, recorded before the run and reissued below; then the run's boundary.
+            ("E", "{}"),
+            ("RunStarted", r#"{"run":"watch-run"}"#),
             ("UnitStarted", r#"{"id":"u-esc"}"#),
             ("UnitEscalated", r#"{"id":"u-esc"}"#),
             ("UnitStarted", r#"{"id":"u-fail"}"#),
@@ -482,7 +476,7 @@ fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real
             ),
         ],
     );
-    seed_out_of_order_tail(root, "other");
+    seed_out_of_order_tail(root);
 
     let lines = watch_once(
         root,
@@ -522,8 +516,8 @@ fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real
         &lines[3],
         &[
             "store integrity",
-            "other",
-            "2 row(s) where position order and revision order disagree",
+            "run",
+            "1 row(s) where position order and revision order disagree",
         ],
         "line 4 (the out-of-order tail, store integrity sorts last)",
     );

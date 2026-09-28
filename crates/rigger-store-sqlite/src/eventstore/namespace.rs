@@ -9,7 +9,7 @@
 
 use super::{
     Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription,
+    Subscription, TypeSelection,
 };
 
 /// Namespaced wraps an EventStore so all of its data is scoped to one project.
@@ -132,6 +132,18 @@ impl EventStore for Namespaced<'_> {
 
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
         self.inner.last_position(&self.scoped(stream), event_type)
+    }
+
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        let events = self
+            .inner
+            .read_stream_typed(&self.scoped(stream), from, selection)?;
+        Ok(self.strip(events))
     }
 }
 

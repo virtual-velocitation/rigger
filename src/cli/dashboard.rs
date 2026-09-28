@@ -193,9 +193,9 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         move |instance: Option<&str>| -> Result<dash::DashInputs, String> {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
                 DashAttach::Local => {
-                    let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
+                    let (events, run_id) =
+                        dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
                     let graph = dash_read_graph(&graph_db, &identity, &events);
-                    let run_id = runscope::current_run_id(&events).unwrap_or_default();
                     let progress = dash_read_progress(&progress_db, &identity, &run_id);
                     let liveness = dash_read_liveness(&events, &scratch_root, &run_id);
                     Ok((events, graph, progress, liveness))
@@ -467,13 +467,14 @@ fn watch_and_self_reap_on_idle(
     }
 }
 
-/// Read this project's CURRENT-run events from `events_db` under `identity`, scoped to the
-/// latest run exactly as [`stats_lines`] does. An absent db is an empty run and NO file is
-/// created (the guard precedes [`Store::open`], which would otherwise fabricate one).
+/// Read this project's CURRENT-run events and run id from `events_db` under `identity` through
+/// the one-shot read of the run ([`read_current_run`], spec 101). An absent db is an empty run
+/// and NO file is created (the guard precedes [`Store::open`], which would otherwise fabricate
+/// one).
 fn dash_read_run(
     events_db: &str,
     identity: &str,
-) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+) -> Result<(Vec<Event>, String), Box<dyn std::error::Error>> {
     // Resolve WHICH backend through the one authority, and SURFACE a genuine selection failure
     // (an unreadable `.rigger/store.conn`, an unreadable/malformed `workflow.yml`, an invalid
     // `store.backend`) with `?` - matching every other real-run-stream read (`canary_stats_lines`,
@@ -482,11 +483,7 @@ fn dash_read_run(
     // different-user / permission edge §48 contemplates), so the dashboard read reports an empty run
     // against a live server (d-u2rr-observer-selection-loud, spec-19c loud-failure-surfacing).
     let sel = store_selection(None, None)?;
-    Ok(
-        read_project_stream(events_db, identity, conductor::STREAM, &sel)?
-            .map(|all| runscope::current_run(&all).to_vec())
-            .unwrap_or_default(),
-    )
+    Ok(with_project_store(events_db, identity, &sel, read_current_run)?.unwrap_or_default())
 }
 
 /// Build the context subgraph around the run's own units/decisions/findings from
@@ -572,7 +569,7 @@ fn dash_attach_calls(
 
 /// This run's progress from the SEPARATE progress store (spec 14), for the dash's live
 /// per-agent view. Absent/empty is fine (the store is created lazily by the first
-/// `rigger progress`), and only the current run's reports (by `run_id`) are returned.
+/// `rigger progress`), and only the current run's reports (its own stream) are read.
 fn dash_read_progress(progress_db: &str, identity: &str, run_id: &str) -> Vec<Event> {
     if !Path::new(progress_db).exists() {
         return Vec::new();
@@ -580,16 +577,7 @@ fn dash_read_progress(progress_db: &str, identity: &str, run_id: &str) -> Vec<Ev
     let Ok(backend) = Store::open(progress_db) else {
         return Vec::new();
     };
-    let store = Namespaced::new(&backend, identity);
-    store
-        .read_stream(progress::STREAM, 0, Direction::Forward)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|e| {
-            run_id.is_empty()
-                || e.meta.get(runscope::META_RUN_ID).map(String::as_str) == Some(run_id)
-        })
-        .collect()
+    read_run_progress(&backend, identity, run_id)
 }
 
 /// The liveness-marker age (whole seconds since last touch) for each in-flight spawn in
@@ -680,12 +668,12 @@ fn dash_read_sqlite_stream_readonly(
     path: &str,
     project: &str,
 ) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
-        return Ok(Vec::new());
-    }
-    let backend = open_sqlite_store(path)?;
-    let store = Namespaced::new(&backend, project);
-    Ok(store.read_stream(conductor::STREAM, 0, Direction::Forward)?)
+    Ok(
+        with_project_store(path, project, &StoreSelection::Sqlite, |store| {
+            Ok(read_current_run(store)?.0)
+        })?
+        .unwrap_or_default(),
+    )
 }
 
 fn dash_attach_run(inst: &rigger::registry::Instance) -> Vec<Event> {
@@ -716,12 +704,12 @@ fn dash_attach_run(inst: &rigger::registry::Instance) -> Vec<Event> {
                     StoreSelection::Server(_) => {
                         let backend = resolve_store(&sel, &events_db_path)?;
                         let store = Namespaced::new(backend.as_ref(), &inst.project);
-                        store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+                        read_current_run(&store)?.0
                     }
                 }
             }
         };
-        Ok(runscope::current_run(&all).to_vec())
+        Ok(all)
     };
     read().unwrap_or_default()
 }
@@ -818,7 +806,6 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let peers = Sidecar::start(&store, 0, Filter::default())?;
     let grounder_name = config_store::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
@@ -847,8 +834,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         String::new()
     };
 
-    let mut server =
-        mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers).with_graph(&graph);
+    let mut server = mcpserver::Server::new(&driver, &store, conductor::STREAM).with_graph(&graph);
     server = server.with_grounder(match &grounder {
         Ok(g) => Ok(g.as_ref()),
         Err(e) => Err(e.to_string()),

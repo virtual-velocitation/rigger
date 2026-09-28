@@ -2,7 +2,7 @@
 
 use rigger::eventstore::{
     Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription,
+    Subscription, TypeSelection,
 };
 
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
@@ -75,6 +75,14 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Option<rigger::eventstore::Revision>, rigger::eventstore::Error> {
             self.inner.last_position(stream, event_type)
         }
+        fn read_stream_typed(
+            &self,
+            stream: &str,
+            from: rigger::eventstore::Revision,
+            selection: rigger::eventstore::TypeSelection,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_stream_typed(stream, from, selection)
+        }
     };
 }
 
@@ -129,6 +137,14 @@ impl EventStore for SilentStore {
     }
     fn last_position(&self, _stream: &str, _event_type: &str) -> Result<Option<Revision>, Error> {
         Ok(None)
+    }
+    fn read_stream_typed(
+        &self,
+        _stream: &str,
+        _from: Revision,
+        _selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
     }
 }
 
@@ -326,6 +342,26 @@ impl EventStore for ReadCountingStore<'_> {
             event_type: event_type.to_string(),
         });
         self.inner.last_position(stream, event_type)
+    }
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        let (only, types) = match selection {
+            TypeSelection::Only(types) => (true, types),
+            TypeSelection::Except(types) => (false, types),
+        };
+        let at = self.record(CountedRead::Typed {
+            stream: stream.to_string(),
+            from,
+            only,
+            types: types.iter().map(|t| t.to_string()).collect(),
+            materialized: 0,
+        });
+        let events = self.inner.read_stream_typed(stream, from, selection)?;
+        Ok(self.handed_back(at, events))
     }
 }
 

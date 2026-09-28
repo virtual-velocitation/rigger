@@ -1,8 +1,10 @@
 //! Periphery (contract / API / integration) tests for spec 101 criterion 2: ONE-SHOT COMMANDS READ
 //! FROM THE BOUNDARY. `rigger status`, `rigger watch`, the dash snapshot, the side-car behind
-//! `rigger peers` and the MCP tools read the run's own events from its boundary, with the derived
-//! types excluded and the carried-over knowledge (decisions, lessons, findings) read by type. These
-//! run OUTSIDE the crate and guard what the inside-out tests are structurally blind to:
+//! `rigger peers`, the MCP tools and the worker couriers (`prompt`, `scratch`, `result`,
+//! `reported`, `hook stop-failure`, `resume-unit`) read the run's own events from its boundary,
+//! with the derived types excluded and the carried-over knowledge (decisions, lessons, findings)
+//! read by type, and the run's progress from its own stream. These run OUTSIDE the crate and
+//! guard what the inside-out tests are structurally blind to:
 //!
 //!  - the in-crate tests count the read over a bare `:memory:` store; nothing drives the product's
 //!    own composition - a project namespace over a file-backed `events.db` another project shares -
@@ -10,8 +12,8 @@
 //!    own scoped stream, so the store (not the caller) refuses what the selection refuses;
 //!  - the MCP tools used to hold a side-car subscription; nothing outside the crate pins that each
 //!    call now reads afresh (a decision recorded between two calls is seen by the second, at the
-//!    cost of exactly one more read) nor that the spawn-bound `rigger_progress` stamps the run the
-//!    boundary read names;
+//!    cost of exactly one more read), that the spawn-bound `rigger_progress` stamps the run the
+//!    boundary read names, nor that `rigger_activity` reads that run's progress stream alone;
 //!  - no counting double reaches into the compiled binary, so the binary tests make any read past
 //!    the slice observable instead: every derived event and every superseded run's own event in a
 //!    real 200,000-event log is made undecodable, so a command that materialized even one of them
@@ -19,19 +21,262 @@
 
 mod common;
 
+use std::io::Cursor;
 use std::path::Path;
 use std::process::Stdio;
 
 use common::cli::{rigger_file, run_rigger, run_stream_identity, temp_store_project};
-use common::fixtures::{ev, seed_one_shot_fixture, ONE_SHOT_DERIVED_TYPES};
+use common::fixtures::{
+    ev, seed_one_shot_fixture, seed_one_shot_progress, CountedRead, OneShotFixture,
+    ReadCountingStore, ONE_SHOT_DERIVED_TYPES,
+};
 use rigger::conductor::STREAM;
+use rigger::driver::workflow::Driver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore, ExpectedRevision};
+use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+use rigger::mcpserver::Server;
 use serde_json::{json, Value};
 
 /// The carried-over types, spelled out: a run read hands back every one of them from every run.
 const CARRY_OVER: [&str; 3] = ["DecisionMade", "LessonLearned", "ReviewFinding"];
+
+/// Each event's type, in the order the read handed them back.
+fn types(events: &[Event]) -> Vec<&str> {
+    events.iter().map(|e| e.type_.as_str()).collect()
+}
+
+/// The `id` field of each event's JSON payload, in order (empty when it has none).
+fn payload_ids(events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .map(|e| {
+            let body: Value = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
+            body["id"].as_str().unwrap_or_default().to_string()
+        })
+        .collect()
+}
+
+/// Given one `events.db` file two projects share - `alpha` holding two superseded runs and 200,000
+/// derived events before its current run's boundary, `beta` holding runs, decisions and derived
+/// events of its own on both sides of alpha's history - when alpha's run is read through the
+/// product's composition (a project namespace over the file-backed store), then:
+///  - counted ABOVE the namespace, the read is exactly the boundary lookup, the carried-over
+///    knowledge by type and the run slice from the boundary, materializing the run's own events
+///    plus the carry-over and nothing of beta;
+///  - counted BELOW the namespace, the backend is asked the same three questions of alpha's
+///    scoped stream with the same selections - the typed read reaches the store as a typed read,
+///    so the store refuses the derived types, never the caller after materializing them.
+#[test]
+fn a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read_per_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let alpha = Namespaced::new(&backend, "alpha");
+    let beta = Namespaced::new(&backend, "beta");
+    let beta_history = |run: &str, decision: &str| {
+        beta.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                Event::new("RunStarted", format!(r#"{{"run":"{run}"}}"#).into_bytes())
+                    .with_meta("run_id", run),
+                ev("DecisionMade", &format!(r#"{{"id":"{decision}"}}"#)),
+                ev("LessonLearned", r#"{"id":"l-beta"}"#),
+                ev("EdgeInferred", r#"{"from":"a","rel":"CALLS","to":"b"}"#),
+                ev("RunNote", "{}"),
+            ],
+        )
+        .unwrap();
+    };
+    beta_history("beta-1", "d-beta-1");
+    let fixture = seed_one_shot_fixture(&alpha, STREAM, &["the current campaign"]);
+    beta_history("beta-2", "d-beta-2");
+
+    let above = ReadCountingStore::new(&alpha);
+    let events = rigger::run::read::read_run(&above, STREAM).unwrap();
+    assert_eq!(above.reads(), fixture.read(STREAM));
+    assert_eq!(above.materialized(), fixture.cost());
+    assert_eq!(
+        types(&events),
+        [
+            "DecisionMade",
+            "LessonLearned",
+            "ReviewFinding",
+            "RunStarted",
+            "RunNote",
+            "DecisionMade",
+            "ReviewFinding",
+            "RunNote",
+        ]
+    );
+    assert_eq!(
+        payload_ids(&events),
+        ["d-a", "l-a", "f-b", "", "", "d-c", "f-c", ""],
+        "every run's carry-over and the current run, never beta's"
+    );
+    assert!(
+        events.iter().all(|e| e.stream == STREAM),
+        "the namespace hands the stream back unprefixed"
+    );
+    assert_eq!(events[3].revision, fixture.boundary);
+
+    let counted_backend = ReadCountingStore::new(&backend);
+    let below = Namespaced::new(&counted_backend, "alpha");
+    let again = rigger::run::read::read_run(&below, STREAM).unwrap();
+    let scoped = format!("{}{STREAM}", Namespaced::prefix_for("alpha"));
+    assert_eq!(counted_backend.reads(), fixture.read(&scoped));
+    assert_eq!(counted_backend.materialized(), fixture.cost());
+    assert_eq!(
+        payload_ids(&again),
+        payload_ids(&events),
+        "the same run whichever side of the namespace counts it"
+    );
+}
+
+/// One JSON-RPC `tools/call` of `name` with `args` against `server`, answered in full.
+fn call_tool(server: &Server, name: &str, args: Value) -> Value {
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": args},
+    });
+    let mut out = Vec::new();
+    server
+        .run(Cursor::new(format!("{request}\n")), &mut out)
+        .unwrap();
+    serde_json::from_slice(&out).unwrap_or_else(|e| {
+        panic!(
+            "{name} answers one JSON reply ({e}): {}",
+            String::from_utf8_lossy(&out)
+        )
+    })
+}
+
+/// `(id, live)` of each decision a `rigger_peers` reply holds, in order.
+fn live_decisions(reply: &Value) -> Vec<(String, bool)> {
+    reply["result"]["structuredContent"]["decisions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a decisions array: {reply}"))
+        .iter()
+        .map(|d| {
+            (
+                d["id"].as_str().unwrap().to_string(),
+                d["live"].as_bool().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// The `id`s in one section of a `rigger_peers` reply, in order.
+fn section_ids(reply: &Value, section: &str) -> Vec<String> {
+    reply["result"]["structuredContent"][section]
+        .as_array()
+        .unwrap_or_else(|| panic!("a {section} array: {reply}"))
+        .iter()
+        .map(|v| v["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Given a spawn-bound MCP server over the 200,000-derived-event log, when an agent calls
+/// `rigger_peers` scoped to a file, a peer then records a decision about that file, and the agent
+/// calls `rigger_peers` again and reports progress, then every call is exactly one read of the
+/// run from its boundary plus the typed carry-over - the second peers call sees the new decision
+/// LIVE at the cost of one more carried-over event, `rigger_progress` stamps its report with
+/// the run the boundary read names, and `rigger_activity` reads the run's progress from its own
+/// stream alone.
+#[test]
+fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
+    let inner = Store::open(":memory:").unwrap();
+    let fixture = seed_one_shot_fixture(&inner, STREAM, &["the current campaign"]);
+    let store = ReadCountingStore::new(&inner);
+    let progress_inner = Store::open(":memory:").unwrap();
+    seed_one_shot_progress(&progress_inner, 1);
+    let progress = ReadCountingStore::new(&progress_inner);
+    let scratch = tempfile::tempdir().unwrap();
+    let driver = Driver::new();
+    let server = Server::new(&driver, &store, STREAM)
+        .with_progress(&progress, scratch.path().to_str().unwrap())
+        .with_spawn("u/implementer#0");
+
+    let first = call_tool(&server, "rigger_peers", json!({"files": ["c.rs"]}));
+    assert_eq!(live_decisions(&first), [("d-c".to_string(), true)]);
+    assert_eq!(section_ids(&first, "findings"), ["f-c"]);
+    assert_eq!(section_ids(&first, "lessons"), Vec::<String>::new());
+    assert_eq!(store.reads(), fixture.read(STREAM));
+
+    inner
+        .append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[ev(
+                "DecisionMade",
+                r#"{"id":"d-new","summary":"chose new","governs":["c.rs"]}"#,
+            )],
+        )
+        .unwrap();
+    let after = OneShotFixture {
+        carry_over: fixture.carry_over + 1,
+        ..fixture
+    };
+
+    let second = call_tool(&server, "rigger_peers", json!({"files": ["c.rs"]}));
+    assert_eq!(
+        live_decisions(&second),
+        [("d-c".to_string(), true), ("d-new".to_string(), true)],
+        "a decision recorded between two calls is seen by the second"
+    );
+    assert_eq!(
+        store.reads(),
+        [fixture.read(STREAM), after.read(STREAM)].concat()
+    );
+
+    let reported = call_tool(&server, "rigger_progress", json!({"activity": "probing"}));
+    assert_eq!(reported["result"]["structuredContent"], json!({}));
+    assert_eq!(
+        store.reads(),
+        [fixture.read(STREAM), after.read(STREAM), after.read(STREAM)].concat()
+    );
+    assert_eq!(store.materialized(), fixture.cost() + 2 * after.cost());
+    assert_eq!(progress.reads(), [], "recording progress reads nothing");
+
+    // `rigger_activity` (the workflow surface): one read of the run, and ONE read of the run's
+    // own progress stream -
+    // its seeded report and the one just recorded - never a superseded run's reports.
+    let workflow = Server::new(&driver, &store, STREAM)
+        .with_progress(&progress, scratch.path().to_str().unwrap());
+    let activity = call_tool(&workflow, "rigger_activity", json!({}));
+    assert!(activity.get("result").is_some(), "{activity}");
+    assert_eq!(
+        store.reads(),
+        [
+            fixture.read(STREAM),
+            after.read(STREAM),
+            after.read(STREAM),
+            after.read(STREAM)
+        ]
+        .concat()
+    );
+    assert_eq!(
+        progress.reads(),
+        [CountedRead::Stream {
+            stream: "progress/run-c".to_string(),
+            from: 0,
+            forward: true,
+            materialized: 2,
+        }]
+    );
+    let recorded = rigger::progress::read_run(&progress_inner, "run-c").unwrap();
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|e| e.meta.get("run_id").map(String::as_str))
+            .collect::<Vec<_>>(),
+        [Some("run-c"), Some("run-c")],
+        "the report is stamped with the run the boundary read names, on that run's stream"
+    );
+}
 
 /// `root`'s run stream as the compiled binary names it inside `events.db`.
 fn scoped_run_stream(root: &Path) -> String {
@@ -211,9 +456,11 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
     // `rigger progress`: the report is stamped with the run the boundary read names.
     rigger_ok(root, &["progress", "u/implementer#0", "probing"]);
     let progress_db = Store::open(rigger_file(root, "progress.db").to_str().unwrap()).unwrap();
-    let reports = Namespaced::new(&progress_db, &run_stream_identity(root))
-        .read_stream("progress/run-c", 0, Direction::Forward)
-        .unwrap();
+    let reports = rigger::progress::read_run(
+        &Namespaced::new(&progress_db, &run_stream_identity(root)),
+        "run-c",
+    )
+    .unwrap();
     assert_eq!(
         reports
             .iter()

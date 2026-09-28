@@ -26,7 +26,9 @@ use serde_json::Value;
 
 use crate::agent::{parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
-use crate::eventstore::{Direction, EventStore};
+#[cfg(test)]
+use crate::eventstore::Direction;
+use crate::eventstore::EventStore;
 use crate::run::STREAM;
 use crate::spawn::{self, SpawnRequest};
 use crate::spawn_store;
@@ -291,10 +293,8 @@ impl AgentDriver for ReplayDriver<'_> {
         // Read the run stream fresh on every spawn: the whole run's state lives in the
         // log, and a concurrent sibling spawn in the same wave may have appended a park
         // since this call started.
-        let all = self
-            .store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .map_err(|e| Error(e.to_string()))?;
+        let all =
+            crate::run::read::read_run(self.store, STREAM).map_err(|e| Error(e.to_string()))?;
         // Scope the spawn lookup to the CURRENT run (completes Gap 11): spawn ids for the
         // fixed stages (`plan/...`, `plan-critique/adjudicator#N`, `plan/replan#N`) are
         // spec-INDEPENDENT, so without run-scoping a fresh run REPLAYS a prior run's

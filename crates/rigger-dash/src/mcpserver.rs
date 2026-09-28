@@ -59,7 +59,6 @@ pub struct Server<'a> {
     driver: &'a Driver,
     store: &'a dyn EventStore,
     stream: String,
-    peers: &'a Sidecar,
     /// The live context-graph projector. When set, an emitted event is folded into
     /// the graph the moment it is appended - so a ReviewFinding (or DecisionMade) an
     /// agent emits via rigger_emit becomes retrievable through `graph_context` by the
@@ -142,17 +141,11 @@ enum Surface {
 }
 
 impl<'a> Server<'a> {
-    pub fn new(
-        driver: &'a Driver,
-        store: &'a dyn EventStore,
-        stream: &str,
-        peers: &'a Sidecar,
-    ) -> Self {
+    pub fn new(driver: &'a Driver, store: &'a dyn EventStore, stream: &str) -> Self {
         Server {
             driver,
             store,
             stream: stream.to_string(),
-            peers,
             graph: None,
             grounder: None,
             grounder_unavailable: None,
@@ -327,7 +320,7 @@ impl<'a> Server<'a> {
     fn call_tool(&self, id: Value, name: &str, args: &Value) -> String {
         let surface = self.surface();
         let result = match (surface, name) {
-            (_, "rigger_peers") => Ok(self.tool_peers(args)),
+            (_, "rigger_peers") => self.tool_peers(args),
             (Surface::Lookup | Surface::SpawnBound, "rigger_ground") => self.tool_ground(args),
             (Surface::Lookup | Surface::SpawnBound, "rigger_graph") => self.tool_graph(args),
             (Surface::Workflow, "rigger_next") => self.tool_next(),
@@ -525,15 +518,19 @@ impl<'a> Server<'a> {
         )
     }
 
+    /// The run a tool folds, read fresh from its boundary with the carried-over knowledge by
+    /// type ([`crate::run::read::read_run`], spec 101) - never the whole log.
+    fn read_run(&self) -> Result<Vec<Event>, ToolError> {
+        crate::run::read::read_run(self.store, &self.stream)
+            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))
+    }
+
     /// The current run's id, resolved fresh from the run stream - the SAME derivation
     /// [`tool_activity`](Server::tool_activity) uses for its own `run_id`, shared here for
     /// the two spawn-bound tools ([`tool_progress`], [`tool_scratch`]) that need it to
     /// resolve a per-run record/path, never a second parallel resolution.
     fn current_run_id(&self) -> Result<String, ToolError> {
-        let all = self
-            .store
-            .read_stream(&self.stream, 0, crate::eventstore::Direction::Forward)
-            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
+        let all = self.read_run()?;
         Ok(crate::run::current_run_id(&all).unwrap_or_default())
     }
 
@@ -590,7 +587,7 @@ impl<'a> Server<'a> {
     /// are how concurrent review lenses see each other's findings LIVE, before any of
     /// them grounds again - the same side-car channel that surfaces peer decisions and the
     /// lessons a capped prompt section elided.
-    fn tool_peers(&self, args: &Value) -> Value {
+    fn tool_peers(&self, args: &Value) -> Result<Value, ToolError> {
         let files: Vec<String> = args
             .get("files")
             .and_then(Value::as_array)
@@ -600,7 +597,9 @@ impl<'a> Server<'a> {
                     .collect()
             })
             .unwrap_or_default();
-        peers_json(self.peers, &files)
+        let peers = Sidecar::read(self.store, &self.stream)
+            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
+        Ok(peers_json(&peers, &files))
     }
 
     /// `rigger_ground` (spec 92, criterion 4's fix round): the operator's own MEMORY-adjacent
@@ -690,28 +689,12 @@ impl<'a> Server<'a> {
     /// --json` prints. Read-only; the progress store and markers are optional (a server
     /// started without them still returns the frontier).
     fn tool_activity(&self) -> Result<Value, ToolError> {
-        let all = self
-            .store
-            .read_stream(&self.stream, 0, crate::eventstore::Direction::Forward)
-            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
+        let all = self.read_run()?;
         let run_events = crate::run::current_run(&all);
         let run_id = crate::run::current_run_id(&all).unwrap_or_default();
 
         let prog_events: Vec<Event> = match self.progress {
-            Some(store) => store
-                .read_stream(
-                    crate::progress::STREAM,
-                    0,
-                    crate::eventstore::Direction::Forward,
-                )
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|e| {
-                    run_id.is_empty()
-                        || e.meta.get(crate::run::META_RUN_ID).map(String::as_str)
-                            == Some(run_id.as_str())
-                })
-                .collect(),
+            Some(store) => crate::progress::read_run(store, &run_id).unwrap_or_default(),
             None => Vec::new(),
         };
 
@@ -1033,6 +1016,53 @@ mod tests {
         .to_string()
     }
 
+    /// THE MCP TOOLS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 derived
+    /// events and two superseded runs before the boundary, every tool that reads the run -
+    /// `rigger_peers`, `rigger_activity` and the spawn-bound `rigger_scratch` - costs exactly one
+    /// read of the run's own events plus the typed carry-over per call, asserted through the
+    /// counting store double, and still answers from the whole carry-over.
+    #[test]
+    fn the_mcp_tools_read_the_run_from_its_boundary_and_the_carry_over_by_type() {
+        use crate::test_support::{seed_one_shot_fixture, ReadCountingStore};
+
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, "run", &[]);
+        let store = ReadCountingStore::new(&inner);
+        let driver = Driver::new();
+        let server = Server::new(&driver, &store, "run");
+
+        let peers = call(&server, &tools_call("rigger_peers"));
+        let ids = |section: &str| -> Vec<String> {
+            peers["result"]["structuredContent"][section]
+                .as_array()
+                .unwrap_or_else(|| panic!("a {section} array: {peers}"))
+                .iter()
+                .map(|v| v["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(ids("decisions"), ["d-a", "d-c"]);
+        assert_eq!(ids("lessons"), ["l-a"]);
+        assert_eq!(ids("findings"), ["f-b", "f-c"]);
+        assert_eq!(store.reads(), fixture.reads("run", 1));
+
+        let activity = call(&server, &tools_call("rigger_activity"));
+        assert_eq!(activity["result"]["structuredContent"], json!([]));
+        assert_eq!(store.reads(), fixture.reads("run", 2));
+
+        let scratch = tempfile::tempdir().unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let bound = Server::new(&driver, &store, "run")
+            .with_progress(&progress, scratch.path().to_str().unwrap())
+            .with_spawn("u/implementer#0");
+        let resp = call(&bound, &tools_call("rigger_scratch"));
+        assert!(
+            resp.get("result").is_some(),
+            "rigger_scratch answers: {resp}"
+        );
+        assert_eq!(store.reads(), fixture.reads("run", 3));
+        assert_eq!(store.materialized(), 3 * fixture.cost());
+    }
+
     /// The `rigger_peers` call scoped to `a.rs`.
     const PEERS_OF_A_RS: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{"files":["a.rs"]}}}"#;
 
@@ -1045,18 +1075,6 @@ mod tests {
                 &[Event::new(type_, serde_json::to_vec(&data).unwrap())],
             )
             .unwrap();
-    }
-
-    /// Poll until the side-car has `caught_up`, failing after two seconds.
-    fn await_sidecar(caught_up: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !caught_up() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "side-car never caught up"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
     }
 
     /// The names `server` advertises from `tools/list`, in order.
@@ -1081,8 +1099,7 @@ mod tests {
     ) -> Value {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
         let server = match spawn {
             Some(spawn) => server.with_spawn(spawn),
             None => server,
@@ -1100,8 +1117,7 @@ mod tests {
     fn emitted_decision(input: &str) -> Event {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
         call(&server, input);
         store
             .read_all(0, Direction::Forward, &Filter::default())
@@ -1119,9 +1135,7 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server =
-            Server::new(&driver, &store, "run", &peers).with_spawn("u104-spawn-mcp/implementer#0");
+        let server = Server::new(&driver, &store, "run").with_spawn("u104-spawn-mcp/implementer#0");
         let resp = call(&server, input);
         assert!(
             resp.get("result").is_some(),
@@ -1143,8 +1157,7 @@ mod tests {
     fn emit_tool_appends_to_the_store() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#;
         let mut output = Vec::new();
@@ -1177,8 +1190,7 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
 
         let adj_id = "u/adjudicator#0";
         let sibling_id = "v/adjudicator#0";
@@ -1289,8 +1301,7 @@ mod tests {
         for meta in [Value::Null, json!([]), json!("x")] {
             let store = Store::open(":memory:").unwrap();
             let driver = Driver::new();
-            let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-            let server = Server::new(&driver, &store, "run", &peers);
+            let server = Server::new(&driver, &store, "run");
 
             // A spawn currently being served: the exact state `rigger_next` leaves the
             // server in, set directly here since the next/result machinery that produces
@@ -1333,8 +1344,7 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
 
         let spawn_id = "u/implementer#0";
         let outcome: Mutex<Option<Result<AgentResult, crate::conductor::Error>>> = Mutex::new(None);
@@ -1400,7 +1410,6 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let progress = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
 
         // A run: a unit started, its implementer parked (in-flight, no result yet).
         let run_id = crate::run_store::ensure_started(&store, &["crit".to_string()]).unwrap();
@@ -1421,7 +1430,7 @@ mod tests {
             .unwrap();
 
         // No scratch root in a unit test, so liveness ages are simply omitted from the view.
-        let server = Server::new(&driver, &store, "run", &peers).with_progress(&progress, "");
+        let server = Server::new(&driver, &store, "run").with_progress(&progress, "");
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
         let mut output = Vec::new();
         server.run(Cursor::new(input), &mut output).unwrap();
@@ -1454,8 +1463,7 @@ mod tests {
         // The MCP path: drive the same args through the server's rigger_emit tool.
         let mcp_store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&mcp_store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &mcp_store, "run", &peers);
+        let server = Server::new(&driver, &mcp_store, "run");
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#;
         server.run(Cursor::new(input), &mut Vec::new()).unwrap();
 
@@ -1555,8 +1563,7 @@ mod tests {
     fn the_emit_tool_refuses_a_payload_the_graph_fold_cannot_apply() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"LessonLearned","data":{"id":"l1","about":"src/main.rs"}}}}"#;
         let resp = call(&server, input);
         assert!(
@@ -1621,17 +1628,14 @@ mod tests {
             );
         }
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        await_sidecar(|| {
-            peers.peers::<crate::sidecar::PeerDecision>().len() >= 2
-                && peers.peers::<crate::sidecar::PeerLesson>().len() >= 2
-        });
-
         // The CLI path: render through the shared core, scoped to a.rs.
-        let core = peers_json(&peers, &["a.rs".to_string()]);
+        let core = peers_json(
+            &Sidecar::read(&store, "run").unwrap(),
+            &["a.rs".to_string()],
+        );
 
         // The MCP path: the same scope through the rigger_peers tool.
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
         let resp = call(&server, PEERS_OF_A_RS);
         let tool = &resp["result"]["structuredContent"];
 
@@ -1662,9 +1666,8 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let graph = Projector::open(":memory:", "test").unwrap();
-        let server = Server::new(&driver, &store, "run", &peers).with_graph(&graph);
+        let server = Server::new(&driver, &store, "run").with_graph(&graph);
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"ReviewFinding","data":{"id":"f1","summary":"skips the buffer authority","about":["combat.rs"]},"meta":{"actor":"tech-lens"}}}}"#;
         let mut output = Vec::new();
@@ -1732,8 +1735,8 @@ mod tests {
     }
 
     /// Seed the two `type_` events `seeded` (one about a.rs, one about b.rs) on the run
-    /// stream, wait for the side-car to hold both as `P` peers, and call `rigger_peers` scoped
-    /// to a.rs: its `section` must hold exactly one entry, which is returned.
+    /// stream, check the side-car reads both as `P` peers, and call `rigger_peers` scoped to
+    /// a.rs: its `section` must hold exactly one entry, which is returned.
     fn sole_peer_of_a_rs<P: crate::sidecar::Peer>(
         type_: &str,
         seeded: [Value; 2],
@@ -1744,9 +1747,8 @@ mod tests {
             append_run(&store, type_, data);
         }
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        await_sidecar(|| peers.peers::<P>().len() >= 2);
-        let server = Server::new(&driver, &store, "run", &peers);
+        assert_eq!(Sidecar::read(&store, "run").unwrap().peers::<P>().len(), 2);
+        let server = Server::new(&driver, &store, "run");
 
         let resp = call(&server, PEERS_OF_A_RS);
         let arr = resp["result"]["structuredContent"][section]
@@ -1796,8 +1798,7 @@ mod tests {
         // stops the shim exiting before the first spawn is even enqueued.
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
 
         let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_next","arguments":{}}}"#;
 
@@ -1826,8 +1827,7 @@ mod tests {
     fn initialize_advertises_tools() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
 
         let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n\
                      {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}";
@@ -1921,8 +1921,7 @@ mod tests {
     fn tool_list_without_a_grounder_is_the_unchanged_workflow_surface() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
+        let server = Server::new(&driver, &store, "run");
 
         let names = tool_names(&server);
         assert_eq!(
@@ -1946,9 +1945,8 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let grounder = Nop;
-        let server = Server::new(&driver, &store, "run", &peers).with_grounder(Ok(&grounder));
+        let server = Server::new(&driver, &store, "run").with_grounder(Ok(&grounder));
 
         let names = tool_names(&server);
         assert_eq!(names, vec!["rigger_peers", "rigger_ground", "rigger_graph"]);
@@ -1964,9 +1962,8 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let grounder = Nop;
-        let server = Server::new(&driver, &store, "run", &peers).with_grounder(Ok(&grounder));
+        let server = Server::new(&driver, &store, "run").with_grounder(Ok(&grounder));
 
         let ground_input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_ground","arguments":{"query":"anything"}}}"#;
         let mut out = Vec::new();
@@ -2033,16 +2030,7 @@ mod tests {
             )
             .unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while peers.peers::<crate::sidecar::PeerDecision>().is_empty() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "side-car never caught up"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_grounder(Err("grounder \"turbovec\" was retired".to_string()));
 
         // Still the lookup surface - the exact same three tools, tool-list-wise.
@@ -2116,7 +2104,6 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
         let payload =
@@ -2125,7 +2112,7 @@ mod tests {
         e.position = 1;
         graph.apply(&e).unwrap();
 
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_graph(&graph)
             .with_grounder(Ok(&grounder));
 
@@ -2158,7 +2145,6 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
         for (pos, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
@@ -2170,7 +2156,7 @@ mod tests {
             graph.apply(&e).unwrap();
         }
 
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_graph(&graph)
             .with_grounder(Ok(&grounder));
 
@@ -2218,10 +2204,9 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let progress = Store::open(":memory:").unwrap();
         let grounder = Nop;
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_grounder(Ok(&grounder))
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u104-spawn-mcp/implementer#0");
@@ -2293,8 +2278,7 @@ mod tests {
     fn spawn_bound_emit_refuses_a_write_naming_another_spawn() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers).with_spawn("u/implementer#0");
+        let server = Server::new(&driver, &store, "run").with_spawn("u/implementer#0");
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1"},"meta":{"spawn":"v/implementer#0"}}}}"#;
         let mut out = Vec::new();
@@ -2331,9 +2315,8 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let progress = Store::open(":memory:").unwrap();
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u104-spawn-mcp/implementer#0");
 
@@ -2374,9 +2357,8 @@ mod tests {
     fn spawn_bound_progress_refuses_a_missing_or_empty_activity() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let progress = Store::open(":memory:").unwrap();
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u/implementer#0");
 
@@ -2401,9 +2383,8 @@ mod tests {
     fn spawn_bound_scratch_answers_with_the_bound_spawns_own_path() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let progress = Store::open(":memory:").unwrap();
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u104-spawn-mcp/implementer#0");
 
@@ -2435,10 +2416,9 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_grounder(Ok(&grounder))
             .with_graph(&graph)
             .with_spawn("u/implementer#0");

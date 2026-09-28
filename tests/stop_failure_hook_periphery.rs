@@ -47,23 +47,42 @@ fn run_rigger(root: &Path, args: &[&str]) -> Output {
         .expect("the rigger binary runs")
 }
 
-/// Every `StopFailure` record in `root`'s own `.rigger/progress.db`, read directly (never
-/// through the command under test) so the assertion is independent of it. Wrapped in the
-/// SAME [`Namespaced`] scoping the binary itself writes through - see
+/// Every `StopFailure` event of the current run in `root`'s own `.rigger/progress.db`, read
+/// directly (never through the command under test) so the assertion is independent of it:
+/// the run's id cold-read from `events.db` (empty before any run), then that run's progress
+/// stream. Wrapped in the SAME [`Namespaced`] scoping the binary itself writes through - see
 /// [`run_stream_identity`].
-fn recorded_stop_failures(root: &Path) -> Vec<StopFailure> {
-    let backend = Store::open(
-        root.join(".rigger/progress.db")
-            .to_str()
-            .expect("a utf-8 store path"),
+fn recorded_stop_failure_events(root: &Path) -> Vec<rigger::eventstore::Event> {
+    let open = |file: &str| {
+        Store::open(
+            root.join(".rigger")
+                .join(file)
+                .to_str()
+                .expect("a utf-8 store path"),
+        )
+        .expect("the store opens")
+    };
+    let identity = run_stream_identity(root);
+    let events = open("events.db");
+    let run_id = rigger::run::current_run_id(
+        &Namespaced::new(&events, &identity)
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .expect("the event log reads"),
     )
-    .expect("the progress store opens");
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(progress::STREAM, 0, Direction::Forward)
+    .unwrap_or_default();
+    let backend = open("progress.db");
+    progress::read_run(&Namespaced::new(&backend, &identity), &run_id)
         .expect("the progress stream reads")
         .into_iter()
         .filter(|e| e.type_ == progress::TYPE_STOP_FAILURE)
+        .collect()
+}
+
+/// Every `StopFailure` record of the current run in `root`'s own `.rigger/progress.db`
+/// ([`recorded_stop_failure_events`]).
+fn recorded_stop_failures(root: &Path) -> Vec<StopFailure> {
+    recorded_stop_failure_events(root)
+        .iter()
         .map(|e| serde_json::from_slice(&e.data).expect("a well-formed StopFailure"))
         .collect()
 }
@@ -237,18 +256,8 @@ fn seed_a_run(root: &Path) -> String {
 /// progress store, in append order - the id `record_stop_failure` actually persisted, read
 /// back independently of the command under test exactly like `recorded_stop_failures` does.
 fn recorded_stop_failure_run_ids(root: &Path) -> Vec<Option<String>> {
-    let backend = Store::open(
-        root.join(".rigger/progress.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .expect("the progress store opens");
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(progress::STREAM, 0, Direction::Forward)
-        .expect("the progress stream reads")
-        .into_iter()
-        .filter(|e| e.type_ == progress::TYPE_STOP_FAILURE)
+    recorded_stop_failure_events(root)
+        .iter()
         .map(|e| e.meta.get(META_RUN_ID).cloned())
         .collect()
 }

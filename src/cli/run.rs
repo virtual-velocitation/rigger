@@ -353,10 +353,8 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let all = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let run_events = runscope::current_run(&all);
-    let run_id = runscope::current_run_id(&all).unwrap_or_default();
-    let rs = ledger::project(run_events)?;
+    let (run_events, run_id) = read_current_run(&store)?;
+    let rs = ledger::project(&run_events)?;
 
     let unit = rs
         .units
@@ -608,11 +606,10 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // protection, exactly like `live_branches_for_sweep`'s own read one line above.
     if let Some(root) = &scratch_root {
         if let Some(live_branches) =
-            live_branches_for_sweep(store.read_stream(conductor::STREAM, 0, Direction::Forward))
+            live_branches_for_sweep(runscope::read::read_run(&store, conductor::STREAM))
         {
-            let fence_events = store
-                .read_stream(conductor::STREAM, 0, Direction::Forward)
-                .map(|evs| runscope::current_run(&evs).to_vec())
+            let fence_events = read_current_run(&store)
+                .map(|(run, _)| run)
                 .unwrap_or_default();
             match rigger::worktree::sweep_terminal(
                 &repo,
@@ -657,7 +654,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         // stream reads as NOT safe, so uncertainty never reclaims. Best-effort; the halt is
         // surfaced regardless.
         if let Some(root) = &scratch_root {
-            if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+            if let Ok(events) = runscope::read::read_run(&store, conductor::STREAM) {
                 if terminal_and_no_live_worker(&events).unwrap_or(false) {
                     reclaim_run_scratch(root);
                 }
@@ -673,7 +670,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // never reads a prior run's leftover mtime) and, since `run_id` never changes within a
     // step, reused verbatim for the hung-attention cursor path too (see `pre_hung_ids`
     // below). Read ONCE here, before the sweep mutates the log.
-    let pre = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let pre = runscope::read::read_run(&store, conductor::STREAM)?;
     // Empty before the first RunStarted (the first step, where nothing is in-flight to sweep
     // and nothing has ever been surfaced anyway).
     let run_id = runscope::current_run_id(&pre).unwrap_or_default();
@@ -754,7 +751,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // `sweep_terminal` above, which reclaims only integrated worktrees. Best-effort - a sweep
     // failure only warns and never blocks the step.
     if let Some(root) = &scratch_root {
-        match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+        match runscope::read::read_run(&store, conductor::STREAM) {
             Ok(events) => {
                 let run_units = current_run_units(&events);
                 let removed = reclaim_orphan_scratch(&repo, root, &run_units, &declared_units);
@@ -794,7 +791,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     };
     let rs = conductor::run(&cfg, &deps)?;
 
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let events = runscope::read::read_run(&store, conductor::STREAM)?;
     // The printed wave is the FULL pending frontier (every parked spawn without a
     // result), so a killed or re-run step process orphans nothing and a relaunched
     // driver resumes the in-flight wave (see spawn::step_result). Scoped to the CURRENT
@@ -1184,7 +1181,7 @@ pub(crate) fn cmd_prompt(args: &[String]) -> Res {
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let (events, _) = read_current_run(&store)?;
     match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
         Some(p) => {
             println!("{p}");
@@ -1224,7 +1221,7 @@ pub(crate) fn cmd_scratch(args: &[String]) -> Res {
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let (_, run_id) = read_current_run(&store)?;
     let repo = loc
         .dir
         .parent()
@@ -1239,7 +1236,6 @@ pub(crate) fn cmd_scratch(args: &[String]) -> Res {
     // reason (arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix).
     let (workdir, _max_retries) = scratch_defaults(&loc);
     let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
-    let run_id = runscope::current_run_id(&prior).unwrap_or_default();
     match spawn_scratch_path(&scratch_root, &run_id, id) {
         Some(path) => {
             println!("{}", path.display());
@@ -1497,10 +1493,9 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // and `rigger dash` all name the ONE base the run anchored on. A run started before base
     // persistence existed (or without a repo) carries none, so fall back to the same
     // flag/env/default resolution the run branch was anchored with.
-    let release_base = store
-        .read_stream(conductor::STREAM, 0, Direction::Forward)
+    let release_base = read_current_run(&store)
         .ok()
-        .and_then(|events| runscope::current_run_base(&events))
+        .and_then(|(events, _)| runscope::current_run_base(&events))
         .unwrap_or_else(|| {
             resolve_run_base(
                 parsed.base.as_deref(),
@@ -1515,8 +1510,8 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // stats row shows (one authority) to stderr. Best-effort: a read hiccup never fails a run that
     // already succeeded, and on the shipped non-symbols default retention is unmeasured so nothing
     // prints and the default run output is unchanged.
-    if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
-        let m = metrics::project(runscope::current_run(&events));
+    if let Ok((events, _)) = read_current_run(&store) {
+        let m = metrics::project(&events);
         if let Some(line) = parallelism_retention_line(&m) {
             if m.parallelism_retention_warns() {
                 eprintln!("rigger: {line}");
@@ -1692,7 +1687,6 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
-    let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;
 
     // Spec 14: the SEPARATE progress store + scratch root, so the MCP `rigger_activity` tool
     // presents the live per-agent view (this run's progress joined with the frontier and the
@@ -1744,7 +1738,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
         // adversary / adjudicator, which ground afterwards, then retrieve it through
         // `graph_context` (the cross-agent memory the review tiers communicate
         // through), not via the conductor hand-threading prompts.
-        let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers)
+        let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM)
             .with_graph(&graph)
             .with_progress(&prog_store, &scratch_root);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
@@ -1943,8 +1937,8 @@ fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::er
 /// stamp on the step path - by the time this runs, `fresh_run_if_requested` has already
 /// ensured/minted the run, so the id is always available for a real run.
 fn start_run_dashboard(store: &dyn EventStore) -> Option<dash::ReapedChild> {
-    if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
-        record_dash_attempt(&runscope::current_run_id(&events).unwrap_or_default());
+    if let Ok((_, run_id)) = read_current_run(store) {
+        record_dash_attempt(&run_id);
     }
     match spawn_run_dashboard() {
         Ok((guard, url)) => {
@@ -2399,8 +2393,8 @@ fn ensure_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) {
     if dash_ensure_suppressed(env_disabled, config_dash_enabled) {
         return;
     }
-    if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
-        record_dash_attempt(&runscope::current_run_id(&events).unwrap_or_default());
+    if let Ok((_, run_id)) = read_current_run(store) {
+        record_dash_attempt(&run_id);
     }
     let marker_path = std::path::PathBuf::from(db_path(DASH_MARKER_FILE));
     match ensure_run_dashboard_at(
@@ -2621,7 +2615,7 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // legitimate (see [`result_advisories`]). Weave with unit-10: under `--if-absent`
     // nothing can supersede (the CAS refuses), so the supersede note is suppressed -
     // the "left it untouched" line below reports that case honestly.
-    let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let (prior, _) = read_current_run(&store)?;
     for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
         eprintln!("{note}");
     }

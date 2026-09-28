@@ -19,7 +19,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::eventstore::Event;
+use crate::eventstore::{Direction, Error, Event, EventStore};
 use crate::run::META_RUN_ID;
 use crate::spawn::{self, WaveItem};
 
@@ -27,6 +27,25 @@ use crate::spawn::{self, WaveItem};
 /// isolates it from the run stream; the dedicated stream name keeps the store
 /// self-describing (and lets a consolidator read exactly the progress events).
 pub const STREAM: &str = "progress";
+
+/// The stream ONE run's progress lives on within the progress store (spec 101): `progress/<run
+/// id>`, or [`STREAM`] itself for a report made before any run started. A stream per run is the
+/// run boundary in this store, so a reader folds its run's progress by reading that stream from
+/// its start - exactly the run's reports, never another run's.
+pub fn stream_of(run_id: &str) -> String {
+    if run_id.is_empty() {
+        STREAM.to_string()
+    } else {
+        format!("{STREAM}/{run_id}")
+    }
+}
+
+/// Run `run_id`'s progress reports out of the progress `store`, oldest first: its own stream
+/// ([`stream_of`]) read from the start, so the read costs exactly the run's reports - the one
+/// read `rigger status`, the dash and the `rigger_activity` tool fold.
+pub fn read_run(store: &dyn EventStore, run_id: &str) -> Result<Vec<Event>, Error> {
+    store.read_stream(&stream_of(run_id), 0, Direction::Forward)
+}
 
 /// A progress-store record that appends as one event of its own [`EVENT_TYPE`](Self::EVENT_TYPE),
 /// stamped with the run it belongs to - the ONE shape every record this store holds is built
@@ -335,6 +354,14 @@ fn event_unit_id(e: &Event) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run's progress lives on its own stream; a report made before any run started lives on
+    /// the unstamped [`STREAM`].
+    #[test]
+    fn each_run_reports_on_its_own_stream_and_a_run_less_report_on_the_bare_one() {
+        assert_eq!(stream_of("run-c"), "progress/run-c");
+        assert_eq!(stream_of(""), "progress");
+    }
     use crate::eventstore::Event;
     use crate::run::META_RUN_ID;
     use crate::spawn::SpawnEvent;
