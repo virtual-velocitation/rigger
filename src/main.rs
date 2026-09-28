@@ -298,6 +298,8 @@ native /rigger Claude Code workflow (.claude/workflows/\n                       
 rigger.js) and provision the JS driver (.rigger/shim/ +\n                              \
 npm install). After it: run `/rigger <spec>` in Claude\n                              \
 Code (primary), or `rigger workflow` as a fallback\n  \
+rigger docs                 render the code-derived docs (every registry skill and\n                              \
+handbook page) into their committed paths\n  \
 rigger prime [<spec>]       print recent decisions (what the hook runs); given a spec\n                              \
 path, also names `rigger validate <spec>` (the pre-launch\n                              \
 spec lint) as a next step\n  \

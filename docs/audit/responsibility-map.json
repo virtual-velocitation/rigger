@@ -7233,6 +7233,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "usage_text_lists_the_docs_verb_on_its_own_line",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "d53c64c8a919fcf2"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "write_docs_writes_every_registry_skill_plus_the_handbook",
     "is_test": true,
     "proposed_module": "main::tests",

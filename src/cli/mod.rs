@@ -5366,6 +5366,25 @@ mod tests {
         }
     }
 
+    /// `rigger --help` lists `rigger docs`, the verb that renders the committed discipline, on
+    /// its own line beside the setup verbs, so an operator can find it without the source.
+    #[test]
+    fn usage_text_lists_the_docs_verb_on_its_own_line() {
+        assert!(
+            USAGE_TEXT.contains(
+                "\n  rigger docs                 render the code-derived docs (every registry skill and\n"
+            ),
+            "the usage text must list `rigger docs` with its description; got:\n{USAGE_TEXT}"
+        );
+        let docs = USAGE_TEXT.find("\n  rigger docs ").unwrap();
+        let setup = USAGE_TEXT.find("\n  rigger setup ").unwrap();
+        let prime = USAGE_TEXT.find("\n  rigger prime ").unwrap();
+        assert!(
+            setup < docs && docs < prime,
+            "`rigger docs` sits between setup and prime, as in the registry"
+        );
+    }
+
     /// Spec 20, unit 1; spec 68, criterion 1; spec 66, criterion 2: `rigger docs` renders
     /// EVERY registry skill plus every [`HANDBOOK_PAGES`] entry and writes them to their
     /// committed paths under the project root. Proven against a temp root so it needs no
