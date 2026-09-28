@@ -7694,7 +7694,9 @@ fn cmd_symbols_index(args: &[String]) -> Res {
 /// EXACTLY as the MCP `rigger_emit` tool does (both call [`mcpserver::emit_event`]).
 /// The store and graph are opened the way `serve` opens them - the namespaced
 /// per-project event store and the `graph.db` projector on the `conductor::STREAM`.
-/// A bad / non-object JSON payload is a clear error to stderr with a non-zero exit.
+/// A bad / non-object JSON payload, or one whose shape the context-graph fold cannot apply
+/// (checked by the shared core before the append), is a clear error to stderr with a non-zero
+/// exit.
 fn cmd_emit(args: &[String]) -> Res {
     // Optional `--spawn <id>`: stamp the emit with the EMITTING spawn's id
     // ([`META_SPAWN`](conductor::META_SPAWN)) at RECORD time. A native courier's `rigger emit`

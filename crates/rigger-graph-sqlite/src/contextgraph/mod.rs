@@ -9,12 +9,12 @@
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sqlite;
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 pub use rigger_domain::contextgraph::*;
 
 #[derive(Deserialize)]
-#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct DecisionMade {
     id: String,
     #[serde(default)]
@@ -51,7 +51,6 @@ struct AliasUnresolved {
     mention: String,
 }
 #[derive(Deserialize)]
-#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct LessonLearned {
     id: String,
     #[serde(default)]
@@ -60,7 +59,6 @@ struct LessonLearned {
     about: Vec<String>,
 }
 #[derive(Deserialize)]
-#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct ReviewFinding {
     id: String,
     #[serde(default)]
@@ -71,4 +69,30 @@ struct ReviewFinding {
     summary: String,
     #[serde(default)]
     about: Vec<String>,
+}
+
+/// Checks that `data` has the payload shape the fold reads for an event of type `type_`, by
+/// deserializing it into the fold's own payload type: the one shape definition, so the check can
+/// never drift from what the fold applies. An event whose payload fails here would sit in the log
+/// unfolded (the fold skips it and never records its position), so an emit surface calls this
+/// BEFORE appending. The error names the offending field and the shape expected; a type whose
+/// payload this module does not define passes unchecked.
+pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
+    fn shape<T: DeserializeOwned>(type_: &str, data: &[u8]) -> Result<(), String> {
+        serde_path_to_error::deserialize::<_, T>(&mut serde_json::Deserializer::from_slice(data))
+            .map(drop)
+            .map_err(|e| {
+                let why = e.inner().to_string().replace("a sequence", "an array");
+                match e.path().to_string().as_str() {
+                    "." => format!("{type_} payload: {why}"),
+                    field => format!("{type_} payload field `{field}`: {why}"),
+                }
+            })
+    }
+    match type_ {
+        TYPE_DECISION_MADE => shape::<DecisionMade>(type_, data),
+        TYPE_LESSON_LEARNED => shape::<LessonLearned>(type_, data),
+        TYPE_REVIEW_FINDING => shape::<ReviewFinding>(type_, data),
+        _ => Ok(()),
+    }
 }

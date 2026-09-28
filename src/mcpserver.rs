@@ -823,6 +823,10 @@ pub fn emit_event(
     }
     let data = args.get("data").cloned().unwrap_or_else(|| json!({}));
     let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+    // Refuse a payload the context-graph fold cannot apply BEFORE the append: the fold would
+    // skip it silently, leaving an event in the log that never becomes a node.
+    rigger_graph_sqlite::contextgraph::check_fold_payload(typ, &bytes)
+        .map_err(|e| format!("rigger_emit: refusing to emit: {e}"))?;
 
     // The actor metadata stamps the DECIDED edge; valid_from sets the
     // bi-temporal validity (§6). Both are optional builder overrides.
@@ -1511,6 +1515,88 @@ mod tests {
         }
     }
 
+    /// A payload the context-graph fold cannot deserialize is refused by the shared emit core
+    /// BEFORE the append: a `LessonLearned` whose `about` is one path string (the fold reads an
+    /// array of paths) or an empty object (no `id`) lands NOTHING, and the error names the
+    /// offending field and the shape the fold expects. Accepting either used to append an event
+    /// the fold skipped silently, so the lesson never became a node.
+    #[test]
+    fn emit_event_refuses_a_payload_the_graph_fold_cannot_apply() {
+        for (data, field, shape) in [
+            (
+                json!({"id": "l1", "about": "src/main.rs"}),
+                "about",
+                "array",
+            ),
+            (json!({}), "id", "missing field"),
+        ] {
+            let store = Store::open(":memory:").unwrap();
+            let args = json!({ "type": "LessonLearned", "data": data });
+            let err = emit_event(&store, "run", None, &args)
+                .expect_err("a payload the fold cannot apply must be refused");
+            assert!(
+                err.contains(&format!("`{field}`")) && err.contains(shape),
+                "the error must name `{field}` and the expected shape ({shape}); got: {err}"
+            );
+            let events = store
+                .read_all(0, Direction::Forward, &Filter::default())
+                .unwrap();
+            assert!(
+                events.is_empty(),
+                "a refused emit must append NOTHING; found: {events:?}"
+            );
+        }
+    }
+
+    /// The same shape check guards the MCP `rigger_emit` tool, because both surfaces route
+    /// through the one emit core: the tool answers an error naming the field and appends
+    /// nothing.
+    #[test]
+    fn the_emit_tool_refuses_a_payload_the_graph_fold_cannot_apply() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"LessonLearned","data":{"id":"l1","about":"src/main.rs"}}}}"#;
+        let resp = call(&server, input);
+        assert!(
+            resp.to_string().contains("`about`"),
+            "the tool's reply must name the offending field: {resp}"
+        );
+        let events = store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.is_empty(),
+            "a refused emit must append NOTHING; found: {events:?}"
+        );
+    }
+
+    /// A `LessonLearned` whose `about` is an array of paths passes the shape check, is
+    /// appended, and folds into the wired graph as a node reachable from the file it is about.
+    #[test]
+    fn emit_event_appends_and_folds_a_well_shaped_lesson() {
+        use crate::contextgraph::{sqlite::Projector, Projection};
+
+        let store = Store::open(":memory:").unwrap();
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let args = json!({
+            "type": "LessonLearned",
+            "data": {"id": "l1", "summary": "s", "about": ["src/main.rs"]},
+        });
+        emit_event(&store, "run", Some(&graph), &args).expect("a well-shaped lesson is appended");
+        let events = store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert_eq!(events.len(), 1, "the lesson was appended once");
+        let g = graph.subgraph(&["src/main.rs".to_string()], 2).unwrap();
+        assert!(
+            g.nodes.iter().any(|n| n.id == "l1"),
+            "the appended lesson folded into the graph: {:?}",
+            g.nodes
+        );
+    }
+
     /// The shared `peers_json` core (which the CLI `rigger peers` renders from) must
     /// produce the SAME structured value the MCP `rigger_peers` tool returns - both
     /// scope decisions, lessons, and findings to the files arg through the one core.
@@ -1627,7 +1713,7 @@ mod tests {
         /// 2_000_000_000 ns = 2 seconds after the unix epoch.
         emit_tool_sets_valid_from_from_nanos: assert_eq!(
             emitted_decision(
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{},"valid_from":2000000000}}}"#
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1"},"valid_from":2000000000}}}"#
             )
             .valid_from,
             UNIX_EPOCH + Duration::from_nanos(2_000_000_000)
