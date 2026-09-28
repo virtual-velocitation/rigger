@@ -3,35 +3,41 @@
 **Goal:** every `rigger` invocation that serves one run reads that run, not the whole
 history of the project. Measured on the 2026-09-15 store (2,075,706 events, 1.24 GB):
 `rigger status` peaks at 2.7 GB resident, `rigger peers` at 5.3 GB (its sidecar replays from
-position 0, `src/cli/hygiene.rs:712`), and one `rigger step` at 9.8 GB (the kernel's out-of-memory
+position 0, `src/cli/observe.rs:531`), and one `rigger step` at 9.8 GB (the kernel's out-of-memory
 report of that day) - while the run those commands served spans 67,456 events
 (positions 3,146,193 to 3,213,649). 97% of the stream is derived graph ingest: 1,801,003
 `EdgeInferred`, 125,861 `CodeEntityExtracted`, 101,354 `DocLinkExtracted`, and of the
 edges ~1.62 million are superseded generations of files that were later re-ingested
 (`gc/<file>@<hash>#<n>` keys: a file edit re-records every edge of the file under a new
-generation). `crates/rigger-conductor/src/conductor.rs` calls `read_stream(STREAM, 0, Direction::Forward)` at 108
-sites, `src/main.rs` at 36, `crates/rigger-domain/src/run.rs` at 22. Five agents each calling rigger a few times a
+generation). On the 2026-09-28 tree `read_stream(STREAM, 0, Direction::Forward)` sits at 104 sites in
+`crates/rigger-conductor/src/conductor.rs`, 28 in `crates/rigger-driver/src/driver/replay.rs`, 16 in
+`crates/rigger-store-sqlite/src/run_store.rs` and 14 in `src/cli/run.rs`, 206 across the workspace. Five agents each calling rigger a few times a
 minute put 15 to 25 GB of baseline pressure on a 62 GB machine before a single cargo build.
 
 ## Design
 
 **THE FOLD HAS A BOUNDARY, decided here so no unit has to.** The current run begins at the
 stream position of its `RunStarted` event (the `runscope` boundary that
-`runscope::current_run` already applies - after reading everything). The boundary is a store
-port query, `last_position(stream, event_type)`, implemented on the embedded sqlite store as
-an indexed lookup and on the server-backed store as a backward read that stops at the first
-match. No caller derives the boundary by scanning forward from 0.
+`runscope::current_run` (`crates/rigger-domain/src/run.rs:156`) already applies - after reading
+everything). The boundary is a new `EventStore` port method (`crates/rigger-domain/src/eventstore.rs:499`),
+`last_position(stream, event_type)`, implemented on the embedded sqlite store
+(`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:779`) as an indexed lookup and on the
+server-backed KurrentDB store (`crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:354`) as a
+backward read that stops at the first match. No caller derives the boundary by scanning forward from 0.
 
 **THREE READ CLASSES.** (i) The run's own events, from the boundary forward, are read and
 folded whole - they are the run. (ii) Carried-over knowledge - `LessonLearned`,
 `DecisionMade`, `ReviewFinding` and the playbook events the fold consults across runs - is
-read BY TYPE over the whole stream through the store's type index (`read_stream_typed`),
-so its cost is bounded by its own count (about 22,000 events today), never by the derived
-types. (iii) The derived ingest types (`ingest::DERIVED_INDEX_TYPES`) are NEVER materialized
+read BY TYPE over the whole stream through a new `EventStore::read_stream_typed` port method
+backed by a type index; `Filter` carries only a `stream_prefix` today, so no by-type read
+exists to reuse. Its cost is bounded by its own count (about 22,000 events today), never by the derived
+types. (iii) The derived ingest types (`ingest::DERIVED_INDEX_TYPES`, `crates/rigger-domain/src/ingest.rs:36`) are NEVER materialized
 by a one-shot command: `graph.db` is their fold, and the only question a command asks of
 them - a file's latest recorded generation (`ingest::project_scoped_latest_generations`,
-`project_scoped_replay_keys`) - is answered by a store query over the `replay_key` meta
-column grouped by file identity. An in-memory scan of every derived event to find the latest
+`crates/rigger-domain/src/ingest.rs:174`, and `ingest::project_scoped_replay_keys`,
+`crates/rigger-domain/src/ingest.rs:160`) - is answered by a store query over the `replay_key`
+entry of each event's `meta` (`ingest::META_REPLAY_KEY`; the sqlite store holds `meta` as one
+JSON column) grouped by file identity. An in-memory scan of every derived event to find the latest
 key per file is NOT an implementation of this design.
 
 **COMPACTION SHEDS SUPERSEDED GENERATIONS.** `rigger reset --derived` today keeps the latest
@@ -43,12 +49,12 @@ from the compacted log equals `graph.db` rebuilt from the full log, byte for byt
 reverted to an earlier content re-emits its batch (that is already how the walk keys), so
 no shed generation is ever needed again.
 
-**THE LIVE-WRITER GUARD READS LIVENESS.** `refuse_derived_reset_if_live` treats a
+**THE LIVE-WRITER GUARD READS LIVENESS.** `refuse_derived_reset_if_live` (`src/cli/hygiene.rs:610`) treats a
 non-terminal unit as a live writer; a run whose driver died leaves units non-terminal
 forever and the only way past is `--force-live`, so the run whose bloat most needs the
 compaction is the one that refuses it. A run is live when a step lock is held, when a spawn's
 liveness marker is younger than the spawn wall-clock bound, or when a registry instance
-heartbeat is younger than `registry::DEFAULT_IDLE_MS`. Unit terminality is not a liveness
+heartbeat is younger than `registry::DEFAULT_IDLE_MS` (`crates/rigger-store-sqlite/src/registry.rs:32`). Unit terminality is not a liveness
 signal. `--force-live` keeps its meaning (skip the check entirely).
 
 **CROSS-RUN COMMANDS ARE OUT OF SCOPE.** `rigger reset --runs`, `rigger stats`,
@@ -72,9 +78,9 @@ cost a one-shot command exactly the run's own events plus the carried-over typed
 
 ## Done when
 
-- [ ] a test proves THE BOUNDARY IS A QUERY: `Store::last_position(stream, "RunStarted")`
+- [ ] a test proves THE BOUNDARY IS A QUERY: `EventStore::last_position(stream, "RunStarted")`
   returns the current run's boundary on both backends (the sqlite store through an indexed
-  lookup, the server-backed store through a backward read that stops at the first match),
+  lookup, the server-backed KurrentDB store through a backward read that stops at the first match),
   pinned at the store port trait with the double asserting no forward read from 0 ever
   happened. This criterion OWNS the boundary lookup; what reads from it is criterion 2's,
   NOT this one's.
@@ -88,7 +94,7 @@ cost a one-shot command exactly the run's own events plus the carried-over typed
   NOT this one's; cross-run commands are excluded.
 - [ ] a test proves THE LATEST GENERATION IS A QUERY: `project_scoped_latest_generations`
   and every consumer of `project_scoped_replay_keys` answer from a store query over the
-  `replay_key` meta grouped by file identity, and no one-shot command materializes a
+  `meta` entry `replay_key` grouped by file identity, and no one-shot command materializes a
   `DERIVED_INDEX_TYPES` event, pinned by the counting double reporting zero derived events
   read across a `rigger step` that reindexes a changed file. This criterion OWNS the derived
   read path; the compaction of those events is criterion 4's, NOT this one's.
