@@ -24,7 +24,7 @@ mechanics and carry 333 MB, 55% of every byte: `SpawnRequested` alone is 6,729 e
 resident in 4.6 s, `rigger step` at 8.3 GB, and on 2026-09-24 15:13 the kernel's
 out-of-memory killer chose that step as the largest process on the machine. `rigger reset
 --runs` (`src/cli/hygiene.rs:703`) prunes the GRAPH of dead runs (`superseded_graph_nodes`,
-`main.rs:9231`) and leaves the log untouched, so no run's mechanics have ever left the live
+`src/cli/hygiene.rs:856`) and leaves the log untouched, so no run's mechanics have ever left the live
 store; `read_stream` (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:897`) materializes the whole stream on every
 call and nearly every caller passes position 0.
 
@@ -56,7 +56,7 @@ the ledger event's position and carrying the generation's replay key
 `src/cli/graph.rs:501`) goes through the same seam. A
 deleted file appends `GenerationIngested { blob: "" }` and supersedes its live structural
 edges exactly as a new generation does. The offline passes (`cmd_graph_communities`, `src/cli/graph.rs:605`, whose only event writer is
-`community::events`, `crates/rigger-domain/src/community.rs:363`; `cmd_graph_concepts`, `main.rs:4872`) append one
+`community::events`, `crates/rigger-domain/src/community.rs:363`; `cmd_graph_concepts`, `src/cli/graph.rs:704`) append one
 `PassRecorded { pass, input_hash, resolution }` and fold their membership edges the same way. No derived payload is appended to the log by any path; the
 store's append seam rejects a `DERIVED_INDEX_TYPES` append outright.
 

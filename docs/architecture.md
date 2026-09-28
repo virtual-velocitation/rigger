@@ -1084,10 +1084,27 @@ structurally.
 
 ## 10. Repo layout & `cargo install` usage  **[AS-BUILT]**
 
-A single Rust crate: a library (`src/lib.rs`) plus a binary (`src/main.rs`), with the ports
-and adapters as modules under `src/`. One cargo feature (`symbols`) is ON BY
-DEFAULT (`default = ["symbols"]`), so a plain `cargo build` ships the structural grounder;
-`--no-default-features` is the deliberate LIGHT opt-out that drops it (leaving the
+A Cargo workspace whose crates sit in Clean Architecture rings, innermost first; a crate
+depends only on crates in its own ring or an inner one, pinned by `tests/boundary_audit.rs`.
+
+- Ring 1, entities and ports: `rigger-domain` holds the entities, the use-case rules and the
+  ports, and knows no file, process, network, clock, store or agent host.
+- Ring 2, application: `rigger-conductor` is the conductor use case that walks the stage DAG,
+  runs each stage's agent and gates and emits the event stream.
+- Ring 3, adapters: `rigger-store-sqlite` (the event stores), `rigger-graph-sqlite` (the
+  context-graph projector), `rigger-process` (process spawn, the reaper and the build budget),
+  `rigger-worktree-git` (per-unit worktrees and landing), `rigger-gates-shell` (the gate
+  runner), `rigger-driver` (the agent hosts), `rigger-grounder` (the grounders and the source
+  ingest) and `rigger-config-files` (the operator's `.rigger/` tree) implement the ports.
+- Ring 4, delivery: `rigger-console` (the console fold shared by `rigger status` and the
+  console page), `rigger-dash` (the HTTP dashboard and the MCP server) and `console-core` (the
+  console's WebAssembly ABI) present the run.
+- Ring 5, composition root: the root `rigger` crate is the binary (`src/main.rs` and its
+  `src/cli/` handlers) that wires every adapter, plus a library facade the integration tests
+  import.
+
+One cargo feature (`symbols`) is ON BY DEFAULT, so a plain `cargo build` ships the structural
+grounder; `--no-default-features` is the deliberate LIGHT opt-out that drops it (leaving the
 self-contained `grep` grounder). The server event-store backend has **no** feature flag and is
 always in the binary.
 

@@ -343,7 +343,7 @@ the selected agent's transcript, the session itself, in order:
 1. **Prompt** - the spawn's task text and persona name from `SpawnRequested` (the full prompt
    behind a disclosure, the same text `rigger prompt <id>` prints).
 2. **Turns** - each transcript turn: the agent's text as paragraphs; a tool call as the mock's
-   tool chip (`rigger graph --around src/worktree.rs`, `cargo test --test cli`); a tool result
+   tool chip (`rigger graph --around crates/rigger-worktree-git/src/worktree.rs`, `cargo test --test cli`); a tool result
    as a terminal block (a test run's lines with pass and fail coloured, a command's output
    verbatim, a truncated block carrying its omitted byte count); an edit as a diff block (the
    old text as removed lines, the new text as added lines, under the file's header); a
