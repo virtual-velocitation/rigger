@@ -4339,7 +4339,7 @@ fn render_section_3(files: &[FileScan]) -> String {
         joined(&production_comment_lines(MAIN, "Connection::open")),
     );
     let projection_importers = [
-        "src/concepts.rs",
+        "crates/rigger-graph-sqlite/src/concepts.rs",
         "crates/rigger-dash/src/dash.rs",
         "crates/rigger-grounder/src/grounder/symbols/events.rs",
         "crates/rigger-grounder/src/grounder/design/events.rs",

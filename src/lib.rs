@@ -18,16 +18,6 @@
 /// The write half of [`canary`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_conductor::canary_store;
-pub use rigger_domain::blocker;
-pub use rigger_domain::canary;
-pub use rigger_domain::community;
-/// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
-/// caps how many actual compiler invocations run at once, across every rigger process on
-/// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
-/// slots bound builds, never agents.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub use rigger_process::budget;
-pub mod concepts;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_conductor::conductor;
 pub use rigger_config_files::config;
@@ -39,6 +29,16 @@ pub use rigger_config_files::config_store;
 /// and the Mission Control console page (specs 94-98). Always compiled (`core`):
 /// no `rusqlite`, `tokio`, `std::fs`, `std::process`, `std::net` or clock read.
 pub use rigger_console::console;
+pub use rigger_domain::blocker;
+pub use rigger_domain::canary;
+pub use rigger_domain::community;
+pub use rigger_domain::concepts;
+/// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
+/// caps how many actual compiler invocations run at once, across every rigger process on
+/// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
+/// slots bound builds, never agents.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::budget;
 pub mod contextgraph;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_dash::dash;
@@ -62,19 +62,19 @@ pub use rigger_dash::mcpserver;
 pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
 pub use rigger_domain::metrics;
+pub use rigger_domain::progress;
+pub use rigger_domain::run;
+pub use rigger_domain::safety;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::hooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::liveness;
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_driver::sidecar;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_grounder::ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::parallel;
-pub mod progress;
-pub use rigger_domain::run;
-pub use rigger_domain::safety;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub use rigger_driver::sidecar;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::reap;
 /// The write half of [`progress`] (spec 93, criterion 1): see that module's own doc.
@@ -106,7 +106,7 @@ pub use rigger_store_sqlite::spawn_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_store_sqlite::sqlite;
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod worktree;
+pub use rigger_worktree_git::worktree;
 
 /// Parameterised tests: one shared case helper, one generated `#[test]` per named case.
 pub use rigger_domain::test_cases;

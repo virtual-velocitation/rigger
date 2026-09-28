@@ -526,6 +526,20 @@ const ADAPTER_VIOLATIONS: &[(&str, &str, &str, &str)] = &[
          dev-dependency on the root crate",
         "lesson-split-driver-fixtures-name-the-conductor",
     ),
+    (
+        "crates/rigger-worktree-git/src/worktree.rs",
+        "tests",
+        "the conductor's run STREAM and the SQLite store it reads the run log from, through a \
+         dev-dependency on the root crate",
+        "lesson-split-worktree-git-tests-reach-the-root",
+    ),
+    (
+        "crates/rigger-worktree-git/src/lib.rs",
+        "conductor_fixtures",
+        "the shared conductor, config, store and registry fixtures' conductor, Config, gate, \
+         ingest and registry vocabulary, through a dev-dependency on the root crate",
+        "lesson-split-worktree-git-tests-reach-the-root",
+    ),
 ];
 
 // ---------------------------------------------------------------------------------------------

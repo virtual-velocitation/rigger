@@ -2079,10 +2079,14 @@ dependencies = [
 name = "rigger-worktree-git"
 version = "0.1.0"
 dependencies = [
+ "rigger",
  "rigger-domain",
  "rigger-driver",
  "rigger-process",
+ "serde_json",
+ "tempfile",
  "thiserror",
+ "uuid",
 ]
 
 [[package]]

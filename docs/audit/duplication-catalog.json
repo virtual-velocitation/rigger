@@ -277,7 +277,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-be3f13e37fd5",
+    "id": "dup-7ecd39c6f4c7",
     "classification": "semantic",
     "sites": [
       {
@@ -301,12 +301,12 @@
         "content_hash": "b0b4170272f04fb7"
       },
       {
-        "file": "src/worktree.rs",
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
         "name": "land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked",
         "content_hash": "38d31a04aa0c3f29"
       },
       {
-        "file": "src/worktree.rs",
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
         "name": "revert_on_base_aborts_and_errors_on_a_conflicting_revert",
         "content_hash": "9874f3396e9affbb"
       },
@@ -520,7 +520,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9f07a7bf395a",
+    "id": "dup-76cb2f6f310d",
     "classification": "semantic",
     "sites": [
       {
@@ -584,6 +584,11 @@
         "content_hash": "b1ad5143fd332b66"
       },
       {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "Command::new",
+        "content_hash": "96b36cb0df82f4e5"
+      },
+      {
         "file": "src/main.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
@@ -637,11 +642,6 @@
         "file": "src/main.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "96b36cb0df82f4e5"
       },
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -944,7 +944,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-1e8420f911f8",
+    "id": "dup-3b8e9427010e",
     "classification": "semantic",
     "sites": [
       {
@@ -1216,6 +1216,56 @@
         "file": "crates/rigger-store-sqlite/src/registry.rs",
         "name": "\"/home/dev/proj/.rigger/events.db\"",
         "content_hash": "095a242a1ba6b733"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"{repo_path}/.rigger/tmp\"",
+        "content_hash": "452d91e7f980731f"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"the default must no longer nest inside the repo's own .rigger: {dflt:?}\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"/.rigger/\"",
+        "content_hash": "4be84b88367800a7"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"/.rigger\"",
+        "content_hash": "4be84b88367800a7"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"the default must never live under any .rigger: {dflt:?}\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"{repo_path}/.rigger/tmp\"",
+        "content_hash": "fe1462be26b09c7c"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"~/.rigger-scratch-test\"",
+        "content_hash": "a4d490063798a99e"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"{home}/.rigger-scratch-test\"",
+        "content_hash": "fe1462be26b09c7c"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"{base}..rigger-run\"",
+        "content_hash": "a0d7cac76fb4a8ee"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\".rigger\"",
+        "content_hash": "6f737e98b475978b"
       },
       {
         "file": "src/main.rs",
@@ -1609,56 +1659,6 @@
       },
       {
         "file": "src/main.rs",
-        "name": "\".rigger\"",
-        "content_hash": "6f737e98b475978b"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"{repo_path}/.rigger/tmp\"",
-        "content_hash": "452d91e7f980731f"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"the default must no longer nest inside the repo's own .rigger: {dflt:?}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"/.rigger/\"",
-        "content_hash": "4be84b88367800a7"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"/.rigger\"",
-        "content_hash": "4be84b88367800a7"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"the default must never live under any .rigger: {dflt:?}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"{repo_path}/.rigger/tmp\"",
-        "content_hash": "fe1462be26b09c7c"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"~/.rigger-scratch-test\"",
-        "content_hash": "a4d490063798a99e"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"{home}/.rigger-scratch-test\"",
-        "content_hash": "fe1462be26b09c7c"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "\"{base}..rigger-run\"",
-        "content_hash": "a0d7cac76fb4a8ee"
-      },
-      {
-        "file": "src/worktree.rs",
         "name": "\".rigger\"",
         "content_hash": "6f737e98b475978b"
       },
@@ -6198,6 +6198,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-5a3cb86b6dd7",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "integrate_lands_work_in_the_repo",
+        "content_hash": "35b1e1b7551eb772"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "integrate_lands_a_pre_committed_artifact_unchanged",
+        "content_hash": "5f73509b251f438a"
+      }
+    ],
+    "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-ca8ccf1b9f66",
     "classification": "exact",
     "sites": [
@@ -6465,25 +6484,6 @@
       }
     ],
     "proposed_home": "main::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-ad4ebfe4d855",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "name": "integrate_lands_work_in_the_repo",
-        "content_hash": "35b1e1b7551eb772"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "integrate_lands_a_pre_committed_artifact_unchanged",
-        "content_hash": "5f73509b251f438a"
-      }
-    ],
-    "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

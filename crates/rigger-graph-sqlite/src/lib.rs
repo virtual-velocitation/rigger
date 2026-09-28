@@ -2,6 +2,8 @@
 //! behind the `Projection` port. It knows rusqlite, the filesystem and the domain; the root
 //! `rigger` crate re-exports it under its historical `rigger::contextgraph::sqlite` path.
 
+#[cfg(test)]
+mod concepts;
 pub mod contextgraph;
 
 // The modules the moved code names by their historical `crate::` paths.
@@ -10,7 +12,7 @@ use rigger_domain::eventstore;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::spawn;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_domain::{concepts, test_cases};
+use rigger_domain::test_cases;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_root::{conductor, metrics};
 #[cfg(any(feature = "store", not(feature = "core")))]

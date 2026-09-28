@@ -860,7 +860,7 @@
     "reason": "Scanner unit tests that each feed a different text shape and assert a different outcome (a fail-closed quote state, scanning resuming after Notes, a bodiless trait method); they share only the parse-then-assert idiom."
   },
   {
-    "id": "dup-ad4ebfe4d855",
+    "id": "dup-5a3cb86b6dd7",
     "disposition": "not-a-duplicate",
     "reason": "Integration of uncommitted work versus integration of a pre-committed artifact, where the second asserts the merged commit is exactly the gated one."
   },

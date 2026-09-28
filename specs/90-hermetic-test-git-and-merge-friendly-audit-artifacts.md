@@ -1,7 +1,7 @@
 # 90 - Hermetic test git and merge-friendly audit artifacts
 
 **Goal:** two hygiene defects tax every review round. (1) The operator's global git has
-`commit.gpgsign=true`, and the unit tests in `src/worktree.rs` and `crates/rigger-conductor/src/conductor.rs` (about 43
+`commit.gpgsign=true`, and the unit tests in `crates/rigger-worktree-git/src/worktree.rs` and `crates/rigger-conductor/src/conductor.rs` (about 43
 `git commit` sites) never disable it, so every test commit runs gpg against the user's keyring:
 with several agents running the suite at once the keyring lock contends and `git worktree add`
 races, ten failures per lane during u86 c2/c3 round 3, and every reviewer spends a cold rerun

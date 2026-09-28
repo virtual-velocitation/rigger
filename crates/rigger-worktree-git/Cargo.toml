@@ -25,5 +25,17 @@ rigger-process = { path = "../rigger-process", default-features = false }
 rigger-driver = { path = "../rigger-driver", default-features = false }
 thiserror = "2"
 
+[dev-dependencies]
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"
+# The adapter's tests read the run log through the SQLite store, and the shared fixtures name the
+# conductor, config, gate, ingest and registry vocabulary (recorded in tests/boundary_audit.rs
+# ADAPTER_VIOLATIONS). A test is its own composition root, so it reaches them through the root
+# package as a dev-dependency, renamed because the shared fixtures already call this crate
+# `rigger`. No default features, so the dev-dependency never widens the root's lane when both
+# crates are tested in one invocation.
+rigger-root = { package = "rigger", path = "../..", default-features = false }
+
 [lints]
 workspace = true
