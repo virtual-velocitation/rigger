@@ -8459,6 +8459,49 @@ mod tests {
         }
 
         #[test]
+        fn a_link_that_returned_revives_from_its_return_not_from_its_first_run() {
+            // h1 asserts `a`, h2 drops it, h1 returns (a new row from 30s), and h4 keeps it: the
+            // row h4 revives is the one the return asserted, never the one h2 retired.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_keyed(
+                &p,
+                1,
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/a.rs"),
+                "gd/docs/f.md@h1#0",
+                10,
+            );
+            apply_keyed(
+                &p,
+                2,
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/b.rs"),
+                "gd/docs/f.md@h2#0",
+                20,
+            );
+            apply_keyed(
+                &p,
+                3,
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/a.rs"),
+                "gd/docs/f.md@h1#0",
+                30,
+            );
+            apply_keyed(
+                &p,
+                4,
+                TYPE_DOC_LINK_EXTRACTED,
+                link("src/a.rs"),
+                "gd/docs/f.md@h4#0",
+                40,
+            );
+            assert_eq!(
+                live_edges(&p),
+                vec![edge("docs/f.md", "src/a.rs", REL_SPECIFIES, 30, 4)]
+            );
+        }
+
+        #[test]
         fn a_generation_of_one_file_never_retires_another_files_facts() {
             let p = Projector::open(":memory:", "test").unwrap();
             apply_keyed(
