@@ -42,11 +42,10 @@ use crate::spawn_store;
 /// invariant 6: one host).
 const PERMISSION_MODE: &str = "default";
 
-/// How often [`Driver::read_stream`]'s loop wakes to re-check elapsed time when
-/// `max_wall_clock` is 0 (unbounded): a "wake up occasionally" budget, never itself a
-/// wall-clock bound - an unbounded spawn still polls rather than blocking forever on the
-/// channel, so a future caller with another reason to want the loop responsive is never
-/// shut out by this recv.
+/// How often [`Driver::read_stream`]'s loop wakes when `max_wall_clock` is 0 (unbounded): a
+/// "wake up occasionally" budget, never itself a wall-clock bound - the wake-up never stops
+/// the session, it only re-checks whether the child has exited behind a pipe a descendant
+/// still holds open (which would otherwise never deliver EOF).
 const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
@@ -368,10 +367,9 @@ impl Driver<'_> {
 
         loop {
             let recv_timeout = if max_wall_clock == 0 {
-                // Unbounded: still poll periodically rather than an infinite wait, so a
-                // future caller that DOES want to observe long-run liveness some other
-                // way is never blocked out by this recv - purely a "wake up occasionally"
-                // budget, never itself a wall-clock bound.
+                // Unbounded: still wake periodically rather than an infinite wait, so the
+                // loop can re-check the child (the unbounded wake-up arm below) - purely a
+                // "wake up occasionally" budget, never itself a wall-clock bound.
                 UNBOUNDED_POLL
             } else {
                 let elapsed = last_activity.elapsed();
@@ -397,9 +395,11 @@ impl Driver<'_> {
                     line
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break, // reader thread gone; treat as EOF
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if result.is_none() => {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if result.is_none() && max_wall_clock != 0 =>
+                {
                     // THE STOP (spec 104 criterion 6): genuine wall-clock SILENCE with no
-                    // result yet. Runs the whole sequence inline (mirrors the pre-result
+                    // result yet, on a BOUNDED launch only. Runs the whole sequence inline (mirrors the pre-result
                     // read-error arm below, which also returns directly) so the caller
                     // sees exactly one outcome for "this launch never produced a result".
                     return self.stop_for_wall_clock_silence(
@@ -410,6 +410,20 @@ impl Driver<'_> {
                         &session_id,
                         max_wall_clock,
                     );
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if result.is_none() => {
+                    // The UNBOUNDED wake-up (`max_wall_clock` 0): never a stop. 2026-09-28:
+                    // this wake-up took the STOP arm above, so every unbounded session that
+                    // thought in silence for [`UNBOUNDED_POLL`] was stopped as a liveness
+                    // fault reading "silent for 0s" - a poll interval read as a wall-clock
+                    // bound. The tell: a stop message naming a 0 s bound. The wake-up only
+                    // re-checks the child: one that has exited while a descendant still holds
+                    // the stdout pipe will never send EOF, so its exit ends the read here as a
+                    // session with no result (classified below); a live child keeps its turn.
+                    if matches!(reaper.child_mut().try_wait(), Ok(Some(_))) {
+                        break;
+                    }
+                    continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     // result.is_some(): silence AFTER a real result already landed is not

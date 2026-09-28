@@ -54,8 +54,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1096,
-        "end_line": 1104
+        "start_line": 1110,
+        "end_line": 1118
       },
       {
         "file": "tests/common/fixtures/graph.rs",
