@@ -381,63 +381,34 @@ impl Store {
         }
     }
 
-    /// Measure the derived-index DUPLICATION already sitting in the log, WITHOUT deleting
+    /// Measure the derived-index REDUNDANCY already sitting in the log, WITHOUT deleting
     /// anything: across every type `identity` covers, within streams under `stream_prefix`, how
-    /// many rows carry a covered key versus how many DISTINCT `(type, stream, key)` triples
-    /// those rows name.
+    /// many rows carry a covered key versus how many of them a compaction would KEEP.
     ///
-    /// The READ-ONLY twin of [`Store::prune_derived_index`]'s own count: it is built from the
-    /// SAME `key_expr`/`type_list` the compaction's own DELETE renders from, and the SAME
-    /// `stream_prefix` filter (`substr(stream, 1, length(?1)) = ?1`), so `rigger validate`'s
-    /// bloat advisory (spec 68) can never drift from a second, independently re-derived
-    /// definition of "duplicated" (Design: "one measurement authority per advisory ... no
-    /// shadow accounting"). ONE aggregate query - `COUNT(*)` and `COUNT(DISTINCT ...)` over a
-    /// single scan of the covered rows - bounded by the log's own row count, never a second
-    /// store read or a full-tree walk.
-    ///
-    /// `type || char(30) || stream || char(30) || {key}` triples a row's TYPE with its stream
-    /// and key before counting distinct values, deliberately mirroring what the compaction's own
-    /// DELETE actually scopes: `prune_derived_index_compacting_with` runs its
-    /// `PARTITION BY stream, {key}` window inside a PER-TYPE loop (`WHERE type = ?1`), so a key
-    /// is only ever compared against OTHER ROWS OF THE SAME TYPE - the same key recorded once
-    /// under two different covered types is two independent single-row groups to the real
-    /// DELETE, never a duplicate pair. Counting distinct `(stream, key)` alone (dropping the
-    /// type) would merge those two groups into one duplicated subject, reporting bloat a real
-    /// prune can never reclaim - the type discriminator is what keeps this measurement unable to
-    /// drift from what `prune_derived_index` actually deletes, exactly as the stream
-    /// discriminator already does for two different streams sharing a key. `char(30)` (ASCII
-    /// record separator) is the join glue throughout: a byte no legal type name, stream name or
-    /// JSON-extracted key contains, so two different triples can never collide onto the same
-    /// joined string.
+    /// The READ-ONLY twin of [`Store::prune_derived_index`]: both are answered by the one
+    /// selection [`plan_derived_prune`], so `rigger validate`'s bloat advisory (spec 68) measures
+    /// exactly the rows `rigger reset --derived` would shed - superseded generations as well as
+    /// earlier recordings of one key - and can never drift from a second, independently re-derived
+    /// definition of "redundant" (Design: "one measurement authority per advisory ... no shadow
+    /// accounting"). No row is touched, no valid-time carried.
     pub fn measure_derived_duplication(
         &self,
         stream_prefix: &str,
         identity: &ContentIdentity,
     ) -> Result<DerivedDuplication, Error> {
-        let key = key_expr(identity.meta_key());
-        let types = type_list(identity.types());
-        let sql = format!(
-            "SELECT COUNT(*), COUNT(DISTINCT type || char(30) || stream || char(30) || {key})
-               FROM events
-              WHERE type IN ({types})
-                AND substr(stream, 1, length(?1)) = ?1
-                AND {key} IS NOT NULL"
-        );
         let guard = self.conn.lock().unwrap();
-        let (rows, distinct_keys): (i64, i64) = guard
-            .query_row(&sql, params![stream_prefix], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(be)?;
+        let plan = plan_derived_prune(&guard, stream_prefix, identity, &[])?;
         Ok(DerivedDuplication {
-            // Never negative (COUNT cannot return one), but the column reads as i64; clamp
-            // rather than trust a cast the type system does not itself guarantee.
-            rows: rows.max(0) as usize,
-            distinct_keys: distinct_keys.max(0) as usize,
+            rows: plan.rows,
+            kept: plan.rows - plan.deletes.len(),
         })
     }
 }
 
 /// What one derived-index compaction deletes and re-dates, decided by [`plan_derived_prune`].
 struct DerivedPrunePlan {
+    /// How many covered, keyed rows the selection weighed.
+    rows: usize,
     /// `(index into the policy's types, position)` of every row to delete.
     deletes: Vec<(usize, i64)>,
     /// `(position, earliest valid-time)` of every surviving re-asserting row whose fact was
@@ -458,8 +429,20 @@ impl DerivedPrunePlan {
     }
 }
 
-/// The ONE selection of a derived-index compaction, shared by the prune and its read-only
-/// preview: which rows go, and which surviving rows take an earlier valid-time.
+/// One re-asserted fact's valid-time as the selection walks its recordings newest first: the
+/// earliest valid-time of its UNBROKEN run of generations, the run (see [`plan_derived_prune`])
+/// it was last met in, whether an older generation that did not assert it has already ended the
+/// run, and the surviving rows it must be carried onto as `(position, own valid-time)`.
+struct FactRun {
+    earliest: i64,
+    run: usize,
+    broken: bool,
+    survivors: Vec<(i64, i64)>,
+}
+
+/// The ONE selection of a derived-index compaction, shared by the prune, its read-only preview
+/// and the `rigger validate` bloat measurement: which rows go, and which surviving rows take an
+/// earlier valid-time.
 ///
 /// One pass over the covered, keyed rows under `stream_prefix`, NEWEST FIRST, so the first row
 /// met for a `(stream, batch identity)` names that identity's LATEST recorded generation
@@ -470,12 +453,14 @@ impl DerivedPrunePlan {
 /// exact-key dedup). A key the policy cannot parse is its own identity, so it is only ever
 /// deduplicated, never shed as superseded.
 ///
-/// For the `reasserting` types the fold keeps the EARLIEST valid-time a fact was asserted at, so
-/// every surviving row takes the minimum valid-time over all recordings of the same identity
-/// with the byte-identical payload - the same fact - including the ones being deleted. Grouping
-/// by payload rather than by key is what carries a fact re-asserted by every generation back to
-/// the generation that first asserted it, and within one key the payload is one value, so it
-/// subsumes the per-key carry.
+/// For the `reasserting` types the fold keeps the EARLIEST valid-time of a fact that has held
+/// WITHOUT A BREAK: a newer generation revives each fact its prior generation asserted, and a
+/// fact a generation dropped is new again when a later one asserts it. So the walk numbers each
+/// identity's RUNS - maximal stretches of recordings of one generation, run 0 the latest - and a
+/// surviving row takes the minimum valid-time over the recordings of the same identity with the
+/// byte-identical payload (the same fact) in consecutive runs from its own, stopping at the first
+/// run that does not assert it. That carries a fact every generation re-asserted back to the
+/// generation that first asserted it, and never past a generation that dropped it.
 fn plan_derived_prune(
     conn: &Connection,
     stream_prefix: &str,
@@ -498,12 +483,14 @@ fn plan_derived_prune(
     );
     let mut stmt = conn.prepare(&sql).map_err(be)?;
     let mut rows = stmt.query(params![stream_prefix]).map_err(be)?;
-    let mut latest: HashMap<(String, String), String> = HashMap::new();
+    // (stream, identity) -> (latest generation, generation of the run being walked, its number).
+    let mut runs: HashMap<(String, String), (String, String, usize)> = HashMap::new();
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
-    // (stream, type, identity, payload) -> (earliest valid-time, survivors as (position, own)).
+    // (stream, type, identity, payload) -> the fact's run so far.
     type Fact = (String, String, String, Vec<u8>);
-    let mut facts: HashMap<Fact, (i64, Vec<(i64, i64)>)> = HashMap::new();
+    let mut facts: HashMap<Fact, FactRun> = HashMap::new();
     let mut plan = DerivedPrunePlan {
+        rows: 0,
         deletes: Vec::new(),
         carries: Vec::new(),
         superseded: 0,
@@ -518,16 +505,20 @@ fn plan_derived_prune(
         let Some(type_index) = types.iter().position(|t| *t == type_) else {
             continue;
         };
-        let parts = identity.key_parts(&content_key);
-        let batch = parts
-            .map_or(content_key.as_str(), |(batch, _)| batch)
-            .to_string();
-        let superseded = parts.is_some_and(|(_, generation)| {
-            latest
-                .entry((stream.clone(), batch.clone()))
-                .or_insert_with(|| generation.to_string())
-                != generation
-        });
+        plan.rows += 1;
+        let (batch, generation) = identity
+            .key_parts(&content_key)
+            .unwrap_or((content_key.as_str(), ""));
+        let batch = batch.to_string();
+        let walk = runs
+            .entry((stream.clone(), batch.clone()))
+            .or_insert_with(|| (generation.to_string(), generation.to_string(), 0));
+        if walk.1 != generation {
+            walk.1 = generation.to_string();
+            walk.2 += 1;
+        }
+        let run = walk.2;
+        let superseded = walk.0 != generation;
         let survives = !superseded && seen.insert((stream.clone(), type_.clone(), content_key));
         if !survives {
             plan.deletes.push((type_index, position));
@@ -538,19 +529,28 @@ fn plan_derived_prune(
         if let Some(payload) = payload {
             let fact = facts
                 .entry((stream, type_, batch, payload))
-                .or_insert((valid_from, Vec::new()));
-            fact.0 = fact.0.min(valid_from);
+                .or_insert(FactRun {
+                    earliest: valid_from,
+                    run,
+                    broken: false,
+                    survivors: Vec::new(),
+                });
+            fact.broken |= run > fact.run + 1;
+            if !fact.broken {
+                fact.earliest = fact.earliest.min(valid_from);
+                fact.run = run;
+            }
             if survives {
-                fact.1.push((position, valid_from));
+                fact.survivors.push((position, valid_from));
             }
         }
     }
-    for (earliest, survivors) in facts.into_values() {
-        for (position, own) in survivors {
+    for fact in facts.into_values() {
+        for (position, own) in fact.survivors {
             // `earliest` is a minimum over a set holding `own`, so inequality is the one case
             // with an earlier date to carry.
-            if earliest != own {
-                plan.carries.push((position, earliest));
+            if fact.earliest != own {
+                plan.carries.push((position, fact.earliest));
             }
         }
     }
@@ -559,25 +559,26 @@ fn plan_derived_prune(
 }
 
 /// What [`Store::measure_derived_duplication`] found: how many rows carry a covered derived-
-/// index key, and how many DISTINCT keys those rows name - the read-only measurement `rigger
+/// index key, and how many of them a compaction keeps - the read-only measurement `rigger
 /// validate`'s bloat advisory (spec 68) warns from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DerivedDuplication {
     /// Rows in scope carrying a covered, non-null key.
     pub rows: usize,
-    /// Distinct `(stream, key)` pairs those rows name.
-    pub distinct_keys: usize,
+    /// Of those, the rows `rigger reset --derived` keeps: the latest recording of each key of
+    /// each identity's latest generation.
+    pub kept: usize,
 }
 
 impl DerivedDuplication {
-    /// Rows per distinct key: `1.0` when there is no duplication (every key recorded once, or
-    /// no covered rows at all - `distinct_keys == 0` is guarded rather than divided by, since
-    /// "nothing to measure" is not evidence of bloat), rising with the log's redundancy.
+    /// Rows per kept row: `1.0` when a compaction would shed nothing (or there are no covered
+    /// rows at all - `kept == 0` is guarded rather than divided by, since "nothing to measure" is
+    /// not evidence of bloat), rising with the log's redundancy.
     pub fn factor(&self) -> f64 {
-        if self.distinct_keys == 0 {
+        if self.kept == 0 {
             1.0
         } else {
-            self.rows as f64 / self.distinct_keys as f64
+            self.rows as f64 / self.kept as f64
         }
     }
 }
@@ -1542,7 +1543,7 @@ mod tests {
     // --- Spec 68, VALIDATE ADVISORIES: measure_derived_duplication, the prune's read-only twin ---
 
     #[test]
-    fn measure_derived_duplication_reports_rows_vs_distinct_keys() {
+    fn measure_derived_duplication_reports_rows_vs_the_rows_a_compaction_keeps() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
         let path = path.to_str().unwrap();
@@ -1551,10 +1552,7 @@ mod tests {
             .measure_derived_duplication("", &crate::ingest::derived_index_identity())
             .unwrap();
         assert_eq!(measured.rows, 4, "four recordings of the one covered key");
-        assert_eq!(
-            measured.distinct_keys, 1,
-            "all four share the same replay key"
-        );
+        assert_eq!(measured.kept, 1, "all four share the same replay key");
         assert_eq!(measured.factor(), 4.0);
     }
 
@@ -1607,7 +1605,7 @@ mod tests {
             .measure_derived_duplication("proj-a/", &crate::ingest::derived_index_identity())
             .unwrap();
         assert_eq!(measured.rows, 2, "only proj-a's rows are in scope");
-        assert_eq!(measured.distinct_keys, 1);
+        assert_eq!(measured.kept, 1);
     }
 
     #[test]
@@ -1634,7 +1632,7 @@ mod tests {
             .measure_derived_duplication("", &crate::ingest::derived_index_identity())
             .unwrap();
         assert_eq!(measured.rows, 2);
-        assert_eq!(measured.distinct_keys, 2);
+        assert_eq!(measured.kept, 2);
         assert_eq!(measured.factor(), 1.0);
     }
 
@@ -1669,7 +1667,7 @@ mod tests {
             .unwrap();
         assert_eq!(measured.rows, 2, "one row of each of the two covered types");
         assert_eq!(
-            measured.distinct_keys, 2,
+            measured.kept, 2,
             "the same key under two DIFFERENT types is two distinct subjects to the per-type \
              prune, not one - each type's own DELETE never sees the other type's row"
         );
@@ -1750,7 +1748,7 @@ mod tests {
             .measure_derived_duplication("", &crate::ingest::derived_index_identity())
             .unwrap();
         assert_eq!(measured.rows, 0);
-        assert_eq!(measured.distinct_keys, 0);
+        assert_eq!(measured.kept, 0);
         assert_eq!(
             measured.factor(),
             1.0,

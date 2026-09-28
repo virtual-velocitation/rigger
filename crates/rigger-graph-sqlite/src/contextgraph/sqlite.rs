@@ -49,6 +49,25 @@ CREATE TABLE IF NOT EXISTS pending_proof (
   evidence TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pending_proof_name ON pending_proof(project, name);
+CREATE TABLE IF NOT EXISTS generations (
+  project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL, prior TEXT,
+  PRIMARY KEY (project, identity)
+);
+CREATE TABLE IF NOT EXISTS node_assertions (
+  project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL, node_id TEXT NOT NULL,
+  kind TEXT NOT NULL, attrs TEXT,
+  PRIMARY KEY (project, identity, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_node_assertions_node ON node_assertions(project, node_id);
+CREATE TABLE IF NOT EXISTS edge_assertions (
+  project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL, edge_id INTEGER NOT NULL,
+  PRIMARY KEY (project, identity, edge_id)
+);
+CREATE TABLE IF NOT EXISTS retired_nodes (
+  id TEXT NOT NULL, kind TEXT NOT NULL, attrs TEXT,
+  project TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (id, project)
+);
 ";
 
 /// Projector is the SQLite-backed Projection.
@@ -451,7 +470,9 @@ impl Projector {
         let conn = self.conn.lock().unwrap();
         let n: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM nodes n
+                "SELECT COUNT(*) FROM (SELECT id, kind, project FROM nodes
+                                       UNION ALL
+                                       SELECT id, kind, project FROM retired_nodes) n
                   WHERE n.kind = ?1 AND n.project = ?2
                     AND NOT EXISTS (
                       SELECT 1 FROM edges e
@@ -1003,7 +1024,162 @@ fn row_to_edge(r: &rusqlite::Row) -> rusqlite::Result<Edge> {
     })
 }
 
+/// Who asserts the facts one event folds: the `<prefix>/<file>` identity and content generation
+/// of a derived-index event ([`rigger_domain::ingest::derived_generation`]), or, for every other event, the log
+/// itself - an assertion no later generation can retract (both fields empty).
+struct Asserter<'e> {
+    identity: &'e str,
+    generation: &'e str,
+}
+
+impl<'e> Asserter<'e> {
+    fn of(e: &'e Event) -> Self {
+        let (identity, generation) =
+            rigger_domain::ingest::derived_generation(e).unwrap_or(("", ""));
+        Asserter {
+            identity,
+            generation,
+        }
+    }
+}
+
+/// Fold one event under the GENERATION RULE (spec 101, [`rigger_domain::ingest::derived_generation`]): when the
+/// event opens a newer generation of its identity, the prior generation's design links are
+/// retired BEFORE it folds (each one the newer generation asserts again is revived in place by
+/// [`assert_link`]), and every node the prior generation asserted that nothing live still holds is
+/// retired AFTER it folds ([`retire_unheld_nodes`]) - after, because the event's own arm is what
+/// retires the code half's prior edges (its `fresh` head) and re-asserts the nodes it keeps.
 fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
+    let by = Asserter::of(e);
+    let prior = advance_generation(tx, &by, to_nanos(e.valid_from), project)?;
+    fold_event(tx, e, project, &by)?;
+    match prior {
+        Some(prior) => retire_unheld_nodes(tx, by.identity, &prior, project),
+        None => Ok(()),
+    }
+}
+
+/// Record `by`'s generation as its identity's current one, answering the PRIOR generation when
+/// this one supersedes it (`None` on the identity's first generation, on a re-recording of the
+/// current one, and for an event outside the rule). On a supersession the prior generation's live
+/// design links are retired at `at`, and assertions of any generation older than the prior one
+/// are dropped: the prior generation's are kept, because they are what [`assert_link`] revives
+/// from and what [`retire_unheld_nodes`] sweeps.
+fn advance_generation(
+    tx: &Transaction,
+    by: &Asserter,
+    at: i64,
+    project: &str,
+) -> Result<Option<String>, Error> {
+    if by.identity.is_empty() {
+        return Ok(None);
+    }
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT generation FROM generations WHERE project = ?1 AND identity = ?2",
+            params![project, by.identity],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(be)?;
+    let Some(prior) = current else {
+        tx.execute(
+            "INSERT INTO generations (project, identity, generation) VALUES (?1, ?2, ?3)",
+            params![project, by.identity, by.generation],
+        )
+        .map_err(be)?;
+        return Ok(None);
+    };
+    if prior == by.generation {
+        return Ok(None);
+    }
+    for table in ["node_assertions", "edge_assertions"] {
+        tx.execute(
+            &format!(
+                "DELETE FROM {table} WHERE project = ?1 AND identity = ?2 AND generation != ?3"
+            ),
+            params![project, by.identity, prior],
+        )
+        .map_err(be)?;
+    }
+    tx.execute(
+        "UPDATE edges SET valid_to = ?1
+          WHERE valid_to IS NULL AND project = ?2
+            AND id IN (SELECT edge_id FROM edge_assertions
+                        WHERE project = ?2 AND identity = ?3 AND generation = ?4)",
+        params![at, project, by.identity, prior],
+    )
+    .map_err(be)?;
+    tx.execute(
+        "UPDATE generations SET generation = ?3, prior = ?4 WHERE project = ?1 AND identity = ?2",
+        params![project, by.identity, by.generation, prior],
+    )
+    .map_err(be)?;
+    Ok(Some(prior))
+}
+
+/// Settle every node the `prior` generation of `identity` asserted and the newer one has not (yet)
+/// asserted again. A node nothing holds any more - no live generation of any identity asserts it,
+/// no event outside the rule asserted it, and no live edge touches it - is RETIRED: never deleted,
+/// it moves to `retired_nodes` with its kind and attrs, and [`ensure_node`] restores it the moment
+/// anything asserts it again, so what other folds recorded on it (a test file's proof) comes back
+/// with it. A node something still holds keeps only what its live assertions say
+/// ([`retract_assertion`]).
+fn retire_unheld_nodes(
+    tx: &Transaction,
+    identity: &str,
+    prior: &str,
+    project: &str,
+) -> Result<(), Error> {
+    let superseded: Vec<(String, Option<String>, bool)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT a.node_id, a.attrs,
+                        EXISTS (
+                          SELECT 1 FROM edges e
+                           WHERE e.valid_to IS NULL AND e.project = ?1
+                             AND (e.from_id = a.node_id OR e.to_id = a.node_id))
+                        OR EXISTS (
+                          SELECT 1 FROM node_assertions b
+                            LEFT JOIN generations g
+                              ON g.project = b.project AND g.identity = b.identity
+                           WHERE b.project = ?1 AND b.node_id = a.node_id
+                             AND (b.identity = '' OR b.generation = g.generation))
+                   FROM node_assertions a
+                  WHERE a.project = ?1 AND a.identity = ?2 AND a.generation = ?3
+                  ORDER BY a.node_id",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, identity, prior], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+        rows
+    };
+    for (id, attrs, held) in &superseded {
+        if *held {
+            retract_assertion(tx, id, attrs.as_deref(), project)?;
+            continue;
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO retired_nodes (id, kind, attrs, project)
+             SELECT id, kind, attrs, project FROM nodes WHERE id = ?1 AND project = ?2",
+            params![id, project],
+        )
+        .map_err(be)?;
+        tx.execute(
+            "DELETE FROM nodes WHERE id = ?1 AND project = ?2",
+            params![id, project],
+        )
+        .map_err(be)?;
+    }
+    Ok(())
+}
+
+fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Result<(), Error> {
     // The edge's bi-temporal valid-time is when the fact became true (the event's
     // caller-supplied valid_from), not the ingest time.
     let at = to_nanos(e.valid_from);
@@ -1012,6 +1188,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             let d: super::DecisionMade = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(
                 tx,
+                by,
                 &d.id,
                 KIND_DECISION,
                 &[("summary", &d.summary)],
@@ -1024,7 +1201,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // in the log for metrics and the run-tree, which read events, not this projection.
             for path in &d.governs {
                 let canonical = resolve_in_tx(tx, path);
-                ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
+                ensure_node(tx, by, &canonical, KIND_ARTIFACT, &[], project)?;
                 add_edge(
                     tx,
                     &d.id,
@@ -1037,7 +1214,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 )?;
             }
             if !d.supersedes.is_empty() {
-                ensure_node(tx, &d.supersedes, KIND_DECISION, &[], project)?;
+                ensure_node(tx, by, &d.supersedes, KIND_DECISION, &[], project)?;
                 add_edge(
                     tx,
                     &d.id,
@@ -1139,10 +1316,17 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
         }
         TYPE_LESSON_LEARNED => {
             let l: super::LessonLearned = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(tx, &l.id, KIND_LESSON, &[("summary", &l.summary)], project)?;
+            ensure_node(
+                tx,
+                by,
+                &l.id,
+                KIND_LESSON,
+                &[("summary", &l.summary)],
+                project,
+            )?;
             for path in &l.about {
                 let canonical = resolve_in_tx(tx, path);
-                ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
+                ensure_node(tx, by, &canonical, KIND_ARTIFACT, &[], project)?;
                 add_edge(
                     tx,
                     &l.id,
@@ -1169,6 +1353,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             let f: super::ReviewFinding = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(
                 tx,
+                by,
                 &f.id,
                 KIND_FINDING,
                 &[("summary", &f.summary), ("by", &f.by), ("unit", &f.unit)],
@@ -1176,7 +1361,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             )?;
             for path in &f.about {
                 let canonical = resolve_in_tx(tx, path);
-                ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
+                ensure_node(tx, by, &canonical, KIND_ARTIFACT, &[], project)?;
                 add_edge(
                     tx,
                     &f.id,
@@ -1216,11 +1401,12 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             if c.partial {
                 file_attrs.push(("partial", "true"));
             }
-            ensure_node(tx, &file, KIND_FILE, &file_attrs, project)?;
+            ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
             let entity = code_entity_id(&file, &c.name);
             let line = c.line.to_string();
             ensure_node(
                 tx,
+                by,
                 &entity,
                 KIND_CODE_ENTITY,
                 &[
@@ -1337,14 +1523,14 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             if r.partial {
                 file_attrs.push(("partial", "true"));
             }
-            ensure_node(tx, &file, KIND_FILE, &file_attrs, project)?;
+            ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
             let target = code_entity_id(&file, &r.name);
             // REFERENCES (spec 29a criterion 2): the file references this symbol, at the confidence
             // tier its resolution earns. The tier is read BEFORE `ensure_node` creates the bare
             // target, so a bare target this reference is about to create never miscounts as a
             // definition. The definition arm's convergent upgrade covers the reverse fold order.
             let tier = reference_tier(tx, &target, &r.name, project)?;
-            ensure_node(tx, &target, KIND_CODE_ENTITY, &[], project)?;
+            ensure_node(tx, by, &target, KIND_CODE_ENTITY, &[], project)?;
             add_edge(
                 tx,
                 &file,
@@ -1368,7 +1554,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // attrs, and a reverse fold order still never leaves the CALLS edge dangling.
             if let Some(caller) = &r.caller {
                 let caller_id = code_entity_id(&file, caller);
-                ensure_node(tx, &caller_id, KIND_CODE_ENTITY, &[], project)?;
+                ensure_node(tx, by, &caller_id, KIND_CODE_ENTITY, &[], project)?;
                 add_edge(
                     tx, &caller_id, &target, REL_CALLS, at, e.position, project, tier,
                 )?;
@@ -1404,6 +1590,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             let id = resolve_in_tx(tx, &c.id);
             ensure_node(
                 tx,
+                by,
                 &id,
                 kind,
                 &[("title", &c.title), ("doc", &c.doc)],
@@ -1456,9 +1643,9 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             };
             let from = resolve_in_tx(tx, &l.from);
             let to = resolve_in_tx(tx, &l.to);
-            ensure_node(tx, &from, KIND_ARTIFACT, &[], project)?;
-            ensure_node(tx, &to, KIND_ARTIFACT, &[], project)?;
-            add_edge(tx, &from, &to, rel, at, e.position, project, TIER_EXTRACTED)?;
+            ensure_node(tx, by, &from, KIND_ARTIFACT, &[], project)?;
+            ensure_node(tx, by, &to, KIND_ARTIFACT, &[], project)?;
+            assert_link(tx, by, &from, &to, rel, at, e.position, project)?;
         }
         TYPE_SPAWN_RESULT => {
             // Disposition-expiry (spec 25, criterion 1 - the DISCARD trigger): an
@@ -1534,6 +1721,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // Create the node and mark it unresolved for later merge (never drop).
             ensure_node(
                 tx,
+                by,
                 &a.mention,
                 KIND_ARTIFACT,
                 &[("unresolved", "true")],
@@ -1605,7 +1793,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // deterministic label is computed). A bare ensure keeps any attrs an earlier member of
             // the same community already wrote until this fold overwrites them with the recomputed
             // label over the now-larger live membership.
-            ensure_node(tx, &c.community, KIND_COMMUNITY, &[], project)?;
+            ensure_node(tx, by, &c.community, KIND_COMMUNITY, &[], project)?;
             // The membership edge, a DERIVED grouping (TIER_INFERRED - one confidence step below the
             // explicit structural edges detection runs over). Upsert-live like every fold (spec 40).
             add_edge(
@@ -1727,6 +1915,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // attrs blob is a sorted-key BTreeMap render (byte-stable across folds and rebuilds).
             ensure_node(
                 tx,
+                by,
                 &c.concept,
                 KIND_CONCEPT,
                 &[
@@ -1746,7 +1935,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // attrs) so the edge never dangles if the events are replayed out of the pass's order.
             // Upsert-live like every fold (spec 40). ALWAYS compiled, mirroring the community arm.
             let r: super::ConceptRealized = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(tx, &r.concept, KIND_CONCEPT, &[], project)?;
+            ensure_node(tx, by, &r.concept, KIND_CONCEPT, &[], project)?;
             add_edge(
                 tx,
                 &r.node,
@@ -2556,11 +2745,26 @@ fn reconcile_pending_proof(
 
 fn ensure_node(
     tx: &Transaction,
+    by: &Asserter,
     id: &str,
     kind: &str,
     attrs: &[(&str, &str)],
     project: &str,
 ) -> Result<(), Error> {
+    // A node a superseded generation left unheld was RETIRED, not deleted
+    // ([`retire_unheld_nodes`]): asserting it again restores the row as it was, before the upsert
+    // below merges this assertion into it.
+    tx.execute(
+        "INSERT OR IGNORE INTO nodes (id, kind, attrs, project)
+         SELECT id, kind, attrs, project FROM retired_nodes WHERE id = ?1 AND project = ?2",
+        params![id, project],
+    )
+    .map_err(be)?;
+    tx.execute(
+        "DELETE FROM retired_nodes WHERE id = ?1 AND project = ?2",
+        params![id, project],
+    )
+    .map_err(be)?;
     let attr_json: Option<String> = if attrs.is_empty() {
         None
     } else {
@@ -2627,7 +2831,7 @@ fn ensure_node(
                  ELSE json_patch(COALESCE(nodes.attrs, '{}'), excluded.attrs)
              END,
              kind = CASE
-                 WHEN nodes.kind = ?5 AND excluded.kind IN (?6, ?7, ?8, ?9, ?10)
+                 WHEN nodes.kind = ?5 AND excluded.kind IN (?6, ?7, ?8, ?9, ?10, ?11)
                      THEN excluded.kind
                  ELSE nodes.kind
              END",
@@ -2637,12 +2841,147 @@ fn ensure_node(
             attr_json,
             project,
             KIND_ARTIFACT,
-            KIND_FILE,
-            KIND_DESIGN_DOC,
-            KIND_ARCH_DECISION,
-            KIND_HANDBOOK_RULE,
-            KIND_RATIONALE,
+            PROMOTING_KINDS[0],
+            PROMOTING_KINDS[1],
+            PROMOTING_KINDS[2],
+            PROMOTING_KINDS[3],
+            PROMOTING_KINDS[4],
+            PROMOTING_KINDS[5],
         ],
+    )
+    .map_err(be)?;
+    record_assertion(tx, by, id, kind, attr_json.as_deref(), project)
+}
+
+/// The specific kinds that PROMOTE a bare [`KIND_ARTIFACT`] path node ([`ensure_node`]): each
+/// proves what the path is - a source file, a code entity in one (spec 101: a decision may name
+/// `<file>::<name>` before or after the definition folds), or a design-intent document.
+const PROMOTING_KINDS: [&str; 6] = [
+    KIND_FILE,
+    KIND_CODE_ENTITY,
+    KIND_DESIGN_DOC,
+    KIND_ARCH_DECISION,
+    KIND_HANDBOOK_RULE,
+    KIND_RATIONALE,
+];
+
+/// The kind a node takes from assertions of `kinds`, in order: the first one, promoted from
+/// [`KIND_ARTIFACT`] by the first [`PROMOTING_KINDS`] member after it - the rule [`ensure_node`]'s
+/// upsert applies one assertion at a time.
+fn settled_kind<'k>(kinds: impl IntoIterator<Item = &'k str>) -> Option<&'k str> {
+    kinds.into_iter().fold(None, |settled, k| match settled {
+        Some(KIND_ARTIFACT) if PROMOTING_KINDS.contains(&k) => Some(k),
+        None => Some(k),
+        kept => kept,
+    })
+}
+
+/// Record that `by` asserts node `id` as `kind` with `attrs` (spec 101): the node assertions are
+/// what the generation rule reads to know who still holds a node. Within one generation the
+/// assertions merge as the node does; an assertion of a NEWER generation of the same identity
+/// replaces the older one, and what only the older one said is retracted from the node
+/// ([`retract_assertion`]).
+fn record_assertion(
+    tx: &Transaction,
+    by: &Asserter,
+    id: &str,
+    kind: &str,
+    attrs: Option<&str>,
+    project: &str,
+) -> Result<(), Error> {
+    let recorded: Option<(String, String, Option<String>)> = tx
+        .query_row(
+            "SELECT generation, kind, attrs FROM node_assertions
+              WHERE project = ?1 AND identity = ?2 AND node_id = ?3",
+            params![project, by.identity, id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(be)?;
+    match recorded {
+        Some((generation, recorded_kind, _)) if generation == by.generation => {
+            let settled = settled_kind([recorded_kind.as_str(), kind]).unwrap_or(kind);
+            tx.execute(
+                "UPDATE node_assertions
+                    SET kind = ?4,
+                        attrs = CASE
+                            WHEN ?5 IS NULL THEN attrs
+                            ELSE json_patch(COALESCE(attrs, '{}'), ?5)
+                        END
+                  WHERE project = ?1 AND identity = ?2 AND node_id = ?3",
+                params![project, by.identity, id, settled, attrs],
+            )
+            .map_err(be)?;
+            Ok(())
+        }
+        recorded => {
+            tx.execute(
+                "INSERT INTO node_assertions (project, identity, generation, node_id, kind, attrs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (project, identity, node_id) DO UPDATE SET
+                     generation = excluded.generation, kind = excluded.kind,
+                     attrs = excluded.attrs",
+                params![project, by.identity, by.generation, id, kind, attrs],
+            )
+            .map_err(be)?;
+            match recorded {
+                Some((_, _, prior)) => retract_assertion(tx, id, prior.as_deref(), project),
+                None => Ok(()),
+            }
+        }
+    }
+}
+
+/// Retract from node `id` what a superseded assertion of it said and no LIVE assertion still says
+/// (spec 101): every attrs key of `retracted` that no live assertion carries is removed, and the
+/// node's kind settles on its live assertions ([`settled_kind`]). A key no assertion ever made - a
+/// test file's proof, an adjudicator's disposition mark - is another fold's record and stays. A
+/// node no live assertion holds keeps its kind: only an edge holds it, and the edge's own fold
+/// asserted it.
+fn retract_assertion(
+    tx: &Transaction,
+    id: &str,
+    retracted: Option<&str>,
+    project: &str,
+) -> Result<(), Error> {
+    let live: Vec<(String, Option<String>)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT b.kind, b.attrs FROM node_assertions b
+                   LEFT JOIN generations g
+                     ON g.project = b.project AND g.identity = b.identity
+                  WHERE b.project = ?1 AND b.node_id = ?2
+                    AND (b.identity = '' OR b.generation = g.generation)
+                  ORDER BY b.rowid",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+        rows
+    };
+    let Some(kind) = settled_kind(live.iter().map(|(k, _)| k.as_str())) else {
+        return Ok(());
+    };
+    let keys = |attrs: Option<&str>| -> BTreeSet<String> {
+        attrs
+            .and_then(|a| serde_json::from_str::<BTreeMap<String, serde_json::Value>>(a).ok())
+            .map(|m| m.into_keys().collect())
+            .unwrap_or_default()
+    };
+    let held: BTreeSet<String> = live.iter().flat_map(|(_, a)| keys(a.as_deref())).collect();
+    for key in keys(retracted).difference(&held) {
+        tx.execute(
+            "UPDATE nodes SET attrs = json_remove(attrs, ?3) WHERE id = ?1 AND project = ?2",
+            params![id, project, format!("$.\"{key}\"")],
+        )
+        .map_err(be)?;
+    }
+    tx.execute(
+        "UPDATE nodes SET kind = ?3 WHERE id = ?1 AND project = ?2",
+        params![id, project, kind],
     )
     .map_err(be)?;
     Ok(())
@@ -2674,23 +3013,97 @@ fn add_edge(
     src: Position,
     project: &str,
     tier: &str,
-) -> Result<(), Error> {
-    let updated = tx
-        .execute(
+) -> Result<i64, Error> {
+    let live: Option<i64> = tx
+        .query_row(
             "UPDATE edges SET source = max(source, ?5), valid_from = min(valid_from, ?4)
              WHERE from_id = ?1 AND to_id = ?2 AND rel = ?3 AND tier = ?7 AND project = ?6
-               AND valid_to IS NULL",
+               AND valid_to IS NULL
+             RETURNING id",
             params![from, to, rel, at, src as i64, project, tier],
+            |r| r.get(0),
         )
+        .optional()
         .map_err(be)?;
-    if updated == 0 {
-        tx.execute(
-            "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
-            params![from, to, rel, at, src as i64, project, tier],
-        )
-        .map_err(be)?;
+    if let Some(id) = live {
+        return Ok(id);
     }
+    tx.execute(
+        "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+        params![from, to, rel, at, src as i64, project, tier],
+    )
+    .map_err(be)?;
+    Ok(tx.last_insert_rowid())
+}
+
+/// Assert a design link under the generation rule (spec 101): a link the identity's PRIOR
+/// generation asserted, retired when this generation opened ([`advance_generation`]), is REVIVED
+/// in place - the fact held without a break, so it keeps its earliest valid-time exactly as the
+/// upsert-live path keeps it - and every other link folds through [`add_edge`]. A link the prior
+/// generation did not assert is new, whatever an older generation once said: a generation that
+/// dropped it broke the run. The link is recorded as this generation's, which is what the next
+/// generation retires and revives from. An event outside the rule folds through [`add_edge`] alone.
+#[allow(clippy::too_many_arguments)]
+fn assert_link(
+    tx: &Transaction,
+    by: &Asserter,
+    from: &str,
+    to: &str,
+    rel: &str,
+    at: i64,
+    src: Position,
+    project: &str,
+) -> Result<(), Error> {
+    if by.identity.is_empty() {
+        add_edge(tx, from, to, rel, at, src, project, TIER_EXTRACTED)?;
+        return Ok(());
+    }
+    let revived: Option<i64> = tx
+        .query_row(
+            "UPDATE edges SET valid_to = NULL, source = max(source, ?5),
+                              valid_from = min(valid_from, ?4)
+              WHERE id = (
+                SELECT e.id FROM edges e
+                  JOIN edge_assertions a ON a.edge_id = e.id
+                  JOIN generations g
+                    ON g.project = a.project AND g.identity = a.identity
+                   AND a.generation = g.prior
+                 WHERE a.project = ?6 AND a.identity = ?8
+                   AND e.from_id = ?1 AND e.to_id = ?2 AND e.rel = ?3 AND e.tier = ?7
+                   AND e.valid_to IS NOT NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM edges l
+                      WHERE l.from_id = ?1 AND l.to_id = ?2 AND l.rel = ?3 AND l.tier = ?7
+                        AND l.project = ?6 AND l.valid_to IS NULL)
+                 ORDER BY e.id DESC
+                 LIMIT 1)
+             RETURNING id",
+            params![
+                from,
+                to,
+                rel,
+                at,
+                src as i64,
+                project,
+                TIER_EXTRACTED,
+                by.identity
+            ],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(be)?;
+    let id = match revived {
+        Some(id) => id,
+        None => add_edge(tx, from, to, rel, at, src, project, TIER_EXTRACTED)?,
+    };
+    tx.execute(
+        "INSERT INTO edge_assertions (project, identity, generation, edge_id)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (project, identity, edge_id) DO UPDATE SET generation = excluded.generation",
+        params![project, by.identity, by.generation, id],
+    )
+    .map_err(be)?;
     Ok(())
 }
 

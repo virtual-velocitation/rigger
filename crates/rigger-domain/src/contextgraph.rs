@@ -392,9 +392,12 @@ pub const TYPE_DOC_LINK_EXTRACTED: &str = "DocLinkExtracted";
 /// which. The CODE half (`CodeEntityExtracted` / `EdgeInferred`) carries a `fresh` batch head that
 /// retires the file's prior structural edges before the batch folds its own (spec 29a criterion
 /// 3), so a re-extraction REPLACES: the live edge's valid-time is the LATEST batch's. The DESIGN
-/// half (`DocLinkExtracted` / `DocConceptExtracted`) sets no `fresh` head at all, so a
-/// re-recording re-asserts an existing edge through the upsert-live path, which keeps the
-/// EARLIEST valid-time (spec 40: the fact has held since it first became true).
+/// half (`DocLinkExtracted` / `DocConceptExtracted`) RE-ASSERTS: a newer generation of the file
+/// (see `ingest::derived_generation`) retires the links the prior generation asserted, and each link
+/// the newer generation asserts again is revived in place, keeping the EARLIEST valid-time (spec
+/// 40: the fact has held since it first became true). A link a generation DROPPED and a later one
+/// asserts again is a new fact from its return: only an unbroken run of generations carries a
+/// date.
 ///
 /// It lives HERE, beside the type constants and the fold that implements it, because it is a FACT
 /// ABOUT THE FOLD. It is published because log MAINTENANCE has to respect it: a compaction that

@@ -94,6 +94,23 @@ pub fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
     Some((&key[identity], &key[generation]))
 }
 
+/// The `(<prefix>/<file> identity, content generation)` a derived-index event records, cut from
+/// its replay key by the one key parser ([`derived_key_parts`]); `None` for an
+/// event of any other type and for one whose key is absent or not that shape.
+///
+/// This is the fold's GENERATION RULE (spec 101): the graph models the project's CURRENT state, so
+/// when a newer generation of an identity folds, every fact the prior generation asserted for that
+/// file and the newer one does not re-assert is retired, and a node no live generation asserts,
+/// no other event asserted and no live edge touches is retired with it. An event this answers
+/// `None` for is outside the rule and folds as it always has (the fail-safe direction: nothing is
+/// retired on a generation nobody can name).
+pub fn derived_generation(e: &Event) -> Option<(&str, &str)> {
+    if !is_derived_index_type(&e.type_) {
+        return None;
+    }
+    derived_key_parts(e.meta.get(META_REPLAY_KEY)?)
+}
+
 /// The derived index's CONTENT-IDENTITY POLICY as one value: the metadata key a derived event
 /// carries its content key under, the four types that carry content identity, and WHICH of those
 /// types re-assert a fact in place rather than superseding the subject's prior recording.
@@ -145,9 +162,8 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 ///    REVERTED to a generation the file has since moved past differs from its latest recorded
 ///    batch, so it must re-emit. An ever-recorded key set would match the old records, re-emit
 ///    nothing, and strand the graph on a superseded version of that file forever. Whether the
-///    re-emitted batch then RETIRES the newer structural edges is the FOLD's business, not this
-///    predicate's: only the code half's `fresh` head drives `supersede_file_edges`, and the design
-///    half sets no `fresh` head at all.
+///    re-emitted batch then RETIRES the newer generation's facts is the FOLD's business, not this
+///    predicate's ([`derived_generation`]).
 ///
 /// This is project-scoped ON PURPOSE: derived index facts are facts about the project's files, not
 /// about a run, so a NEW run inherits them and an unchanged file appends nothing on every

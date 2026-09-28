@@ -495,9 +495,9 @@ fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
     ))
 }
 
-/// The derived-index duplication FACTOR (rows per distinct key) above which `rigger validate`
-/// warns of log bloat (Design: "derived-type duplication factor above threshold"). `1.5` means
-/// at least half again as many recordings as distinct keys survive in the log - a real
+/// The derived-index duplication FACTOR (rows per row a compaction keeps) above which `rigger
+/// validate` warns of log bloat (Design: "derived-type duplication factor above threshold"). `1.5`
+/// means at least half again as many recordings as a compaction would keep sit in the log - a real
 /// redundancy signal, not the occasional legitimate re-recording (a revert, a branch switch) a
 /// small, healthy log can carry without ever being worth an operator's attention.
 const BLOAT_DUPLICATION_THRESHOLD: f64 = 1.5;
@@ -512,9 +512,9 @@ fn bloat_advisory(measured: &rigger::eventstore::sqlite::DerivedDuplication) -> 
         return None;
     }
     Some(format!(
-        "warning: the event log's derived index is duplicated {factor:.1}x ({} row(s) recording \
-         only {} distinct key(s)); run `rigger reset --derived` to compact it.",
-        measured.rows, measured.distinct_keys
+        "warning: the event log's derived index is duplicated {factor:.1}x ({} row(s), of which a \
+         compaction keeps only {}); run `rigger reset --derived` to compact it.",
+        measured.rows, measured.kept
     ))
 }
 
@@ -2066,14 +2066,14 @@ mod tests {
         // Exactly at the threshold: not yet a warning-worthy signal.
         let at_threshold = rigger::eventstore::sqlite::DerivedDuplication {
             rows: 3,
-            distinct_keys: 2, // factor 1.5 == BLOAT_DUPLICATION_THRESHOLD
+            kept: 2, // factor 1.5 == BLOAT_DUPLICATION_THRESHOLD
         };
         assert_eq!(bloat_advisory(&at_threshold), None);
 
         // Clearly above: a named warning carrying the measured factor and the fix.
         let above_threshold = rigger::eventstore::sqlite::DerivedDuplication {
             rows: 6,
-            distinct_keys: 1, // factor 6.0
+            kept: 1, // factor 6.0
         };
         let advisory = bloat_advisory(&above_threshold).expect("must warn above threshold");
         assert!(advisory.starts_with("warning:"), "advisory: {advisory}");
