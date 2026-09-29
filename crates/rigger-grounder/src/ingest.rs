@@ -15,7 +15,7 @@
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
 //! no-op there.
 
-use crate::contextgraph::{fold_loss_clause, Fold, Projection};
+use crate::contextgraph::{fold_loss_clause, wired, Fold, Projection};
 use crate::eventstore::{
     Appended, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision, Subscription,
     TypeSelection,
@@ -61,17 +61,13 @@ pub fn append_and_fold_batch(
         });
     }
     let appended = store.append(stream, ExpectedRevision::Any, events)?;
-    fold_appended(graph, stream, events, appended)
+    let fold = Fold::of_batch(|| wired(graph), &placed(stream, events, &appended)?);
+    Ok(AppendedAndFolded { appended, fold })
 }
 
-/// Fold into `graph` exactly the events `appended` reports the store placed, each stamped with the
-/// position the store issued for it (see [`append_and_fold_batch`]), beside that report.
-fn fold_appended(
-    graph: Option<&dyn Projection>,
-    stream: &str,
-    events: &[Event],
-    appended: Appended,
-) -> Result<AppendedAndFolded, crate::eventstore::Error> {
+/// Exactly the events `appended` reports the store placed, each stamped with the position the
+/// store issued for it (see [`append_and_fold_batch`]): what a fold of that append folds.
+fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Event>, Error> {
     // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
     // the report against the batch - so a report of a different length is not a smaller
     // fold, it is a MISALIGNED one: every slot after the discrepancy names a different
@@ -79,14 +75,14 @@ fn fold_appended(
     // payload. `placed()` cannot see that (an index it cannot answer just yields nothing),
     // so it is checked here, once, where the zip happens.
     if appended.handed() != events.len() {
-        return Err(crate::eventstore::Error::Backend(format!(
+        return Err(Error::Backend(format!(
             "event store reported {} placement(s) for an append of {} event(s) to \
              {stream:?}: the report cannot name what was written",
             appended.handed(),
             events.len()
         )));
     }
-    let positioned: Vec<Event> = appended
+    Ok(appended
         .placed()
         .filter_map(|(i, position)| {
             events.get(i).map(|e| {
@@ -95,38 +91,40 @@ fn fold_appended(
                 e
             })
         })
-        .collect();
-    Ok(AppendedAndFolded {
-        appended,
-        fold: Fold::of_batch(graph, &positioned),
-    })
+        .collect())
 }
 
 /// An [`EventStore`] that folds every event appended through it into the context graph, so a writer
 /// that knows only the store port - a run's mint, a parked spawn, a recorded liveness fault, an
 /// operator's resume - still leaves no event the graph's applied ledger misses. The append keeps
-/// the caller's own expectation; the fold is [`append_and_fold_batch`]'s, at the positions the
-/// store issued. A fold into a wired graph that it could not make is said through `log`, never
-/// swallowed: the events are on the log whatever became of the fold. Wrapped with no graph (an
-/// offline replay's isolated re-drive) it folds nothing by design and has nothing to say. Every
-/// read passes through untouched.
-pub struct FoldingStore<'a> {
+/// the caller's own expectation and goes to the log FIRST; only then is the graph opened, through
+/// the `graph` opener the store was wired with (spec 101: a verb whose job is to append never opens
+/// `graph.db` before its append), and the append folded at the positions the store issued. A fold
+/// it could not make - the graph could not be had, owes its rebuild, or refused the write - is said
+/// through `log`, never swallowed: the events are on the log whatever became of the fold. Wired
+/// with no opener (an offline replay's isolated re-drive) it folds nothing by design and has
+/// nothing to say. Every read passes through untouched.
+pub struct FoldingStore<'a, O> {
     store: &'a dyn EventStore,
-    graph: Option<&'a dyn Projection>,
+    graph: Option<O>,
     log: &'a (dyn Fn(&str) + Sync),
 }
 
-impl<'a> FoldingStore<'a> {
+impl<'a, O> FoldingStore<'a, O> {
     pub fn new(
         store: &'a dyn EventStore,
-        graph: Option<&'a dyn Projection>,
+        graph: Option<O>,
         log: &'a (dyn Fn(&str) + Sync),
     ) -> Self {
         Self { store, graph, log }
     }
 }
 
-impl EventStore for FoldingStore<'_> {
+impl<'g, O, G> EventStore for FoldingStore<'_, O>
+where
+    O: Fn() -> Result<G, crate::contextgraph::Error> + Send + Sync,
+    G: std::ops::Deref<Target = dyn Projection + 'g>,
+{
     fn append(
         &self,
         stream: &str,
@@ -134,15 +132,18 @@ impl EventStore for FoldingStore<'_> {
         events: &[Event],
     ) -> Result<Appended, Error> {
         let appended = self.store.append(stream, expected, events)?;
-        let done = fold_appended(self.graph, stream, events, appended)?;
-        if let (Some(_), Fold::NotFolded(_)) = (self.graph, &done.fold) {
-            (self.log)(&format!(
-                "rigger: recorded {} run event(s){}",
-                events.len(),
-                fold_loss_clause(&done.fold)
-            ));
+        let placed = placed(stream, events, &appended)?;
+        if let Some(open) = &self.graph {
+            let fold = Fold::of_batch(open, &placed);
+            if let Fold::NotFolded(_) = fold {
+                (self.log)(&format!(
+                    "rigger: recorded {} run event(s){}",
+                    events.len(),
+                    fold_loss_clause(&fold)
+                ));
+            }
         }
-        Ok(done.appended)
+        Ok(appended)
     }
 
     fn read_stream(

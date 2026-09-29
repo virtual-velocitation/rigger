@@ -555,14 +555,17 @@ impl Fold {
         Self::settle(graph.and_then(|g| g.apply(event, FoldAccess(()))))
     }
 
-    /// Fold `events` into `graph` in one transaction, or say why they were not folded - with no
-    /// graph wired, that there is none. No events is nothing to fold, so it is folded without
-    /// asking the graph.
-    pub fn of_batch(graph: Option<&dyn Projection>, events: &[Event]) -> Self {
+    /// Fold `events` in one transaction into the graph `graph` yields, or say why they were not
+    /// folded - the graph could not be had, or refused them. No events is nothing to fold, so it is
+    /// folded without opening the graph.
+    pub fn of_batch<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+        graph: impl FnOnce() -> Result<G, Error>,
+        events: &[Event],
+    ) -> Self {
         if events.is_empty() {
             return Fold::Folded;
         }
-        Self::settle(wired(graph).and_then(|g| g.apply_batch(events, FoldAccess(()))))
+        Self::settle(graph().and_then(|g| g.apply_batch(events, FoldAccess(()))))
     }
 
     fn settle(folded: Result<(), Error>) -> Self {
@@ -1128,8 +1131,8 @@ mod locate_default {
 #[cfg(test)]
 mod fold_outcome {
     use super::{
-        fold_clause, fold_loss_clause, rebuild_owed_refusal, Error, Fold, FoldAccess, Projection,
-        REBUILD_OWED,
+        fold_clause, fold_loss_clause, rebuild_owed_refusal, wired, Error, Fold, FoldAccess,
+        Projection, REBUILD_OWED,
     };
     use crate::eventstore::Event;
     use crate::test_support::MinimalProjection;
@@ -1166,16 +1169,26 @@ mod fold_outcome {
     #[test]
     fn no_events_are_folded_without_asking_the_graph_or_needing_one() {
         let recording = Recording::default();
-        assert_eq!(Fold::of_batch(Some(&recording), &[]), Fold::Folded);
+        assert_eq!(
+            Fold::of_batch(|| wired(Some(&recording)), &[]),
+            Fold::Folded
+        );
         assert_eq!(*recording.0.lock().unwrap(), Vec::<u64>::new());
-        assert_eq!(Fold::of_batch(Some(&Refusing), &[]), Fold::Folded);
-        assert_eq!(Fold::of_batch(None, &[]), Fold::Folded);
+        assert_eq!(Fold::of_batch(|| wired(Some(&Refusing)), &[]), Fold::Folded);
+        assert_eq!(Fold::of_batch(|| wired(None), &[]), Fold::Folded);
+        assert_eq!(
+            Fold::of_batch(
+                || -> Result<&dyn Projection, Error> { panic!("no events open no graph") },
+                &[]
+            ),
+            Fold::Folded
+        );
     }
 
     #[test]
     fn a_batch_with_no_graph_wired_is_not_folded_and_says_so() {
         assert_eq!(
-            Fold::of_batch(None, &[at(1)]),
+            Fold::of_batch(|| wired(None), &[at(1)]),
             Fold::NotFolded("graph: no context graph is wired".to_string())
         );
     }
@@ -1184,12 +1197,12 @@ mod fold_outcome {
     fn a_batch_folds_every_event_in_order_or_reports_the_graphs_refusal() {
         let recording = Recording::default();
         assert_eq!(
-            Fold::of_batch(Some(&recording), &[at(3), at(5)]),
+            Fold::of_batch(|| wired(Some(&recording)), &[at(3), at(5)]),
             Fold::Folded
         );
         assert_eq!(*recording.0.lock().unwrap(), vec![3, 5]);
         assert_eq!(
-            Fold::of_batch(Some(&Refusing), &[at(1)]),
+            Fold::of_batch(|| wired(Some(&Refusing)), &[at(1)]),
             Fold::NotFolded("graph: refused".to_string())
         );
     }

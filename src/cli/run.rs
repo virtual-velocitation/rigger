@@ -388,8 +388,9 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     if !run_id.is_empty() {
         ev = ev.with_meta(runscope::META_RUN_ID, &run_id);
     }
-    let graph = loc.graph()?;
-    rigger::ingest::FoldingStore::new(&store, Some(graph.as_ref()), &stderr_line).append(
+    // The resume goes on the log first; `graph.db` is opened only after (spec 101), so a graph
+    // that cannot be had costs the operator's recovery verb only the fold, which it says.
+    rigger::ingest::FoldingStore::new(&store, Some(|| loc.graph()), &stderr_line).append(
         conductor::STREAM,
         ExpectedRevision::Any,
         std::slice::from_ref(&ev),
@@ -534,7 +535,11 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // through the same store). Opened before any append, so a graph that owes its rebuild refuses
     // the step before it writes anything the graph would miss.
     let graph = open_graph(&db_path("graph.db"), &project_identity(), "step")?;
-    let folding = rigger::ingest::FoldingStore::new(&store, Some(&graph), &stderr_line);
+    let folding = rigger::ingest::FoldingStore::new(
+        &store,
+        Some(|| contextgraph::wired(Some(&graph))),
+        &stderr_line,
+    );
 
     // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
     // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
@@ -1467,7 +1472,11 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
     fresh_run_if_requested(
         parsed,
-        &rigger::ingest::FoldingStore::new(&store, Some(&graph), &stderr_line),
+        &rigger::ingest::FoldingStore::new(
+            &store,
+            Some(|| contextgraph::wired(Some(&graph))),
+            &stderr_line,
+        ),
         &criteria,
         false,
         &base_tip,
@@ -1698,7 +1707,11 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
     fresh_run_if_requested(
         parsed,
-        &rigger::ingest::FoldingStore::new(&store, Some(&graph), &stderr_line),
+        &rigger::ingest::FoldingStore::new(
+            &store,
+            Some(|| contextgraph::wired(Some(&graph))),
+            &stderr_line,
+        ),
         &criteria,
         true,
         &base_tip,

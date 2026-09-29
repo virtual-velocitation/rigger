@@ -1464,7 +1464,17 @@ pub struct Deps<'a> {
     pub log: &'a (dyn Fn(&str) + Sync),
 }
 
-impl Deps<'_> {
+impl<'a> Deps<'a> {
+    /// The store every event the run appends goes through: [`Deps::store`], folding each append
+    /// into [`Deps::graph`] after it is on the log and saying through [`Deps::log`] a fold it could
+    /// not make - the one folding store every other writer of a verb uses too.
+    fn folding(&self) -> impl EventStore + 'a {
+        crate::ingest::FoldingStore::new(
+            self.store,
+            self.graph.map(|g| move || contextgraph::wired(Some(g))),
+            self.log,
+        )
+    }
     /// Whether a step over these dependencies ingests the project into the graph: there is a
     /// graph to fold into, a repo to walk, and the `symbols` pass to extract with. The one
     /// condition both ingest paths check, and the one that decides whether a step seeds the
@@ -1565,10 +1575,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // `RunStarted`; a resume/idle/replay over the same criteria adopts the existing run
     // and appends nothing. The run id then rides every event this process emits. A minted
     // boundary is folded like every other event the run appends.
-    let run_id = crate::run_store::ensure_started(
-        &crate::ingest::FoldingStore::new(deps.store, deps.graph, deps.log),
-        &deps.criteria,
-    )?;
+    let run_id = crate::run_store::ensure_started(&deps.folding(), &deps.criteria)?;
 
     // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
     // crashed or re-run conductor skips work that already landed instead of
@@ -2866,10 +2873,11 @@ impl RunCtx<'_> {
         // it could not make is said through the injected log, never swallowed. A run wired to no
         // graph - an offline replay's isolated re-drive - folds nothing by design and has nothing
         // to say. Both are the one folding store's, which every other writer of a verb uses too.
-        Ok(
-            crate::ingest::FoldingStore::new(self.deps.store, self.deps.graph, self.deps.log)
-                .append(STREAM, crate::eventstore::ExpectedRevision::Any, &stamped)?,
-        )
+        Ok(self.deps.folding().append(
+            STREAM,
+            crate::eventstore::ExpectedRevision::Any,
+            &stamped,
+        )?)
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the

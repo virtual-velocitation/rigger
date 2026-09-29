@@ -4964,13 +4964,15 @@ mod tests {
             br#"{"id":"d","summary":"s","governs":[],"supersedes":""}"#.to_vec(),
         );
         decision.position = 1;
+        let graph = Projector::open(graph_db, "p").unwrap();
         assert_eq!(
             contextgraph::Fold::of_batch(
-                Some(&Projector::open(graph_db, "p").unwrap()),
+                || contextgraph::wired(Some(&graph)),
                 std::slice::from_ref(&decision)
             ),
             contextgraph::Fold::Folded
         );
+        drop(graph);
         assert_eq!(
             graph_rebuild_owed_note(graph_db, "p"),
             None,

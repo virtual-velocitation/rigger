@@ -3850,7 +3850,10 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         assert!(
             matches!(
-                crate::contextgraph::Fold::of_batch(Some(&p), &[good.clone(), poison]),
+                crate::contextgraph::Fold::of_batch(
+                    || crate::contextgraph::wired(Some(&p)),
+                    &[good.clone(), poison]
+                ),
                 crate::contextgraph::Fold::NotFolded(_)
             ),
             "a fold error must surface from apply_batch"
@@ -3901,7 +3904,10 @@ mod tests {
             "a fold that succeeds owes nothing"
         );
         assert!(matches!(
-            Fold::of_batch(Some(&p), &log[1..2]),
+            crate::contextgraph::Fold::of_batch(
+                || crate::contextgraph::wired(Some(&p)),
+                &log[1..2]
+            ),
             Fold::NotFolded(_)
         ));
         assert_eq!(
@@ -3910,7 +3916,7 @@ mod tests {
             "the failed fold marks the file owed"
         );
         assert_eq!(
-            Fold::of_batch(Some(&p), &log[2..]),
+            crate::contextgraph::Fold::of_batch(|| crate::contextgraph::wired(Some(&p)), &log[2..]),
             Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
             "a marked file refuses every later fold"
         );
@@ -4044,7 +4050,8 @@ mod tests {
         writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
 
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let folded = Fold::of_batch(Some(&p), &log[1..]);
+        let folded =
+            crate::contextgraph::Fold::of_batch(|| crate::contextgraph::wired(Some(&p)), &log[1..]);
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         writer.execute_batch("ROLLBACK;").unwrap();
         assert_eq!(

@@ -24,7 +24,7 @@ pub fn event_of(type_: &str, json: serde_json::Value) -> Event {
 /// seeding a graph a test then reads.
 pub fn folds(p: &dyn Projection, events: &[Event]) {
     assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(p), events),
+        rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events),
         rigger::contextgraph::Fold::Folded
     );
 }

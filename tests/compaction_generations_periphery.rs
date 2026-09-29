@@ -2329,7 +2329,7 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
         "a pre-rule graph.db owes a rebuild"
     );
     assert_eq!(
-        Fold::of_batch(Some(&graph), &log[3..]),
+        Fold::of_batch(|| rigger::contextgraph::wired(Some(&graph)), &log[3..]),
         Fold::NotFolded(format!("graph: {}", rigger::contextgraph::REBUILD_OWED)),
         "nothing folds incrementally into a pre-rule graph.db"
     );
@@ -4930,7 +4930,7 @@ fn a_failed_fold_into_an_in_memory_graph_marks_nothing_owed_and_the_next_batch_f
     let mut poison = Event::new("DecisionMade", b"{ not valid json".to_vec());
     poison.position = 1;
     let graph = Projector::open(":memory:", PROJECT).unwrap();
-    let failed = Fold::of_batch(Some(&graph), &[poison]);
+    let failed = Fold::of_batch(|| rigger::contextgraph::wired(Some(&graph)), &[poison]);
     assert!(
         matches!(&failed, Fold::NotFolded(why) if why.starts_with("graph: ")),
         "the failed fold is reported: {failed:?}"

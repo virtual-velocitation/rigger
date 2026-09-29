@@ -373,7 +373,10 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
         ..Default::default()
     };
     assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(&failing), &batch),
+        rigger::contextgraph::Fold::of_batch(
+            || rigger::contextgraph::wired(Some(&failing)),
+            &batch
+        ),
         rigger::contextgraph::Fold::NotFolded("graph: apply failed at position 2".to_string()),
         "an apply error must surface from the default apply_batch"
     );
@@ -521,7 +524,11 @@ fn a_folding_store_folds_what_it_appends_at_the_issued_positions_under_the_calle
     let cap = CapturingProjection::default();
     let lines = Mutex::new(Vec::<String>::new());
     let log = |line: &str| lines.lock().unwrap().push(line.to_string());
-    let folding = rigger::ingest::FoldingStore::new(&store, Some(&cap as &dyn Projection), &log);
+    let folding = rigger::ingest::FoldingStore::new(
+        &store,
+        Some(|| rigger::contextgraph::wired(Some(&cap))),
+        &log,
+    );
     let batch = [
         Event::new("A", b"a".to_vec()),
         Event::new("B", b"b".to_vec()),
@@ -584,10 +591,14 @@ fn a_folding_store_says_a_lost_fold_through_its_sink_and_a_graphless_one_stays_s
         Event::new("A", b"a".to_vec()),
         Event::new("B", b"b".to_vec()),
     ];
-    rigger::ingest::FoldingStore::new(&store, Some(&cap as &dyn Projection), &log)
-        .append("run", ExpectedRevision::Any, &batch)
-        .unwrap();
-    rigger::ingest::FoldingStore::new(&store, None, &log)
+    rigger::ingest::FoldingStore::new(
+        &store,
+        Some(|| rigger::contextgraph::wired(Some(&cap))),
+        &log,
+    )
+    .append("run", ExpectedRevision::Any, &batch)
+    .unwrap();
+    rigger::ingest::FoldingStore::new(&store, NO_GRAPH, &log)
         .append("run", ExpectedRevision::Any, &batch[..1])
         .unwrap();
     assert_eq!(
@@ -606,6 +617,58 @@ fn a_folding_store_says_a_lost_fold_through_its_sink_and_a_graphless_one_stays_s
     );
 }
 
+/// A folding store wired with no graph opener at all: an offline replay's isolated re-drive.
+const NO_GRAPH: Option<OpenGraph> = None;
+
+/// How a folding store opens its graph on demand.
+type OpenGraph = fn() -> Result<Box<dyn Projection>, rigger::contextgraph::Error>;
+
+/// Given a store wrapped to fold into a graph it opens on demand, when a caller appends, then the
+/// graph is opened only once the events are on the log - so a graph that cannot be had costs the
+/// append nothing but its fold, which is said with the reason.
+#[test]
+fn a_folding_store_opens_its_graph_only_after_the_append_is_on_the_log() {
+    let store = Store::open(":memory:").unwrap();
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let seen_at_open = Mutex::new(Vec::<usize>::new());
+    let open = || -> Result<Box<dyn Projection>, rigger::contextgraph::Error> {
+        seen_at_open.lock().unwrap().push(
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+        );
+        Err(rigger::contextgraph::Error(
+            "file is not a database".to_string(),
+        ))
+    };
+    let appended = rigger::ingest::FoldingStore::new(&store, Some(open), &log)
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[Event::new("A", b"a".to_vec())],
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            appended.placed().collect::<Vec<_>>(),
+            seen_at_open.lock().unwrap().clone(),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            vec![(0, 1)],
+            vec![1],
+            vec![
+                "rigger: recorded 1 run event(s); not folded into the context graph: graph: file \
+                 is not a database"
+                    .to_string()
+            ]
+        ),
+        "the event is on the log before the graph is opened, once, and the lost fold is said"
+    );
+}
+
 /// Given a store wrapped to fold, when a caller reads through it, then every read answers exactly
 /// what the wrapped store answers.
 #[test]
@@ -617,7 +680,7 @@ fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
         .collect();
     store.append("run", ExpectedRevision::Any, &events).unwrap();
     let log = |_: &str| {};
-    let folding = rigger::ingest::FoldingStore::new(&store, None, &log);
+    let folding = rigger::ingest::FoldingStore::new(&store, NO_GRAPH, &log);
     let ids = |es: Vec<Event>| es.into_iter().map(|e| e.position).collect::<Vec<_>>();
     let filter = rigger::eventstore::Filter::default();
     let first = |s: rigger::eventstore::Subscription| {
