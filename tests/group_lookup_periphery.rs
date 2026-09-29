@@ -145,6 +145,11 @@ mod ingest_sinks {
         rusqlite::Connection::open(common::cli::rigger_file(root, "events.db")).unwrap()
     }
 
+    /// Run `sql` against `root`'s events file on a raw connection of its own.
+    fn execute(root: &Path, sql: &str) {
+        events_db(root).execute_batch(sql).unwrap();
+    }
+
     /// Set the type of the one recording grouped under `identity` to the SQL literal `type_sql`,
     /// asserting exactly one row carries that group.
     fn set_recording_type(root: &Path, identity: &str, type_sql: &str) {
@@ -372,19 +377,11 @@ mod ingest_sinks {
     /// none of which names that index - still answers. Opening the store keeps it, since the index
     /// the schema creates already exists by that name.
     fn break_group_index(root: &Path) {
-        events_db(root)
-            .execute_batch(
-                "DROP INDEX idx_events_group; \
-                 CREATE INDEX idx_events_group ON events(position) WHERE 0",
-            )
-            .unwrap();
-    }
-
-    /// Drop the unusable group index, so the next open of the store rebuilds the real one.
-    fn repair_group_index(root: &Path) {
-        events_db(root)
-            .execute_batch("DROP INDEX idx_events_group")
-            .unwrap();
+        execute(
+            root,
+            "DROP INDEX idx_events_group; \
+             CREATE INDEX idx_events_group ON events(position) WHERE 0",
+        );
     }
 
     /// GIVEN a project whose store cannot answer a group lookup (its group index is unusable) while
@@ -424,7 +421,8 @@ mod ingest_sinks {
             "no batch is appended when no lookup answered"
         );
 
-        repair_group_index(root);
+        // Drop the unusable group index, so the next open of the store rebuilds the real one.
+        execute(root, "DROP INDEX idx_events_group");
         let failed = read_run_events(root).len();
         step_line(root, "the step once the store answers again");
         let appended = derived_since(root, failed);
@@ -434,6 +432,148 @@ mod ingest_sinks {
             "the next step appends every batch the failed step could not, whole and in walk order"
         );
         assert_eq!(meta_of(&appended, META_GROUP), identities_of(&all));
+    }
+
+    const REFUSED: &str = "src/refused.rs";
+
+    /// The error the store answers an append of a refused batch with.
+    const REFUSAL: &str = "the store refuses this batch";
+
+    /// Make the store refuse (with [`REFUSAL`]) any append of an event grouped under `identity`,
+    /// while every read and every other append still answers: a real backend failure at the append,
+    /// raised by the store itself inside the append's own statement.
+    fn refuse_appends_of(root: &Path, identity: &str) {
+        execute(
+            root,
+            &format!(
+                "CREATE TRIGGER refuse_group BEFORE INSERT ON events \
+                 WHEN json_extract(NEW.meta, '$.group') = '{identity}' \
+                 BEGIN SELECT RAISE(ABORT, '{REFUSAL}'); END"
+            ),
+        );
+    }
+
+    /// A tree whose refused file's batch sits BETWEEN other batches of the walk, so a sink that
+    /// stopped at the refusal would visibly drop the batches after it. Returns the walk.
+    fn tree_with_a_refused_file(root: &Path) -> Vec<(String, String, Vec<String>)> {
+        tree(
+            root,
+            &[
+                ("src/after.rs", "pub fn after() {}\n"),
+                (REFUSED, "pub fn refused() {}\n"),
+                (UNCHANGED, "pub fn kept() {}\n"),
+            ],
+        );
+        let now = walk(root);
+        let refused = format!("gc/{REFUSED}");
+        let at = now
+            .iter()
+            .position(|(identity, _, _)| *identity == refused)
+            .unwrap_or_else(|| panic!("the walk emits {refused}"));
+        assert!(
+            at > 0 && at + 1 < now.len(),
+            "sanity: the refused batch is neither the walk's first nor its last; walk {:?}",
+            now.iter()
+                .map(|(identity, _, _)| identity)
+                .collect::<Vec<_>>()
+        );
+        now
+    }
+
+    /// Drive one ingest sink - `rigger <args>` - over a project whose store refuses to append
+    /// `src/refused.rs`'s batch, a batch the walk emits between others, while every lookup still
+    /// answers; then let the store accept appends and drive the same sink again.
+    ///
+    /// Asserts, of the refused run: it FAILS naming the store's refusal, and every other batch -
+    /// the ones after the refusal included - is appended whole, grouped and in walk order. Of the
+    /// next run: it succeeds and appends exactly the refused batch, whole and grouped, because the
+    /// failed run recorded nothing that spares it. Returns both runs' stdout and the refused
+    /// batch's event count, for the sink's own report lines.
+    fn refuse_then_accept(args: &[&str]) -> (String, String, usize) {
+        let dir = ingestable_project();
+        let root = dir.path();
+        let now = tree_with_a_refused_file(root);
+        let refused = format!("gc/{REFUSED}");
+        let refused_keys = keys_of(&now, &[&refused]);
+        let others: Vec<String> = now
+            .iter()
+            .filter(|(identity, _, _)| *identity != refused)
+            .flat_map(|(_, _, keys)| keys.clone())
+            .collect();
+        refuse_appends_of(root, &refused);
+        let before = read_run_events(root).len();
+
+        let (refused_out, err, ok) = run_rigger(root, args);
+        assert!(
+            !ok,
+            "rigger {args:?} whose append is refused must fail; stdout: {refused_out}; stderr: {err}"
+        );
+        assert!(
+            err.contains(REFUSAL),
+            "rigger {args:?} names the store's refusal; stderr: {err}"
+        );
+        let appended = derived_since(root, before);
+        assert_eq!(
+            meta_of(&appended, META_REPLAY_KEY),
+            others,
+            "every other batch, the ones after the refusal included, is appended whole in walk order"
+        );
+        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&others));
+
+        // Let the store record every append again.
+        execute(root, "DROP TRIGGER refuse_group");
+        let failed = read_run_events(root).len();
+        let (next_out, err, ok) = run_rigger(root, args);
+        assert!(
+            ok,
+            "rigger {args:?} once the store accepts appends must succeed; stderr: {err}"
+        );
+        let appended = derived_since(root, failed);
+        assert_eq!(
+            meta_of(&appended, META_REPLAY_KEY),
+            refused_keys,
+            "the next run appends exactly the batch the store refused, whole"
+        );
+        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&refused_keys));
+        (refused_out, next_out, refused_keys.len())
+    }
+
+    /// GIVEN a project whose store refuses to append one file's batch while every lookup answers,
+    /// WHEN `rigger graph build` walks the tree,
+    /// THEN the build FAILS naming the refusal and prints no ingested-count line, rather than
+    /// reporting success over a batch it never recorded, and appends every other batch;
+    /// AND once the store accepts appends, the next build appends exactly the refused batch and
+    /// reports exactly that count.
+    #[test]
+    fn a_graph_build_whose_append_is_refused_fails_and_the_next_build_appends_the_refused_batch() {
+        let (refused_out, next_out, refused) = refuse_then_accept(&["graph", "build"]);
+        assert_eq!(
+            refused_out.trim(),
+            "",
+            "a failed build reports no ingested count"
+        );
+        assert!(
+            next_out.starts_with(&format!(
+                "graph build: ingested {refused} code-ingest event(s) into "
+            )),
+            "the next build reports exactly the refused batch's events; stdout: {next_out}"
+        );
+    }
+
+    /// GIVEN a project whose store refuses to append one file's batch while every lookup answers,
+    /// WHEN a `rigger step` parks a stage and so walks and ingests the tree,
+    /// THEN the step FAILS naming the refusal and prints no step line, and appends every other
+    /// batch;
+    /// AND once the store accepts appends, the next `rigger step` - its first-sight lookup asking a
+    /// store that never recorded the batch - appends exactly the refused batch and parks its stage.
+    #[test]
+    fn a_step_whose_append_is_refused_fails_and_the_next_step_appends_the_refused_batch() {
+        let (refused_out, next_out, _) = refuse_then_accept(&["step"]);
+        assert_eq!(refused_out.trim(), "", "a failed step prints no step line");
+        assert!(
+            next_out.starts_with("{\"wave\":[{\"id\":\"a/implementer#0\""),
+            "the next step parks its stage; stdout: {next_out}"
+        );
     }
 
     /// GIVEN a log whose derived events were recorded BEFORE the group stamp - each keyed, none
