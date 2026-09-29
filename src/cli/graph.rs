@@ -948,24 +948,12 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     }
     // The event goes on the log FIRST; `graph.db` is opened only after (spec 101), and a fold
     // that cannot happen is reported as not folded, with the reason, instead of claimed.
-    let emitted = mcpserver::emit_event(
-        &store,
-        conductor::STREAM,
-        || {
-            Projector::open(&loc.file("graph.db"), &loc.identity())
-                .map(|g| Box::new(g) as Box<dyn contextgraph::Projection>)
-        },
-        &tool_args,
-    )?;
-    let pos = emitted.position;
-    match emitted.fold {
-        contextgraph::Fold::Folded => {
-            println!("emitted {typ} (position {pos}) and folded it into the context graph")
-        }
-        contextgraph::Fold::NotFolded(why) => {
-            println!("emitted {typ} (position {pos}); not folded into the context graph: {why}")
-        }
-    }
+    let emitted = mcpserver::emit_event(&store, conductor::STREAM, || loc.graph(), &tool_args)?;
+    println!(
+        "emitted {typ} (position {}){}",
+        emitted.position,
+        fold_clause(&emitted.fold)
+    );
     Ok(())
 }
 

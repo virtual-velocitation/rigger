@@ -1000,8 +1000,8 @@ fn decide_migration(
 
 /// Perform the one-time spec-09 identity migration on an already-opened sqlite `backend`,
 /// renaming a project's legacy-namespace history to the `minted` identity and recording the
-/// move as a `DecisionMade` (no new event types). Returns `Some(n)` with the stream count
-/// when it migrated, `None` when there was nothing to do (idempotent on re-open), and an
+/// move as a `DecisionMade` (no new event types). Returns `Some((n, emitted))` with the stream
+/// count and what became of that decision (its position and fold) when it migrated, `None` when there was nothing to do (idempotent on re-open), and an
 /// `Err` naming BOTH identities when the store is ambiguous (history under both namespaces).
 /// Takes the identities as arguments so it is unit-testable against an in-memory store.
 fn migrate_project_identity(
@@ -1009,7 +1009,7 @@ fn migrate_project_identity(
     minted: &str,
     legacy: &str,
     graph: Option<&Projector>,
-) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+) -> Result<Option<(usize, mcpserver::Emitted)>, Box<dyn std::error::Error>> {
     let legacy_ns = format!("proj-{legacy}-");
     let minted_ns = format!("proj-{minted}-");
     let legacy_has = backend.has_stream_prefix(&legacy_ns)?;
@@ -1065,14 +1065,14 @@ fn migrate_project_identity(
                 "type": contextgraph::TYPE_DECISION_MADE,
                 "data": data,
             });
-            mcpserver::emit_event(
+            let emitted = mcpserver::emit_event(
                 &store,
                 conductor::STREAM,
                 || mcpserver::wired(graph.map(|g| g as &dyn Projection)),
                 &args,
             )
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            Ok(Some(n))
+            Ok(Some((n, emitted)))
         }
     }
 }
@@ -1120,13 +1120,31 @@ fn migrate_identity_at(loc: &StoreLocation) -> Res {
     }
     let backend = open_sqlite_store(&store_path)?;
     let graph = Projector::open(&loc.file("graph.db"), &minted)?;
-    if let Some(n) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))? {
+    if let Some((n, decision)) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))?
+    {
         eprintln!(
             "rigger: migrated project identity - renamed {n} stream(s) from the legacy \
-             namespace {legacy:?} to the minted identity {minted:?} (.rigger/{PROJECT_ID_FILE})"
+             namespace {legacy:?} to the minted identity {minted:?} (.rigger/{PROJECT_ID_FILE}); \
+             recorded its decision (position {}){}",
+            decision.position,
+            fold_clause(&decision.fold)
         );
     }
     Ok(())
+}
+
+/// The one CLI spelling of an event on the log that the context graph does not hold, and why.
+fn not_folded(why: &str) -> String {
+    format!("not folded into the context graph: {why}")
+}
+
+/// What a command that appended an event adds to its own report line about that event's fold,
+/// so no command claims a fold that did not happen or stays silent about one that failed.
+fn fold_clause(fold: &contextgraph::Fold) -> String {
+    match fold {
+        contextgraph::Fold::Folded => " and folded it into the context graph".to_string(),
+        contextgraph::Fold::NotFolded(why) => format!("; {}", not_folded(why)),
+    }
 }
 
 fn db_path(name: &str) -> String {
@@ -1328,6 +1346,15 @@ struct StoreLocation {
 }
 
 impl StoreLocation {
+    /// This store's context graph, opened for one fold: the one opener every command that appends
+    /// and then folds hands [`contextgraph::Fold::of`] (directly or through
+    /// [`mcpserver::emit_event`]), so each folds into the `graph.db` its store owns, under the
+    /// store's identity.
+    fn graph(&self) -> Result<Box<dyn Projection>, contextgraph::Error> {
+        Projector::open(&self.file("graph.db"), &self.identity())
+            .map(|g| Box::new(g) as Box<dyn Projection>)
+    }
+
     /// A store file path (`events.db` / `graph.db`) under the resolved `.rigger/`, as the
     /// `&str` the sqlite `Store` / `Projector` opens.
     fn file(&self, name: &str) -> String {
@@ -8610,7 +8637,16 @@ mod tests {
             .unwrap();
 
         let moved = migrate_project_identity(&backend, "mint123", "oldname", None).unwrap();
-        assert_eq!(moved, Some(1), "one legacy stream renamed");
+        assert_eq!(
+            moved.map(|(n, decision)| (n, decision.fold)),
+            Some((
+                1,
+                contextgraph::Fold::NotFolded(
+                    "graph: no context graph is wired to this surface".to_string()
+                )
+            )),
+            "one legacy stream renamed; with no graph wired its decision says it was not folded"
+        );
 
         // The legacy namespace is now empty; the minted namespace holds the history.
         assert!(backend
@@ -8729,9 +8765,9 @@ mod tests {
         let graph = Projector::open(graph_path, "mint123").unwrap();
         let moved = migrate_project_identity(&backend, "mint123", "oldname", Some(&graph)).unwrap();
         assert_eq!(
-            moved,
-            Some(1),
-            "the one legacy stream is renamed to the minted namespace"
+            moved.map(|(n, decision)| (n, decision.fold)),
+            Some((1, contextgraph::Fold::Folded)),
+            "the one legacy stream is renamed to the minted namespace, and its decision folds into the wired graph"
         );
 
         // Backward-compat: the minted projector still returns the pre-mint decision and its
@@ -8867,9 +8903,9 @@ mod tests {
         // replays the idempotent re-key, and completes the rename that the crash interrupted.
         let moved = migrate_project_identity(&backend, "mint123", "oldname", Some(&graph)).unwrap();
         assert_eq!(
-            moved,
-            Some(1),
-            "recovery completes the stream rename the crash interrupted"
+            moved.map(|(n, decision)| (n, decision.fold)),
+            Some((1, contextgraph::Fold::Folded)),
+            "recovery completes the stream rename the crash interrupted, and its decision folds into the wired graph"
         );
         // The re-key was a clean 0-row no-op on the recovery replay: a further replay still moves
         // nothing (idempotent), so recovery never duplicated or re-moved a row.

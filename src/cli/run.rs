@@ -2649,7 +2649,7 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     };
 
     // Disposition-expiry (spec 25, criterion 1): fold the just-recorded result into this run's
-    // context graph, EXACTLY as `rigger emit` folds an emitted event (see [`cmd_emit`] /
+    // context graph through the same fold outcome `rigger emit` reports (see [`cmd_emit`] /
     // [`mcpserver::emit_event`]). The adjudicator's recorded `SpawnResult` is the ONLY place a
     // review's findings are disposed: the `TYPE_SPAWN_RESULT` fold arm reads its verdict line's
     // `discarded` ids (through the single [`spawn::SpawnResult::adjudication`] authority) and
@@ -2660,12 +2660,16 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // on the adjudicator role and returns `None` otherwise), so folding EVERY recorded result
     // is safe: a plain worker/courier result folds to nothing.
     //
-    // Best-effort, and AFTER the durable append (mirroring `emit_event`): the record already
-    // landed in the log, so a graph open/fold failure must NEVER fail a result the log holds -
-    // the graph is a rebuildable projection, the log is the source of truth. A `--if-absent`
-    // no-op appended nothing, so there is nothing new to fold (the prior record already did).
+    // AFTER the durable append, as `emit_event` does: the record already landed in the log, so a
+    // fold that cannot happen (a graph that owes its rebuild, or one locked past its busy
+    // timeout) never fails a result the log holds - but it is SAID, with the reason, because a
+    // current graph that missed the fold is re-derived by no rebuild, and a silently lost
+    // adjudicator verdict would keep its discarded findings in grounding. A `--if-absent` no-op
+    // appended nothing, so there is nothing new to fold (the prior record already did).
     if let Some(pos) = recorded {
-        fold_recorded_result_into_graph(&loc, &res, pos);
+        if let contextgraph::Fold::NotFolded(why) = fold_recorded_result(&loc, &res, pos) {
+            println!("{}", not_folded(&why));
+        }
     }
 
     // Per-spawn scratch reclamation (spec 34, criterion 1): the moment this spawn's result is
@@ -2775,27 +2779,28 @@ fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: 
 
 /// Fold a just-recorded [`spawn::SpawnResult`] into the run's context graph at its recorded
 /// `position`, so an adjudicator verdict that disposes a review's findings invalidates their
-/// graph edges (the `contextgraph` `TYPE_SPAWN_RESULT` fold arm). This is the result-channel
-/// analogue of the emit-channel fold [`mcpserver::emit_event`] performs: rebuild the appended
-/// event, stamp it with the position the append returned, and `apply` it to the SAME `graph.db`
-/// the resolved store owns (`loc.file("graph.db")`, exactly as [`cmd_emit`] co-locates it).
+/// graph edges (the `contextgraph` `TYPE_SPAWN_RESULT` fold arm), and answer what became of the
+/// fold. This is the result-channel counterpart of [`mcpserver::emit_event`]: rebuild the
+/// appended event, stamp it with the position the append returned, and fold it through the one
+/// [`contextgraph::Fold::of`] into the graph [`StoreLocation::graph`] opens, the same opener
+/// [`cmd_emit`] hands the emit core.
 ///
-/// Entirely best-effort: the record already landed durably in `events.db`, so neither opening
-/// the projector nor applying the fold may surface an error that fails a recorded result. A
-/// serialize failure (unreachable for a result that just serialized to append) or a graph I/O
-/// failure is swallowed - the log stays the source of truth and the graph re-derives on the
-/// next fold or rebuild.
-fn fold_recorded_result_into_graph(
+/// The result is already on the log, so nothing here fails it: a graph that owes its rebuild,
+/// one locked past its busy timeout, or a result that will not serialize (unreachable for one
+/// that just serialized to append) is answered as [`contextgraph::Fold::NotFolded`], with the
+/// reason, for the caller to report. A graph that owes its rebuild re-derives the result from
+/// the log when `rigger setup` rebuilds it; a current graph that missed it never does.
+fn fold_recorded_result(
     loc: &StoreLocation,
     res: &spawn::SpawnResult,
     pos: rigger::eventstore::Position,
-) {
-    let Ok(mut event) = res.to_event() else {
-        return;
-    };
-    event.position = pos;
-    if let Ok(graph) = Projector::open(&loc.file("graph.db"), &loc.identity()) {
-        let _ = graph.apply(&event);
+) -> contextgraph::Fold {
+    match res.to_event() {
+        Ok(mut event) => {
+            event.position = pos;
+            contextgraph::Fold::of(loc.graph(), &event)
+        }
+        Err(e) => contextgraph::Fold::NotFolded(e.to_string()),
     }
 }
 
