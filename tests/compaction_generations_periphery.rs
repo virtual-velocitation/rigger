@@ -2395,6 +2395,92 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     );
 }
 
+/// Given a log with no live selection - a server-backed log, whose live selection is its run stream
+/// as it stands - and a `graph.db` that misses one of its events, when setup reads the graph's
+/// ledger against it and pays the rebuild, then the owed check reads the stream's positions alone
+/// in one ordered pass, materializing no event, and the rebuild reads each event once: its fold
+/// reads the stream, and its tail reads only the event the stream gained meanwhile.
+#[test]
+fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_each_event_once() {
+    use common::fixtures::{CountedRead, ReadCountingStore};
+    use rigger::contextgraph::sqlite::{stream_positions, stream_source, Projector};
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let log = run_events(&backend, PROJECT);
+    let n = log.len();
+    let graph_db = dir.path().join("graph.db");
+    fold_in_batches(&graph_db, PROJECT, &[log[..n - 1].to_vec()]);
+    let late = Event::new(
+        rigger::contextgraph::TYPE_DECISION_MADE,
+        br#"{"id":"d-late","summary":"s","governs":["src/f.rs"],"supersedes":""}"#.to_vec(),
+    );
+    let store = Namespaced::new(&backend, PROJECT);
+    let counting =
+        ReadCountingStore::new(&store).interleaving(1, rigger::conductor::STREAM, vec![late]);
+    let run = || rigger::conductor::STREAM.to_string();
+
+    let owed = Projector::open(graph_db.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .owed_against(&mut stream_positions(
+            &counting,
+            rigger::conductor::STREAM,
+            2,
+        ))
+        .unwrap();
+    let rebuilt = Projector::rebuild(
+        graph_db.to_str().unwrap(),
+        PROJECT,
+        !owed.is_empty(),
+        &mut stream_source(&counting, rigger::conductor::STREAM, 2),
+        &mut no_progress,
+    )
+    .unwrap();
+    assert_eq!(
+        (owed, rebuilt, counting.reads()),
+        (
+            vec![rigger::contextgraph::OWED_LOST_FOLD],
+            Some(0),
+            vec![
+                CountedRead::StreamPositions {
+                    stream: run(),
+                    handed: n,
+                },
+                CountedRead::Stream {
+                    stream: run(),
+                    from: 0,
+                    forward: true,
+                    materialized: n,
+                },
+                CountedRead::Stream {
+                    stream: run(),
+                    from: n as i64,
+                    forward: true,
+                    materialized: 1,
+                },
+            ]
+        ),
+        "positions alone, then each event read once across the fold and its tail"
+    );
+    assert_eq!(
+        serde_json::to_string(
+            &Projector::open(graph_db.to_str().unwrap(), PROJECT)
+                .unwrap()
+                .whole()
+                .unwrap()
+        )
+        .unwrap(),
+        fold_in_batches(
+            &dir.path().join("clean.db"),
+            PROJECT,
+            &[run_events(&backend, PROJECT)]
+        ),
+        "the rebuilt graph is a fresh fold of the whole log, the late event included"
+    );
+}
+
 rigger::test_cases! {
     /// Folded before the ledgers existed at all.
     a_graph_db_without_ledgers_is_rebuilt_from_the_log_once:

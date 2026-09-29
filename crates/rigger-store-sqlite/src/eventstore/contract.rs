@@ -28,6 +28,64 @@ pub fn assert_contract(store: &dyn EventStore) {
     append_of_no_events_reports_nothing(store);
     last_position_answers_the_newest_boundary_without_reading_the_stream(store);
     typed_read_hands_back_only_the_selected_types_from_a_revision(store);
+    positions_read_hands_every_position_of_the_stream_in_order_in_batches(store);
+}
+
+/// THE POSITIONS READ (spec 101): `read_stream_positions` hands the sink the global position of
+/// every event of THAT stream - exactly the positions a full read of it holds - in position order,
+/// in batches of at most `batch`, and nothing of another stream; a stream the store does not hold
+/// hands nothing, and a sink's error ends the read with that error.
+fn positions_read_hands_every_position_of_the_stream_in_order_in_batches(store: &dyn EventStore) {
+    let at = |t: &str| Event::new(t, b"{}".to_vec());
+    for (stream, t) in [
+        ("c-positions", "A"),
+        ("c-positions-sibling", "S"),
+        ("c-positions", "B"),
+        ("c-positions", "C"),
+        ("c-positions-sibling", "S"),
+        ("c-positions", "D"),
+        ("c-positions", "E"),
+    ] {
+        store
+            .append(stream, ExpectedRevision::Any, &[at(t)])
+            .expect("the fixture stream appends");
+    }
+    let held: Vec<u64> = store
+        .read_stream("c-positions", 0, Direction::Forward)
+        .expect("the stream reads")
+        .into_iter()
+        .map(|e| e.position)
+        .collect();
+    let batches = |stream: &str| -> Vec<Vec<u64>> {
+        let mut out = Vec::new();
+        store
+            .read_stream_positions(stream, 2, &mut |positions| {
+                out.push(positions.to_vec());
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("the positions read must succeed: {e}"));
+        out
+    };
+    assert_eq!(
+        batches("c-positions"),
+        vec![held[..2].to_vec(), held[2..4].to_vec(), held[4..].to_vec()],
+        "every position of the stream, in order, in batches of at most two"
+    );
+    assert_eq!(
+        batches("c-positions-never-written"),
+        Vec::<Vec<u64>>::new(),
+        "a stream the store does not hold hands nothing"
+    );
+    let mut calls = 0;
+    let refused = store.read_stream_positions("c-positions", 2, &mut |_| {
+        calls += 1;
+        Err(Error::Backend("the sink refused".to_string()))
+    });
+    assert_eq!(
+        (refused.map_err(|e| e.to_string()), calls),
+        (Err("event store: the sink refused".to_string()), 1),
+        "a sink's error ends the read with that error"
+    );
 }
 
 /// THE TYPED READ (spec 101): `read_stream_typed` hands back exactly the events of THAT stream,
