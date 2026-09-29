@@ -203,26 +203,34 @@ pub fn run_stream_identity(root: &Path) -> String {
 pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
+    with_run_store(root, |store| {
+        for &(ty, body) in events {
+            store
+                .append(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[Event::new(ty, body.as_bytes().to_vec())],
+                )
+                .unwrap();
+        }
+    });
+}
+
+/// `f` over `root`'s own project namespace of its on-disk `.rigger/events.db` - the store the
+/// binary writes, opened through the same composition the binary opens it through.
+pub fn with_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore) -> R) -> R {
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
+    f(&store)
 }
 
 /// Every event in `root`'s namespaced run stream, oldest first.
 pub fn read_run_events(root: &Path) -> Vec<Event> {
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap()
+    with_run_store(root, |store| {
+        store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .unwrap()
+    })
 }
 
 /// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
@@ -301,8 +309,6 @@ pub const DUP_KEY: &str = "gc/src/a.rs@h1#0";
 /// Append [`DUP_ROUNDS`] re-extractions of the same [`code_entity`] under [`DUP_KEY`] to
 /// `root`'s run stream - derived duplicates a reset is expected to compact.
 pub fn seed_derived_duplicates(root: &Path) {
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events = Vec::with_capacity(DUP_ROUNDS);
     for r in 0..DUP_ROUNDS {
         events.push(
@@ -314,9 +320,11 @@ pub fn seed_derived_duplicates(root: &Path) {
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(1_000 + r as u64)),
         );
     }
-    store
-        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-        .unwrap();
+    with_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+            .unwrap();
+    });
 }
 
 /// The `worker` agent definition (sonnet, Read/Edit) that runs without a worktree
