@@ -397,68 +397,9 @@ mod group_lookup_tests {
         batch_is_latest_recorded, keyed_derived_event, latest_generation, META_REPLAY_KEY,
     };
     use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_REVIEW_FINDING};
-    use crate::eventstore::{
-        Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead,
-        Position, Revision, Subscription, TypeSelection, META_GROUP,
-    };
+    use crate::eventstore::{Event, GroupHead, META_GROUP};
+    use crate::test_support::GroupLookupOnly;
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
-
-    /// A store whose group lookup answers `head` for every group and records each `(stream,
-    /// group)` it was asked; every other port method is unreachable, so a reader that touched the
-    /// stream any other way fails.
-    struct OneHead {
-        head: Option<GroupHead>,
-        asked: Mutex<Vec<(String, String)>>,
-    }
-
-    impl OneHead {
-        fn new(head: Option<GroupHead>) -> Self {
-            OneHead {
-                head,
-                asked: Mutex::new(Vec::new()),
-            }
-        }
-        fn asked(&self) -> Vec<(String, String)> {
-            self.asked.lock().unwrap().clone()
-        }
-    }
-
-    impl EventStore for OneHead {
-        fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
-            unreachable!("the reader never appends")
-        }
-        fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
-            unreachable!("the reader never reads the stream")
-        }
-        fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
-            unreachable!("the reader never reads the log")
-        }
-        fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
-            unreachable!("the reader never subscribes")
-        }
-        fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
-            unreachable!("the reader never subscribes")
-        }
-        fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
-            unreachable!("the reader never looks up a boundary")
-        }
-        fn read_stream_typed(
-            &self,
-            _: &str,
-            _: Revision,
-            _: TypeSelection,
-        ) -> Result<Vec<Event>, Error> {
-            unreachable!("the reader never reads by type")
-        }
-        fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
-            self.asked
-                .lock()
-                .unwrap()
-                .push((stream.to_string(), group.to_string()));
-            Ok(self.head.clone())
-        }
-    }
 
     fn head(type_: &str, key: Option<&str>) -> GroupHead {
         let mut meta = BTreeMap::new();
@@ -508,7 +449,10 @@ mod group_lookup_tests {
 
     #[test]
     fn the_latest_generation_is_cut_from_the_newest_group_members_replay_key() {
-        let store = OneHead::new(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#3"))));
+        let store = GroupLookupOnly::answering(Some(head(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            Some("gc/a.rs@h2#3"),
+        )));
         assert_eq!(
             latest_generation(&store, "rigger", "gc/a.rs").unwrap(),
             Some("h2".to_string())
@@ -523,17 +467,20 @@ mod group_lookup_tests {
     #[test]
     fn no_recorded_member_a_non_derived_member_or_an_unparseable_key_answers_no_generation() {
         for (store, why) in [
-            (OneHead::new(None), "a never-recorded identity"),
             (
-                OneHead::new(Some(head(TYPE_REVIEW_FINDING, Some("gc/a.rs@h2#0")))),
+                GroupLookupOnly::answering(None),
+                "a never-recorded identity",
+            ),
+            (
+                GroupLookupOnly::answering(Some(head(TYPE_REVIEW_FINDING, Some("gc/a.rs@h2#0")))),
                 "a newest member outside the derived types (type first)",
             ),
             (
-                OneHead::new(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs")))),
+                GroupLookupOnly::answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs")))),
                 "a newest member whose key does not parse",
             ),
             (
-                OneHead::new(Some(head(TYPE_CODE_ENTITY_EXTRACTED, None))),
+                GroupLookupOnly::answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, None))),
                 "a newest member with no replay key",
             ),
         ] {
@@ -553,7 +500,10 @@ mod group_lookup_tests {
                 .map(|i| (format!("gc/a.rs@{generation}#{i}"), &ev))
                 .collect()
         };
-        let store = OneHead::new(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#1"))));
+        let store = GroupLookupOnly::answering(Some(head(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            Some("gc/a.rs@h2#1"),
+        )));
         assert!(
             batch_is_latest_recorded(&store, "rigger", &batch("h2")).unwrap(),
             "the recorded generation: its keys are the recorded ones, it appends nothing"
@@ -570,7 +520,7 @@ mod group_lookup_tests {
             ],
             "each question is one lookup of the batch's identity"
         );
-        let empty = OneHead::new(None);
+        let empty = GroupLookupOnly::answering(None);
         assert!(
             !batch_is_latest_recorded(&empty, "rigger", &batch("h2")).unwrap(),
             "a never-recorded identity appends"

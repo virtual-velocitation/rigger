@@ -158,6 +158,74 @@ impl EventStore for SilentStore {
     }
 }
 
+/// A store whose ONLY reachable port method is the group lookup (spec 101): it answers every group
+/// with one fixed answer - a newest member, no member, or a backend error - and records each
+/// `(stream, group)` it was asked. Every other method panics, so a caller that reads the stream,
+/// subscribes or appends where it should only have asked the lookup fails.
+pub struct GroupLookupOnly {
+    answer: Result<Option<GroupHead>, String>,
+    asked: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl GroupLookupOnly {
+    /// A store answering `head` for every group.
+    pub fn answering(head: Option<GroupHead>) -> Self {
+        GroupLookupOnly {
+            answer: Ok(head),
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A store whose group lookup fails with a backend error carrying `message`.
+    pub fn failing(message: &str) -> Self {
+        GroupLookupOnly {
+            answer: Err(message.to_string()),
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Every `(stream, group)` the lookup was asked, in order.
+    pub fn asked(&self) -> Vec<(String, String)> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl EventStore for GroupLookupOnly {
+    fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
+        panic!("only the group lookup is reachable: nothing appends")
+    }
+    fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
+        panic!("only the group lookup is reachable: nothing reads the stream")
+    }
+    fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
+        panic!("only the group lookup is reachable: nothing reads the log")
+    }
+    fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
+        panic!("only the group lookup is reachable: nothing subscribes")
+    }
+    fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
+        panic!("only the group lookup is reachable: nothing subscribes")
+    }
+    fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
+        panic!("only the group lookup is reachable: nothing looks up a boundary")
+    }
+    fn read_stream_typed(
+        &self,
+        _: &str,
+        _: Revision,
+        _: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        panic!("only the group lookup is reachable: nothing reads by type")
+    }
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((stream.to_string(), group.to_string()));
+        self.answer.clone().map_err(Error::Backend)
+    }
+}
+
 /// One call a [`ReadCountingStore`] forwarded, with how many events it handed back - the unit a
 /// one-shot command's read cost is asserted in (spec 101). A call is recorded before it is
 /// forwarded, so one that fails stays recorded, having handed back nothing; a subscription counts
