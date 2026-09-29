@@ -3757,25 +3757,27 @@ rigger::test_cases! {
 /// Whether `db` holds a table named `table`: `rebuild_cursor` while a rebuild's tail is not yet
 /// folded, `lost_fold` while the file itself records a fold lost into it.
 fn holds_table(db: &Path, table: &str) -> bool {
-    rusqlite::Connection::open(db)
-        .unwrap()
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table],
-            |r| r.get(0),
-        )
-        .unwrap()
+    exists(
+        db,
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        table,
+    )
 }
 
 /// Whether `db`'s applied ledger records `position`.
 fn applied(db: &Path, position: u64) -> bool {
+    exists(
+        db,
+        "SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)",
+        position,
+    )
+}
+
+/// What the `SELECT EXISTS` query `sql` answers over `db` with `param` bound to `?1`.
+fn exists(db: &Path, sql: &str, param: impl rusqlite::ToSql) -> bool {
     rusqlite::Connection::open(db)
         .unwrap()
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)",
-            [position],
-            |r| r.get(0),
-        )
+        .query_row(sql, [param], |r| r.get(0))
         .unwrap()
 }
 
