@@ -1764,9 +1764,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_status,
         prior_attempts,
         prior_resume_bound,
-        replayed_keys: Mutex::new(replayed_keys),
-        #[cfg(feature = "symbols")]
-        replayed_generations: Mutex::new(HashMap::new()),
+        replayed_keys: crate::replay_keys::ReplayKeys::seeded(replayed_keys),
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
         stale_units: Mutex::new(stale_units),
@@ -2530,9 +2528,10 @@ struct RunCtx<'a> {
     /// The set of REPLAY KEYS an emit may be suppressed against. Its SEED is a PARTITION over two
     /// scopes decided BY EVENT TYPE (spec 60), not one seed with one meaning - so read the half a
     /// key was seeded into before reading membership. The run-scoped half's keys, once inserted,
-    /// are NEVER removed. The project-scoped half now can be: see
-    /// [`replayed_generations`](RunCtx::replayed_generations) (spec 86 criterion 3) for when
-    /// [`emit_keyed_batch`](RunCtx::emit_keyed_batch) retires one of its keys in place.
+    /// are NEVER removed. The project-scoped half now can be: the per-identity generations
+    /// [`ReplayKeys`](crate::replay_keys::ReplayKeys) tracks beside it (spec 86 criterion 3)
+    /// retire a stale generation's keys when [`emit_keyed_batch`](RunCtx::emit_keyed_batch) meets
+    /// a fresh one, and a failed append forgets the keys it installed.
     ///
     /// The RUN-SCOPED half is every NON-derived key (spec 04, criterion 4): seeded at run start
     /// from THIS run's slice of the prior log's [`META_REPLAY_KEY`] metadata and extended as this
@@ -2555,7 +2554,7 @@ struct RunCtx<'a> {
     /// 2. EXTENDED by its sole consumer [`emit_keyed_batch`](RunCtx::emit_keyed_batch), which
     ///    inserts EVERY key it appends and, since spec 86 criterion 3, ALSO retires a batch
     ///    identity's own STALE generation's keys the moment a fresh generation for that SAME
-    ///    identity is seen - see [`replayed_generations`](RunCtx::replayed_generations). From
+    ///    identity is seen - see [`ReplayKeys::install`](crate::replay_keys::ReplayKeys::install). From
     ///    the first batch onward the half is therefore "latest generation as of run start, PLUS
     ///    everything this process has emitted for a generation it currently tracks as live",
     ///    which is neither latest-generation-per-file nor a this-run-only fact, but no longer
@@ -2573,33 +2572,11 @@ struct RunCtx<'a> {
     /// review/rework rounds) IS weighed against the extended-and-retired set, which is not the set
     /// a later step would seed from the log. Nothing may read this half as a this-run fact, and
     /// nothing may read it once the ingest sink has run as a latest-generation-as-of-run-start
-    /// fact - but within one process it IS latest-generation-as-tracked-by-`replayed_generations`,
+    /// fact - but within one process it IS latest-generation-as-tracked-by-`ReplayKeys`,
     /// which is what closes the identical-key-across-two-exclusions collision
     /// (`adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle`) without
     /// requiring a fresh process between rounds.
-    replayed_keys: Mutex<HashSet<String>>,
-    /// PER-IDENTITY tracking of the CURRENT in-process generation `replayed_keys`' project-scoped
-    /// half holds keys for: `identity -> (that identity's current generation hash, the keys THAT
-    /// generation itself contributed to `replayed_keys`)`. Spec 86 criterion 3's own fix for
-    /// `adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle`:
-    /// `empty_structural_boundary_event`'s payload is CONSTANT per `(file, lang)`, so re-excluding
-    /// the SAME file within one process hashes to the IDENTICAL replay key as its first exclusion,
-    /// and more generally ANY in-process content revert to a generation already recorded collides
-    /// the same way. [`emit_keyed_batch`](RunCtx::emit_keyed_batch), this map's SOLE
-    /// reader and writer, consults it before the ordinary per-key dedup: when a batch's identity
-    /// already names a DIFFERENT generation here, that stale generation's own keys are removed
-    /// from `replayed_keys` first, so the fresh generation's boundary (or ordinary) event can
-    /// never be shadowed by an earlier generation's still-resident key merely because the two
-    /// happen to hash identically. Starts EMPTY in every process: an identity enters it at first
-    /// sight, seeded from the store's group lookup exactly when
-    /// [`replayed_keys`](RunCtx::replayed_keys)' project-scoped half is (spec 101), and it is never
-    /// read or written anywhere else - only the four derived index types key a per-file generation
-    /// at all, so a run-scoped (lifecycle/gate/breaker) key never enters this map.
-    ///
-    /// Symbols-gated like its sole reader/writer [`emit_keyed_batch`](RunCtx::emit_keyed_batch):
-    /// the light lane compiles no extraction pass, so no derived-index generation is ever tracked.
-    #[cfg(feature = "symbols")]
-    replayed_generations: Mutex<HashMap<String, (String, HashSet<String>)>>,
+    replayed_keys: crate::replay_keys::ReplayKeys,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
     /// process records new verdicts. [`cached`] over [`gate_verdicts`](RunCtx::gate_verdicts)
@@ -2746,9 +2723,7 @@ impl<'a> RunCtx<'a> {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
-            replayed_keys: Mutex::new(HashSet::new()),
-            #[cfg(feature = "symbols")]
-            replayed_generations: Mutex::new(HashMap::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
@@ -2896,8 +2871,7 @@ impl RunCtx<'_> {
             // carries it (seeded at run start) or this process already emitted it - a
             // replay, so append nothing. Holding the lock only around the set guard lets
             // concurrent units in a wave append their own keyed events in parallel.
-            let mut keys = self.replayed_keys.lock().unwrap();
-            if !keys.insert(key.to_string()) {
+            if !self.replayed_keys.insert(key) {
                 return Ok(());
             }
         }
@@ -2922,112 +2896,43 @@ impl RunCtx<'_> {
     /// recorded), so batching changes transaction CADENCE only, never event content, order, or the
     /// dedup contract.
     ///
-    /// Spec 86 criterion 3: BEFORE that ordinary per-key dedup runs, this is also the SOLE
-    /// reader and writer of [`replayed_generations`](RunCtx::replayed_generations) - every key in
-    /// `keyed` shares one batch identity and one content generation (`key_batch` stamps a whole
-    /// file's batch under one `<prefix>/<file>@<hash>#<i>` hash), read once from the batch's first
-    /// key via [`crate::ingest::derived_key_parts`]. When that identity already names a DIFFERENT
-    /// generation in `replayed_generations`, this retires the STALE generation's own keys from
-    /// `replayed_keys` before tracking the fresh one, so a fresh generation's keys can never be
-    /// shadowed by an earlier generation's still-resident keys merely because the two generations
-    /// happen to hash identically (the empty structural/evidence boundary sentinels are constant
-    /// per file, so any two exclusions of the same file do) or because in-process content reverted
-    /// to a generation already recorded. An unparseable key (`keyed` is empty, or its first key is
-    /// not the `key_batch` shape) fails safe to the plain dedup above, tracking no generation - the
-    /// same fail-safe direction [`crate::ingest::project_scoped_latest_generations`] itself takes on an
-    /// unparseable key. `replayed_generations` is locked OUTER and `replayed_keys` NESTED inside
-    /// it, and this is the ONLY site that ever acquires both, so that order is never reversed and no
-    /// deadlock is reachable.
-    ///
-    /// The two locks are held only around the two sets and the first-sight group lookup (released
-    /// before the append), so concurrent units in a wave still append their own keyed events in
-    /// parallel. A failed append takes them again, in the same order, to forget what this call
-    /// installed (spec 101): the survivors' keys and the identity's slot, so the next sight asks
-    /// the store afresh instead of reading the unrecorded batch as appended.
+    /// What survives is decided by [`ReplayKeys::install`](crate::replay_keys::ReplayKeys::install),
+    /// the one owner of the replay keys and the per-identity generations: the first-sight group
+    /// lookup (spec 101, [`crate::ingest::batch_is_latest_recorded`]), the retirement of a stale
+    /// generation's keys (spec 86 criterion 3), and the dedup itself, under that type's fixed lock
+    /// order. Its locks are released before the append, so concurrent units in a wave still append
+    /// their own keyed events in parallel. A failed append hands the survivors' keys to
+    /// [`ReplayKeys::forget`](crate::replay_keys::ReplayKeys::forget), which forgets only what this
+    /// call installed, so the next sight asks the store afresh instead of reading the unrecorded
+    /// batch as appended.
     ///
     /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
     #[cfg(feature = "symbols")]
     fn emit_keyed_batch(&self, keyed: &[(String, &Event)]) -> Result<(), Error> {
-        let identity_generation = keyed
-            .first()
-            .and_then(|(k, _)| crate::ingest::derived_key_parts(k));
-        let (kept, survivors): (Vec<String>, Vec<Event>) = {
-            let mut gens = self.replayed_generations.lock().unwrap();
-            // FIRST SIGHT (spec 101): the first time this process meets the batch's identity it
-            // asks the store whether the batch is that identity's latest recorded generation - one
-            // group lookup, taken UNDER the generations lock so the unseen check, the answer and
-            // the slot it installs are one step: a concurrent stage meeting the same identity waits,
-            // then finds the slot, so no answer is installed over a generation it never saw. An
-            // unanswered lookup is this call's error and creates no slot, so the next sight asks
-            // again. From then on `replayed_generations` governs the identity.
-            let recorded = match identity_generation {
-                Some((identity, _)) if !gens.contains_key(identity) => {
-                    crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed)?
-                }
-                _ => false,
-            };
-            let mut keys = self.replayed_keys.lock().unwrap();
-            if let Some((identity, generation)) = identity_generation {
-                let slot = gens
-                    .entry(identity.to_string())
-                    .or_insert_with(|| (generation.to_string(), HashSet::new()));
-                if slot.0 != generation {
-                    for stale_key in slot.1.drain() {
-                        keys.remove(&stale_key);
-                    }
-                    slot.0 = generation.to_string();
-                }
-                // The recorded generation IS this batch (a key is a pure function of the batch's
-                // bytes): install its keys, so the dedup below appends none of them.
-                if recorded {
-                    for (key, _) in keyed {
-                        keys.insert(key.clone());
-                        slot.1.insert(key.clone());
-                    }
-                }
-            }
-            keyed
-                .iter()
-                .filter_map(|(key, ev)| {
-                    // The `from_slice` guard runs BEFORE the dedup insert, exactly as the per-event
-                    // sink does (`if let Ok(payload) = from_slice { emit_keyed(..) }`), so a non-JSON
-                    // event neither appends nor records its key.
+        let (kept, survivors): (Vec<String>, Vec<Event>) = self
+            .replayed_keys
+            .install(
+                keyed,
+                || crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed),
+                |key, ev| {
+                    // A non-JSON event neither appends nor records its key, exactly as the
+                    // per-event sink skips it (`if let Ok(payload) = from_slice { emit_keyed(..) }`).
                     let payload: Value = serde_json::from_slice(&ev.data).ok()?;
-                    if !keys.insert(key.clone()) {
-                        return None;
-                    }
-                    if let Some((identity, _)) = identity_generation {
-                        if let Some(slot) = gens.get_mut(identity) {
-                            slot.1.insert(key.clone());
-                        }
-                    }
                     let data = serde_json::to_vec(&payload).ok()?;
-                    Some((
-                        key.clone(),
-                        crate::ingest::keyed_derived_event(Event::new(&ev.type_, data), key),
+                    Some(crate::ingest::keyed_derived_event(
+                        Event::new(&ev.type_, data),
+                        key,
                     ))
-                })
-                .unzip()
-        };
+                },
+            )?
+            .into_iter()
+            .unzip();
         let appended = self.append_and_fold_batch(&survivors);
         if appended.is_err() {
             // A FAILED APPEND RECORDED NOTHING (spec 101), so nothing this call installed may read
-            // as appended: its kept keys leave the dedup set, and the identity's slot leaves the
-            // generations with every key it tracks, so the next sight of the identity asks the
-            // store afresh and follows what the store holds - the batch appends again when the
-            // store still lacks it, and a revert to the recorded generation appends nothing.
-            let mut gens = self.replayed_generations.lock().unwrap();
-            let mut keys = self.replayed_keys.lock().unwrap();
-            for key in &kept {
-                keys.remove(key);
-            }
-            if let Some((identity, _)) = identity_generation {
-                if let Some((_, tracked)) = gens.remove(identity) {
-                    for key in &tracked {
-                        keys.remove(key);
-                    }
-                }
-            }
+            // as appended: see `ReplayKeys::forget` for what it forgets, and the in-flight window
+            // it leaves.
+            self.replayed_keys.forget(keyed, &kept);
         }
         appended.map(|_| ())
     }
@@ -3314,8 +3219,7 @@ impl RunCtx<'_> {
         {
             // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
             // recorded this skip re-appends nothing.
-            let mut keys = self.replayed_keys.lock().unwrap();
-            if !keys.insert(key.clone()) {
+            if !self.replayed_keys.insert(&key) {
                 return Ok(());
             }
         }
@@ -3367,8 +3271,7 @@ impl RunCtx<'_> {
             // The run_gates hit-site already checks the exact-key replay before calling
             // here, so on the live path the key is always new; the guard keeps a
             // double-call safe.
-            let mut keys = self.replayed_keys.lock().unwrap();
-            if !keys.insert(key.to_string()) {
+            if !self.replayed_keys.insert(key) {
                 return Ok(());
             }
         }
@@ -4264,7 +4167,7 @@ impl RunCtx<'_> {
     /// reintroduce the exact live-read bug this function exists to close.
     fn review_round_start_sha(&self, unit: &str, attempt: u32, dir: &str) -> Result<String, Error> {
         let key = review_round_start_key(unit, attempt);
-        if self.replayed_keys.lock().unwrap().contains(&key) {
+        if self.replayed_keys.contains(&key) {
             let events = self.read_current_run()?;
             return Ok(recorded_review_round_start_sha(&events, unit, attempt).unwrap_or_default());
         }
@@ -19446,8 +19349,10 @@ mod tests {
             Some("h2".to_string())
         );
         assert_eq!(
-            ctx.replayed_generations.lock().unwrap()[IDENTITY].0,
-            "h2",
+            ctx.replayed_keys
+                .tracked(IDENTITY)
+                .map(|(generation, _)| generation),
+            Some("h2".to_string()),
             "the process tracks the generation the store holds"
         );
 
@@ -19612,15 +19517,7 @@ mod tests {
     /// `None` when the identity has no slot.
     #[cfg(feature = "symbols")]
     fn tracked(ctx: &RunCtx, identity: &str) -> Option<(String, Vec<String>)> {
-        ctx.replayed_generations
-            .lock()
-            .unwrap()
-            .get(identity)
-            .map(|(generation, keys)| {
-                let mut keys: Vec<String> = keys.iter().cloned().collect();
-                keys.sort();
-                (generation.clone(), keys)
-            })
+        ctx.replayed_keys.tracked(identity)
     }
 
     /// Spec 101 (A REFUSED APPEND FORGETS ONLY ITS OWN): GIVEN stage A's append of a file's `h2`
@@ -23095,9 +22992,7 @@ mod tests {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
-            replayed_keys: Mutex::new(HashSet::new()),
-            #[cfg(feature = "symbols")]
-            replayed_generations: Mutex::new(HashMap::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
@@ -29049,9 +28944,7 @@ mod tests {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
-            replayed_keys: Mutex::new(HashSet::new()),
-            #[cfg(feature = "symbols")]
-            replayed_generations: Mutex::new(HashMap::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),

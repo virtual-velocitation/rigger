@@ -16,6 +16,8 @@ mod blast_radius_eval;
 pub mod canary_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod conductor;
+#[cfg(any(feature = "store", not(feature = "core")))]
+mod replay_keys;
 
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(any(feature = "store", not(feature = "core")))]
