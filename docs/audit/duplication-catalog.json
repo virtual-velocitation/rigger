@@ -5669,7 +5669,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3709101dd60e",
+    "id": "dup-577db88b9691",
     "classification": "semantic",
     "sites": [
       {
@@ -5770,7 +5770,7 @@
       {
         "file": "tests/group_lookup_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "3f6732b7e0275276"
+        "content_hash": "3e9483c78f23ac0d"
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",

@@ -5305,7 +5305,7 @@
     ]
   },
   {
-    "id": "dup-3709101dd60e",
+    "id": "dup-577db88b9691",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5404,8 +5404,8 @@
       },
       {
         "file": "tests/group_lookup_periphery.rs",
-        "start_line": 293,
-        "end_line": 293
+        "start_line": 145,
+        "end_line": 145
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
