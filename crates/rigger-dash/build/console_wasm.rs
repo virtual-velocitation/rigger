@@ -138,7 +138,7 @@ pub fn build_wasm_artifact(
     // default, so without this scrub the nested cargo process (and, transitively, ITS
     // OWN build-script invocations) inherits the outer build's `CARGO_FEATURE_STORE=1`
     // ALONGSIDE the correctly-resolved `CARGO_FEATURE_CORE=1` for `console-core`'s
-    // `default-features = false, features = ["core"]` dependency edge - which means
+    // default `core` lane - which means
     // `rigger`'s build script sees BOTH set inside the nested build too, evaluates
     // `needs_wasm` true again, and spawns ANOTHER nested build inside itself: genuine,
     // unbounded recursion (observed in practice terminating only when a `--target-dir`

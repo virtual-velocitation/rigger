@@ -118,6 +118,13 @@ fn dash_status_line(status: &dash::DashStatus) -> Option<String> {
              next step restarts it"
                 .to_string(),
         ),
+        dash::DashStatus::Unresponsive { url, pid } => {
+            let pid = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
+            Some(format!(
+                "dashboard: {url}{pid} did not answer within {}ms - busy, not dead",
+                dash::DASH_PROBE_WINDOW_MS
+            ))
+        }
     }
 }
 
@@ -134,6 +141,9 @@ fn dash_status_json(status: &dash::DashStatus) -> Option<serde_json::Value> {
         dash::DashStatus::Serving(url) => serde_json::json!({"status": "serving", "url": url}),
         dash::DashStatus::NotServing { pid } => {
             serde_json::json!({"status": "not_serving", "pid": pid})
+        }
+        dash::DashStatus::Unresponsive { url, pid } => {
+            serde_json::json!({"status": "unresponsive", "url": url, "pid": pid})
         }
     };
     Some(serde_json::json!({ "dashboard": dashboard }))
@@ -174,8 +184,7 @@ pub(crate) fn cmd_progress(args: &[String]) -> Res {
     // Resolve the current run READ-ONLY from the run store, only to scope the report.
     let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let events = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+    let (_, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
@@ -255,9 +264,8 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // The current run's slice of the run stream, and its id.
     let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let all = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let run_events = runscope::current_run(&all);
-    let run_id = runscope::current_run_id(&all).unwrap_or_default();
+    let (run_slice, run_id) = runscope::read::read_current_run(&run_store, conductor::STREAM)?;
+    let run_events = run_slice.as_slice();
 
     // Spec 94, criterion 5: `--line` needs only the run's event slice and the configured
     // remediation bound - console::fold's own three inputs (unit statuses, current blockers,
@@ -273,22 +281,10 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
         return Ok(());
     }
 
-    // This run's progress, from the SEPARATE store (absent/empty is fine - the store is
-    // created lazily by the first `rigger progress`).
+    // This run's progress, from the SEPARATE store's per-run stream (absent/empty is fine - the
+    // store is created lazily by the first `rigger progress`).
     let prog_events: Vec<Event> = match Store::open(&loc.file("progress.db")) {
-        Ok(backend) => {
-            let store = Namespaced::new(&backend, &loc.identity());
-            store
-                .read_stream(progress::STREAM, 0, Direction::Forward)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|e| {
-                    run_id.is_empty()
-                        || e.meta.get(runscope::META_RUN_ID).map(String::as_str)
-                            == Some(run_id.as_str())
-                })
-                .collect()
-        }
+        Ok(backend) => read_run_progress(&backend, &loc.identity(), &run_id),
         Err(_) => Vec::new(),
     };
 
@@ -307,7 +303,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
 
     // Spec 69, criterion 4: never printed (or, under `--json`, ever wired) on trust alone.
-    // [`dash::dash_status`] probes with [`dash::dash_serving_on`] directly - the SAME
+    // [`dash::dash_status`] probes with [`dash::dash_answer_on`] directly - the SAME
     // underlying probe [`dash_marker_serving`] wraps for the step path's own idempotent-start
     // decision, so this surface and the step path can never disagree about whether a recorded
     // dash is alive. A marker-less recorded URL (the guard-bound `rigger run` / `rigger
@@ -319,8 +315,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // carries the same truth as the human table (round 2: the prior placement after the
     // `--json` return left `--json` structurally unable to compute it at all).
     let dash_marker = dash::DashMarker::read(Path::new(&loc.file(DASH_MARKER_FILE)));
-    let dash_status =
-        dash::dash_status(recorded_dash_url(&loc), dash_marker, dash::dash_serving_on);
+    let dash_status = dash::dash_status(recorded_dash_url(&loc), dash_marker, dash::dash_answer_on);
 
     if json {
         // The dashboard truth is APPENDED to the in-flight-agent array rather than wrapping
@@ -513,9 +508,9 @@ pub(crate) fn cmd_watch(args: &[String]) -> Res {
 /// from the context graph scoped to the given files (or all if none), EXACTLY as the MCP
 /// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The store
 /// is RESOLVED by walking up to the project's existing `.rigger` (refusing to fabricate
-/// one, spec 05 - see [`require_store_dir`]); a side-car replays the `conductor::STREAM`
-/// backlog and this command waits for it to catch up before rendering one readable
-/// line per decision / lesson / finding. Rendering the lessons here is what makes the
+/// one, spec 05 - see [`require_store_dir`]); the side-car reads the `conductor::STREAM` run
+/// from its boundary with the carried-over knowledge by type, and this command renders one
+/// readable line per decision / lesson / finding. Rendering the lessons here is what makes the
 /// capped prompt sections' "recover the full set with `rigger peers <file>`" note honest
 /// for the lessons section, not just decisions and findings (adj-u1gap17).
 pub(crate) fn cmd_peers(args: &[String]) -> Res {
@@ -525,17 +520,10 @@ pub(crate) fn cmd_peers(args: &[String]) -> Res {
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
-    // The side-car replays the whole backlog from position 0; wait until it has
-    // drained every event currently in the store before reading, so a one-shot CLI
-    // call sees the full picture (the long-running serve path catches up live).
-    let peers = Sidecar::start(&store, 0, Filter::default())?;
-    let total = store
-        .read_all(0, Direction::Forward, &Filter::default())?
-        .len();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while peers.len() < total && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // The side-car reads the run from its boundary and the carried-over decisions, lessons and
+    // findings by type (spec 101) - every record committed before this call, never the whole
+    // log.
+    let peers = Sidecar::read(&store, conductor::STREAM)?;
 
     let result = mcpserver::peers_json(&peers, &files);
     let decisions = result["decisions"].as_array().cloned().unwrap_or_default();
@@ -635,6 +623,18 @@ mod tests {
             "a directly-proven-dead url with no matching marker names both self-heal paths \
              without fabricating a pid"
         );
+        assert_eq!(
+            dash_status_line(&dash::DashStatus::Unresponsive {
+                url: "http://127.0.0.1:7420/".into(),
+                pid: Some(4242),
+            }),
+            Some(
+                "dashboard: http://127.0.0.1:7420/ (pid 4242) did not answer within 750ms - \
+                 busy, not dead"
+                    .to_string()
+            ),
+            "a held port that did not answer in the window is busy, never reported dead"
+        );
     }
 
     /// Spec 69, criterion 4's third clause ("`--json` carries the same truth"): the JSON
@@ -670,6 +670,16 @@ mod tests {
             })),
             "a directly-proven-dead url with no matching marker carries null, never a \
              fabricated pid"
+        );
+        assert_eq!(
+            dash_status_json(&dash::DashStatus::Unresponsive {
+                url: "http://127.0.0.1:7420/".into(),
+                pid: None,
+            }),
+            Some(serde_json::json!({
+                "dashboard": {"status": "unresponsive", "url": "http://127.0.0.1:7420/", "pid": null}
+            })),
+            "a held port that did not answer in the window carries its url, never not_serving"
         );
     }
 

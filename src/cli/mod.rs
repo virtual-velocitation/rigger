@@ -1738,10 +1738,20 @@ fn result_of_at(
     id: &str,
     sel: &StoreSelection,
 ) -> Result<Option<spawn::SpawnResult>, Box<dyn std::error::Error>> {
-    let Some(events) = read_project_stream(path, project, conductor::STREAM, sel)? else {
+    let Some((events, _)) = with_project_store(path, project, sel, |store| {
+        runscope::read::read_current_run(store, conductor::STREAM)
+    })?
+    else {
         return Ok(None);
     };
     Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
+}
+
+/// Run `run_id`'s progress reports out of `project`'s namespace of the progress store
+/// `backend` - its own per-run stream alone ([`progress::read_run`], spec 101), the one progress
+/// read `rigger status` and the dash snapshot fold. An unreadable stream is no progress.
+fn read_run_progress(backend: &dyn EventStore, project: &str, run_id: &str) -> Vec<Event> {
+    progress::read_run(&Namespaced::new(backend, project), run_id).unwrap_or_default()
 }
 
 /// `project`'s namespaced `stream`, read forward from revision 0 out of the store `sel`
@@ -1756,12 +1766,26 @@ fn read_project_stream(
     stream: &str,
     sel: &StoreSelection,
 ) -> Result<Option<Vec<Event>>, Box<dyn std::error::Error>> {
+    with_project_store(path, project, sel, |store| {
+        store.read_stream(stream, 0, Direction::Forward)
+    })
+}
+
+/// `read` over `project`'s namespaced view of the store `sel` resolves at `path` - `None` when
+/// that store is an embedded sqlite file that does not exist yet, checked BEFORE [`Store::open`],
+/// which would otherwise create the file and mask a never-run project as an empty one.
+fn with_project_store<T>(
+    path: &str,
+    project: &str,
+    sel: &StoreSelection,
+    read: impl FnOnce(&dyn EventStore) -> Result<T, rigger::eventstore::Error>,
+) -> Result<Option<T>, Box<dyn std::error::Error>> {
     if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(None);
     }
     let backend = resolve_store(sel, path)?;
     let store = Namespaced::new(backend.as_ref(), project);
-    Ok(Some(store.read_stream(stream, 0, Direction::Forward)?))
+    Ok(Some(read(&store)?))
 }
 
 /// Loop-readiness gate for run-branch basing (spec 38, criterion 2): REFUSE a run that has NO
@@ -2826,13 +2850,21 @@ fn watch_poll(
     loc: &StoreLocation,
     selection: &StoreSelection,
 ) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
-    let now = std::time::SystemTime::now();
-
     let run_backend = resolve_store(selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    let all_in_project = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let run_events = runscope::current_run(&all_in_project).to_vec();
-    let run_id = runscope::current_run_id(&all_in_project).unwrap_or_default();
+    watch_poll_over(loc, &run_store)
+}
+
+/// [`watch_poll`] over an already-opened run store: every store input [`watch::detect`] needs
+/// comes from ONE read of the run ([`runscope::read::read_current_run`], spec 101), so a poll costs the run's
+/// own events plus the carried-over knowledge, never the project's history.
+fn watch_poll_over(
+    loc: &StoreLocation,
+    run_store: &dyn EventStore,
+) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
+    let now = std::time::SystemTime::now();
+
+    let (run_events, run_id) = runscope::read::read_current_run(run_store, conductor::STREAM)?;
     let last_event_at = run_events.last().map(|e| e.recorded_at);
     // When THIS run began - its own leading `RunStarted`'s `recorded_at` (`current_run`
     // always slices from that event onward), or `None` when no run has started yet in
@@ -2840,10 +2872,9 @@ fn watch_poll(
     // below for why.
     let run_started_at = run_events.first().map(|e| e.recorded_at);
 
-    // Store integrity reads the WHOLE log across every stream (spec 71's own scope: a
-    // disordered stream is a store-wide fault, not a per-run one), reusing the same
-    // open connection rather than a second backend handle.
-    let full_events = run_store.read_all(0, Direction::Forward, &Filter::default())?;
+    // Store integrity is judged over the run this poll already read (spec 101: a one-shot
+    // command reads the run, never the whole log): a disordered tail of the run stream is
+    // reported here, and `rigger validate` keeps the whole-store detector (spec 71).
 
     // No step process running right now: a non-blocking try-lock that succeeds means
     // free. Dropped immediately either way, so this probe never holds the lock.
@@ -2871,7 +2902,7 @@ fn watch_poll(
     // blind for 2 of the 3 real drivers (round-3 reject cause
     // adv-u69c1r3-watch-once-inherits-marker-absent-blindspot). So when no marker
     // exists, probe the PORT EMBEDDED IN THE RECORDED URL directly instead - the same
-    // safe, timeout-bounded `dash_serving_on` probe, just without a pid to name. Only
+    // safe, timeout-bounded `dash::dash_answer_on` probe, just without a pid to name. Only
     // when NEITHER breadcrumb is recorded at all (`dash: off` / `RIGGER_NO_DASH`, or
     // watched before any run began) does the DashProbe VALUE constructed here read as
     // "never started". A `NotServing` value built here does not by itself guarantee an
@@ -2891,6 +2922,18 @@ fn watch_poll(
     let marker_path = std::path::PathBuf::from(loc.file(DASH_MARKER_FILE));
     let url_path = std::path::PathBuf::from(loc.file(DASH_URL_FILE));
     let mtime_of = |p: &Path| std::fs::metadata(p).ok()?.modified().ok();
+    // The ONE probe `rigger status` also consumes ([`dash::dash_answer_on`]): a held port that
+    // does not answer within [`dash::DASH_PROBE_WINDOW_MS`] is a busy dash, never a dead one.
+    // `pid` is the display value (already filtered through `dash::displayable_pid`).
+    let probe = |port: u16, pid: Option<u32>| match dash::dash_answer_on(port) {
+        dash::DashAnswer::Serving => watch::DashProbe::Serving,
+        dash::DashAnswer::Unresponsive => watch::DashProbe::Unresponsive {
+            pid,
+            port,
+            window_ms: dash::DASH_PROBE_WINDOW_MS,
+        },
+        dash::DashAnswer::NotServing => watch::DashProbe::NotServing { pid, port },
+    };
     let marker = dash::DashMarker::read(&marker_path);
     let recorded = recorded_dash_url(loc);
     let (dash, dash_breadcrumb_written_at) = match (recorded, marker) {
@@ -2925,64 +2968,41 @@ fn watch_poll(
                 } else {
                     mtime_of(&url_path)
                 };
-                if dash::dash_serving_on(url_port) {
-                    (watch::DashProbe::Serving, written_at)
-                } else {
-                    (
-                        watch::DashProbe::NotServing {
-                            // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status):
-                            // filtered HERE, at the display value handed to `NotServing`, never
-                            // by touching `pid` itself - `port_matches` above must keep reading
-                            // the UNFILTERED `pid.is_some()` so a genuinely port-matching
-                            // sentinel marker still sources `written_at` from `marker_path`, not
-                            // `url_path` (filtering inside `pid_if_port_matches` would flip
-                            // `port_matches` to false for exactly this marker and reintroduce
-                            // the wrong-file's-mtime defect class closed at round 9,
-                            // adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime).
-                            // `dash::displayable_pid` names no real process for the sentinel, so
-                            // it renders here exactly like the already-correct
-                            // no-matching-marker case.
-                            pid: dash::displayable_pid(pid),
-                            port: url_port,
-                        },
-                        written_at,
-                    )
-                }
+                // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status):
+                // filtered HERE, at the display value handed to the probe, never
+                // by touching `pid` itself - `port_matches` above must keep reading
+                // the UNFILTERED `pid.is_some()` so a genuinely port-matching
+                // sentinel marker still sources `written_at` from `marker_path`, not
+                // `url_path` (filtering inside `pid_if_port_matches` would flip
+                // `port_matches` to false for exactly this marker and reintroduce
+                // the wrong-file's-mtime defect class closed at round 9,
+                // adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime).
+                // `dash::displayable_pid` names no real process for the sentinel, so
+                // it renders here exactly like the already-correct
+                // no-matching-marker case.
+                (probe(url_port, dash::displayable_pid(pid)), written_at)
             }
             // An unparseable recorded URL (foreign or malformed - the same ambiguous
             // input `dash_status` treats as unverifiable): the marker is the only
             // checkable breadcrumb left, so probe it as the marker-only arm does.
             None => {
-                if dash::dash_serving_on(m.port) {
-                    (watch::DashProbe::Serving, mtime_of(&marker_path))
-                } else {
-                    (
-                        watch::DashProbe::NotServing {
-                            // Round 5: this arm has no url port to compare against via
-                            // `pid_if_port_matches`, so it always read `m.pid` directly - the
-                            // same sentinel-leak class the two sites above were fixed for
-                            // (round-4 reject's REJECT GROUND named those two by line range, but
-                            // the underlying defect - an unfiltered raw marker pid reaching a
-                            // display site - applies here identically).
-                            pid: dash::displayable_pid(Some(m.pid)),
-                            port: m.port,
-                        },
-                        mtime_of(&marker_path),
-                    )
-                }
+                // Round 5: this arm has no url port to compare against via
+                // `pid_if_port_matches`, so it always read `m.pid` directly - the
+                // same sentinel-leak class the two sites above were fixed for
+                // (round-4 reject's REJECT GROUND named those two by line range, but
+                // the underlying defect - an unfiltered raw marker pid reaching a
+                // display site - applies here identically).
+                (
+                    probe(m.port, dash::displayable_pid(Some(m.pid))),
+                    mtime_of(&marker_path),
+                )
             }
         },
         // URL recorded, no marker at all: probe the url's own port (detection, not
         // presentation - a dead url-only dash must still be reported; pinned by the
         // url-breadcrumb-only test in tests/cli.rs). No marker, no pid to name.
         (Some(url), None) => match dash::url_port(&url) {
-            Some(port) if dash::dash_serving_on(port) => {
-                (watch::DashProbe::Serving, mtime_of(&url_path))
-            }
-            Some(port) => (
-                watch::DashProbe::NotServing { pid: None, port },
-                mtime_of(&url_path),
-            ),
+            Some(port) => (probe(port, None), mtime_of(&url_path)),
             None => (watch::DashProbe::NotRecorded, None),
         },
         // No URL recorded: a marker alone stays this probe's own authority. `dash_status`
@@ -2990,22 +3010,13 @@ fn watch_poll(
         // is real (the step path writes a marker; the dead-marker contract in
         // `rigger-restore-the-dash` pins that `rigger watch --once` reports it), so
         // suppressing it here would hide a genuinely dead dash.
-        (None, Some(m)) => {
-            if dash::dash_serving_on(m.port) {
-                (watch::DashProbe::Serving, mtime_of(&marker_path))
-            } else {
-                (
-                    watch::DashProbe::NotServing {
-                        // Round 5: same sentinel-leak class as the unparseable-url arm's comment
-                        // above - no url port to compare against, so this always read `m.pid`
-                        // directly until now.
-                        pid: dash::displayable_pid(Some(m.pid)),
-                        port: m.port,
-                    },
-                    mtime_of(&marker_path),
-                )
-            }
-        }
+        (None, Some(m)) => (
+            // Round 5: same sentinel-leak class as the unparseable-url arm's comment
+            // above - no url port to compare against, so this always read `m.pid`
+            // directly until now.
+            probe(m.port, dash::displayable_pid(Some(m.pid))),
+            mtime_of(&marker_path),
+        ),
         (None, None) => (watch::DashProbe::NotRecorded, None),
     };
 
@@ -3024,7 +3035,6 @@ fn watch_poll(
 
     let inputs = watch::WatchInputs {
         run_events: &run_events,
-        full_events: &full_events,
         now,
         last_event_at,
         step_lock_free,
@@ -4899,10 +4909,12 @@ fn git_repo_at(root: &Path) -> String {
 }
 
 /// The graph-first lookup hook's stated bounce message (spec 92, criterion 4's Design
-/// text, quoted verbatim so the installed hook and this decision never drift apart).
+/// text), naming the escape hatch in the one spelling that survives a sibling PreToolUse
+/// hook's rewrite: `--literal` inside a trailing shell comment, which the shell discards
+/// before grep runs (lesson-u101c2r3-grep-guard-literal-not-stripped).
 const GREP_GUARD_MESSAGE: &str =
-    "use rigger_ground / rigger_graph for code lookups; grep is for literal text - add \
-     `--literal` to proceed";
+    "use rigger_ground / rigger_graph for code lookups; grep is for literal text - end the \
+     command with a `# --literal` comment to proceed";
 
 #[cfg(test)]
 mod tests {
@@ -11382,6 +11394,88 @@ mod tests {
         (dir, loc, identity)
     }
 
+    // --- Spec 101, criterion 2: ONE-SHOT COMMANDS READ FROM THE BOUNDARY ---
+
+    /// `rigger status`, `rigger progress` and the dash snapshot (its local and attached arms
+    /// alike) fold exactly one read of the run - [`runscope::read::read_current_run`] - and over a log holding
+    /// 200,000 derived events and two superseded runs before the boundary it costs exactly the
+    /// run's own events plus the typed carry-over, asserted through the counting store double,
+    /// and hands back the current run's slice and id.
+    #[test]
+    fn status_progress_and_the_dash_snapshot_read_the_run_from_its_boundary() {
+        use crate::test_support::{seed_one_shot_fixture, ReadCountingStore};
+
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, conductor::STREAM, &[]);
+        let store = ReadCountingStore::new(&inner);
+        let (run, run_id) = runscope::read::read_current_run(&store, conductor::STREAM).unwrap();
+        assert_eq!(store.reads(), fixture.read(conductor::STREAM));
+        assert_eq!(store.materialized(), fixture.cost());
+        assert_eq!(run_id, "run-c");
+        let types: Vec<&str> = run.iter().map(|e| e.type_.as_str()).collect();
+        assert_eq!(
+            types,
+            [
+                "RunStarted",
+                "RunNote",
+                "DecisionMade",
+                "ReviewFinding",
+                "RunNote"
+            ]
+        );
+        assert_eq!(run[0].revision, fixture.boundary);
+    }
+
+    /// `rigger status` and the dash snapshot read the run's progress from its boundary in the
+    /// progress store (spec 101): through the project namespace, ONE read of the current run's
+    /// own progress stream from its start, materializing exactly that run's reports - never a
+    /// superseded run's - asserted through the counting store double.
+    #[test]
+    fn status_and_the_dash_read_the_runs_progress_from_its_own_stream() {
+        use crate::test_support::{seed_one_shot_progress, CountedRead, ReadCountingStore};
+
+        let backend = Store::open(":memory:").unwrap();
+        seed_one_shot_progress(&Namespaced::new(&backend, "alpha"), 3);
+        let counted = ReadCountingStore::new(&backend);
+        let reports = read_run_progress(&counted, "alpha", "run-c");
+        let activities: Vec<String> = reports
+            .iter()
+            .map(|e| {
+                serde_json::from_slice::<progress::AgentProgress>(&e.data)
+                    .unwrap()
+                    .activity
+            })
+            .collect();
+        assert_eq!(activities, ["run-c step 0", "run-c step 1", "run-c step 2"]);
+        assert_eq!(
+            counted.reads(),
+            [CountedRead::Stream {
+                stream: format!("{}progress/run-c", Namespaced::prefix_for("alpha")),
+                from: 0,
+                forward: true,
+                materialized: 3,
+            }]
+        );
+    }
+
+    /// `rigger watch`: one poll over the same log reads the run once from its boundary with the
+    /// carried-over knowledge by type - no whole-log read for store integrity or anything else -
+    /// and a healthy run reports nothing.
+    #[test]
+    fn a_watch_poll_reads_the_run_from_its_boundary_and_nothing_else() {
+        use crate::test_support::{seed_one_shot_fixture, ReadCountingStore};
+
+        let (_dir, loc, _identity) = watch_test_store();
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, conductor::STREAM, &[]);
+        let store = ReadCountingStore::new(&inner);
+        let anomalies = watch_poll_over(&loc, &store).unwrap();
+        assert_eq!(store.reads(), fixture.read(conductor::STREAM));
+        assert_eq!(store.materialized(), fixture.cost());
+        let signals: Vec<watch::Signal> = anomalies.iter().map(|a| a.signal).collect();
+        assert_eq!(signals, [], "{anomalies:?}");
+    }
+
     // --- Spec 83, criterion 2: HEARTBEATS ARE VISIBLE AGAIN (write/read agreement) ---
 
     /// `StoreLocation::repo_root` - the repo [`liveness_ages_for_wave`] resolves the scratch
@@ -11567,6 +11661,21 @@ mod tests {
         {
             let backend = Store::open(&db).unwrap();
             let store = Namespaced::new(&backend, &identity);
+            // An event recorded before the run (revision 0, corrupted below), then the run's
+            // boundary in front of every anomaly: the poll reads the run from here (spec 101).
+            store
+                .append(
+                    conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[
+                        Event::new("E", vec![0]),
+                        Event::new(
+                            runscope::TYPE_RUN_STARTED,
+                            br#"{"run":"watch-run"}"#.to_vec(),
+                        ),
+                    ],
+                )
+                .unwrap();
             // An escalated unit.
             store
                 .append(
@@ -11615,42 +11724,38 @@ mod tests {
                     )
                     .unwrap();
             }
-            // A healthy, unrelated stream that will be corrupted below.
-            store
-                .append(
-                    "watch-test-ooo",
-                    ExpectedRevision::Any,
-                    &[
-                        Event::new("E", vec![0]),
-                        Event::new("E", vec![1]),
-                        Event::new("E", vec![2]),
-                    ],
-                )
-                .unwrap();
         }
 
-        // An out-of-order tail (spec 71's own corruption signature): delete the
-        // namespaced stream's revision-0 row and reissue it at the newest position -
-        // exactly what a stale (pre-append-guard) writer would do, and exactly the
-        // shape `Store::append` itself refuses, so it can only be reproduced by going
-        // around it with a raw connection - mirrors
+        // An out-of-order tail (spec 71's own corruption signature): delete the run stream's
+        // revision-0 row - recorded before the run's boundary - and reissue it at the newest
+        // position, exactly what a stale (pre-append-guard) writer would do, and exactly the
+        // shape `Store::append` itself refuses, so it can only be reproduced by going around it
+        // with a raw connection - mirrors
         // `append_refuses_a_stream_whose_position_order_and_revision_order_already_
-        // disagree` (src/eventstore/sqlite.rs).
-        let scoped_ooo_stream = format!(
-            "{}watch-test-ooo",
-            rigger::eventstore::namespace::Namespaced::prefix_for(&identity)
+        // disagree` (src/eventstore/sqlite.rs). The reissued row now sits AFTER the boundary
+        // in the log, so the run the poll reads holds it where the log recorded it.
+        let scoped_run_stream = format!(
+            "{}{}",
+            rigger::eventstore::namespace::Namespaced::prefix_for(&identity),
+            conductor::STREAM
         );
         {
             let conn = rusqlite::Connection::open(&db).unwrap();
             conn.execute(
                 "DELETE FROM events WHERE stream = ?1 AND revision = 0",
-                [&scoped_ooo_stream],
+                [&scoped_run_stream],
             )
             .unwrap();
+            // Stamped now: the reissue is the run's newest event, and a stale timestamp would
+            // read as a silent driver rather than the disorder under test.
+            let now_nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as i64;
             conn.execute(
                 "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
-                 revision) VALUES (?1, 'E', 'reissued', X'00', '{}', 0, 0, 0)",
-                [&scoped_ooo_stream],
+                 revision) VALUES (?1, 'E', 'reissued', X'00', '{}', ?2, ?2, 0)",
+                rusqlite::params![scoped_run_stream, now_nanos],
             )
             .unwrap();
         }
@@ -11679,7 +11784,12 @@ mod tests {
         assert!(fs.contains("frontier progress") && fs.contains("u-stall/implementer#0"));
         assert!(fs.contains("stop the driver and diagnose"));
         let si = by_signal(watch::Signal::StoreIntegrity).line();
-        assert!(si.contains("store integrity") && si.contains("watch-test-ooo"));
+        assert!(si.contains("store integrity"));
+        assert_eq!(
+            by_signal(watch::Signal::StoreIntegrity).subject,
+            conductor::STREAM
+        );
+        assert_eq!(by_signal(watch::Signal::StoreIntegrity).magnitude, 1);
         assert!(si.contains(watch::ORDER_SIGNATURE_REPAIR_DOC_REF));
     }
 

@@ -63,6 +63,8 @@ The discipline that makes this layer worth having: **emit at decision time, not 
 
 Supersession, not deletion: the graph is bi-temporal, so overruling a decision emits a superseding event and the old belief is marked invalid-as-of, never erased. Agents therefore never need to "clean up" the log - append the correction and the projection handles the rest.
 
+Live progress (`rigger progress <id> '<activity>'`) is presentation only and lives outside the log, in `.rigger/progress.db`, on one stream per run, so `rigger status`, the dash and the `rigger_activity` tool read the current run's reports and nothing older. A binary that predates the per-run streams wrote every run's reports to one shared stream. Refreshing the binary to one with per-run progress streams in the middle of a run drops that run's earlier reports from these views (a recorded stop-failure class included); each agent's line fills again with its next report, and nothing in the event log is lost.
+
 ## 3. Gates: the tools that judge
 
 A gate is a shell command whose exit code is the verdict, declared once in the workflow's `gates:` library and referenced by name from stages:

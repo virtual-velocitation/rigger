@@ -58,6 +58,15 @@ pub struct Filter {
     pub stream_prefix: Option<String>,
 }
 
+/// Which event types a [`EventStore::read_stream_typed`] hands back (spec 101): `Only` the named
+/// types, or every type `Except` the named ones. The store answers either from its type index, so
+/// an event the selection refuses is never materialized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeSelection<'a> {
+    Only(&'a [&'a str]),
+    Except(&'a [&'a str]),
+}
+
 /// Event is a single immutable fact. Callers populate the input fields; the store
 /// stamps `recorded_at`, `position`, and `revision` on append (and `stream` to the
 /// target stream). `valid_from` is the bi-temporal valid-time - when the fact
@@ -696,6 +705,21 @@ pub trait EventStore: Send + Sync {
     /// A backend answers from its own index, or by a backward read that stops at the first
     /// match - never by reading the stream forward, and never by materializing it.
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error>;
+
+    /// Read one stream forward from the event at per-stream revision `from` (**inclusive**),
+    /// handing back only the events `selection` admits, in log (position) order (spec 101). The
+    /// read is anchored on that EVENT: it hands back the event and everything the log recorded
+    /// on this stream after it, which on a well-formed stream is exactly the events at revision
+    /// `from` and above; a `from` of 0 (or below) reads from the stream's start, and a `from`
+    /// past the stream's last revision reads nothing. A backend answers the selection from its
+    /// own type index or server-side filter, so a refused event is never materialized for the
+    /// caller.
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error>;
 }
 
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.

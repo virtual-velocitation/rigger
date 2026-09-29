@@ -773,13 +773,14 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     match lookup_hook {
         InstallOutcome::Installed => println!(
             "installed the graph-first lookup hook - a Grep tool call or `grep` command over \
-             src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (add \
-             --literal to a `grep` command to proceed anyway)"
+             src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (end \
+             a `grep` command with a `# --literal` comment to proceed anyway)"
         ),
         InstallOutcome::Refreshed => println!(
             "installed the graph-first lookup hook into the existing settings.json - a Grep \
              tool call or `grep` command over src/, tests/, or workflows/ now bounces toward \
-             rigger_ground/rigger_graph (add --literal to a `grep` command to proceed anyway)"
+             rigger_ground/rigger_graph (end a `grep` command with a `# --literal` comment to \
+             proceed anyway)"
         ),
         InstallOutcome::AlreadyCurrent => {}
     }
@@ -1168,23 +1169,30 @@ pub(crate) fn cmd_prime(args: &[String]) -> Res {
         "{}",
         instructions_in_force_line(config_store::load_instructions(Path::new("."))?.len())
     );
-    let path = db_path("events.db");
-    let selection = store_selection(None, None)?;
-    if selection.is_sqlite() && !Path::new(&path).exists() {
-        println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
-        if let Some(spec) = spec_path {
-            println!("{}", spec_lint_next_step(spec));
+    // The one store-location authority every courier resolves through: a session started in a
+    // subdirectory or a unit worktree reads the project's own store and identity, never the cwd's.
+    let (loc, selection) = match require_store_dir() {
+        Ok(found) => found,
+        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => {
+            println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
+            if let Some(spec) = spec_path {
+                println!("{}", spec_lint_next_step(spec));
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
-    let store = resolve_store(&selection, &path)?;
-    let events = store.read_all(0, Direction::Backward, &Filter::default())?;
+        Err(e) => return Err(e),
+    };
+    let backend = resolve_store(&selection, &store_file(&loc.dir, "events.db"))?;
+    // Every run's decisions BY TYPE on this project's run stream (spec 101): a session start
+    // reads the decisions it prints and nothing else - no derived event, no other project's.
+    let decisions = Namespaced::new(backend.as_ref(), &loc.identity()).read_stream_typed(
+        conductor::STREAM,
+        0,
+        rigger::eventstore::TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
+    )?;
     println!("# Rigger: recent decisions");
     let mut shown = 0;
-    for e in &events {
-        if e.type_ != contextgraph::TYPE_DECISION_MADE {
-            continue;
-        }
+    for e in decisions.iter().rev() {
         if let Ok(d) = serde_json::from_slice::<PeerDecision>(&e.data) {
             println!("- {}: {}", d.id, d.summary);
             shown += 1;

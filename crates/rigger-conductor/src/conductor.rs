@@ -16,7 +16,9 @@ use crate::config::{AgentDef, Config, RegenerateRule, Stage};
 #[cfg(test)]
 use crate::config_store;
 use crate::contextgraph::{self, Graph, Projection};
-use crate::eventstore::{Appended, Direction, Event, EventStore};
+#[cfg(test)]
+use crate::eventstore::Direction;
+use crate::eventstore::{Appended, Event, EventStore};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
@@ -1459,6 +1461,16 @@ pub struct Deps<'a> {
     pub criteria: Vec<String>,
 }
 
+impl Deps<'_> {
+    /// Whether a step over these dependencies ingests the project into the graph: there is a
+    /// graph to fold into, a repo to walk, and the `symbols` pass to extract with. The one
+    /// condition both ingest paths check, and the one that decides whether a step seeds the
+    /// latest recorded generations (spec 101): a step that does not ingest weighs no batch.
+    fn ingests(&self) -> bool {
+        cfg!(feature = "symbols") && self.graph.is_some() && !self.repo.is_empty()
+    }
+}
+
 #[derive(Deserialize)]
 struct UnitProposed {
     id: String,
@@ -1557,8 +1569,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // (`crate::run::current_run`): a prior run's non-terminal residue sits before this
     // run's `RunStarted` and so can never seed ready work (the Gap 11 zombie fix), while
     // its decisions/findings stay visible as memory through the whole-stream graph.
-    let all_prior = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-    let prior_events = crate::run::current_run(&all_prior);
+    let (prior_events, _) = crate::run::read::read_current_run(deps.store, STREAM)?;
+    let prior_events = prior_events.as_slice();
     let prior = ledger::project(prior_events).map_err(|e| Error(e.to_string()))?;
     // Replay idempotency (spec 04, criterion 4): seed the replay-key set from the prior
     // log's [`META_REPLAY_KEY`] metadata so a step re-running the conductor over recorded
@@ -1588,17 +1600,26 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // The type test comes first in BOTH arms, so the partition is a property of the code rather
     // than of the key's spelling: a derived event is excluded here even if its key looks like a
     // lifecycle key, and a non-derived event is ineligible below even if its key looks like a
-    // content key. `all_prior` is the whole-stream read this function already did - no extra
+    // content key. `prior_events` is the read of the run this function already took - no extra
     // store round-trip.
     let mut replayed_keys: HashSet<String> = prior_events
         .iter()
         .filter(|e| !crate::ingest::is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect();
-    // ONE whole-stream walk feeds BOTH `replayed_keys`' project-scoped extension and
+    // ONE read of the derived events feeds BOTH `replayed_keys`' project-scoped extension and
     // `replayed_generations`' seed (spec 86 criterion 3) - never two independent aggregations
-    // that could drift apart.
-    let latest_generations = crate::ingest::project_scoped_latest_generations(&all_prior);
+    // that could drift apart. Taken only by a step that ingests (spec 101): the seed's only
+    // reader weighs an ingest batch, so a step that ingests nothing reads no derived event.
+    let latest_generations = if deps.ingests() {
+        crate::ingest::project_scoped_latest_generations(&deps.store.read_stream_typed(
+            STREAM,
+            0,
+            crate::eventstore::TypeSelection::Only(&crate::ingest::DERIVED_INDEX_TYPES),
+        )?)
+    } else {
+        Default::default()
+    };
     replayed_keys.extend(
         latest_generations
             .values()
@@ -2146,8 +2167,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         && !ctx.budget_halted.load(Ordering::SeqCst);
     ctx.run_deferred_gates(&stages, converged)?;
 
-    let events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-    let current_events = crate::run::current_run(&events);
+    let (current_events, _) = crate::run::read::read_current_run(deps.store, STREAM)?;
+    let current_events = current_events.as_slice();
     // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1),
     // then stamp the live HALT reason (Gap 13) from the conductor's IN-PROCESS breaker
     // state, not from a fold of the log: a halt is a runtime condition of THIS process (a
@@ -3191,6 +3212,13 @@ impl RunCtx<'_> {
         Ok(())
     }
 
+    /// The current run this step folds ([`crate::run::read::read_current_run`], spec 101): its
+    /// own events from its boundary - never the whole log. The one read every run-scoped fold of
+    /// this context takes.
+    fn read_current_run(&self) -> Result<Vec<Event>, Error> {
+        Ok(crate::run::read::read_current_run(self.deps.store, STREAM)?.0)
+    }
+
     /// The integrating commit(s) of `unit` to REVERT for a compensation (spec 12, unit 4):
     /// the REAL git commits its `UnitIntegrated` events recorded in THIS run, in REVERSE
     /// integration order (newest first, so reverting the newest never conflicts with an
@@ -3203,11 +3231,9 @@ impl RunCtx<'_> {
     /// integrated more than once across compensation cycles, or landed more than one
     /// commit in a single integration.
     fn commits_to_compensate(&self, unit: &str) -> Vec<String> {
-        let all = match self.deps.store.read_stream(STREAM, 0, Direction::Forward) {
-            Ok(e) => e,
-            Err(_) => return Vec::new(),
+        let Ok(events) = self.read_current_run() else {
+            return Vec::new();
         };
-        let events = crate::run::current_run(&all);
         let already = self.compensated_commits.lock().unwrap();
         let mut commits: Vec<String> = Vec::new();
         for e in events
@@ -3858,7 +3884,7 @@ impl RunCtx<'_> {
         // replay-keyed) UnitStarted records the adoption in the SAME event as its own
         // branch/agent - never a second event, and never a window where the emitted
         // record and the actual worktree seed could disagree. Computed unconditionally
-        // on every call (a cheap full-log fold), but its own durable provenance write
+        // on every call (one read of the lifecycle types), but its own durable provenance write
         // and git side effect only ever mutate once - see
         // [`Self::adopt_prior_criterion_branch`]'s own doc comment (round 4: the
         // provenance below is never freshly re-derived once decided, so this call is
@@ -4224,9 +4250,8 @@ impl RunCtx<'_> {
     fn review_round_start_sha(&self, unit: &str, attempt: u32, dir: &str) -> Result<String, Error> {
         let key = review_round_start_key(unit, attempt);
         if self.replayed_keys.lock().unwrap().contains(&key) {
-            let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-            let events = crate::run::current_run(&events);
-            return Ok(recorded_review_round_start_sha(events, unit, attempt).unwrap_or_default());
+            let events = self.read_current_run()?;
+            return Ok(recorded_review_round_start_sha(&events, unit, attempt).unwrap_or_default());
         }
         let sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
@@ -4709,19 +4734,18 @@ impl RunCtx<'_> {
         unit: &str,
         named_spawn_id: &str,
     ) -> Result<bool, Error> {
-        let all = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
         // Scoped to THIS run alone (mirrors `run()`'s own `prior_events` fold and every
         // `liveness::sweep`/`hung_spawns` call site): an unscoped whole-stream read would let
         // a PRIOR run's leftover `SpawnRequested` for a same-named unit (a re-run that reuses
         // a slug) satisfy this guard for a unit this run has never touched - the same Gap 11
         // zombie class `crate::run::current_run`'s own doc comment names.
-        let events = crate::run::current_run(&all);
+        let events = self.read_current_run()?;
         let scratch = crate::worktree::scratch_root_from_env(
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
         );
         Ok(liveness::spawn_is_halted(
-            events,
+            &events,
             &scratch,
             &self.run_id,
             unit,
@@ -6734,12 +6758,7 @@ impl RunCtx<'_> {
     /// All scoping is within the CURRENT run ([`current_run`](crate::run::current_run)), so a
     /// prior run's approve never counts.
     fn gating_spawn_emitted_approve(&self, id: &str) -> Result<bool, Error> {
-        let all = self
-            .deps
-            .store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .map_err(|e| Error(e.to_string()))?;
-        let events = crate::run::current_run(&all);
+        let events = self.read_current_run()?;
         Ok(events.iter().any(|e| {
             e.type_ == contextgraph::TYPE_DECISION_MADE
                 // Attributed EXACTLY by the emitting spawn's [`META_SPAWN`] stamp: it counts
@@ -6773,13 +6792,8 @@ impl RunCtx<'_> {
     /// `false` there and a genuine in-process review failure still propagates to remediation
     /// unchanged - only a REPLAYED recorded error re-parks.
     fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
-        let all = self
-            .deps
-            .store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .map_err(|e| Error(e.to_string()))?;
-        let events = crate::run::current_run(&all);
-        Ok(spawn::result_of(events, id)
+        let events = self.read_current_run()?;
+        Ok(spawn::result_of(&events, id)
             .map_err(|e| Error(e.to_string()))?
             .is_some_and(|res| res.is_error() && !res.is_liveness_fault()))
     }
@@ -6830,11 +6844,7 @@ impl RunCtx<'_> {
         // agent ran out-of-process and its findings went to the graph, so its empty stdout
         // is a valid outcome, not degeneracy. The live drivers never record a spawn
         // result, so this read is `None` there and the in-process observation stands.
-        let events = self
-            .deps
-            .store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .map_err(|e| Error(e.to_string()))?;
+        let events = self.read_current_run()?;
         let replayed = spawn::result_of(&events, id)
             .map_err(|e| Error(e.to_string()))?
             .is_some();
@@ -7470,9 +7480,7 @@ impl RunCtx<'_> {
     /// diff, exactly the behavior `specs/91-mutation-runs-once-at-the-check-in-seam.md`
     /// documents for a run with nothing to diff against.
     fn run_base_env(&self) -> String {
-        self.deps
-            .store
-            .read_stream(STREAM, 0, Direction::Forward)
+        self.read_current_run()
             .ok()
             .and_then(|events| crate::run::current_run_base_tip(&events))
             .unwrap_or_default()
@@ -9276,8 +9284,7 @@ impl RunCtx<'_> {
     /// simply supersedes an earlier, smaller map) - the same latest-position-wins
     /// idiom every other log-derived state in this file already reads by.
     fn read_plan_landed(&self, unit: &str) -> Result<HashMap<String, String>, Error> {
-        let all = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-        let events = crate::run::current_run(&all);
+        let events = self.read_current_run()?;
         let id = format!("plan-landed:{unit}");
         let mut map = HashMap::new();
         for e in events
@@ -10238,7 +10245,7 @@ impl RunCtx<'_> {
     /// graph to fold into - the shipped non-repo / graph-less paths stay byte-for-byte unchanged.
     #[cfg(feature = "symbols")]
     fn ingest_project_batches(&self) {
-        if self.deps.graph.is_none() || self.deps.repo.is_empty() {
+        if !self.deps.ingests() {
             return;
         }
         let root = self.deps.repo.clone();
@@ -10316,7 +10323,7 @@ impl RunCtx<'_> {
     /// mirroring [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)'s own guard.
     #[cfg(feature = "symbols")]
     fn ingest_files_into_graph(&self, files: &[String]) {
-        if self.deps.graph.is_none() || self.deps.repo.is_empty() || files.is_empty() {
+        if !self.deps.ingests() || files.is_empty() {
             return;
         }
         let root = self.deps.repo.clone();
@@ -10540,7 +10547,14 @@ impl RunCtx<'_> {
             return Ok(None);
         }
         let branch = unit_branch(&st.name);
-        let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        // Adoption is decided across runs by contract (spec 88: a criterion's abandoned attempt
+        // from an earlier run is adopted), so it reads every run's LIFECYCLE events by type -
+        // the only ones its rules consult - and never a prior run's other events (spec 101).
+        let events = self.deps.store.read_stream_typed(
+            STREAM,
+            0,
+            crate::eventstore::TypeSelection::Only(&crate::run::read::ADOPTION_TYPES),
+        )?;
         let spec = current_run_spec(&events);
         if let Some((prior, tip, prior_spec)) =
             recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
@@ -10799,7 +10813,7 @@ impl RunCtx<'_> {
         integrated: &HashSet<String>,
         terminal: &HashSet<String>,
     ) -> Result<(), Error> {
-        let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        let events = self.read_current_run()?;
         // GATE INHERITANCE (spec 103, decided): the fan-out template's gates are the
         // base every proposed unit's stage carries below - a proposal's own `gates`
         // field is accepted for compatibility and UNIONED in ([`union_gates`]), so a
@@ -10838,7 +10852,7 @@ impl RunCtx<'_> {
         // against the same value regardless of walk order, so the ADD-before-refine order
         // reads the refined unit's episode exactly as correctly as refine-before-ADD does.
         let mut final_episode: HashMap<String, String> = HashMap::new();
-        for e in crate::run::current_run(&events) {
+        for e in &events {
             if e.type_ != TYPE_UNIT_PROPOSED {
                 continue;
             }
@@ -10860,7 +10874,7 @@ impl RunCtx<'_> {
         // harvest here re-parks ancient units at attempt #0. Observed live: the first
         // run under the scoped binary rose u-metrics-mod from a weeks-dead aborted
         // run, a second time, BECAUSE of the scoping it evaded.
-        for e in crate::run::current_run(&events) {
+        for e in &events {
             if e.type_ != TYPE_UNIT_PROPOSED {
                 continue;
             }
@@ -31340,6 +31354,168 @@ mod tests {
         assert_eq!(rs2.units["a-new"].status, ledger::Status::Integrated);
     }
 
+    /// A `rigger step` THAT DOES NOT INGEST READS FROM THE BOUNDARY (spec 101): over a log
+    /// holding 200,000 derived events and two superseded runs before the boundary, a step that
+    /// adopts the current run and finds nothing to do costs exactly the run's own events plus the
+    /// typed carry-over per read of the run, and never reads the stream any other way - asserted
+    /// through the counting store double.
+    #[test]
+    fn a_step_that_does_not_ingest_costs_the_run_and_the_typed_carry_over_per_read() {
+        use crate::test_support::{seed_one_shot_fixture, CountedRead, ReadCountingStore};
+
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, STREAM, &[]);
+        let store = ReadCountingStore::new(&inner);
+        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let rs = run_isolated(&Config::default(), &stub_deps(&store, &driver, Vec::new()))
+            .expect("the step runs");
+        assert!(rs.units.is_empty(), "the current run holds no unit");
+        let reads = store.reads();
+        let times = reads
+            .iter()
+            .filter(|r| matches!(r, CountedRead::LastPosition { .. }))
+            .count();
+        assert!(times > 0, "the step reads the run");
+        assert_eq!(reads, fixture.reads(STREAM, times));
+        assert_eq!(store.materialized(), times * fixture.cost());
+        assert_eq!(
+            inner.last_position(STREAM, "RunStarted").unwrap(),
+            Some(fixture.boundary),
+            "the step adopted the current run rather than minting one"
+        );
+    }
+
+    /// The same step under the production replay driver while it parks a stage's spawn and then
+    /// replays the recorded result: every read it makes is a read of the run from the boundary
+    /// and of the carried-over knowledge by type - never the whole stream, never a derived event
+    /// - however many events the step appends between its reads.
+    #[test]
+    fn a_step_that_parks_and_replays_reads_only_the_run_and_the_typed_carry_over() {
+        use crate::test_support::{seed_one_shot_fixture, CountedRead, ReadCountingStore};
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                ..Default::default()
+            },
+        );
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, STREAM, &[]);
+        let one_read: Vec<CountedRead> = fixture
+            .read(STREAM)
+            .iter()
+            .map(CountedRead::uncounted)
+            .collect();
+        let step = |why: &str| {
+            let store = ReadCountingStore::new(&inner);
+            let driver = crate::driver::replay::ReplayDriver::new(&store);
+            let rs =
+                run_isolated(&cfg, &stub_deps(&store, &driver, Vec::new())).expect("the step runs");
+            let reads: Vec<CountedRead> =
+                store.reads().iter().map(CountedRead::uncounted).collect();
+            assert!(!reads.is_empty(), "{why}: the step reads the run");
+            assert_eq!(
+                reads,
+                (0..reads.len() / one_read.len())
+                    .flat_map(|_| one_read.clone())
+                    .collect::<Vec<_>>(),
+                "{why}: every read is a read of the run from the boundary"
+            );
+            // The most any one read of the run can hand back: every event from the boundary that
+            // is not derived, plus every carried-over event before it.
+            let bound = crate::run::read::read_run(&inner, STREAM).unwrap().len();
+            assert!(
+                store.reads().iter().all(|r| r.materialized() <= bound),
+                "{why}: no read hands back more than the run and its carry-over"
+            );
+            rs
+        };
+
+        let rs = step("the step that parks the spawn");
+        assert_eq!(rs.units["s"].status, ledger::Status::Grounding);
+        crate::spawn_store::record_result(
+            &inner,
+            &crate::spawn::SpawnResult::ok(spawn_id("s", ROLE_IMPLEMENTER, 0), "done"),
+        )
+        .unwrap();
+        let rs = step("the step that replays the result");
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+    }
+
+    /// A `rigger step` THAT DOES NOT INGEST BUT STARTS A CRITERION'S UNIT IN A REPO (spec 101):
+    /// criterion adoption (spec 88) is decided across runs, so it reads every run's LIFECYCLE
+    /// events by type - one `Only(ADOPTION_TYPES)` read from 0 materializing exactly the runs'
+    /// boundaries and unit starts - and every other read the step makes is a read of the run
+    /// from the boundary with the carried-over knowledge by type, over the 200,000-derived-event
+    /// fixture; asserted through the counting store double.
+    #[test]
+    fn a_step_that_starts_a_criterion_unit_in_a_repo_reads_adoption_by_lifecycle_type() {
+        use crate::test_support::{seed_one_shot_fixture, CountedRead, ReadCountingStore};
+
+        let repo = temp_git_project_with_commit();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                criterion_id: "c1-deadbeefcafefeed".into(),
+                ..Default::default()
+            },
+        );
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, STREAM, &[]);
+        let store = ReadCountingStore::new(&inner);
+        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).expect("the step runs");
+        assert_eq!(rs.units["s"].status, ledger::Status::Grounding);
+
+        let adoption = CountedRead::Typed {
+            stream: STREAM.to_string(),
+            from: 0,
+            only: true,
+            types: crate::run::read::ADOPTION_TYPES
+                .iter()
+                .map(|t| t.to_string())
+                .collect(),
+            // The three runs' `RunStarted` and the two superseded runs' `UnitStarted`.
+            materialized: 5,
+        };
+        let reads = store.reads();
+        assert_eq!(
+            reads.iter().filter(|r| **r == adoption).count(),
+            1,
+            "one adoption read, by lifecycle type: {reads:?}"
+        );
+        let one_read: Vec<CountedRead> = fixture
+            .read(STREAM)
+            .iter()
+            .map(CountedRead::uncounted)
+            .collect();
+        let rest: Vec<CountedRead> = reads
+            .iter()
+            .filter(|r| **r != adoption)
+            .map(CountedRead::uncounted)
+            .collect();
+        assert!(!rest.is_empty(), "the step reads the run");
+        assert_eq!(
+            rest,
+            (0..rest.len() / one_read.len())
+                .flat_map(|_| one_read.clone())
+                .collect::<Vec<_>>(),
+            "every other read is a read of the run from the boundary"
+        );
+    }
+
     #[test]
     fn a_step_whose_width_is_filled_by_parked_units_returns_instead_of_re_reading_the_stream() {
         // The wave loop re-offers every ready stage until `wave_ready` is empty. A stage the
@@ -31351,6 +31527,17 @@ mod tests {
         struct CappedReads<'a> {
             inner: &'a dyn EventStore,
             reads: AtomicU32,
+        }
+        impl CappedReads<'_> {
+            /// Count one read of the stream, failing once the cap is spent.
+            fn charge(&self) -> Result<(), crate::eventstore::Error> {
+                if self.reads.fetch_add(1, Ordering::SeqCst) >= READ_CAP {
+                    return Err(crate::eventstore::Error::Backend(
+                        "read cap reached: the step re-reads the stream without progress".into(),
+                    ));
+                }
+                Ok(())
+            }
         }
         impl EventStore for CappedReads<'_> {
             fn append(
@@ -31367,11 +31554,7 @@ mod tests {
                 from: crate::eventstore::Revision,
                 dir: Direction,
             ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                if self.reads.fetch_add(1, Ordering::SeqCst) >= READ_CAP {
-                    return Err(crate::eventstore::Error::Backend(
-                        "read cap reached: the step re-reads the stream without progress".into(),
-                    ));
-                }
+                self.charge()?;
                 self.inner.read_stream(stream, from, dir)
             }
             fn read_all(
@@ -31402,6 +31585,15 @@ mod tests {
                 event_type: &str,
             ) -> Result<Option<crate::eventstore::Revision>, crate::eventstore::Error> {
                 self.inner.last_position(stream, event_type)
+            }
+            fn read_stream_typed(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+                selection: crate::eventstore::TypeSelection,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.charge()?;
+                self.inner.read_stream_typed(stream, from, selection)
             }
         }
         const READ_CAP: u32 = 200;

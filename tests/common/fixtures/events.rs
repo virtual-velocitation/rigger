@@ -2,7 +2,7 @@
 
 use rigger::eventstore::{
     Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription,
+    Subscription, TypeSelection,
 };
 
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
@@ -75,6 +75,14 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Option<rigger::eventstore::Revision>, rigger::eventstore::Error> {
             self.inner.last_position(stream, event_type)
         }
+        fn read_stream_typed(
+            &self,
+            stream: &str,
+            from: rigger::eventstore::Revision,
+            selection: rigger::eventstore::TypeSelection,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_stream_typed(stream, from, selection)
+        }
     };
 }
 
@@ -130,6 +138,14 @@ impl EventStore for SilentStore {
     fn last_position(&self, _stream: &str, _event_type: &str) -> Result<Option<Revision>, Error> {
         Ok(None)
     }
+    fn read_stream_typed(
+        &self,
+        _stream: &str,
+        _from: Revision,
+        _selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
 }
 
 /// One call a [`ReadCountingStore`] forwarded, with how many events it handed back - the unit a
@@ -162,27 +178,50 @@ pub enum CountedRead {
         stream: String,
         event_type: String,
     },
+    /// A typed read: `only` is whether the selection named the types it hands back (`Only`)
+    /// or the ones it refuses (`Except`), and `types` are those names in the order given.
+    Typed {
+        stream: String,
+        from: Revision,
+        only: bool,
+        types: Vec<String>,
+        materialized: usize,
+    },
 }
 
 impl CountedRead {
     /// The events this call handed back to its caller so far.
     pub fn materialized(&self) -> usize {
         match self {
-            CountedRead::Stream { materialized, .. } | CountedRead::All { materialized, .. } => {
-                *materialized
-            }
+            CountedRead::Stream { materialized, .. }
+            | CountedRead::All { materialized, .. }
+            | CountedRead::Typed { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
             CountedRead::LastPosition { .. } => 0,
         }
     }
 
+    /// This call with its count cleared: what was asked, not what came back.
+    pub fn uncounted(&self) -> CountedRead {
+        let mut read = self.clone();
+        match &mut read {
+            CountedRead::Stream { materialized, .. }
+            | CountedRead::All { materialized, .. }
+            | CountedRead::Typed { materialized, .. } => *materialized = 0,
+            CountedRead::SubscribeStream { delivered, .. }
+            | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
+            CountedRead::LastPosition { .. } => {}
+        }
+        read
+    }
+
     /// Add `n` handed-back events to this call's count; a lookup hands back none.
     fn add(&mut self, n: usize) {
         match self {
-            CountedRead::Stream { materialized, .. } | CountedRead::All { materialized, .. } => {
-                *materialized += n
-            }
+            CountedRead::Stream { materialized, .. }
+            | CountedRead::All { materialized, .. }
+            | CountedRead::Typed { materialized, .. } => *materialized += n,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
             CountedRead::LastPosition { .. } => {}
@@ -201,6 +240,8 @@ type CallLog = std::sync::Arc<std::sync::Mutex<Vec<CountedRead>>>;
 pub struct ReadCountingStore<'a> {
     inner: &'a dyn EventStore,
     reads: CallLog,
+    /// A write waiting to land in `inner` when a given call returns ([`Self::interleaving`]).
+    interleaved: std::sync::Mutex<Option<(usize, String, Vec<Event>)>>,
 }
 
 impl<'a> ReadCountingStore<'a> {
@@ -209,7 +250,16 @@ impl<'a> ReadCountingStore<'a> {
         ReadCountingStore {
             inner,
             reads: CallLog::default(),
+            interleaved: std::sync::Mutex::default(),
         }
+    }
+
+    /// This double with a concurrent writer: `events` land on `stream` of the inner store the
+    /// moment the call at index `after` of the call log (0-based, in call order; a boundary lookup
+    /// counts) returns, so a test places an append exactly between two calls of one command.
+    pub fn interleaving(self, after: usize, stream: &str, events: Vec<Event>) -> Self {
+        *self.interleaved.lock().unwrap() = Some((after, stream.to_string(), events));
+        self
     }
 
     /// Every read forwarded so far, in call order.
@@ -232,7 +282,19 @@ impl<'a> ReadCountingStore<'a> {
     /// Count the `events` call `at` handed back, then hand them on.
     fn handed_back(&self, at: usize, events: Vec<Event>) -> Vec<Event> {
         self.reads.lock().unwrap()[at].add(events.len());
+        self.land_interleaved(at);
         events
+    }
+
+    /// Append the interleaved write when it waits on call `at`, once.
+    fn land_interleaved(&self, at: usize) {
+        let mut pending = self.interleaved.lock().unwrap();
+        if pending.as_ref().is_some_and(|(after, ..)| *after == at) {
+            let (_, stream, events) = pending.take().unwrap();
+            self.inner
+                .append(&stream, ExpectedRevision::Any, &events)
+                .expect("the interleaved write appends");
+        }
     }
 
     /// `sub` relayed so each event it delivers is counted into call `at` before it is handed on.
@@ -298,10 +360,212 @@ impl EventStore for ReadCountingStore<'_> {
         Ok(self.counted(at, sub))
     }
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
-        self.record(CountedRead::LastPosition {
+        let at = self.record(CountedRead::LastPosition {
             stream: stream.to_string(),
             event_type: event_type.to_string(),
         });
-        self.inner.last_position(stream, event_type)
+        let boundary = self.inner.last_position(stream, event_type);
+        self.land_interleaved(at);
+        boundary
     }
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        let (only, types) = match selection {
+            TypeSelection::Only(types) => (true, types),
+            TypeSelection::Except(types) => (false, types),
+        };
+        let at = self.record(CountedRead::Typed {
+            stream: stream.to_string(),
+            from,
+            only,
+            types: types.iter().map(|t| t.to_string()).collect(),
+            materialized: 0,
+        });
+        let events = self.inner.read_stream_typed(stream, from, selection)?;
+        Ok(self.handed_back(at, events))
+    }
+}
+
+/// The derived index types a one-shot fixture floods the log with - the four
+/// `ingest::DERIVED_INDEX_TYPES`, spelled out because this fixture compiles into crates that do
+/// not all see the `ingest` module (a test asserting on them compares against that constant).
+pub const ONE_SHOT_DERIVED_TYPES: [&str; 4] = [
+    "CodeEntityExtracted",
+    "EdgeInferred",
+    "DocConceptExtracted",
+    "DocLinkExtracted",
+];
+
+/// What a one-shot command may cost over [`seed_one_shot_fixture`]'s log (spec 101): the current
+/// run's own non-derived events and the carried-over knowledge of every run, and nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OneShotFixture {
+    /// The per-stream revision of the current run's `RunStarted`.
+    pub boundary: Revision,
+    /// The current run's own events a one-shot read hands back: its `RunStarted`, its decision,
+    /// its finding and its two notes (never the derived events appended during it).
+    pub run_events: usize,
+    /// The `DecisionMade`, `LessonLearned` and `ReviewFinding` events of every run.
+    pub carry_over: usize,
+}
+
+impl OneShotFixture {
+    /// The events one read of the run materializes: the run's own plus the carry-over.
+    pub fn cost(&self) -> usize {
+        self.run_events + self.carry_over
+    }
+
+    /// The three calls ONE read of the run on `stream` makes, as the counting double records
+    /// them: the boundary lookup, the carried-over knowledge by type over the whole stream, and
+    /// the run slice from the boundary with the derived types refused.
+    pub fn read(&self, stream: &str) -> Vec<CountedRead> {
+        let carry = ["DecisionMade", "LessonLearned", "ReviewFinding"];
+        let names = |types: &[&str]| types.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        vec![
+            CountedRead::LastPosition {
+                stream: stream.to_string(),
+                event_type: "RunStarted".to_string(),
+            },
+            CountedRead::Typed {
+                stream: stream.to_string(),
+                from: 0,
+                only: true,
+                types: names(&carry),
+                materialized: self.carry_over,
+            },
+            CountedRead::Typed {
+                stream: stream.to_string(),
+                from: self.boundary,
+                only: false,
+                types: names(&ONE_SHOT_DERIVED_TYPES),
+                materialized: self.run_events,
+            },
+        ]
+    }
+
+    /// `times` reads of the run on `stream`, back to back.
+    pub fn reads(&self, stream: &str, times: usize) -> Vec<CountedRead> {
+        (0..times).flat_map(|_| self.read(stream)).collect()
+    }
+}
+
+/// A `RunStarted` for run `run` over `criteria`, stamped with its run id as the conductor mints it.
+fn run_started(run: &str, criteria: &[&str]) -> Event {
+    Event::new(
+        "RunStarted",
+        serde_json::to_vec(&serde_json::json!({"run": run, "criteria": criteria})).unwrap(),
+    )
+    .with_meta("run_id", run)
+}
+
+/// `n` derived index events, cycling the four [`ONE_SHOT_DERIVED_TYPES`].
+fn derived_events(n: usize) -> Vec<Event> {
+    (0..n)
+        .map(|i| {
+            ev(
+                ONE_SHOT_DERIVED_TYPES[i % 4],
+                r#"{"from":"a","rel":"CALLS","to":"b"}"#,
+            )
+        })
+        .collect()
+}
+
+/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 derived index
+/// events before the current run's boundary, then the current run (started over `criteria`) with
+/// derived events of its own appended during it. Each prior run left a decision, a lesson or a
+/// finding the current run carries over, and a note of its own no one-shot read carries; the
+/// current run holds a decision and a finding of its own plus two notes.
+pub fn seed_one_shot_fixture(
+    store: &dyn EventStore,
+    stream: &str,
+    criteria: &[&str],
+) -> OneShotFixture {
+    let append = |events: &[Event]| {
+        store
+            .append(stream, ExpectedRevision::Any, events)
+            .expect("the one-shot fixture appends");
+    };
+    let decision = |id: &str, file: &str| {
+        ev(
+            "DecisionMade",
+            &format!(r#"{{"id":"{id}","summary":"chose {id}","governs":["{file}"]}}"#),
+        )
+    };
+    append(&[
+        run_started("run-a", &["a prior campaign"]),
+        ev("UnitStarted", r#"{"id":"ua","unit":"ua","agent":"impl"}"#),
+        decision("d-a", "a.rs"),
+        ev(
+            "LessonLearned",
+            r#"{"id":"l-a","summary":"learned a","about":["a.rs"]}"#,
+        ),
+        ev("RunNote", "{}"),
+    ]);
+    for _ in 0..10 {
+        append(&derived_events(10_000));
+    }
+    append(&[
+        run_started("run-b", &["another prior campaign"]),
+        ev("UnitStarted", r#"{"id":"ub","unit":"ub","agent":"impl"}"#),
+        ev(
+            "ReviewFinding",
+            r#"{"id":"f-b","by":"lens","summary":"found b","about":["b.rs"]}"#,
+        ),
+        ev("RunNote", "{}"),
+    ]);
+    for _ in 0..10 {
+        append(&derived_events(10_000));
+    }
+    append(&[run_started("run-c", criteria), ev("RunNote", "{}")]);
+    let boundary = store
+        .last_position(stream, "RunStarted")
+        .expect("the fixture's boundary reads")
+        .expect("the fixture started a run");
+    append(&derived_events(50));
+    append(&[
+        decision("d-c", "c.rs"),
+        ev(
+            "ReviewFinding",
+            r#"{"id":"f-c","by":"lens","summary":"found c","about":["c.rs"]}"#,
+        ),
+        ev("RunNote", "{}"),
+    ]);
+    append(&derived_events(50));
+    OneShotFixture {
+        boundary,
+        run_events: 5,
+        carry_over: 5,
+    }
+}
+
+/// THE ONE-SHOT PROGRESS FIXTURE (spec 101): the progress store beside [`seed_one_shot_fixture`]'s
+/// log - two reports from each superseded run (`run-a`, `run-b`) and `current` from the current
+/// run `run-c`, each on its run's own progress stream (`progress/<run>`, spelled out because this
+/// fixture compiles into crates that do not all see the `progress` module) and stamped with its
+/// run, as the progress writer records them - so a read of the current run's progress costs
+/// exactly `current` reports.
+pub fn seed_one_shot_progress(store: &dyn EventStore, current: usize) {
+    let report = |run: &str, n: usize| {
+        for i in 0..n {
+            let body =
+                serde_json::json!({"id": "u/implementer#0", "activity": format!("{run} step {i}")});
+            store
+                .append(
+                    &format!("progress/{run}"),
+                    ExpectedRevision::Any,
+                    &[
+                        Event::new("AgentProgress", serde_json::to_vec(&body).unwrap())
+                            .with_meta("run_id", run),
+                    ],
+                )
+                .expect("the one-shot progress fixture appends");
+        }
+    };
+    report("run-a", 2);
+    report("run-b", 2);
+    report("run-c", current);
 }

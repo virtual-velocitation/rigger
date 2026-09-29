@@ -19,6 +19,12 @@ use serde::{Deserialize, Serialize};
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
 use crate::eventstore::Event;
 
+/// The one read a one-shot command folds (spec 101): the run from its boundary and the
+/// carried-over knowledge by type, through the store port. Gated with [`crate::ingest`], whose
+/// derived types it refuses.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod read;
+
 /// The run's event stream name. Defined here (spec 93, criterion 1) rather than in
 /// [`crate::conductor`] (which re-exports it): this module is `core`, `conductor` is the
 /// `store`-gated orchestration use case excluded from `core`, and this module needs the

@@ -113,11 +113,10 @@ impl Fixture {
             .collect()
     }
 
-    /// Every `SpawnLaunched` record (open and closing alike) the progress store holds, in
-    /// append order.
+    /// Every `SpawnLaunched` record (open and closing alike) the progress store holds for the
+    /// run [`opts`] names, in append order.
     fn launch_records(&self) -> Vec<rigger::progress::SpawnLaunched> {
-        self.progress_store
-            .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+        rigger::progress::read_run(&self.progress_store, &opts("").run_id)
             .unwrap()
             .iter()
             .filter(|e| e.type_ == rigger::progress::TYPE_SPAWN_LAUNCHED)
@@ -125,10 +124,9 @@ impl Fixture {
             .collect()
     }
 
-    /// Every agent-progress activity line the progress store holds.
+    /// Every agent-progress activity line the progress store holds for the run [`opts`] names.
     fn activities(&self) -> Vec<String> {
-        self.progress_store
-            .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+        rigger::progress::read_run(&self.progress_store, &opts("").run_id)
             .unwrap()
             .iter()
             .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)

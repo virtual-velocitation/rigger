@@ -59,9 +59,8 @@ use serde_json::Value;
 
 use rigger::driver::workflow::Driver;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision, Filter};
+use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::mcpserver::Server;
-use rigger::sidecar::Sidecar;
 
 /// Plant a real marker file at `path`, backdated by `secs_ago` seconds - mirrors `tests/cli.rs`'s
 /// `plant_stale_marker`, generalized to an arbitrary (non-stale) age so the test can assert the
@@ -90,7 +89,6 @@ fn rigger_activity_reports_a_real_markers_liveness_age_over_a_non_empty_scratch_
     let store = Store::open(":memory:").unwrap();
     let progress = Store::open(":memory:").unwrap();
     let driver = Driver::new();
-    let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
 
     // A run: a unit started, its implementer parked (in-flight, no result yet) - the exact
     // frontier shape `mcpserver.rs::activity_tool_presents_the_live_per_agent_view` seeds,
@@ -120,8 +118,7 @@ fn rigger_activity_reports_a_real_markers_liveness_age_over_a_non_empty_scratch_
     let secs_ago = 5u64;
     plant_marker(&marker, secs_ago);
 
-    let server =
-        Server::new(&driver, &store, "run", &peers).with_progress(&progress, &scratch_root);
+    let server = Server::new(&driver, &store, "run").with_progress(&progress, &scratch_root);
     let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
     let mut output = Vec::new();
     server.run(Cursor::new(input), &mut output).unwrap();
@@ -166,7 +163,6 @@ fn rigger_activity_omits_liveness_age_when_no_marker_file_exists_yet() {
     let store = Store::open(":memory:").unwrap();
     let progress = Store::open(":memory:").unwrap();
     let driver = Driver::new();
-    let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
 
     rigger::run_store::ensure_started(&store, &["crit".to_string()]).unwrap();
     store
@@ -186,8 +182,7 @@ fn rigger_activity_omits_liveness_age_when_no_marker_file_exists_yet() {
     let scratch_dir = tempfile::tempdir().unwrap();
     let scratch_root = scratch_dir.path().to_str().unwrap().to_string();
 
-    let server =
-        Server::new(&driver, &store, "run", &peers).with_progress(&progress, &scratch_root);
+    let server = Server::new(&driver, &store, "run").with_progress(&progress, &scratch_root);
     let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
     let mut output = Vec::new();
     server.run(Cursor::new(input), &mut output).unwrap();

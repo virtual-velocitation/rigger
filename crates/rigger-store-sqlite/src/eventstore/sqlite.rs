@@ -16,7 +16,7 @@ use crate::sqlite::open_connection;
 use super::{
     from_nanos, to_nanos, AliasHistory, Appended, ContentIdentity, Direction, Error, Event,
     EventStore, ExpectedRevision, FactIdentity, Filter, Position, Revision, Subscription,
-    NO_STREAM,
+    TypeSelection, NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -42,6 +42,32 @@ const LAST_POSITION_SQL: &str =
     "SELECT revision FROM events WHERE stream = ?1 AND type = ?2 ORDER BY position DESC LIMIT 1";
 
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
+
+/// Where a typed read from revision `?2` starts in the log: the position of the stream's first
+/// event at or above that revision - one seek of the `(stream, revision)` index.
+const TYPED_READ_START_SQL: &str =
+    "SELECT position FROM events WHERE stream = ?1 AND revision >= ?2 \
+     ORDER BY revision ASC LIMIT 1";
+
+/// The typed read behind [`EventStore::read_stream_typed`] for `selection`, from the log position
+/// `?2`, with the named types bound from `?3` on: `Only` seeks `idx_events_stream_type` once per
+/// named type, so its cost is the selected events alone; `Except` walks the stream from `?2` on
+/// the stream index and refuses the named types in the query, so a refused row never leaves the
+/// store. Both hand back log (position) order.
+fn typed_read_sql(selection: TypeSelection) -> String {
+    let (types, index, op) = match selection {
+        TypeSelection::Only(types) => (types, "INDEXED BY idx_events_stream_type ", "IN"),
+        TypeSelection::Except(types) => (types, "", "NOT IN"),
+    };
+    let binds = (0..types.len())
+        .map(|i| format!("?{}", i + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT {COLS} FROM events {index}WHERE stream = ?1 AND position >= ?2 \
+         AND type {op} ({binds}) ORDER BY position ASC"
+    )
+}
 
 /// Store is the SQLite-backed EventStore. The connection is shared (Arc) so a
 /// subscription's polling thread reads the same database the writers append to.
@@ -1126,6 +1152,43 @@ impl EventStore for Store {
             .optional()
             .map_err(be)
     }
+
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        let types = match selection {
+            TypeSelection::Only(types) | TypeSelection::Except(types) => types,
+        };
+        let conn = self.conn.lock().unwrap();
+        // The read is anchored on the EVENT at revision `from`, never on the revision number:
+        // everything the log recorded from that event on is read, so a row a stale writer
+        // reissued later at a lower revision is still read where the log holds it. Revision 0
+        // (or below) is the stream's start.
+        let start: i64 = if from > 0 {
+            match conn
+                .query_row(TYPED_READ_START_SQL, params![stream, from], |r| r.get(0))
+                .optional()
+                .map_err(be)?
+            {
+                Some(position) => position,
+                None => return Ok(Vec::new()),
+            }
+        } else {
+            0
+        };
+        let binds: Vec<rusqlite::types::Value> = [stream.to_string().into(), start.into()]
+            .into_iter()
+            .chain(types.iter().map(|t| t.to_string().into()))
+            .collect();
+        let mut stmt = conn.prepare(&typed_read_sql(selection)).map_err(be)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(binds), row_to_event)
+            .map_err(be)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(be)
+    }
 }
 
 /// The watermark a subscription's polling thread advances as it delivers events.
@@ -1505,6 +1568,71 @@ mod tests {
         assert_eq!(
             revs, expected,
             "per-stream revisions must stay contiguous and unique under concurrency"
+        );
+    }
+
+    /// THE TYPED READ IS ANCHORED ON THE EVENT (spec 101): a typed read from a revision starts at
+    /// that revision's EVENT and hands back everything the log recorded after it, in log order -
+    /// so a row a stale writer reissued at the newest position under revision 0 (spec 71's
+    /// corruption signature) is read after a run boundary at revision 1, where a fold can see the
+    /// disorder, and a read from revision 0 still reads the whole stream rather than starting at
+    /// the reissued row.
+    #[test]
+    fn a_typed_read_hands_back_a_reissued_row_where_the_log_recorded_it() {
+        let store = Store::open(":memory:").unwrap();
+        let events: Vec<Event> = ["Pre", "RunStarted", "Work", "Lesson"]
+            .iter()
+            .map(|t| Event::new(*t, b"{}".to_vec()))
+            .collect();
+        store
+            .append("s", ExpectedRevision::NoStream, &events)
+            .unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("DELETE FROM events WHERE stream = 's' AND revision = 0", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, \
+                 revision) VALUES ('s', 'Pre', 'reissued', X'7b7d', '{}', 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let read = |from: Revision, selection: TypeSelection| -> Vec<(String, Revision)> {
+            store
+                .read_stream_typed("s", from, selection)
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.type_, e.revision))
+                .collect()
+        };
+        let pairs = |v: &[(&str, Revision)]| -> Vec<(String, Revision)> {
+            v.iter().map(|(t, r)| (t.to_string(), *r)).collect()
+        };
+        assert_eq!(
+            read(0, TypeSelection::Except(&[])),
+            pairs(&[("RunStarted", 1), ("Work", 2), ("Lesson", 3), ("Pre", 0)]),
+            "revision 0 is the stream's start, whatever row now holds it"
+        );
+        assert_eq!(
+            read(0, TypeSelection::Only(&["Pre", "Lesson"])),
+            pairs(&[("Lesson", 3), ("Pre", 0)]),
+            "an Only read hands back log order too"
+        );
+        assert_eq!(
+            read(1, TypeSelection::Except(&["Lesson"])),
+            pairs(&[("RunStarted", 1), ("Work", 2), ("Pre", 0)]),
+            "the reissued row sits after the boundary event, so the slice from it holds it"
+        );
+        assert_eq!(
+            read(3, TypeSelection::Only(&["Pre"])),
+            pairs(&[("Pre", 0)]),
+            "anchored on the event at revision 3, not on revisions at or above 3"
+        );
+        assert_eq!(
+            read(4, TypeSelection::Except(&[])),
+            pairs(&[]),
+            "a revision past the stream's last reads nothing"
         );
     }
 

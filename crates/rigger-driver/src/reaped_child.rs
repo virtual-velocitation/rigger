@@ -18,10 +18,8 @@
 /// on BOTH the default and the `--no-default-features` lane, and `std::process` is the
 /// only child-lifecycle primitive available on both.
 ///
-/// The two other long-lived children are supervised by the same DISCIPLINE at their own
-/// ownership boundary, not through this handle:
-///   - the peers side-car ([`crate::sidecar::Sidecar`]) is the IN-PROCESS instance - its
-///     own `Drop` stops and joins its collector thread;
+/// The other long-lived child is supervised by the same DISCIPLINE at its own ownership
+/// boundary, not through this handle:
 ///   - `rigger serve` is spawned ONLY by the Node shim over an stdio transport, so the
 ///     Rust conductor never holds its `Child` to wrap in a Rust guard. Its
 ///     kill-on-parent-exit is STRUCTURAL: [`crate::mcpserver::Server::run`] serves only
@@ -78,9 +76,8 @@ mod supervised_lifecycle {
     //! after its guard is dropped / the driver exits, so a normally-finishing OR
     //! crashing agent leaves no orphaned `rigger` process. The standalone-`rigger dash`
     //! proof the criterion names lives in `tests/cli.rs` (it needs the compiled binary);
-    //! these hermetic tests prove the SAME [`ReapedChild`] discipline generically - on a
-    //! stand-in child on the CRASH path, and on the always-present in-process child, the
-    //! peers [`crate::sidecar::Sidecar`].
+    //! these hermetic tests prove the SAME [`ReapedChild`] discipline generically, on a
+    //! stand-in child on the CRASH path.
     use super::ReapedChild;
     use std::time::Duration;
 
@@ -130,32 +127,5 @@ mod supervised_lifecycle {
             .recv_timeout(Duration::from_secs(5))
             .expect("a panic-unwound ReapedChild did not reap its process");
         assert_eq!(n, 0, "a reaped child's stdout should be at EOF");
-    }
-
-    #[test]
-    fn dropping_the_peers_sidecar_reaps_its_collector_thread() {
-        use crate::eventstore::sqlite::Store;
-        use crate::eventstore::Filter;
-        use crate::sidecar::Sidecar;
-        use std::sync::mpsc;
-
-        let store = Store::open(":memory:").unwrap();
-        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
-
-        // The peers side-car is the in-process instance of the supervised lifecycle: its
-        // Drop sets the stop flag and JOINS the collector thread. Prove the join returns
-        // (the thread saw stop and ended) rather than leaking - drop on a helper thread
-        // and require it to complete within a bound. A leaked collector would hang the
-        // join forever and the recv would time out.
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            drop(sidecar);
-            let _ = tx.send(());
-        });
-        assert!(
-            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
-            "dropping the peers side-car did not reap (join) its collector thread"
-        );
-        drop(store);
     }
 }

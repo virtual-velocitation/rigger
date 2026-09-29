@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use super::{
     from_nanos, to_nanos, Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter,
-    Position, Revision, Subscription, NO_STREAM,
+    Position, Revision, Subscription, TypeSelection, NO_STREAM,
 };
 
 /// The envelope carrying Rigger's metadata and valid-time in KurrentDB's custom
@@ -206,12 +206,68 @@ fn to_event(rec: &RecordedEvent, filter: &Filter) -> Option<Event> {
     })
 }
 
+/// The server-side `$all` event-type filter a typed read hands the server (spec 101): `Only`
+/// matches exactly the named types, `Except` every type but the named ones and never a system
+/// (`$`) type, so a refused event - a derived one, or a link or metadata record - never leaves
+/// the server. Rigger's type names are plain identifiers, so each matches only itself.
+fn typed_read_filter(selection: TypeSelection) -> String {
+    match selection {
+        TypeSelection::Only(types) => format!("^(?:{})$", types.join("|")),
+        TypeSelection::Except(types) => format!("^(?!\\$)(?!(?:{})$)", types.join("|")),
+    }
+}
+
+/// The `$all` read a typed read drives from `start`: forward, filtered by the server on event
+/// type ([`typed_read_filter`]).
+fn typed_read_options(
+    start: StreamPosition<KdbPosition>,
+    selection: TypeSelection,
+) -> ReadAllOptions {
+    ReadAllOptions::default()
+        .position(start)
+        .forwards()
+        .filter(SubscriptionFilter::on_event_type().regex(typed_read_filter(selection)))
+}
+
+/// Where a typed read from revision `from` starts in `$all`: the log's start for a `from` of 0 (or
+/// below), else the position of the event at that revision, which `anchor` reads back (one event)
+/// - `None` when the stream holds no such event, so the read has nothing to hand back.
+fn typed_read_start(
+    from: Revision,
+    anchor: impl FnOnce() -> Result<Option<Position>, Error>,
+) -> Result<Option<StreamPosition<KdbPosition>>, Error> {
+    if from > 0 {
+        Ok(anchor()?.map(all_position))
+    } else {
+        Ok(Some(StreamPosition::Start))
+    }
+}
+
+/// The events of `stream` among a typed read's `(stream id, record)` pulls, in pull order: a
+/// record of another stream is refused on its stream id BEFORE `decode` ever sees it, and a pull
+/// the server failed ends the read in that failure.
+fn records_of<R>(
+    pulls: impl IntoIterator<Item = Result<(String, R), kurrentdb::Error>>,
+    stream: &str,
+    decode: impl Fn(&R) -> Option<Event>,
+) -> Result<Vec<Event>, Error> {
+    let mut out = Vec::new();
+    for pull in pulls {
+        let (id, record) =
+            pull.map_err(|e| Error::Backend(format!("kurrentdb: read typed: {e}")))?;
+        if id == stream {
+            out.extend(decode(&record));
+        }
+    }
+    Ok(out)
+}
+
 impl Store {
     /// Read a stream forward from `from` (inclusive revision), stopping once `limit`
-    /// events have been collected. This is the ONE read this adapter drives: the port's
-    /// `read_stream` passes `usize::MAX` (no bound) and the append's position read-back
-    /// passes the batch size, so a read-back after a big append never walks a whole
-    /// stream.
+    /// events have been collected. This is the ONE stream read this adapter drives: the
+    /// port's `read_stream` passes `usize::MAX` (no bound), and the append's position
+    /// read-back and a typed read's anchor pass the few events they need, so neither ever
+    /// walks a whole stream.
     fn read_forward(
         &self,
         stream: &str,
@@ -568,6 +624,44 @@ impl EventStore for Store {
             }
         }
     }
+
+    /// A `$all` read the SERVER filters on event type ([`typed_read_filter`]), so a type the
+    /// selection refuses never leaves it, started at the `$all` position of the event at
+    /// revision `from` ([`typed_read_start`]) so the read is anchored on that event; another
+    /// stream's record is refused on its stream id before it is decoded ([`records_of`]).
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        let anchor = || {
+            Ok(self
+                .read_forward(stream, from, 1)?
+                .first()
+                .map(|event| event.position))
+        };
+        let Some(start) = typed_read_start(from, anchor)? else {
+            return Ok(Vec::new());
+        };
+        let mut rs = self
+            .rt
+            .block_on(self.client.read_all(&typed_read_options(start, selection)))
+            .map_err(|e| Error::Backend(format!("kurrentdb: read typed: {e}")))?;
+        let pulls =
+            std::iter::from_fn(|| self.rt.block_on(rs.next()).transpose()).filter_map(|pulled| {
+                pulled
+                    .map(|ev| {
+                        original(&ev)
+                            .map(|rec| rec.stream_id().to_string())
+                            .map(|id| (id, ev))
+                    })
+                    .transpose()
+            });
+        records_of(pulls, stream, |ev| {
+            original(ev).and_then(|rec| to_event(rec, &Filter::default()))
+        })
+    }
 }
 
 /// The boundary scan over a newest-first read's `(event type, revision)` records: the revision
@@ -699,6 +793,91 @@ mod ack {
     }
 }
 
+/// The server-side filter a typed read hands KurrentDB is pinned WITHOUT a server: the exact
+/// pattern for each selection shape, since the server - never this adapter - applies it.
+#[cfg(test)]
+mod typed_filter {
+    use super::*;
+
+    crate::test_cases! {
+        only_matches_exactly_the_named_types: assert_eq!(
+            typed_read_filter(TypeSelection::Only(&["DecisionMade", "LessonLearned"])),
+            "^(?:DecisionMade|LessonLearned)$"
+        );
+        except_refuses_the_named_types_and_every_system_type: assert_eq!(
+            typed_read_filter(TypeSelection::Except(&["EdgeInferred", "DocLinkExtracted"])),
+            "^(?!\\$)(?!(?:EdgeInferred|DocLinkExtracted)$)"
+        );
+    }
+
+    /// A read from revision 0 (or below) starts at the log's start without reading any anchor;
+    /// a later revision starts at its event's `$all` position, and a revision the stream never
+    /// reached starts nowhere.
+    #[test]
+    fn a_typed_read_starts_at_the_log_start_or_at_its_anchor_event() {
+        let unread = || -> Result<Option<Position>, Error> {
+            panic!("a read from the stream's start reads no anchor")
+        };
+        assert_eq!(
+            typed_read_start(0, unread).unwrap(),
+            Some(StreamPosition::Start)
+        );
+        assert_eq!(
+            typed_read_start(-1, unread).unwrap(),
+            Some(StreamPosition::Start)
+        );
+        assert_eq!(
+            typed_read_start(3, || Ok(Some(4096))).unwrap(),
+            Some(StreamPosition::Position(KdbPosition {
+                commit: 4096,
+                prepare: 4096
+            }))
+        );
+        assert_eq!(typed_read_start(3, || Ok(None)).unwrap(), None);
+        assert!(typed_read_start(3, || Err(Error::Backend("down".into()))).is_err());
+    }
+
+    /// Only the named stream's records are decoded and kept, in pull order; another stream's
+    /// record never reaches the decoder, and a failed pull ends the read in that failure.
+    #[test]
+    fn a_typed_read_decodes_only_the_named_streams_records() {
+        let pull = |stream: &str, n: u8| -> Result<(String, u8), kurrentdb::Error> {
+            Ok((stream.to_string(), n))
+        };
+        let decode = |n: &u8| -> Option<Event> {
+            assert_ne!(*n, 9, "another stream's record reached the decoder");
+            Some(Event::new("E", vec![*n]))
+        };
+        let kept = records_of(
+            vec![
+                pull("s", 1),
+                pull("other", 9),
+                pull("s", 2),
+                pull("s-longer", 9),
+            ],
+            "s",
+            decode,
+        )
+        .unwrap();
+        assert_eq!(
+            kept.iter().map(|e| e.data.clone()).collect::<Vec<_>>(),
+            [vec![1], vec![2]]
+        );
+        let failed = records_of(
+            vec![pull("s", 1), Err(kurrentdb::Error::ResourceNotFound)],
+            "s",
+            decode,
+        );
+        assert!(
+            failed
+                .unwrap_err()
+                .to_string()
+                .contains("kurrentdb: read typed"),
+            "the failure names the typed read"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,11 +933,93 @@ mod tests {
             let store = store.expect("KurrentDB never became ready");
             wait_ready(&store);
             crate::eventstore::contract::assert_contract(&store);
+            the_server_hands_a_typed_read_only_the_selected_types(&store);
         }));
         let _ = rt.block_on(container.rm());
         if let Err(e) = result {
             std::panic::resume_unwind(e);
         }
+    }
+
+    /// WHAT THE BACKEND HANDS OVER (spec 101): the `$all` read a typed read drives is filtered by
+    /// the SERVER, so every record that leaves it - on any stream - is of a type the selection
+    /// admits and never a system (`$`) type; the refused types never cross the wire, and the
+    /// adapter then keeps only the named stream's share.
+    fn the_server_hands_a_typed_read_only_the_selected_types(store: &Store) {
+        let at = |t: &str| Event::new(t, b"{}".to_vec());
+        store
+            .append(
+                "k-handed",
+                ExpectedRevision::Any,
+                &[at("KLesson"), at("KDerived"), at("KWork"), at("KDerived")],
+            )
+            .unwrap();
+        store
+            .append(
+                "k-handed-sibling",
+                ExpectedRevision::Any,
+                &[at("KWork"), at("KDerived"), at("KLesson")],
+            )
+            .unwrap();
+        let handed_over = |selection: TypeSelection| -> Vec<(String, String)> {
+            store.rt.block_on(async {
+                let mut rs = store
+                    .client
+                    .read_all(&typed_read_options(StreamPosition::Start, selection))
+                    .await
+                    .unwrap();
+                let mut out = Vec::new();
+                while let Some(ev) = rs.next().await.unwrap() {
+                    let rec = original(&ev).unwrap();
+                    if rec.stream_id().starts_with("k-handed") {
+                        out.push((rec.stream_id().to_string(), rec.event_type.clone()));
+                    }
+                    assert!(
+                        !rec.event_type.starts_with('$'),
+                        "no system record leaves the server: {}",
+                        rec.event_type
+                    );
+                }
+                out
+            })
+        };
+        let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|(s, t)| (s.to_string(), t.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            handed_over(TypeSelection::Only(&["KLesson", "KWork"])),
+            pairs(&[
+                ("k-handed", "KLesson"),
+                ("k-handed", "KWork"),
+                ("k-handed-sibling", "KWork"),
+                ("k-handed-sibling", "KLesson"),
+            ]),
+            "Only: the server hands over the named types alone"
+        );
+        let except = handed_over(TypeSelection::Except(&["KDerived"]));
+        assert_eq!(
+            except,
+            pairs(&[
+                ("k-handed", "KLesson"),
+                ("k-handed", "KWork"),
+                ("k-handed-sibling", "KWork"),
+                ("k-handed-sibling", "KLesson"),
+            ]),
+            "Except: the server never hands over a refused type"
+        );
+        let kept: Vec<String> = store
+            .read_stream_typed("k-handed", 1, TypeSelection::Except(&["KDerived"]))
+            .unwrap()
+            .into_iter()
+            .map(|e| e.type_)
+            .collect();
+        assert_eq!(
+            kept,
+            ["KWork"],
+            "the adapter keeps the named stream's share from the anchor event on"
+        );
     }
 
     /// The records a backward read hands back, newest first, as `(event type, revision)`.

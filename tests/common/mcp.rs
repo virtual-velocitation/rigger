@@ -78,26 +78,13 @@ impl McpSession {
             .collect()
     }
 
-    /// `rigger_peers`, polled until it reports a decision. `Sidecar::start` (spec 92,
-    /// criterion 4's `cmd_mcp`) collects the store's backlog on a background thread polling
-    /// every 50ms (crates/rigger-driver/src/sidecar.rs); a call issued before that thread's first poll fires sees an
-    /// empty backlog, so this polls (bounded, never a fixed sleep) instead of trusting the very
-    /// first call.
+    /// `rigger_peers`: each call reads the store afresh from the run's boundary (spec 101), so
+    /// the first call already sees every decision recorded before it.
     pub fn peers(&mut self) -> serde_json::Value {
-        use std::time::{Duration, Instant};
-
-        let peers_args = serde_json::json!({"name": "rigger_peers", "arguments": {}});
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut peers = self.call("tools/call", peers_args.clone());
-        while peers["result"]["structuredContent"]["decisions"]
-            .as_array()
-            .is_none_or(Vec::is_empty)
-            && Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(20));
-            peers = self.call("tools/call", peers_args.clone());
-        }
-        peers
+        self.call(
+            "tools/call",
+            serde_json::json!({"name": "rigger_peers", "arguments": {}}),
+        )
     }
 
     /// Close stdin - the EOF that lets `mcpserver::Server::run`'s read loop finish and the

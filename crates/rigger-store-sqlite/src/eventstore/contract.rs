@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use super::{Direction, Error, Event, EventStore, ExpectedRevision, Filter};
+use super::{Direction, Error, Event, EventStore, ExpectedRevision, Filter, TypeSelection};
 
 /// Run every contract check against a store, panicking on any violation.
 pub fn assert_contract(store: &dyn EventStore) {
@@ -27,6 +27,96 @@ pub fn assert_contract(store: &dyn EventStore) {
     append_of_one_event_answers_the_position_the_store_holds_it(store);
     append_of_no_events_reports_nothing(store);
     last_position_answers_the_newest_boundary_without_reading_the_stream(store);
+    typed_read_hands_back_only_the_selected_types_from_a_revision(store);
+}
+
+/// THE TYPED READ (spec 101): `read_stream_typed` hands back exactly the events of THAT stream,
+/// from the event at revision `from` (inclusive), whose type the selection admits, in log order:
+/// `Only` the named types, or every type `Except` the named ones, and nothing else, so a refused
+/// event is never materialized for the caller.
+fn typed_read_hands_back_only_the_selected_types_from_a_revision(store: &dyn EventStore) {
+    let at = |t: &str| Event::new(t, b"{}".to_vec());
+    store
+        .append(
+            "c-typed",
+            ExpectedRevision::NoStream,
+            &[
+                at("Lesson"),
+                at("Derived"),
+                at("Work"),
+                at("Lesson"),
+                at("Derived"),
+                at("Other"),
+                at("Work"),
+            ],
+        )
+        .expect("the fixture stream appends");
+    store
+        .append(
+            "c-typed-sibling",
+            ExpectedRevision::NoStream,
+            &[at("Lesson"), at("Work")],
+        )
+        .expect("the sibling stream appends");
+    let read = |from, selection| -> Vec<(String, i64)> {
+        store
+            .read_stream_typed("c-typed", from, selection)
+            .unwrap_or_else(|e| panic!("the typed read must succeed: {e}"))
+            .into_iter()
+            .map(|e| {
+                assert_eq!(e.stream, "c-typed", "only the named stream is read");
+                (e.type_, e.revision)
+            })
+            .collect()
+    };
+    let pairs = |v: &[(&str, i64)]| -> Vec<(String, i64)> {
+        v.iter().map(|(t, r)| (t.to_string(), *r)).collect()
+    };
+    assert_eq!(
+        read(0, TypeSelection::Only(&["Lesson", "Work"])),
+        pairs(&[("Lesson", 0), ("Work", 2), ("Lesson", 3), ("Work", 6)]),
+        "Only hands back the named types, in revision order"
+    );
+    assert_eq!(
+        read(3, TypeSelection::Only(&["Lesson"])),
+        pairs(&[("Lesson", 3)]),
+        "the from revision is inclusive and bounds the Only read"
+    );
+    assert_eq!(
+        read(2, TypeSelection::Except(&["Derived", "Lesson"])),
+        pairs(&[("Work", 2), ("Other", 5), ("Work", 6)]),
+        "Except refuses the named types from an inclusive from revision"
+    );
+    assert_eq!(
+        read(0, TypeSelection::Except(&[])),
+        pairs(&[
+            ("Lesson", 0),
+            ("Derived", 1),
+            ("Work", 2),
+            ("Lesson", 3),
+            ("Derived", 4),
+            ("Other", 5),
+            ("Work", 6),
+        ]),
+        "an Except naming nothing is the whole stream"
+    );
+    assert_eq!(
+        read(0, TypeSelection::Only(&["Absent"])),
+        pairs(&[]),
+        "a type the stream never recorded selects nothing"
+    );
+    assert_eq!(
+        read(7, TypeSelection::Except(&[])),
+        pairs(&[]),
+        "a revision past the stream's last reads nothing"
+    );
+    assert!(
+        store
+            .read_stream_typed("c-typed-never-written", 0, TypeSelection::Except(&[]))
+            .expect("a missing stream reads empty")
+            .is_empty(),
+        "a stream that does not exist reads empty"
+    );
 }
 
 /// THE BOUNDARY IS A QUERY (spec 101): the newest event of a type on a stream is answered by the

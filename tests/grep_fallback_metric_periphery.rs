@@ -44,7 +44,7 @@ use common::fixtures::positioned;
 use rigger::contextgraph::Graph;
 use rigger::dash::{build_state, state_json};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::Event;
 use rigger::metrics::grep_fallbacks;
 use rigger::progress::{self, AgentProgress, GREP_FALLBACK_PREFIX};
 use rigger::progress_store;
@@ -147,10 +147,8 @@ fn the_recorded_writer_wire_form_round_trips_into_the_counter() {
     )
     .unwrap();
 
-    // Read the exact bytes the writer stored, off the progress stream.
-    let stored = store
-        .read_stream(progress::STREAM, 0, Direction::Forward)
-        .unwrap();
+    // Read the exact bytes the writer stored, off the run's progress stream.
+    let stored = progress::read_run(&store, run_id).unwrap();
     assert_eq!(
         stored.len(),
         3,
