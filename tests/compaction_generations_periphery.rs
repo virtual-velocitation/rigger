@@ -4345,9 +4345,7 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
         out.lines()
             .filter(|l| l.starts_with("rebuilding graph.db"))
             .collect::<Vec<_>>(),
-        vec![
-            LOST_FOLD_REBUILD_LINE
-        ],
+        vec![LOST_FOLD_REBUILD_LINE],
         "setup names the cause the graph owes its rebuild for - the lost fold, not an older \
          rule; stdout: {out}"
     );
@@ -4458,13 +4456,21 @@ fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_t
     let graph_db = rigger_file(root, "graph.db");
     let mark = rigger_file(root, "graph.db.owed");
     let rigger_dir = graph_db.parent().unwrap().to_path_buf();
-    // The log's write-ahead files stay in place while this is open, so the append needs no new
-    // file in the directory the mark cannot be written to.
-    let log_holder = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
+    // Both files' write-ahead files stay in place while these are open, so the append and the
+    // lock need no new file in the directory the mark cannot be written to.
+    let keepers = [rigger_file(root, "events.db"), graph_db.clone()].map(|db| {
+        let keeper = rusqlite::Connection::open(db).unwrap();
+        keeper
+            .query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap();
+        keeper
+    });
     std::fs::set_permissions(&rigger_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
     let (out, err, ok) = with_graph_locked(&graph_db, || emit_decision(root, "d-lost"));
     std::fs::set_permissions(&rigger_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    drop(log_holder);
+    drop(keepers);
     let lost = read_run_events(root).last().unwrap().position;
     let prefix = format!(
         "emitted DecisionMade (position {lost}); not folded into the context graph: graph: \
