@@ -6525,7 +6525,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"migrate\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "4bca6d59dc18d288"
+    "content_hash": "8eb3a2eeb73af721"
   },
   {
     "file": "src/cli/mod.rs",
