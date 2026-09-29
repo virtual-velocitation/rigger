@@ -27,11 +27,12 @@ mod common;
 
 #[cfg(feature = "symbols")]
 use common::fixtures::minted_events as minted;
+use common::fixtures::reference_replay_keys;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
 use rigger::eventstore::Event;
-use rigger::ingest::{derived_key_spans, project_scoped_latest_generations, META_REPLAY_KEY};
+use rigger::ingest::{derived_key_spans, META_REPLAY_KEY};
 
 /// The published spans as the two slices they name, for readable assertions. It cuts what
 /// `derived_key_spans` returns and computes nothing of its own, so a disagreement between this and
@@ -230,12 +231,7 @@ fn the_suppression_predicate_groups_by_the_published_spans() {
          test cannot pass by making both sides empty"
     );
 
-    let kept: BTreeSet<String> = project_scoped_latest_generations(&recorded)
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
+    let kept: BTreeSet<String> = reference_replay_keys(&recorded);
     let kept: BTreeSet<&str> = kept.iter().map(String::as_str).collect();
 
     assert_eq!(

@@ -41,9 +41,7 @@ use rigger::contextgraph::{
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use rigger::eventstore::Event;
-use rigger::ingest::{
-    is_derived_index_type, project_scoped_latest_generations, DERIVED_INDEX_TYPES,
-};
+use rigger::ingest::{is_derived_index_type, DERIVED_INDEX_TYPES};
 use std::collections::BTreeSet;
 
 /// An event of `type_` carrying `key` in the replay-key metadata slot - the exact shape both ingest
@@ -152,11 +150,7 @@ fn no_non_derived_event_is_eligible_however_its_replay_key_is_spelled() {
         .collect();
 
     assert!(
-        project_scoped_latest_generations(&stream)
-            .into_values()
-            .flat_map(|(_, keys)| keys)
-            .collect::<std::collections::HashSet<String>>()
-            .is_empty(),
+        reference_replay_keys(&stream).is_empty(),
         "no non-derived event may contribute a suppression key - the type test is asked first, so \
          a domain fact whose replay key is spelled like a content key is still passed over"
     );
@@ -174,14 +168,8 @@ fn the_predicate_is_a_pure_function_of_the_recorded_stream() {
         keyed(TYPE_DOC_LINK_EXTRACTED, "gd/docs/a.md@h9#0"),
     ];
 
-    let first = project_scoped_latest_generations(&stream)
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>();
-    let second = project_scoped_latest_generations(&stream)
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>();
+    let first = reference_replay_keys(&stream);
+    let second = reference_replay_keys(&stream);
 
     assert_eq!(
         first, second,
@@ -189,19 +177,11 @@ fn the_predicate_is_a_pure_function_of_the_recorded_stream() {
          run and a cold build from disagreeing about what a fresh emit is redundant against"
     );
     assert!(
-        project_scoped_latest_generations(&[])
-            .into_values()
-            .flat_map(|(_, keys)| keys)
-            .collect::<std::collections::HashSet<String>>()
-            .is_empty(),
+        reference_replay_keys(&[]).is_empty(),
         "an empty stream suppresses nothing"
     );
     assert!(
-        project_scoped_latest_generations(&[Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new())])
-            .into_values()
-            .flat_map(|(_, keys)| keys)
-            .collect::<std::collections::HashSet<String>>()
-            .is_empty(),
+        reference_replay_keys(&[Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new())]).is_empty(),
         "a derived event with no replay key at all names no generation, so it suppresses nothing"
     );
 }
@@ -248,12 +228,7 @@ fn derived_keys_recorded_by_an_earlier_run_still_seed_the_next_run() {
     stream.push(keyed(TYPE_DOC_CONCEPT_EXTRACTED, "gd/docs/moving.md@h2#0"));
     stream.push(keyed(TYPE_DOC_LINK_EXTRACTED, "gd/docs/moving.md@h2#1"));
 
-    let seed: BTreeSet<String> = project_scoped_latest_generations(&stream)
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
+    let seed: BTreeSet<String> = reference_replay_keys(&stream);
 
     // DIRECTION ONE - the untouched file's generation was recorded by the EARLIER run and must
     // still suppress. Scope the read to the current run and this set is missing it, so the file's
@@ -337,12 +312,7 @@ fn the_replay_key_metadata_name_is_one_name_owned_beside_the_key_authority() {
                 .with_meta(rigger::ingest::META_REPLAY_KEY, key),
         ),
     ] {
-        let seen: BTreeSet<String> = project_scoped_latest_generations(&[event])
-            .into_values()
-            .flat_map(|(_, keys)| keys)
-            .collect::<std::collections::HashSet<String>>()
-            .into_iter()
-            .collect();
+        let seen: BTreeSet<String> = reference_replay_keys(&[event]);
         assert_eq!(
             seen, expected,
             "the suppression predicate must read a key stamped through {via}; a stamping half and \
@@ -463,12 +433,7 @@ fn every_content_key_the_walk_actually_mints_round_trips_through_the_predicate()
         "sanity: the design half of the derived index must have minted keys; got {keys:?}"
     );
 
-    let suppressed: BTreeSet<String> = project_scoped_latest_generations(&as_recorded(&recorded))
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
+    let suppressed: BTreeSet<String> = reference_replay_keys(&as_recorded(&recorded));
 
     assert_eq!(
         suppressed, keys,
@@ -520,12 +485,7 @@ fn a_real_batchs_generation_is_recovered_from_the_key_the_walk_minted() {
         "sanity: the edited source file must mint a fresh code batch"
     );
 
-    let suppressed: BTreeSet<String> = project_scoped_latest_generations(&recorded_before)
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
+    let suppressed: BTreeSet<String> = reference_replay_keys(&recorded_before);
 
     assert!(
         new_code_keys.is_disjoint(&suppressed),
@@ -572,12 +532,7 @@ fn two_real_files_under_at_sign_paths_keep_two_batch_identities_end_to_end() {
          whole premise of splitting the key from the right; got {keys:?}"
     );
 
-    let suppressed: BTreeSet<String> = project_scoped_latest_generations(&as_recorded(&recorded))
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
+    let suppressed: BTreeSet<String> = reference_replay_keys(&as_recorded(&recorded));
     assert_eq!(
         suppressed, keys,
         "every file's own minted keys must survive: no file's batch may retire another's because \
@@ -638,6 +593,7 @@ use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 #[cfg(feature = "symbols")]
 use common::fixtures::minted_events;
+use common::fixtures::reference_replay_keys;
 
 /// INTEGRATION, at the crate boundary the binary crosses: the cold `graph build` sink and the run's
 /// seeding are two processes that must agree, and this criterion makes them agree by sharing ONE
@@ -662,12 +618,7 @@ fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
     );
 
     let log = read_run_events(root);
-    let suppressed: BTreeSet<String> = project_scoped_latest_generations(&log)
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
+    let suppressed: BTreeSet<String> = reference_replay_keys(&log);
     assert_eq!(
         suppressed,
         minted_keys(root),
@@ -917,12 +868,7 @@ fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_chan
     // live. The predicate over the log is the shipped read of "what is already recorded", so this
     // equality is the net contract itself: the edited file's superseded generation is retired, the
     // skipped files' generations are still there whole, and nothing else is live.
-    let live: BTreeSet<String> = project_scoped_latest_generations(&read_run_events(root))
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect();
+    let live: BTreeSet<String> = reference_replay_keys(&read_run_events(root));
     assert_eq!(
         live, tree_now,
         "after a mix of skipping and re-ingest the live suppression set must be exactly the tree's \

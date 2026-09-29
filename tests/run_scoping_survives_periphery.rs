@@ -35,6 +35,7 @@
 mod common;
 
 use common::fixtures::count_of_type;
+use common::fixtures::reference_replay_keys;
 use common::fixtures::run_log;
 use common::fixtures::NoopDriver;
 use rigger::conductor::{run, Deps, META_REPLAY_KEY};
@@ -43,7 +44,6 @@ use rigger::contextgraph::{TYPE_EDGE_INFERRED, TYPE_GATE_VERDICT};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::Event;
 use rigger::gate::ExecRunner;
-use rigger::ingest::project_scoped_latest_generations;
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
 use rigger::run::{current_run, TYPE_RUN_STARTED};
 use std::collections::BTreeSet;
@@ -231,10 +231,7 @@ fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_th
         .iter()
         .map(|k| Event::new(TYPE_EDGE_INFERRED, Vec::new()).with_meta(META_REPLAY_KEY, k))
         .collect();
-    let eligible = project_scoped_latest_generations(&as_derived)
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>();
+    let eligible = reference_replay_keys(&as_derived);
     let missed: Vec<&String> = verdict_keys
         .iter()
         .filter(|k| !eligible.contains(*k))
@@ -250,16 +247,9 @@ fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_th
     // events, the predicate offers nothing at all. No domain or lifecycle event a run records
     // contributes a key to the project-scoped arm of the seed, however its key is spelled.
     assert!(
-        project_scoped_latest_generations(&log)
-            .into_values()
-            .flat_map(|(_, keys)| keys)
-            .collect::<std::collections::HashSet<String>>()
-            .is_empty(),
+        reference_replay_keys(&log).is_empty(),
         "a non-derived event is ineligible for the project-scoped arm of the seed whatever its \
          key looks like; over a real run's log the predicate returned {:?}",
-        project_scoped_latest_generations(&log)
-            .into_values()
-            .flat_map(|(_, keys)| keys)
-            .collect::<std::collections::HashSet<String>>()
+        reference_replay_keys(&log)
     );
 }

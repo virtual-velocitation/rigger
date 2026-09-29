@@ -55,6 +55,7 @@ use common::git::run_git;
 use common::cli::ingested_count;
 use common::cli::read_run_events;
 use common::cli::run_rigger;
+use common::fixtures::reference_replay_keys;
 
 /// Drive `graph build` in `root` and return what it reported ingesting, failing loudly rather than
 /// letting a non-zero exit read as a zero-ingest.
@@ -98,12 +99,7 @@ fn temp_churn_project() -> tempfile::TempDir {
 /// The LIVE suppression set the shipped predicate returns over the log the binary wrote: each
 /// file's latest recorded generation only, which is exactly what the next build will skip.
 fn live_suppression_set(root: &std::path::Path) -> BTreeSet<String> {
-    rigger::ingest::project_scoped_latest_generations(&read_run_events(root))
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
-        .collect()
+    reference_replay_keys(&read_run_events(root))
 }
 
 /// The derived-index replay keys the recorded stream carries FOR ONE FILE, in append order.

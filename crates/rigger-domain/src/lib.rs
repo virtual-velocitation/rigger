@@ -70,6 +70,10 @@ mod event_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]
 mod graph_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/ingest.rs"]
+mod ingest_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
@@ -78,5 +82,7 @@ mod spawn_fixtures;
 mod test_support {
     pub use crate::event_fixtures::*;
     pub use crate::graph_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::ingest_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

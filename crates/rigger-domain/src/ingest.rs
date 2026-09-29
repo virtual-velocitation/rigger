@@ -245,13 +245,14 @@ pub fn project_scoped_latest_generations(
 /// is criterion 3's.
 #[cfg(test)]
 mod dedup_tests {
-    use super::{derived_key_parts, project_scoped_latest_generations, META_REPLAY_KEY};
+    use super::{derived_key_parts, META_REPLAY_KEY};
     use crate::contextgraph::{
         TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
         TYPE_REVIEW_FINDING,
     };
     use crate::eventstore::Event;
-    use std::collections::HashSet;
+    use crate::test_support::reference_replay_keys;
+    use std::collections::BTreeSet;
 
     fn keyed(type_: &str, key: &str) -> Event {
         Event::new(type_, Vec::new()).with_meta(META_REPLAY_KEY, key)
@@ -280,14 +281,11 @@ mod dedup_tests {
             Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new()),
         ];
 
-        let keys = project_scoped_latest_generations(&stream)
-            .into_values()
-            .flat_map(|(_, keys)| keys)
-            .collect::<std::collections::HashSet<String>>();
+        let keys = reference_replay_keys(&stream);
 
         assert_eq!(
             keys,
-            HashSet::from([
+            BTreeSet::from([
                 "gc/src/a.rs@h2#0".to_string(),
                 "gd/src/a.rs@h1#0".to_string(),
                 "gc/we@ird#1/x.rs@h3#0".to_string(),
@@ -303,11 +301,7 @@ mod dedup_tests {
             "a domain event is ineligible however its replay key is spelled"
         );
         assert!(
-            project_scoped_latest_generations(&[])
-                .into_values()
-                .flat_map(|(_, keys)| keys)
-                .collect::<std::collections::HashSet<String>>()
-                .is_empty(),
+            reference_replay_keys(&[]).is_empty(),
             "an empty stream suppresses nothing"
         );
     }
@@ -329,11 +323,8 @@ mod dedup_tests {
         ];
 
         assert_eq!(
-            project_scoped_latest_generations(&stream)
-                .into_values()
-                .flat_map(|(_, keys)| keys)
-                .collect::<std::collections::HashSet<String>>(),
-            HashSet::from([
+            reference_replay_keys(&stream),
+            BTreeSet::from([
                 "gc/vendor/pkg@1.2.3/a.rs@h1#0".to_string(),
                 "gc/vendor/pkg@1.2.3/a.rs@h1#1".to_string(),
                 "gc/vendor/pkg@4.5.6/b.rs@h2#0".to_string(),
@@ -381,11 +372,7 @@ mod dedup_tests {
                 "{key:?} is not the content-key shape, so it names no batch identity"
             );
             assert!(
-                project_scoped_latest_generations(&[keyed(TYPE_CODE_ENTITY_EXTRACTED, key)])
-                    .into_values()
-                    .flat_map(|(_, keys)| keys)
-                    .collect::<std::collections::HashSet<String>>()
-                    .is_empty(),
+                reference_replay_keys(&[keyed(TYPE_CODE_ENTITY_EXTRACTED, key)]).is_empty(),
                 "{key:?} must suppress nothing - a key we cannot parse re-emits (fail-safe)"
             );
         }

@@ -19860,10 +19860,7 @@ mod tests {
         let as_derived = Event::new(contextgraph::TYPE_EDGE_INFERRED, Vec::new())
             .with_meta(META_REPLAY_KEY, &verdict_key);
         assert!(
-            crate::ingest::project_scoped_latest_generations(std::slice::from_ref(&as_derived))
-                .into_values()
-                .flat_map(|(_, keys)| keys)
-                .collect::<std::collections::HashSet<String>>()
+            crate::test_support::reference_replay_keys(std::slice::from_ref(&as_derived))
                 .contains(&verdict_key),
             "the fixture is vacuous unless {verdict_key} really parses as a \
              <prefix>/<file>@<hash>#<i> content key - fix the fixture, not this assertion"
@@ -19872,17 +19869,10 @@ mod tests {
         // offers nothing at all. Type first - the key never reaches the comparison, so the
         // project-scoped arm of the seed never reads a non-derived event's key, however spelled.
         assert!(
-            crate::ingest::project_scoped_latest_generations(&after_two)
-                .into_values()
-                .flat_map(|(_, keys)| keys)
-                .collect::<std::collections::HashSet<String>>()
-                .is_empty(),
+            crate::test_support::reference_replay_keys(&after_two).is_empty(),
             "a non-derived event is ineligible for the project-scoped arm of the seed whatever \
              its key looks like; the predicate returned {:?}",
-            crate::ingest::project_scoped_latest_generations(&after_two)
-                .into_values()
-                .flat_map(|(_, keys)| keys)
-                .collect::<std::collections::HashSet<String>>()
+            crate::test_support::reference_replay_keys(&after_two)
         );
     }
 
