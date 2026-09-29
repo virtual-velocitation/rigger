@@ -2297,6 +2297,7 @@ fn rebuild(
     rigger::contextgraph::sqlite::Projector::rebuild(
         db.to_str().unwrap(),
         PROJECT,
+        false,
         source,
         &mut no_progress,
     )
@@ -2334,6 +2335,7 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     let ran = Projector::rebuild(
         old_db.to_str().unwrap(),
         PROJECT,
+        false,
         &mut source_over(&log, 2, &afters),
         &mut |at| reported.push(at),
     )
@@ -3102,7 +3104,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
 }
 
 /// Given a `graph.db` that owes its rebuild for both causes at once - the release before the
-/// generation rule folded it, and a fold into it failed - when the operator runs `rigger setup`,
+/// generation rule folded it, and it misses an event the log holds - when the operator runs `rigger setup`,
 /// then setup names both causes in order, pays both with its one rebuild (the lost fold's mark is
 /// gone and the file records the current rule), and a second `rigger setup` owes nothing.
 #[test]
@@ -3118,7 +3120,7 @@ fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both(
             .collect::<Vec<_>>(),
         vec![
             "rebuilding graph.db from the event log: it was folded under an older fold rule, and \
-             a fold into it failed, so the log's live selection is refolded once"
+             it misses an event the log holds, so the log's live selection is refolded once"
         ],
         "setup names the older rule first and the lost fold second; stdout: {out}"
     );
@@ -3276,6 +3278,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
             let ran = Projector::rebuild(
                 graph_db.to_str().unwrap(),
                 &project,
+                false,
                 &mut source,
                 &mut |_| {
                     batches += 1;
@@ -3327,6 +3330,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     let second = Projector::rebuild(
         store.graph_db.to_str().unwrap(),
         &store.project(),
+        false,
         &mut |_, _| panic!("a rebuild refused as busy reads nothing"),
         &mut |_| {},
     );
@@ -3651,6 +3655,33 @@ fn the_live_selection_is_one_projects_stream_with_that_streams_head() {
         Vec::<(Vec<u64>, u64)>::new(),
         "a project with no run stream hands nothing"
     );
+    assert_eq!(
+        (
+            live_positions(&backend, PROJECT, 2),
+            live_positions(&backend, other, 1),
+            live_positions(&backend, "proj-absent", 2)
+        ),
+        (vec![vec![m[1], m[2]]], vec![vec![t[1]], vec![t[2]]], vec![]),
+        "the positions alone are the same selection, batch for batch"
+    );
+}
+
+/// The batches of positions `backend`'s live selection of `project` hands in batches of `batch`.
+fn live_positions(backend: &Store, project: &str, batch: usize) -> Vec<Vec<u64>> {
+    let mut handed = Vec::new();
+    backend
+        .read_live_positions(
+            &Namespaced::prefix_for(project),
+            rigger::conductor::STREAM,
+            &rigger::ingest::derived_index_identity(),
+            batch,
+            &mut |positions| {
+                handed.push(positions.to_vec());
+                Ok(())
+            },
+        )
+        .unwrap();
+    handed
 }
 
 /// The live selection is refused, before a single event is handed, under a policy that has not
@@ -3755,7 +3786,7 @@ rigger::test_cases! {
 }
 
 /// Whether `db` holds a table named `table`: `rebuild_cursor` while a rebuild's tail is not yet
-/// folded, `lost_fold` while the file itself records a fold lost into it.
+/// folded; `lost_fold`, a record of a lost fold beside the ledger, never.
 fn holds_table(db: &Path, table: &str) -> bool {
     exists(
         db,
@@ -3804,6 +3835,7 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
             Projector::rebuild(
                 graph_db.to_str().unwrap(),
                 &project,
+                false,
                 &mut |after, sink| {
                     reads += 1;
                     if reads == 2 {
@@ -4314,8 +4346,7 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
             .filter(|l| l.starts_with("rebuilding graph.db"))
             .collect::<Vec<_>>(),
         vec![
-            "rebuilding graph.db from the event log: a fold into it failed, so the log's live \
-             selection is refolded once"
+            LOST_FOLD_REBUILD_LINE
         ],
         "setup names the cause the graph owes its rebuild for - the lost fold, not an older \
          rule; stdout: {out}"
@@ -4373,70 +4404,29 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
     );
 }
 
-/// Given a current `graph.db` whose fold of an emit was lost where the owed mark could not be
-/// written, so the file records the lost fold itself (its `lost_fold` table), when later processes
-/// act on it, then every one of them owes the rebuild: an emit appends and says it was not folded
-/// because the rebuild is owed, `rigger setup` names the lost fold as the cause and its rebuild
-/// folds the lost event and the one emitted while owed into a file that no longer records the loss,
-/// the next emit folds, and a second `rigger setup` owes nothing.
-#[test]
-fn a_graph_db_that_records_its_own_lost_fold_is_owed_by_every_later_process_until_setup_pays_it() {
-    let dir = temp_store_project();
-    let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+/// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
+/// it misses an event the log holds.
+const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an event \
+     the log holds, so the log's live selection is refolded once";
+
+/// Given `root`'s `graph.db` misses the event at log position `lost`, when the operator runs
+/// `rigger setup` in a fresh process, then setup names the missing event as the cause, its
+/// rebuild folds it, the next emit folds, and a second `rigger setup` owes nothing - the rebuilt
+/// ledger holds every position of the log's live selection.
+fn the_next_setup_pays_the_missing_event(root: &Path, lost: u64) {
     let graph_db = rigger_file(root, "graph.db");
-    let mark = rigger_file(root, "graph.db.owed");
-    with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
-    let lost = read_run_events(root).last().unwrap().position;
-    std::fs::remove_file(&mark).unwrap();
-    rusqlite::Connection::open(&graph_db)
-        .unwrap()
-        .execute_batch("CREATE TABLE lost_fold (lost INTEGER);")
-        .unwrap();
-
-    let (out, err, ok) = emit_decision(root, "d-after");
-    let after = read_run_events(root).last().unwrap().position;
-    assert_eq!(
-        (ok, out, applied(&graph_db, after)),
-        (
-            true,
-            format!(
-                "emitted DecisionMade (position {after}); not folded into the context graph: \
-                 graph: {}\n",
-                rigger::contextgraph::REBUILD_OWED
-            ),
-            false
-        ),
-        "the file's own record of the lost fold makes a later process owe the rebuild; \
-         stderr: {err}"
-    );
-
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
     assert_eq!(
-        out.lines()
-            .filter(|l| l.starts_with("rebuilding graph.db"))
-            .collect::<Vec<_>>(),
-        vec![
-            "rebuilding graph.db from the event log: a fold into it failed, so the log's live \
-             selection is refolded once"
-        ],
-        "setup names the lost fold the file records as the cause; stdout: {out}"
-    );
-    assert_eq!(
         (
-            applied(&graph_db, lost),
-            applied(&graph_db, after),
-            holds_table(&graph_db, "lost_fold"),
-            mark.exists()
+            out.lines()
+                .filter(|l| l.starts_with("rebuilding graph.db"))
+                .collect::<Vec<_>>(),
+            applied(&graph_db, lost)
         ),
-        (true, true, false, false),
-        "setup's rebuild folds the lost event and the one emitted while owed into a file that no \
-         longer records the loss"
+        (vec![LOST_FOLD_REBUILD_LINE], true),
+        "setup finds the event missing from the ledger, says so, and its rebuild folds it; \
+         stdout: {out}"
     );
     let (out, err, ok) = emit_decision(root, "d-rebuilt");
     assert!(
@@ -4448,6 +4438,84 @@ fn a_graph_db_that_records_its_own_lost_fold_is_owed_by_every_later_process_unti
         ok && !out.contains("graph.db"),
         "a paid rebuild is not owed or reported again; stdout: {out} stderr: {err}"
     );
+}
+
+/// Given a current `graph.db`, when an agent's `rigger emit` loses its fold to another writer's
+/// lock while the directory the owed mark lives in is not writable, then the emit appends and
+/// says it did not fold, naming the mark it could not write, and records nothing else - no mark,
+/// no table in the file - yet the loss is not forgotten with the process: the next `rigger setup`
+/// finds the event missing from the graph's ledger and pays it.
+#[test]
+fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_the_ledger() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    let mark = rigger_file(root, "graph.db.owed");
+    let rigger_dir = graph_db.parent().unwrap().to_path_buf();
+    // The log's write-ahead files stay in place while this is open, so the append needs no new
+    // file in the directory the mark cannot be written to.
+    let log_holder = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
+    std::fs::set_permissions(&rigger_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (out, err, ok) = with_graph_locked(&graph_db, || emit_decision(root, "d-lost"));
+    std::fs::set_permissions(&rigger_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    drop(log_holder);
+    let lost = read_run_events(root).last().unwrap().position;
+    let prefix = format!(
+        "emitted DecisionMade (position {lost}); not folded into the context graph: graph: \
+         database is locked; the mark that graph.db owes its rebuild was not written ("
+    );
+    let suffix = "graph.db.owed: Permission denied (os error 13)) - the next `rigger setup` still \
+                  finds the event missing from graph.db and rebuilds it\n";
+    assert_eq!(
+        (
+            ok,
+            out.starts_with(&prefix) && out.ends_with(suffix),
+            mark.exists(),
+            holds_table(&graph_db, "lost_fold"),
+            applied(&graph_db, lost)
+        ),
+        (true, true, false, false, false),
+        "the emit appends, says it did not fold and names the unwritten mark, and records the \
+         loss nowhere but in the ledger it misses; stdout: {out} stderr: {err}"
+    );
+    the_next_setup_pays_the_missing_event(root, lost);
+}
+
+/// Given an event on the log that no fold ever reached - its process died between the append and
+/// the fold, so nothing ran to record the loss - when the operator runs `rigger setup`, then setup
+/// finds it missing from the graph's ledger and pays it.
+#[test]
+fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let decision = br#"{"id":"d-crashed","summary":"s","governs":["src/f.rs"],"supersedes":""}"#;
+    let lost = Namespaced::new(&backend, &run_stream_identity(root))
+        .append(
+            rigger::conductor::STREAM,
+            ExpectedRevision::Any,
+            &[Event::new("DecisionMade", decision.to_vec())],
+        )
+        .unwrap()
+        .one("the crashed emit's event")
+        .unwrap();
+    drop(backend);
+    assert!(
+        !applied(&rigger_file(root, "graph.db"), lost),
+        "the event is on the log and not in the graph"
+    );
+    the_next_setup_pays_the_missing_event(root, lost);
 }
 
 /// Given a `graph.db` still at the old fold rule, when the operator runs `rigger reset --runs`,

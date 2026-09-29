@@ -3899,13 +3899,7 @@ mod tests {
         );
         drop(p);
 
-        let rebuilt = Projector::rebuild(
-            path,
-            "test",
-            &mut |after, sink| stream_past(&log, after, 10, sink),
-            &mut |_| {},
-        )
-        .unwrap();
+        let rebuilt = rebuild_as_setup_does(path, &log);
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
             (rebuilt, mark.exists(), p.rebuild_owed().unwrap()),
@@ -3918,10 +3912,16 @@ mod tests {
             vec!["a.rs".to_string(), "b.rs".to_string()],
             "the rebuilt file holds the event the refused fold lost"
         );
+        assert_eq!(
+            owed_against_the_log(&p, &log),
+            Vec::<&str>::new(),
+            "the rebuild records the event it passed over, so the ledger holds every position"
+        );
         drop(p);
         let again = Projector::rebuild(
             path,
             "test",
+            false,
             &mut |_, _| panic!("a paid rebuild reads nothing"),
             &mut |_| {},
         )
@@ -3929,31 +3929,60 @@ mod tests {
         assert!(!again, "a paid rebuild does not run again");
     }
 
-    /// A lost fold owed by the `graph.db` at `path`, then paid: a fresh projector on the file
-    /// names the lost fold as the cause, a rebuild from `log` returns that it rebuilt, and the
-    /// rebuilt file owes nothing and folds again.
-    fn a_fresh_projector_owes_the_lost_fold_and_a_rebuild_pays_it(path: &str, log: &[Event]) {
-        assert_eq!(
-            Projector::open(path, "test")
-                .unwrap()
-                .owed_because()
-                .unwrap(),
-            vec![OWED_LOST_FOLD],
-            "a fresh projector on the file sees the lost fold"
-        );
-        let rebuilt = Projector::rebuild(
+    /// Why the file behind `p` owes its rebuild once its ledger is read against `log`, streamed
+    /// in batches of two so a hole in a later batch is met too.
+    fn owed_against_the_log(p: &Projector, log: &[Event]) -> Vec<&'static str> {
+        p.owed_against(&mut |sink| positions_in(log, 2, sink))
+            .unwrap()
+    }
+
+    /// What `rigger setup` does to the `graph.db` at `path` over `log`: read why it owes its
+    /// rebuild against the log, then pay that - reporting whether it rebuilt.
+    fn rebuild_as_setup_does(path: &str, log: &[Event]) -> bool {
+        let owed = !owed_against_the_log(&Projector::open(path, "test").unwrap(), log).is_empty();
+        Projector::rebuild(
             path,
             "test",
+            owed,
             &mut |after, sink| stream_past(log, after, 10, sink),
             &mut |_| {},
-        );
+        )
+        .unwrap()
+    }
+
+    /// A lost fold owed by the `graph.db` at `path`, then paid: a fresh projector on the file
+    /// holds no record of the loss, its ledger read against `log` names the lost fold as the
+    /// cause, a rebuild from `log` folds the lost position, and the rebuilt file owes nothing and
+    /// folds again.
+    fn the_ledger_owes_the_lost_fold_and_a_rebuild_pays_it(path: &str, log: &[Event], lost: u64) {
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
-            (rebuilt.unwrap(), p.owed_because().unwrap()),
-            (true, Vec::<&str>::new()),
-            "the rebuild pays the debt"
+            (p.owed_because().unwrap(), owed_against_the_log(&p, log)),
+            (Vec::<&str>::new(), vec![OWED_LOST_FOLD]),
+            "the file records nothing, and the ledger's hole is the debt"
+        );
+        drop(p);
+        let rebuilt = rebuild_as_setup_does(path, log);
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (rebuilt, applied(&p, lost), owed_against_the_log(&p, log)),
+            (true, true, Vec::<&str>::new()),
+            "the rebuild folds the lost position and pays the debt"
         );
         crate::test_support::folds(&p, &[decision_at("d9", "z.rs", 9)]);
+    }
+
+    /// Whether `p`'s applied ledger records `position`.
+    fn applied(p: &Projector, position: u64) -> bool {
+        p.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)",
+                [position as i64],
+                |r| r.get(0),
+            )
+            .unwrap()
     }
 
     /// A `DecisionMade` `id` governing `file` at log position `position`.
@@ -3966,53 +3995,13 @@ mod tests {
         e
     }
 
-    /// A batch that fails to fold into a current `graph.db` whose owed mark cannot be written (its
-    /// directory is not writable) records the debt in the file itself, so it outlives the process
-    /// that lost the fold: that projector refuses every later fold, and once the directory is
-    /// writable again a fresh projector on the same file owes the rebuild and a rebuild pays it.
+    /// A batch that fails to fold into a current `graph.db` - lost to another writer's lock -
+    /// where the owed mark cannot be written (its directory is not writable) records nothing
+    /// else: the fold's error comes back naming the unwritten mark, no process holds the debt,
+    /// and the file itself carries it in its ledger, which misses the lost position - so it
+    /// outlives the process and the rebuild `rigger setup` reads it for pays it.
     #[test]
-    fn a_lost_fold_whose_owed_mark_cannot_be_written_is_owed_by_the_file_itself() {
-        use crate::contextgraph::Fold;
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("graph.db");
-        let path = path.to_str().unwrap();
-        let mark = dir.path().join("graph.db.owed");
-        let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
-        poison.position = 2;
-        let log = [decision_at("d1", "a.rs", 1), poison.clone()];
-        let p = Projector::open(path, "test").unwrap();
-        crate::test_support::folds(&p, &log[..1]);
-        let fold_error = p.fold_batch(std::slice::from_ref(&poison)).unwrap_err();
-
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let folded = Fold::of_batch(Some(&p), std::slice::from_ref(&poison));
-        let (why, marked) = (p.owed_because().unwrap(), mark.exists());
-        let refused = Fold::of_batch(Some(&p), std::slice::from_ref(&poison));
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        drop(p);
-        assert_eq!(
-            (folded, why, marked, refused),
-            (
-                Fold::NotFolded(fold_error.to_string()),
-                vec![OWED_LOST_FOLD],
-                false,
-                Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
-            ),
-            "the file records the lost fold its mark could not, and refuses every later fold"
-        );
-        a_fresh_projector_owes_the_lost_fold_and_a_rebuild_pays_it(path, &log);
-    }
-
-    /// A batch that fails to fold into a `graph.db` where neither the owed mark nor the file can
-    /// record the debt (the directory is not writable and another writer holds the file's lock) is
-    /// never silent: the fold's error comes back with both failures beside it, and the projector
-    /// that lost it owes its rebuild on its own record, refusing every later fold. It records the
-    /// debt the first time it checks with a writable place to put it, so the debt then outlives it:
-    /// a fresh projector owes it and a rebuild pays it - after which the long-lived projector owes
-    /// nothing and folds again.
-    #[test]
-    fn a_lost_fold_no_record_can_hold_is_owed_by_its_projector_until_it_records_it() {
+    fn a_lost_fold_whose_mark_cannot_be_written_is_owed_by_the_ledger_alone() {
         use crate::contextgraph::Fold;
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -4032,38 +4021,77 @@ mod tests {
 
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
         let folded = Fold::of_batch(Some(&p), &log[1..]);
-        let (why, marked) = (p.owed_because().unwrap(), mark.exists());
-        let refused = Fold::of_batch(Some(&p), &log[1..]);
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         writer.execute_batch("ROLLBACK;").unwrap();
         assert_eq!(
-            (folded, why, marked, refused),
+            (folded, p.owed_because().unwrap(), mark.exists()),
             (
                 Fold::NotFolded(format!(
-                    "graph: database is locked; the record that graph.db owes its rebuild was not \
-                     written ({}: Permission denied (os error 13); graph.db: database is locked), \
-                     so only this process knows it until it can write it",
+                    "graph: database is locked; the mark that graph.db owes its rebuild was not \
+                     written ({}: Permission denied (os error 13)) - the next `rigger setup` \
+                     still finds the event missing from graph.db and rebuilds it",
                     mark.display()
                 )),
-                vec![OWED_LOST_FOLD],
+                Vec::<&str>::new(),
                 false,
-                Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
             ),
-            "the fold's error names both failed records, and its projector still owes the rebuild"
+            "the fold's error names the unwritten mark, and nothing else records the loss"
         );
+        drop(p);
+        the_ledger_owes_the_lost_fold_and_a_rebuild_pays_it(path, &log, 2);
+    }
 
+    /// An event the log holds that no fold ever reached - its process died between the append
+    /// and the fold, so nothing ran to record anything - is owed by the ledger all the same, and
+    /// the rebuild pays it.
+    #[test]
+    fn an_event_appended_but_never_folded_is_owed_by_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let log = [
+            decision_at("d1", "a.rs", 1),
+            decision_at("d2", "b.rs", 2),
+            decision_at("d3", "c.rs", 3),
+        ];
+        let p = Projector::open(path, "test").unwrap();
+        crate::test_support::folds(&p, &log[..2]);
         assert_eq!(
-            (p.owed_because().unwrap(), mark.exists()),
-            (vec![OWED_LOST_FOLD], true),
-            "the next check records the debt where it now can"
-        );
-        a_fresh_projector_owes_the_lost_fold_and_a_rebuild_pays_it(path, &log);
-        assert_eq!(
-            p.owed_because().unwrap(),
+            owed_against_the_log(&p, &log[..2]),
             Vec::<&str>::new(),
-            "the long-lived projector owes nothing once the rebuild paid its record"
+            "a ledger holding every position owes nothing"
         );
-        crate::test_support::folds(&p, &[decision_at("d10", "y.rs", 10)]);
+        drop(p);
+        the_ledger_owes_the_lost_fold_and_a_rebuild_pays_it(path, &log, 3);
+    }
+
+    /// A file whose mark already names the lost fold owes it once, without reading the log; one
+    /// at an older fold rule whose ledger misses a position owes both causes.
+    #[test]
+    fn the_ledger_is_read_only_for_a_cause_the_file_does_not_already_carry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let log = [decision_at("d1", "a.rs", 1), decision_at("d2", "b.rs", 2)];
+        let p = Projector::open(path, "test").unwrap();
+        crate::test_support::folds(&p, &log[..1]);
+        std::fs::write(dir.path().join("graph.db.owed"), b"").unwrap();
+        assert_eq!(
+            p.owed_against(&mut |_| panic!("a marked file reads no positions"))
+                .unwrap(),
+            vec![OWED_LOST_FOLD],
+            "the mark names the lost fold once"
+        );
+        std::fs::remove_file(dir.path().join("graph.db.owed")).unwrap();
+        p.conn
+            .lock()
+            .unwrap()
+            .pragma_update(None, "user_version", PROJECTION_VERSION - 1)
+            .unwrap();
+        assert_eq!(
+            owed_against_the_log(&p, &log),
+            vec![OWED_OLDER_RULE, OWED_LOST_FOLD]
+        );
     }
 
     /// A graph file owes its rebuild for what it says: an older fold rule, a lost fold, or both -
