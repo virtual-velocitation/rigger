@@ -3966,6 +3966,144 @@ mod tests {
         assert!(!again, "a paid rebuild does not run again");
     }
 
+    /// A `DecisionMade` at `position` for `id`, governing `file`.
+    fn decision_at(id: &str, file: &str, position: u64) -> Event {
+        let payload = serde_json::json!({
+            "id": id, "summary": "x", "governs": [file], "supersedes": ""
+        });
+        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+        e.position = position;
+        e
+    }
+
+    /// An event of `type_` at `position` whose payload is `data`.
+    fn event_at(type_: &str, data: &[u8], position: u64) -> Event {
+        let mut e = Event::new(type_, data.to_vec());
+        e.position = position;
+        e
+    }
+
+    /// A rebuild of the graph file at `path` from `log` in batches of `batch`, owed by its caller,
+    /// recording where each read of the log started.
+    fn rebuild_in_batches(
+        path: &str,
+        log: &[Event],
+        batch: usize,
+        reads_from: &mut Vec<u64>,
+    ) -> Result<Option<usize>, Error> {
+        Projector::rebuild(
+            path,
+            "test",
+            true,
+            &mut |after, sink| {
+                reads_from.push(after);
+                stream_past(log, after, batch, sink)
+            },
+            &mut |_| {},
+        )
+    }
+
+    /// A rebuild passes over exactly the events whose payload the fold rejects - of any type the
+    /// fold reads a payload for - recording each in the `applied` ledger so the rebuilt file owes
+    /// nothing for them, and says how many it passed over; every other event folds.
+    #[test]
+    fn a_rebuild_passes_over_only_a_payload_the_fold_rejects_and_says_how_many() {
+        let log = [
+            decision_at("d1", "a.rs", 1),
+            event_at(TYPE_DECISION_MADE, b"{ not valid json", 2),
+            event_at(TYPE_UNIT_INTEGRATED, br#"{"unit": 5}"#, 3),
+            decision_at("d4", "b.rs", 4),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+
+        let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new()).unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (
+                rebuilt,
+                (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                live_governs(&p)
+                    .into_iter()
+                    .map(|g| g.1)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                Some(2),
+                vec![true; 4],
+                vec!["a.rs".to_string(), "b.rs".to_string()]
+            ),
+            "the two rejected payloads are passed over and counted, recorded as folded, and the \
+             rest fold"
+        );
+        drop(p);
+        assert_eq!(
+            rebuild_in_batches(path, &[decision_at("d5", "c.rs", 5)], 10, &mut Vec::new()).unwrap(),
+            Some(0),
+            "a rebuild that rejects nothing passed over nothing"
+        );
+    }
+
+    /// A rebuild that meets a storage error folding an event whose payload the fold reads is not a
+    /// rejection: the error propagates, nothing marks the event folded, the live file is untouched,
+    /// and the next rebuild resumes from the last committed batch and folds it.
+    #[test]
+    fn a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it() {
+        let log = [
+            decision_at("d1", "a.rs", 1),
+            decision_at("d-boom", "b.rs", 2),
+            decision_at("d3", "c.rs", 3),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let shadow = format!("{path}.rebuild");
+        drop(Projector::open(&shadow, "test").unwrap());
+        Connection::open(&shadow)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = 'd-boom'
+                 BEGIN SELECT RAISE(ABORT, 'disk gave out'); END;",
+            )
+            .unwrap();
+
+        let mut reads_from = Vec::new();
+        let failed = rebuild_in_batches(path, &log, 1, &mut reads_from);
+        assert_eq!(
+            (
+                failed.map_err(|e| e.to_string()),
+                applied(&Projector::open(path, "test").unwrap(), 1),
+            ),
+            (Err("graph: disk gave out".to_string()), false),
+            "the storage error propagates and the live file is untouched"
+        );
+        Connection::open(&shadow)
+            .unwrap()
+            .execute_batch("DROP TRIGGER boom;")
+            .unwrap();
+        let rebuilt = rebuild_in_batches(path, &log, 1, &mut reads_from).unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (
+                rebuilt,
+                reads_from,
+                live_governs(&p)
+                    .into_iter()
+                    .map(|g| g.1)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                Some(0),
+                vec![0, 1, 3],
+                vec!["a.rs".to_string(), "b.rs".to_string(), "c.rs".to_string()]
+            ),
+            "the next rebuild resumes past the committed batch and folds the event the error lost"
+        );
+    }
+
     /// Why the file behind `p` owes its rebuild once its ledger is read against `log`, streamed
     /// in batches of two so a hole in a later batch is met too.
     fn owed_against_the_log(p: &Projector, log: &[Event]) -> Vec<&'static str> {

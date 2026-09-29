@@ -4430,6 +4430,13 @@ fn the_next_setup_pays_the_missing_event(root: &Path, lost: u64) {
         "setup finds the event missing from the ledger, says so, and its rebuild folds it; \
          stdout: {out}"
     );
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("passed over "))
+            .collect::<Vec<_>>(),
+        Vec::<&str>::new(),
+        "a rebuild whose every payload folds passes over nothing; stdout: {out}"
+    );
     let (out, err, ok) = emit_decision(root, "d-rebuilt");
     assert!(
         ok && out.ends_with(" and folded it into the context graph\n"),
@@ -4526,6 +4533,59 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
         "the event is on the log and not in the graph"
     );
     the_next_setup_pays_the_missing_event(root, lost);
+}
+
+/// Given an event on the log whose payload the fold rejects - appended without the emit surface's
+/// shape check - when the operator runs `rigger setup`, then setup finds it missing from the
+/// graph's ledger, rebuilds, and says it passed that one event over, recording it as folded so the
+/// next setup owes nothing for it.
+#[test]
+fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rejects() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let rejected = Namespaced::new(&backend, &run_stream_identity(root))
+        .append(
+            rigger::conductor::STREAM,
+            ExpectedRevision::Any,
+            &[Event::new("DecisionMade", b"{ not valid json".to_vec())],
+        )
+        .unwrap()
+        .one("the malformed decision")
+        .unwrap();
+    drop(backend);
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        (
+            out.lines()
+                .filter(|l| l.starts_with("rebuilding graph.db")
+                    || l.starts_with("rebuilt graph.db")
+                    || l.starts_with("passed over "))
+                .collect::<Vec<_>>(),
+            applied(&rigger_file(root, "graph.db"), rejected),
+        ),
+        (
+            vec![
+                LOST_FOLD_REBUILD_LINE,
+                "rebuilt graph.db from the event log",
+                "passed over 1 event(s) whose payload the fold rejects, recorded as folded",
+            ],
+            true
+        ),
+        "setup rebuilds, and says the one event it passed over; stdout: {out}"
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok && !out.contains("graph.db"),
+        "the passed-over event is not owed again; stdout: {out} stderr: {err}"
+    );
 }
 
 /// Given a project whose run stream grew only through rigger's own verbs - `rigger step` minting
