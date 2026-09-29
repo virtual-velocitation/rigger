@@ -145,7 +145,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-5d4b1e693e51",
+    "id": "dup-99f63bd5c9a7",
     "classification": "near",
     "sites": [
       {
@@ -202,6 +202,11 @@
         "file": "crates/rigger-worktree-git/src/worktree.rs",
         "name": "shared_build_cache_guard_path",
         "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "not_folded",
+        "content_hash": "6fd90a8c2eed6379"
       },
       {
         "file": "src/cli/mod.rs",
@@ -983,7 +988,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-62edbaa1bb5b",
+    "id": "dup-850b7531aede",
     "classification": "semantic",
     "sites": [
       {
@@ -1323,7 +1328,7 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "name": "\"rigger: migrated project identity - renamed {n} stream(s) from the legacy \\\n             namespace {legacy:?} to the minted identity {minted:?} (.rigger/{PROJECT_ID_FILE})\"",
+        "name": "\"rigger: migrated project identity - renamed {n} stream(s) from the legacy \\\n             namespace {legacy:?} to the minted identity {minted:?} (.rigger/{PROJECT_ID_FILE}); \\\n             recorded its decision (position {}){}\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -2937,6 +2942,11 @@
         "content_hash": "0a68549443b7c66d"
       },
       {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "\"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \\\n             {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \\\n             decision (position {}) and folded it into the context graph\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "98eec4bb59ff365c"
@@ -3743,7 +3753,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 551 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 552 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5506,7 +5516,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-45aae10584f7",
+    "id": "dup-acf3477b1019",
     "classification": "semantic",
     "sites": [
       {
@@ -5660,6 +5670,11 @@
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
         "file": "tests/graph_additive_indexes_persist.rs",
         "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
@@ -5776,7 +5791,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 53 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 54 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

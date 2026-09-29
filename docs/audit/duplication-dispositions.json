@@ -490,9 +490,9 @@
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
   {
-    "id": "dup-5d4b1e693e51",
+    "id": "dup-99f63bd5c9a7",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
+    "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error, the not-folded report line); they share only the `format!` shape."
   },
   {
     "id": "dup-2a5626cb9627",

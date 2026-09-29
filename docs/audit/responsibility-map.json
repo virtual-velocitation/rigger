@@ -6525,7 +6525,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"migrate\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "8eb3a2eeb73af721"
+    "content_hash": "5d78cb89da3697a4"
   },
   {
     "file": "src/cli/mod.rs",
@@ -6541,7 +6541,23 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"migrate\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "0de2e86c316f5fa4"
+    "content_hash": "748a94db094f6210"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "not_folded",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "8b5a39960b3c24c7"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "fold_clause",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "78a8a738b93b7a9d"
   },
   {
     "file": "src/cli/mod.rs",
@@ -6582,6 +6598,14 @@
     "proposed_module": "main::support",
     "reason": "name contains \"resolve\" (path/id resolution helper); grouped under `main::support`.",
     "content_hash": "883ecbc0aaac9005"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "graph",
+    "is_test": false,
+    "proposed_module": "main::store_location",
+    "reason": "method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.",
+    "content_hash": "12e70479b549a36f"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8157,7 +8181,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8337b5740e8fa98c"
+    "content_hash": "ede5cd1ebbe86278"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8177,11 +8201,19 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "migrates_one_stream_folding_into",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a7c9f83da9df34d8"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ef00f3dc1e9d1365"
+    "content_hash": "aeafb42bef7dd78b"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8197,7 +8229,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8dbaf1831b5dd6b4"
+    "content_hash": "77d1faaded07ba0e"
   },
   {
     "file": "src/cli/mod.rs",
