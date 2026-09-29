@@ -2928,10 +2928,7 @@ fn a_fold_dependent_command_refuses_at_the_old_rule_and_an_inspection_answers_as
     let (out, err, ok) = run_rigger(store.root(), &["graph", "--around", "docs/f.md"]);
     assert!(ok, "an inspection still answers; stderr: {err}");
     assert!(
-        err.contains(&format!(
-            "note: {} - until then the context graph answers as it stands",
-            rigger::contextgraph::REBUILD_OWED
-        )),
+        err.contains(&rebuild_owed_note()),
         "the inspection says the rebuild is owed; stderr: {err}"
     );
     assert!(
