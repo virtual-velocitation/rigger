@@ -23,15 +23,39 @@ use std::collections::HashMap;
 /// The replay-key set and the per-identity generations it holds derived keys for.
 pub(crate) struct ReplayKeys {
     #[cfg(feature = "symbols")]
-    generations: Mutex<HashMap<String, Slot>>,
+    generations: Mutex<Generations>,
     keys: Mutex<HashSet<String>>,
 }
 
-/// One identity's tracked generation and the keys that generation contributed to the set.
+/// The tracked slot of every identity met, and the last epoch minted for one.
+#[cfg(feature = "symbols")]
+#[derive(Default)]
+struct Generations {
+    slots: HashMap<String, Slot>,
+    minted: u64,
+}
+
+/// One identity's tracked generation, the keys that generation contributed to the set, and the
+/// EPOCH of the install that set this generation: minted afresh each time the slot is created or
+/// switches generation, so an install that tracked a generation which has since moved away and
+/// come back is told apart from the install that brought it back.
 #[cfg(feature = "symbols")]
 struct Slot {
     generation: String,
     keys: HashSet<String>,
+    epoch: u64,
+}
+
+/// What one [`ReplayKeys::install`] tracked, handed back to [`ReplayKeys::forget`]: the identity
+/// and the epoch its slot carried, or nothing for a batch naming no identity.
+#[cfg(feature = "symbols")]
+pub(crate) struct Ticket(Option<(String, u64)>);
+
+/// The next epoch, never one minted before.
+#[cfg(feature = "symbols")]
+fn mint(minted: &mut u64) -> u64 {
+    *minted += 1;
+    *minted
 }
 
 impl ReplayKeys {
@@ -67,7 +91,8 @@ fn identity_generation<'k>(keyed: &'k [(String, &Event)]) -> Option<(&'k str, &'
 #[cfg(feature = "symbols")]
 impl ReplayKeys {
     /// Decide what of the keyed batch `keyed` appends, and record it as appended: the survivors,
-    /// in batch order, each with its key.
+    /// in batch order, each with its key, and the [`Ticket`] a failed append hands to
+    /// [`forget`](ReplayKeys::forget).
     ///
     /// The FIRST time an identity is met, `first_sight` answers whether the batch is that
     /// identity's latest recorded generation (spec 101). It is asked under the generations lock,
@@ -86,26 +111,27 @@ impl ReplayKeys {
         keyed: &[(String, &Event)],
         first_sight: impl FnOnce() -> Result<bool, E>,
         mut rebuild: impl FnMut(&str, &Event) -> Option<Event>,
-    ) -> Result<Vec<(String, Event)>, E> {
+    ) -> Result<(Vec<(String, Event)>, Ticket), E> {
         let named = identity_generation(keyed);
         let mut generations = self.generations.lock().unwrap();
+        let Generations { slots, minted } = &mut *generations;
         let recorded = match named {
-            Some((identity, _)) if !generations.contains_key(identity) => first_sight()?,
+            Some((identity, _)) if !slots.contains_key(identity) => first_sight()?,
             _ => false,
         };
         let mut keys = self.keys.lock().unwrap();
         let mut slot = named.map(|(identity, generation)| {
-            let slot = generations
-                .entry(identity.to_string())
-                .or_insert_with(|| Slot {
-                    generation: generation.to_string(),
-                    keys: HashSet::new(),
-                });
+            let slot = slots.entry(identity.to_string()).or_insert_with(|| Slot {
+                generation: generation.to_string(),
+                keys: HashSet::new(),
+                epoch: mint(minted),
+            });
             if slot.generation != generation {
                 for stale in slot.keys.drain() {
                     keys.remove(&stale);
                 }
                 slot.generation = generation.to_string();
+                slot.epoch = mint(minted);
             }
             if recorded {
                 for (key, _) in keyed {
@@ -127,15 +153,24 @@ impl ReplayKeys {
                 survivors.push((key.clone(), rebuilt));
             }
         }
-        Ok(survivors)
+        let ticket = Ticket(
+            named
+                .zip(slot)
+                .map(|((identity, _), slot)| (identity.to_string(), slot.epoch)),
+        );
+        Ok((survivors, ticket))
     }
 
-    /// Forget what one [`install`](ReplayKeys::install) of `keyed` recorded, after its append
-    /// failed and recorded nothing: its `kept` keys (the survivors it returned) leave the set and
-    /// its identity's slot, and the slot itself is removed only when it still names this batch's
-    /// generation and is left holding no keys - so the next sight asks the store afresh and follows
-    /// what the store holds. A slot a concurrent call has since moved to a newer generation is that
-    /// call's, and is left exactly as it stands.
+    /// Forget what the [`install`](ReplayKeys::install) that handed out `ticket` recorded, after
+    /// its append failed and recorded nothing. `kept` is that install's survivors' keys.
+    ///
+    /// A batch naming no identity tracked no slot: its `kept` keys leave the set. Otherwise the
+    /// install is recognised by its slot's epoch, not its generation string. While the identity's
+    /// slot still carries the ticket's epoch, the `kept` keys leave the set and the slot, and a
+    /// slot left holding no keys is removed - so the next sight asks the store afresh and follows
+    /// what the store holds. Once the slot carries another epoch (it switched generation, perhaps
+    /// back to this very one, or was removed and re-created), every key the identity holds belongs
+    /// to a later install, and this forget touches nothing for it.
     ///
     /// THE IN-FLIGHT WINDOW: both locks are released across the append, so between the install and
     /// this forget a concurrent call emitting the SAME identity and generation finds every key
@@ -143,41 +178,49 @@ impl ReplayKeys {
     /// the log nor this set although that caller reported success. The loss is loud - the call
     /// whose append failed fails its step - and heals on the next sight of the identity, which asks
     /// the store afresh and appends the batch.
-    pub(crate) fn forget(&self, keyed: &[(String, &Event)], kept: &[String]) {
+    pub(crate) fn forget(&self, ticket: &Ticket, kept: &[String]) {
         let mut generations = self.generations.lock().unwrap();
         let mut keys = self.keys.lock().unwrap();
-        for key in kept {
-            keys.remove(key);
-        }
-        let Some((identity, generation)) = identity_generation(keyed) else {
+        let Some((identity, epoch)) = &ticket.0 else {
+            for key in kept {
+                keys.remove(key);
+            }
             return;
         };
-        if let Some(slot) = generations.get_mut(identity) {
-            if slot.generation == generation {
-                for key in kept {
-                    slot.keys.remove(key);
-                }
-                if slot.keys.is_empty() {
-                    generations.remove(identity);
-                }
-            }
+        let Some(slot) = generations.slots.get_mut(identity) else {
+            return;
+        };
+        if slot.epoch != *epoch {
+            return;
+        }
+        for key in kept {
+            keys.remove(key);
+            slot.keys.remove(key);
+        }
+        if slot.keys.is_empty() {
+            generations.slots.remove(identity);
         }
     }
 
     /// The generation tracked for `identity` with its keys in order, `None` when it has no slot.
     #[cfg(test)]
     pub(crate) fn tracked(&self, identity: &str) -> Option<(String, Vec<String>)> {
-        self.generations.lock().unwrap().get(identity).map(|slot| {
-            let mut keys: Vec<String> = slot.keys.iter().cloned().collect();
-            keys.sort();
-            (slot.generation.clone(), keys)
-        })
+        self.generations
+            .lock()
+            .unwrap()
+            .slots
+            .get(identity)
+            .map(|slot| {
+                let mut keys: Vec<String> = slot.keys.iter().cloned().collect();
+                keys.sort();
+                (slot.generation.clone(), keys)
+            })
     }
 }
 
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
-    use super::ReplayKeys;
+    use super::{ReplayKeys, Ticket};
     use crate::eventstore::Event;
     use std::collections::HashSet;
 
@@ -191,13 +234,16 @@ mod tests {
     }
 
     /// Install `batch` answering `recorded` at first sight, every event rebuilt as itself; the
-    /// survivors' keys.
-    fn install(set: &ReplayKeys, batch: &[(String, &Event)], recorded: bool) -> Vec<String> {
-        set.install(batch, || Ok::<_, ()>(recorded), |_, ev| Some(ev.clone()))
-            .unwrap()
-            .into_iter()
-            .map(|(key, _)| key)
-            .collect()
+    /// survivors' keys and the install's ticket.
+    fn install(
+        set: &ReplayKeys,
+        batch: &[(String, &Event)],
+        recorded: bool,
+    ) -> (Vec<String>, Ticket) {
+        let (survivors, ticket) = set
+            .install(batch, || Ok::<_, ()>(recorded), |_, ev| Some(ev.clone()))
+            .unwrap();
+        (survivors.into_iter().map(|(key, _)| key).collect(), ticket)
     }
 
     fn keys_of(batch: &[(String, &Event)]) -> Vec<String> {
@@ -220,11 +266,11 @@ mod tests {
         let ev = Event::new("T", vec![]);
         let (h1, h2) = (batch("h1", 2, &ev), batch("h2", 2, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
-        assert_eq!(install(&set, &h1, true), Vec::<String>::new());
+        assert_eq!(install(&set, &h1, true).0, Vec::<String>::new());
         assert_eq!(set.tracked(IDENTITY), Some(("h1".into(), keys_of(&h1))));
 
         let other = ReplayKeys::seeded(HashSet::new());
-        assert_eq!(install(&other, &h2, false), keys_of(&h2));
+        assert_eq!(install(&other, &h2, false).0, keys_of(&h2));
         assert_eq!(other.tracked(IDENTITY), Some(("h2".into(), keys_of(&h2))));
     }
 
@@ -234,17 +280,17 @@ mod tests {
         let h1 = batch("h1", 1, &ev);
         let set = ReplayKeys::seeded(HashSet::new());
         let unanswered = set.install(&h1, || Err("down"), |_, ev| Some(ev.clone()));
-        assert_eq!(unanswered.map(|s| s.len()), Err("down"));
+        assert_eq!(unanswered.map(|(s, _)| s.len()).err(), Some("down"));
         assert_eq!(set.tracked(IDENTITY), None);
         assert!(!set.contains(&h1[0].0));
 
-        assert_eq!(install(&set, &h1, false), keys_of(&h1));
+        assert_eq!(install(&set, &h1, false).0, keys_of(&h1));
         let again = set.install(
             &h1,
             || -> Result<bool, ()> { panic!("a seen identity is never looked up again") },
             |_, ev| Some(ev.clone()),
         );
-        assert_eq!(again.map(|s| s.len()), Ok(0));
+        assert_eq!(again.map(|(s, _)| s.len()).ok(), Some(0));
     }
 
     #[test]
@@ -253,10 +299,14 @@ mod tests {
         let (h1, h2) = (batch("h1", 2, &ev), batch("h2", 1, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
         install(&set, &h1, true);
-        assert_eq!(install(&set, &h2, false), keys_of(&h2));
+        assert_eq!(install(&set, &h2, false).0, keys_of(&h2));
         assert_eq!(set.tracked(IDENTITY), Some(("h2".into(), keys_of(&h2))));
         assert!(!set.contains(&h1[0].0) && !set.contains(&h1[1].0));
-        assert_eq!(install(&set, &h1, false), keys_of(&h1), "a revert appends");
+        assert_eq!(
+            install(&set, &h1, false).0,
+            keys_of(&h1),
+            "a revert appends"
+        );
     }
 
     #[test]
@@ -264,7 +314,7 @@ mod tests {
         let ev = Event::new("T", vec![]);
         let h1 = batch("h1", 2, &ev);
         let set = ReplayKeys::seeded(HashSet::new());
-        let survivors = set
+        let (survivors, _) = set
             .install(
                 &h1,
                 || Ok::<_, ()>(false),
@@ -287,8 +337,8 @@ mod tests {
         let ev = Event::new("T", vec![]);
         let h1 = batch("h1", 2, &ev);
         let set = ReplayKeys::seeded(HashSet::new());
-        let kept = install(&set, &h1, false);
-        set.forget(&h1, &kept);
+        let (kept, ticket) = install(&set, &h1, false);
+        set.forget(&ticket, &kept);
         assert_eq!(set.tracked(IDENTITY), None);
         assert!(!set.contains(&h1[0].0) && !set.contains(&h1[1].0));
     }
@@ -299,9 +349,9 @@ mod tests {
         let (first, whole) = (batch("h1", 1, &ev), batch("h1", 2, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
         install(&set, &first, false);
-        let kept = install(&set, &whole, false);
+        let (kept, ticket) = install(&set, &whole, false);
         assert_eq!(kept, [whole[1].0.clone()]);
-        set.forget(&whole, &kept);
+        set.forget(&ticket, &kept);
         assert_eq!(set.tracked(IDENTITY), Some(("h1".into(), keys_of(&first))));
         assert!(set.contains(&whole[0].0) && !set.contains(&whole[1].0));
     }
@@ -311,9 +361,9 @@ mod tests {
         let ev = Event::new("T", vec![]);
         let (h2, h3) = (batch("h2", 2, &ev), batch("h3", 2, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
-        let kept = install(&set, &h2, false);
+        let (kept, ticket) = install(&set, &h2, false);
         install(&set, &h3, false);
-        set.forget(&h2, &kept);
+        set.forget(&ticket, &kept);
         assert_eq!(set.tracked(IDENTITY), Some(("h3".into(), keys_of(&h3))));
         assert!(set.contains(&h3[0].0) && set.contains(&h3[1].0));
     }
@@ -323,12 +373,12 @@ mod tests {
         let ev = Event::new("T", vec![]);
         let (h2, h3) = (batch("h2", 2, &ev), batch("h3", 2, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
-        let kept = install(&set, &h2, false);
-        let none = set
+        let (kept, ticket) = install(&set, &h2, false);
+        let (none, _) = set
             .install(&h3, || Ok::<_, ()>(false), |_, _| None)
             .unwrap();
         assert_eq!(none.len(), 0);
-        set.forget(&h2, &kept);
+        set.forget(&ticket, &kept);
         assert_eq!(set.tracked(IDENTITY), Some(("h3".into(), vec![])));
     }
 
@@ -337,17 +387,17 @@ mod tests {
         let ev = Event::new("T", vec![]);
         let (h2, h1) = (batch("h2", 2, &ev), batch("h1", 1, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
-        let kept_a = install(&set, &h2, false);
+        let (kept_a, ticket_a) = install(&set, &h2, false);
         install(&set, &h1, false);
-        let kept_d = install(&set, &h2, false);
+        let (kept_d, _) = install(&set, &h2, false);
         assert_eq!(
             kept_d, kept_a,
             "the reinstall keeps the very same key strings"
         );
-        set.forget(&h2, &kept_a);
+        set.forget(&ticket_a, &kept_a);
         assert_eq!(set.tracked(IDENTITY), Some(("h2".into(), keys_of(&h2))));
         assert!(set.contains(&h2[0].0) && set.contains(&h2[1].0));
-        assert_eq!(install(&set, &h2, false), Vec::<String>::new());
+        assert_eq!(install(&set, &h2, false).0, Vec::<String>::new());
     }
 
     #[test]
@@ -355,7 +405,7 @@ mod tests {
         let ev = Event::new("T", vec![]);
         let unshaped = [("unshaped#0".to_string(), &ev)];
         let set = ReplayKeys::seeded(HashSet::new());
-        let kept = set
+        let (kept, ticket) = set
             .install(
                 &unshaped,
                 || -> Result<bool, ()> { panic!("a batch naming no identity asks nothing") },
@@ -364,7 +414,7 @@ mod tests {
             .unwrap();
         assert_eq!(kept.len(), 1);
         assert!(set.contains("unshaped#0"));
-        set.forget(&unshaped, &["unshaped#0".to_string()]);
+        set.forget(&ticket, &["unshaped#0".to_string()]);
         assert!(!set.contains("unshaped#0"));
     }
 }

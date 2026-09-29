@@ -2901,38 +2901,35 @@ impl RunCtx<'_> {
     /// lookup (spec 101, [`crate::ingest::batch_is_latest_recorded`]), the retirement of a stale
     /// generation's keys (spec 86 criterion 3), and the dedup itself, under that type's fixed lock
     /// order. Its locks are released before the append, so concurrent units in a wave still append
-    /// their own keyed events in parallel. A failed append hands the survivors' keys to
-    /// [`ReplayKeys::forget`](crate::replay_keys::ReplayKeys::forget), which forgets only what this
-    /// call installed, so the next sight asks the store afresh instead of reading the unrecorded
-    /// batch as appended.
+    /// their own keyed events in parallel. A failed append hands the survivors' keys and the
+    /// install's ticket to [`ReplayKeys::forget`](crate::replay_keys::ReplayKeys::forget), which
+    /// forgets only what this call installed, so the next sight asks the store afresh instead of
+    /// reading the unrecorded batch as appended.
     ///
     /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
     #[cfg(feature = "symbols")]
     fn emit_keyed_batch(&self, keyed: &[(String, &Event)]) -> Result<(), Error> {
-        let (kept, survivors): (Vec<String>, Vec<Event>) = self
-            .replayed_keys
-            .install(
-                keyed,
-                || crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed),
-                |key, ev| {
-                    // A non-JSON event neither appends nor records its key, exactly as the
-                    // per-event sink skips it (`if let Ok(payload) = from_slice { emit_keyed(..) }`).
-                    let payload: Value = serde_json::from_slice(&ev.data).ok()?;
-                    let data = serde_json::to_vec(&payload).ok()?;
-                    Some(crate::ingest::keyed_derived_event(
-                        Event::new(&ev.type_, data),
-                        key,
-                    ))
-                },
-            )?
-            .into_iter()
-            .unzip();
+        let (survivors, ticket) = self.replayed_keys.install(
+            keyed,
+            || crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed),
+            |key, ev| {
+                // A non-JSON event neither appends nor records its key, exactly as the
+                // per-event sink skips it (`if let Ok(payload) = from_slice { emit_keyed(..) }`).
+                let payload: Value = serde_json::from_slice(&ev.data).ok()?;
+                let data = serde_json::to_vec(&payload).ok()?;
+                Some(crate::ingest::keyed_derived_event(
+                    Event::new(&ev.type_, data),
+                    key,
+                ))
+            },
+        )?;
+        let (kept, survivors): (Vec<String>, Vec<Event>) = survivors.into_iter().unzip();
         let appended = self.append_and_fold_batch(&survivors);
         if appended.is_err() {
             // A FAILED APPEND RECORDED NOTHING (spec 101), so nothing this call installed may read
             // as appended: see `ReplayKeys::forget` for what it forgets, and the in-flight window
             // it leaves.
-            self.replayed_keys.forget(keyed, &kept);
+            self.replayed_keys.forget(&ticket, &kept);
         }
         appended.map(|_| ())
     }
