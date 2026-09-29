@@ -200,11 +200,9 @@ pub fn stream_source<'s>(
         store
             .read_stream_batched(stream, next, batch, &mut |events, head| {
                 next = events.last().map_or(next, |e| e.revision + 1);
-                let past = &events[events.partition_point(|e| e.position <= after)..];
-                if past.is_empty() {
-                    return Ok(());
-                }
-                sink(past, head).map_err(|e| crate::eventstore::Error::Backend(e.0))
+                // The batch's events past `after`, handed with the stream's head.
+                stream_past(events, after, batch, &mut |past, _| sink(past, head))
+                    .map_err(|e| crate::eventstore::Error::Backend(e.0))
             })
             .map_err(be)
     }
