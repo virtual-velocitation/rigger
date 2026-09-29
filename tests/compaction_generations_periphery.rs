@@ -3113,6 +3113,43 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
     );
 }
 
+/// Given a `graph.db` that owes its rebuild for both causes at once - the release before the
+/// generation rule folded it, and a fold into it was lost - when the operator runs `rigger setup`,
+/// then setup names both causes in order, pays both with its one rebuild (the lost fold's mark is
+/// gone and the file records the current rule), and a second `rigger setup` owes nothing.
+#[test]
+fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both() {
+    let store = ReleaseEraStore::new();
+    let mark = rigger_file(store.root(), "graph.db.owed");
+    std::fs::write(&mark, b"").unwrap();
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("rebuilding graph.db"))
+            .collect::<Vec<_>>(),
+        vec![
+            "rebuilding graph.db from the event log: it was folded under an older fold rule, and \
+             a fold into it failed, so the log's live selection is refolded once"
+        ],
+        "setup names the older rule first and the lost fold second; stdout: {out}"
+    );
+    assert_eq!(
+        (mark.exists(), user_version(&store.graph_db)),
+        (false, 1),
+        "the one rebuild pays both: the mark is dropped and the file records the current rule"
+    );
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
+
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "a second setup must succeed; stderr: {err}");
+    assert!(
+        !out.contains("graph.db"),
+        "a paid rebuild is not owed or reported again; stdout: {out}"
+    );
+}
+
 /// Given a release-era store whose durable identity `rigger setup` has yet to mint, when the
 /// operator runs `rigger setup`, then the log moves to the minted identity before the rebuild reads
 /// it, and the rebuilt `graph.db` is the whole log's under that identity - never an empty graph
