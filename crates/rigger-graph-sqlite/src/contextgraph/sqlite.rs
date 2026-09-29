@@ -4020,15 +4020,20 @@ mod tests {
             e
         };
         let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
-        poison.position = 2;
-        let log = [decision("d1", "a.rs", 1), poison, decision("d3", "b.rs", 3)];
+        poison.position = 3;
+        let log = [
+            run_started_at("r1", 1),
+            decision("d1", "a.rs", 2),
+            poison,
+            decision("d3", "b.rs", 4),
+        ];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         let mark = dir.path().join("graph.db.owed");
 
         let p = Projector::open(path, "test").unwrap();
-        crate::test_support::folds(&p, &log[..1]);
+        crate::test_support::folds(&p, &log[..2]);
         assert_eq!(
             (p.rebuild_owed().unwrap(), mark.exists()),
             (false, false),
@@ -4037,7 +4042,7 @@ mod tests {
         assert!(matches!(
             crate::contextgraph::Fold::of_batch(
                 || crate::contextgraph::wired(Some(&p)),
-                &log[1..2]
+                &log[2..3]
             ),
             Fold::NotFolded(_)
         ));
@@ -4047,7 +4052,7 @@ mod tests {
             "the failed fold marks the file owed"
         );
         assert_eq!(
-            crate::contextgraph::Fold::of_batch(|| crate::contextgraph::wired(Some(&p)), &log[2..]),
+            crate::contextgraph::Fold::of_batch(|| crate::contextgraph::wired(Some(&p)), &log[3..]),
             Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
             "a marked file refuses every later fold"
         );
@@ -4090,6 +4095,16 @@ mod tests {
         assert_eq!(again, None, "a paid rebuild does not run again");
     }
 
+    /// The `RunStarted` of run `run` at `position`: a rebuild keeps only the active run's decisions
+    /// and findings, so a fixture whose decisions must survive a rebuild opens its run with this.
+    fn run_started_at(run: &str, position: u64) -> Event {
+        event_at(
+            rigger_domain::run::TYPE_RUN_STARTED,
+            format!(r#"{{"run":"{run}","spec":"s.md"}}"#).as_bytes(),
+            position,
+        )
+    }
+
     /// An event of `type_` at `position` whose payload is `data`.
     fn event_at(type_: &str, data: &[u8], position: u64) -> Event {
         let mut e = Event::new(type_, data.to_vec());
@@ -4123,15 +4138,16 @@ mod tests {
     #[test]
     fn a_rebuild_passes_over_only_a_payload_the_fold_rejects_and_says_how_many() {
         let log = [
-            decision_at("d1", "a.rs", 1),
-            event_at(TYPE_DECISION_MADE, b"{ not valid json", 2),
-            event_at(TYPE_UNIT_INTEGRATED, br#"{"unit": 5}"#, 3),
+            run_started_at("r1", 1),
+            decision_at("d1", "a.rs", 2),
+            event_at(TYPE_DECISION_MADE, b"{ not valid json", 3),
+            event_at(TYPE_UNIT_INTEGRATED, br#"{"unit": 5}"#, 4),
             event_at(
                 TYPE_DECISION_MADE,
                 br#"{"id":"d-trailing","governs":["t.rs"]} x"#,
-                4,
+                5,
             ),
-            decision_at("d5", "b.rs", 5),
+            decision_at("d6", "b.rs", 6),
         ];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
@@ -4143,7 +4159,7 @@ mod tests {
         assert_eq!(
             (
                 rebuilt,
-                (1..=5).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                (1..=6).map(|at| applied(&p, at)).collect::<Vec<_>>(),
                 live_governs(&p)
                     .into_iter()
                     .map(|g| g.1)
@@ -4151,7 +4167,7 @@ mod tests {
             ),
             (
                 Some(3),
-                vec![true; 5],
+                vec![true; 6],
                 vec!["a.rs".to_string(), "b.rs".to_string()]
             ),
             "the three rejected payloads (malformed, mistyped, trailing bytes) are passed over and \
@@ -4159,7 +4175,7 @@ mod tests {
         );
         drop(p);
         assert_eq!(
-            rebuild_in_batches(path, &[decision_at("d6", "c.rs", 6)], 10, &mut Vec::new()).unwrap(),
+            rebuild_in_batches(path, &[decision_at("d7", "c.rs", 7)], 10, &mut Vec::new()).unwrap(),
             Some(0),
             "a rebuild that rejects nothing passed over nothing"
         );
@@ -4210,9 +4226,10 @@ mod tests {
     #[test]
     fn a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it() {
         let log = [
-            decision_at("d1", "a.rs", 1),
-            decision_at("d-boom", "b.rs", 2),
-            decision_at("d3", "c.rs", 3),
+            run_started_at("r1", 1),
+            decision_at("d1", "a.rs", 2),
+            decision_at("d-boom", "b.rs", 3),
+            decision_at("d3", "c.rs", 4),
         ];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
@@ -4233,7 +4250,7 @@ mod tests {
         assert_eq!(
             (
                 failed.map_err(|e| e.to_string()),
-                applied(&Projector::open(path, "test").unwrap(), 1),
+                applied(&Projector::open(path, "test").unwrap(), 2),
             ),
             (Err("graph: disk gave out".to_string()), false),
             "the storage error propagates and the live file is untouched"
@@ -4255,7 +4272,7 @@ mod tests {
             ),
             (
                 Some(0),
-                vec![0, 1, 3],
+                vec![0, 2, 4],
                 vec!["b.rs".to_string(), "a.rs".to_string(), "c.rs".to_string()]
             ),
             "the next rebuild resumes past the committed batch and folds the event the error lost \
@@ -4334,16 +4351,9 @@ mod tests {
     #[test]
     fn a_rebuild_applies_the_run_closure_prune_before_its_swap_even_when_resumed() {
         use rigger_domain::run::{superseded_edge_boundary, superseded_graph_nodes};
-        let run_started = |run: &str, at| {
-            event_at(
-                rigger_domain::run::TYPE_RUN_STARTED,
-                format!(r#"{{"run":"{run}","spec":"s.md"}}"#).as_bytes(),
-                at,
-            )
-        };
         let log = [
             decision_at("d-pre", "p.rs", 1),
-            run_started("r1", 2),
+            run_started_at("r1", 2),
             decision_at("d-dead", "a.rs", 3),
             event_at(
                 TYPE_REVIEW_FINDING,
@@ -4352,7 +4362,7 @@ mod tests {
             ),
             decision_at("shared", "s.rs", 5),
             event_at(TYPE_LESSON_LEARNED, br#"{"id":"l1","about":["a.rs"]}"#, 6),
-            run_started("r2", 7),
+            run_started_at("r2", 7),
             decision_at("d-live", "b.rs", 8),
             decision_at("shared", "s.rs", 9),
         ];

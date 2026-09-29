@@ -2197,6 +2197,14 @@ fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
 
 /// `src/f.rs` drops `gone` and `docs/f.md` drops its link to `src/old.rs` between h1 and h2: the
 /// facts a graph folded before the generation rule keeps and a rebuild does not.
+/// The `RunStarted` of run `run`.
+fn run_started(run: &str) -> Event {
+    Event::new(
+        "RunStarted",
+        format!(r#"{{"run":"{run}","spec":"s.md"}}"#).into_bytes(),
+    )
+}
+
 fn two_generations_dropping_facts() -> Vec<Event> {
     vec![
         keyed(
@@ -2692,7 +2700,9 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
 fn the_live_selection_is_exactly_what_the_compaction_keeps_and_rebuilds_the_whole_logs_graph() {
     let dir = tempfile::tempdir().unwrap();
     let mut events = two_generations_dropping_facts();
-    events.insert(2, governs("src/f.rs::alpha", 15));
+    // The decision is the active run's, so the rebuild's run-closure prune keeps it.
+    events.insert(2, run_started("r1"));
+    events.insert(3, governs("src/f.rs::alpha", 15));
     events.push(keyed(
         TYPE_DOC_LINK_EXTRACTED,
         link("src/a.rs"),
@@ -3024,7 +3034,10 @@ impl ReleaseEraStore {
             std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
         }
         let project = run_stream_identity(root);
-        let mut log = two_generations_dropping_facts();
+        // The history opens a run, so a decision this store's tests emit is the active run's and
+        // a cold rebuild's run-closure prune keeps it, as `rigger reset --runs` would.
+        let mut log = vec![run_started("r1")];
+        log.extend(two_generations_dropping_facts());
         log.push(keyed(
             TYPE_EDGE_INFERRED,
             proof("alpha", 3),
@@ -3146,7 +3159,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
             "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
              the log's live selection is refolded once"
                 .to_string(),
-            format!("rebuilt 3 events, through position {head} of {head} (100%)"),
+            format!("rebuilt 4 events, through position {head} of {head} (100%)"),
             "rebuilt graph.db from the event log".to_string(),
         ],
         "setup says it is rebuilding and how far along it is, folding only the live selection - \
@@ -3289,7 +3302,7 @@ fn an_emit_at_the_old_rule_appends_says_it_skipped_the_fold_and_leaves_graph_db_
     let last = log.last().unwrap();
     assert_eq!(
         (log.len(), last.type_.as_str()),
-        (7, "DecisionMade"),
+        (8, "DecisionMade"),
         "the decision is appended to the log"
     );
     assert_eq!(
@@ -3561,7 +3574,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
     let log = store.log();
     assert_eq!(
         (log.len(), log.last().unwrap().type_.as_str()),
-        (7, "DecisionMade"),
+        (8, "DecisionMade"),
         "the emit appended to the log"
     );
     assert_eq!(
@@ -4252,7 +4265,7 @@ fn a_result_at_the_old_rule_is_on_the_log_and_says_it_skipped_the_fold() {
     let last = log.last().unwrap();
     assert_eq!(
         (ok, log.len(), last.type_.as_str()),
-        (true, 7, "SpawnResult"),
+        (true, 8, "SpawnResult"),
         "the result is appended to the log and the courier succeeds; stderr: {err}"
     );
     assert_eq!(
@@ -4339,9 +4352,15 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
     let minted = store.project();
     assert_ne!(minted, legacy, "init minted a distinct identity");
 
-    let (_, err, ok) = run_rigger(store.root(), &["reset"]);
+    let (out, err, ok) = run_rigger(store.root(), &["reset"]);
     let log = store.log();
     let last = log.last().unwrap();
+    assert_eq!(
+        out.lines().next(),
+        Some(format!("--runs: {}", rigger::contextgraph::REBUILD_OWED).as_str()),
+        "the menu counts nothing prunable from a graph that owes its rebuild, and says so; \
+         stderr: {err}"
+    );
     assert_eq!(
         (
             ok,
@@ -4351,7 +4370,7 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
         ),
         (
             true,
-            7,
+            8,
             "DecisionMade",
             serde_json::json!(format!("identity-migration-{minted}"))
         ),
