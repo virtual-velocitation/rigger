@@ -1038,3 +1038,107 @@ mod locate_default {
         assert_eq!(MinimalProjection.locate("anything").unwrap(), Located::None);
     }
 }
+
+/// The one fold outcome and the report every append-then-fold surface renders from it.
+#[cfg(test)]
+mod fold_outcome {
+    use super::{
+        fold_clause, fold_loss_clause, rebuild_owed_refusal, Error, Fold, FoldAccess, Projection,
+        REBUILD_OWED,
+    };
+    use crate::eventstore::Event;
+    use crate::test_support::MinimalProjection;
+    use std::sync::Mutex;
+
+    /// A projection that refuses every fold with `graph: refused`.
+    struct Refusing;
+
+    impl Projection for Refusing {
+        fn apply(&self, _e: &Event, _access: FoldAccess) -> Result<(), Error> {
+            Err(Error("refused".to_string()))
+        }
+        crate::projection_reads_nothing!();
+    }
+
+    /// A projection recording the position of every event its default batch fold hands `apply`.
+    #[derive(Default)]
+    struct Recording(Mutex<Vec<u64>>);
+
+    impl Projection for Recording {
+        fn apply(&self, e: &Event, _access: FoldAccess) -> Result<(), Error> {
+            self.0.lock().unwrap().push(e.position);
+            Ok(())
+        }
+        crate::projection_reads_nothing!();
+    }
+
+    fn at(position: u64) -> Event {
+        let mut e = Event::new("DecisionMade", b"{}".to_vec());
+        e.position = position;
+        e
+    }
+
+    #[test]
+    fn a_batch_with_no_graph_wired_is_not_folded_and_says_so() {
+        assert_eq!(
+            Fold::of_batch(None, &[at(1)]),
+            Fold::NotFolded("no context graph is wired".to_string())
+        );
+    }
+
+    #[test]
+    fn a_batch_folds_every_event_in_order_or_reports_the_graphs_refusal() {
+        let recording = Recording::default();
+        assert_eq!(
+            Fold::of_batch(Some(&recording), &[at(3), at(5)]),
+            Fold::Folded
+        );
+        assert_eq!(*recording.0.lock().unwrap(), vec![3, 5]);
+        assert_eq!(
+            Fold::of_batch(Some(&Refusing), &[at(1)]),
+            Fold::NotFolded("graph: refused".to_string())
+        );
+    }
+
+    #[test]
+    fn one_event_folds_or_reports_why_the_graph_could_not_be_had_or_refused() {
+        let folded: Result<&dyn Projection, Error> = Ok(&MinimalProjection);
+        assert_eq!(Fold::of(folded, &at(1)), Fold::Folded);
+        let refusing: Result<&dyn Projection, Error> = Ok(&Refusing);
+        assert_eq!(
+            Fold::of(refusing, &at(1)),
+            Fold::NotFolded("graph: refused".to_string())
+        );
+        let unopened: Result<&dyn Projection, Error> = Err(Error("unopenable".to_string()));
+        assert_eq!(
+            Fold::of(unopened, &at(1)),
+            Fold::NotFolded("graph: unopenable".to_string())
+        );
+    }
+
+    #[test]
+    fn an_emit_line_claims_the_fold_only_when_it_happened_and_otherwise_says_why() {
+        assert_eq!(
+            fold_clause(&Fold::Folded),
+            " and folded it into the context graph"
+        );
+        assert_eq!(
+            fold_clause(&Fold::NotFolded("graph: locked".to_string())),
+            "; not folded into the context graph: graph: locked"
+        );
+    }
+
+    #[test]
+    fn a_line_that_names_the_graph_adds_nothing_for_a_fold_and_the_reason_for_a_lost_one() {
+        assert_eq!(fold_loss_clause(&Fold::Folded), "");
+        assert_eq!(
+            fold_loss_clause(&Fold::NotFolded("graph: locked".to_string())),
+            "; not folded into the context graph: graph: locked"
+        );
+    }
+
+    #[test]
+    fn the_owed_refusal_names_the_refusing_command_before_the_one_spelling() {
+        assert_eq!(rebuild_owed_refusal("step"), format!("step: {REBUILD_OWED}"));
+    }
+}
