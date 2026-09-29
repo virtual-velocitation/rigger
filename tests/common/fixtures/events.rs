@@ -168,18 +168,11 @@ pub struct GroupLookupOnly {
 }
 
 impl GroupLookupOnly {
-    /// A store answering `head` for every group.
-    pub fn answering(head: Option<GroupHead>) -> Self {
+    /// A store answering every group with `answer`: `Ok` the newest member (or none), `Err` a
+    /// backend error carrying that message.
+    pub fn new(answer: Result<Option<GroupHead>, String>) -> Self {
         GroupLookupOnly {
-            answer: Ok(head),
-            asked: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-
-    /// A store whose group lookup fails with a backend error carrying `message`.
-    pub fn failing(message: &str) -> Self {
-        GroupLookupOnly {
-            answer: Err(message.to_string()),
+            answer,
             asked: std::sync::Mutex::new(Vec::new()),
         }
     }

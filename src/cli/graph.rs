@@ -964,7 +964,7 @@ mod tests {
             "pub fn answer() -> u32 { 42 }\n",
         )
         .unwrap();
-        let store = GroupLookupOnly::failing("group index unreadable");
+        let store = GroupLookupOnly::new(Err("group index unreadable".into()));
         match ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()) {
             Err(Error::Backend(msg)) => assert_eq!(msg, "group index unreadable"),
             other => panic!("the lookup's failure is the build's, got {other:?}"),

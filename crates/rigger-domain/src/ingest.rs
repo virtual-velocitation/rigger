@@ -401,6 +401,11 @@ mod group_lookup_tests {
     use crate::test_support::GroupLookupOnly;
     use std::collections::BTreeMap;
 
+    /// A lookup-only store answering `head` for every group.
+    fn answering(head: Option<GroupHead>) -> GroupLookupOnly {
+        GroupLookupOnly::new(Ok(head))
+    }
+
     fn head(type_: &str, key: Option<&str>) -> GroupHead {
         let mut meta = BTreeMap::new();
         if let Some(key) = key {
@@ -449,10 +454,7 @@ mod group_lookup_tests {
 
     #[test]
     fn the_latest_generation_is_cut_from_the_newest_group_members_replay_key() {
-        let store = GroupLookupOnly::answering(Some(head(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            Some("gc/a.rs@h2#3"),
-        )));
+        let store = answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#3"))));
         assert_eq!(
             latest_generation(&store, "rigger", "gc/a.rs").unwrap(),
             Some("h2".to_string())
@@ -467,20 +469,17 @@ mod group_lookup_tests {
     #[test]
     fn no_recorded_member_a_non_derived_member_or_an_unparseable_key_answers_no_generation() {
         for (store, why) in [
+            (answering(None), "a never-recorded identity"),
             (
-                GroupLookupOnly::answering(None),
-                "a never-recorded identity",
-            ),
-            (
-                GroupLookupOnly::answering(Some(head(TYPE_REVIEW_FINDING, Some("gc/a.rs@h2#0")))),
+                answering(Some(head(TYPE_REVIEW_FINDING, Some("gc/a.rs@h2#0")))),
                 "a newest member outside the derived types (type first)",
             ),
             (
-                GroupLookupOnly::answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs")))),
+                answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs")))),
                 "a newest member whose key does not parse",
             ),
             (
-                GroupLookupOnly::answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, None))),
+                answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, None))),
                 "a newest member with no replay key",
             ),
         ] {
@@ -500,10 +499,7 @@ mod group_lookup_tests {
                 .map(|i| (format!("gc/a.rs@{generation}#{i}"), &ev))
                 .collect()
         };
-        let store = GroupLookupOnly::answering(Some(head(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            Some("gc/a.rs@h2#1"),
-        )));
+        let store = answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#1"))));
         assert!(
             batch_is_latest_recorded(&store, "rigger", &batch("h2")).unwrap(),
             "the recorded generation: its keys are the recorded ones, it appends nothing"
@@ -520,7 +516,7 @@ mod group_lookup_tests {
             ],
             "each question is one lookup of the batch's identity"
         );
-        let empty = GroupLookupOnly::answering(None);
+        let empty = answering(None);
         assert!(
             !batch_is_latest_recorded(&empty, "rigger", &batch("h2")).unwrap(),
             "a never-recorded identity appends"
