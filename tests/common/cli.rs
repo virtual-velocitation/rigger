@@ -225,6 +225,16 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
         .unwrap()
 }
 
+/// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
+/// the binary waits on, and hand back what `run` returned once the lock is released.
+pub fn with_graph_locked<T>(graph_db: &Path, run: impl FnOnce() -> T) -> T {
+    let holder = rusqlite::Connection::open(graph_db).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let out = run();
+    holder.execute_batch("ROLLBACK").unwrap();
+    out
+}
+
 /// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);

@@ -34,6 +34,7 @@ use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
+use common::cli::with_graph_locked;
 use common::fixtures::meta_replay_key;
 use rigger::contextgraph::sqlite::RebuildSink;
 use rigger::contextgraph::Fold;
@@ -4226,16 +4227,6 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
     );
 }
 
-/// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
-/// the binary waits on, and hand back what `run` returned once the lock is released.
-fn with_graph_locked<T>(graph_db: &Path, run: impl FnOnce() -> T) -> T {
-    let holder = rusqlite::Connection::open(graph_db).unwrap();
-    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let out = run();
-    holder.execute_batch("ROLLBACK").unwrap();
-    out
-}
-
 /// Given a current `graph.db` whose fold of an emit was lost to another writer's lock, when the
 /// agent emits again, then the graph owes its rebuild: the next emit appends and says it was not
 /// folded because the rebuild is owed, a read-only inspection says the rebuild is owed, and once
@@ -4277,6 +4268,19 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
         ok && err.contains(&rebuild_owed_note()),
         "a read-only inspection says the rebuild is owed; stderr: {err}"
     );
+    let owed_log = read_run_events(root).len();
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert_eq!(
+        (ok, read_run_events(root).len()),
+        (false, owed_log),
+        "the compaction refuses a graph a lost fold left owed and prunes nothing; stdout: {out}"
+    );
+    assert!(
+        err.contains(&rigger::contextgraph::rebuild_owed_refusal(
+            "reset --derived"
+        )),
+        "the compaction's refusal names `rigger setup`; stderr: {err}"
+    );
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
@@ -4289,6 +4293,11 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
     assert!(
         ok && out.ends_with(" and folded it into the context graph\n"),
         "once rebuilt, an emit folds again; stdout: {out} stderr: {err}"
+    );
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(
+        ok && out.starts_with("reset --derived: pruned 0 redundant derived-index event(s)"),
+        "once setup has paid the rebuild the compaction runs; stdout: {out} stderr: {err}"
     );
 }
 
@@ -4316,9 +4325,10 @@ fn reset_runs_on_a_graph_that_owes_its_rebuild_refuses_naming_setup_and_writes_n
 }
 
 /// Given a current `graph.db` another writer holds locked, when the operator runs `rigger graph
-/// build` over a project with a source file, then the build appends the file's batch and says it
-/// was not folded, with the reason, rather than claiming it; the graph now owes its rebuild, so
-/// the next build refuses naming `rigger setup`.
+/// build` over a project with two source files, then the build appends both files' batches and
+/// says they were not folded, naming the first fold it lost (the lock) rather than the owed
+/// refusal the second batch met because of it; the graph now owes its rebuild, so the next build
+/// refuses naming `rigger setup`.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses() {
@@ -4331,6 +4341,7 @@ fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses
     );
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src").join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+    std::fs::write(root.join("src").join("more.rs"), "pub fn beta() {}\n").unwrap();
     let graph_db = rigger_file(root, "graph.db");
     let before = read_run_events(root).len();
 
@@ -4345,9 +4356,23 @@ fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses
                  not folded into the context graph: graph: database is locked\n"
             )
         ),
-        "the build reports the fold it could not make; stderr: {err}"
+        "the build names the first fold it lost - the lock - never the owed refusal every later \
+         batch then met; stderr: {err}"
     );
-    assert!(ingested > 0, "the source file's batch is on the log");
+    let mut files: Vec<String> = read_run_events(root)[before..]
+        .iter()
+        .filter_map(|e| {
+            serde_json::from_slice::<serde_json::Value>(&e.data).ok()?["file"]
+                .as_str()
+                .map(String::from)
+        })
+        .collect();
+    files.dedup();
+    assert_eq!(
+        files,
+        vec!["src/lib.rs".to_string(), "src/more.rs".to_string()],
+        "both files' batches are on the log, one after the other"
+    );
 
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
     assert!(
@@ -4371,8 +4396,9 @@ fn a_step_whose_fold_is_lost_to_a_lock_says_so_and_the_next_step_refuses() {
     common::cli::write_workflow(root, "");
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(
-        ok,
-        "the first step parks the stage's spawn; stdout: {out} stderr: {err}"
+        ok && !err.contains("run event(s)"),
+        "the first step parks the stage's spawn and, its events folded, says nothing of the \
+         fold; stdout: {out} stderr: {err}"
     );
     let (_, err, ok) = run_rigger(root, &["result", "a/implementer#0", "done"]);
     assert!(ok, "the spawn's result is recorded; stderr: {err}");
@@ -4394,4 +4420,125 @@ fn a_step_whose_fold_is_lost_to_a_lock_says_so_and_the_next_step_refuses() {
         !ok && err.contains(&format!("step: {}", rigger::contextgraph::REBUILD_OWED)),
         "the next step refuses naming `rigger setup`; stdout: {out} stderr: {err}"
     );
+}
+
+/// Cut `branch` from the run branch of the repository at `root`, commit on it, and fast-forward
+/// the run branch onto it: a unit's work landed by hand, as `rigger reset --runs` closes it.
+/// Returns the landed tip.
+fn land_on_the_run_branch(root: &Path, branch: &str) -> String {
+    use common::git::{git_ok, git_ok_with_identity, git_out};
+    git_ok(root, &["branch", branch, "rigger-run"]);
+    git_ok(root, &["checkout", "-q", branch]);
+    git_ok_with_identity(root, &["commit", "-q", "--allow-empty", "-m", branch]);
+    git_ok(root, &["checkout", "-q", "rigger-run"]);
+    git_ok(root, &["merge", "-q", "--ff-only", branch]);
+    git_out(root, &["rev-parse", branch])
+}
+
+/// The line `rigger reset --runs` prints for closing unit `unit` at landed tip `tip` of run `r1`,
+/// before whatever it adds about the fold.
+fn closed_unit_line(unit: &str, tip: &str) -> String {
+    format!(
+        "reset --runs: closed unit {unit:?} of run r1: no driver is alive and its branch tip {tip} \
+         is landed on rigger-run, so its UnitIntegrated is recorded (by operator)"
+    )
+}
+
+/// The position of the last `UnitIntegrated` on `root`'s run stream.
+fn last_integration(root: &Path) -> u64 {
+    read_run_events(root)
+        .iter()
+        .rev()
+        .find(|e| e.type_ == "UnitIntegrated")
+        .expect("a UnitIntegrated is on the log")
+        .position
+}
+
+/// Given a run no driver drives whose unit's branch is landed on the run branch, when the operator
+/// runs `rigger reset --runs`, then it records the unit's `UnitIntegrated`, folds it, and its
+/// closing line claims nothing more; when another writer holds `graph.db` locked while it closes
+/// the next landed unit, the closing line says that unit's integration was not folded, with the
+/// reason, and the graph now owes its rebuild, so the next `rigger reset --runs` refuses naming
+/// `rigger setup`.
+#[test]
+fn reset_runs_says_whether_the_integration_it_recorded_for_a_landed_unit_was_folded() {
+    use common::git::{git_ok, init_repo};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_repo(root);
+    git_ok(root, &["checkout", "-q", "-b", "rigger-run"]);
+    common::cli::seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","spec":"s.md"}"#),
+            ("UnitStarted", r#"{"id":"u1","branch":"rigger/u1"}"#),
+        ],
+    );
+    let tip = land_on_the_run_branch(root, "rigger/u1");
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert_eq!(
+        (ok, out.lines().next().unwrap_or_default().to_string()),
+        (true, closed_unit_line("u1", &tip)),
+        "the folded integration's line claims nothing more; stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    assert!(
+        applied(&graph_db, last_integration(root)),
+        "the recorded integration is folded"
+    );
+
+    common::cli::seed_run_events(
+        root,
+        &[("UnitStarted", r#"{"id":"u2","branch":"rigger/u2"}"#)],
+    );
+    let tip = land_on_the_run_branch(root, "rigger/u2");
+    let (out, err, _) = with_graph_locked(&graph_db, || run_rigger(root, &["reset", "--runs"]));
+    assert_eq!(
+        out.lines().next().unwrap_or_default(),
+        format!(
+            "{}; not folded into the context graph: graph: database is locked",
+            closed_unit_line("u2", &tip)
+        ),
+        "the lost integration's line says it was not folded, with the reason; stderr: {err}"
+    );
+    assert!(
+        !applied(&graph_db, last_integration(root)),
+        "the integration is on the log but not in the graph"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert!(
+        !ok && err.contains(&rigger::contextgraph::rebuild_owed_refusal("reset --runs")),
+        "the next reset --runs refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+    );
+}
+
+/// Given an in-memory graph, which no rebuild outlives, when a batch fails to fold into it, then
+/// the failure is reported but marks nothing owed - no file beside it is written - and the next
+/// batch folds.
+#[test]
+fn a_failed_fold_into_an_in_memory_graph_marks_nothing_owed_and_the_next_batch_folds() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    let mark = std::env::current_dir().unwrap().join(":memory:.owed");
+    let mut poison = Event::new("DecisionMade", b"{ not valid json".to_vec());
+    poison.position = 1;
+    let graph = Projector::open(":memory:", PROJECT).unwrap();
+    let failed = Fold::of_batch(Some(&graph), &[poison]);
+    assert!(
+        matches!(&failed, Fold::NotFolded(why) if why.starts_with("graph: ")),
+        "the failed fold is reported: {failed:?}"
+    );
+    assert_eq!(
+        (graph.rebuild_owed().unwrap(), mark.exists()),
+        (false, false),
+        "an in-memory graph owes nothing and writes no mark"
+    );
+    let mut good = Event::new(
+        "DecisionMade",
+        br#"{"id":"d","summary":"s","governs":["a.rs"],"supersedes":""}"#.to_vec(),
+    );
+    good.position = 2;
+    assert_eq!(Fold::of_batch(Some(&graph), &[good]), Fold::Folded);
 }

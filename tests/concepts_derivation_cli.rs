@@ -270,4 +270,6 @@ rigger::test_cases! {
         CONCEPTS.a_malformed_resolution_or_unknown_argument_fails_loudly();
     re_running_a_grain_reproduces_the_byte_identical_live_layer:
         CONCEPTS.re_running_a_grain_reproduces_the_byte_identical_live_layer();
+    a_pass_whose_fold_is_lost_to_a_lock_says_so_and_the_next_pass_refuses:
+        CONCEPTS.a_pass_whose_fold_is_lost_to_a_lock_says_so_and_the_next_pass_refuses();
 }

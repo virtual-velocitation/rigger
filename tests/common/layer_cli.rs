@@ -280,4 +280,51 @@ impl LayerCli {
             "re-running the same grain reproduces the identical membership edges"
         );
     }
+
+    /// Given a seeded project whose pass has folded, when the same pass runs while another
+    /// writer holds `graph.db` locked past the busy timeout, then its line is the folded pass's
+    /// line with the fold it could not make, and the reason, added - a folded pass adds nothing -
+    /// and the graph now owes its rebuild, so the next pass refuses naming `rigger setup` rather
+    /// than deriving from a graph that lost the recorded layer.
+    pub fn a_pass_whose_fold_is_lost_to_a_lock_says_so_and_the_next_pass_refuses(&self) {
+        let dir = self.project();
+        let root = dir.path();
+        (self.seed)(root);
+        let folded = self.run(root, &[]);
+        let folded_line = String::from_utf8_lossy(&folded.stdout).into_owned();
+        assert!(
+            folded.status.success()
+                && folded_line.starts_with(&format!("graph {}: ", self.subcommand)),
+            "the unlocked pass folds; stdout: {folded_line}"
+        );
+
+        let graph_db = root.join(".rigger").join("graph.db");
+        let locked = crate::common::cli::with_graph_locked(&graph_db, || self.run(root, &[]));
+        assert_eq!(
+            (
+                locked.status.success(),
+                String::from_utf8_lossy(&locked.stdout).into_owned()
+            ),
+            (
+                true,
+                format!(
+                    "{}; not folded into the context graph: graph: database is locked\n",
+                    folded_line.trim_end_matches('\n')
+                )
+            ),
+            "the locked pass says the fold it could not make; stderr: {}",
+            String::from_utf8_lossy(&locked.stderr)
+        );
+
+        let next = self.run(root, &[]);
+        let stderr = String::from_utf8_lossy(&next.stderr);
+        assert!(
+            !next.status.success()
+                && stderr.contains(&rigger::contextgraph::rebuild_owed_refusal(&format!(
+                    "graph {}",
+                    self.subcommand
+                ))),
+            "the next pass refuses naming `rigger setup`; stderr: {stderr}"
+        );
+    }
 }

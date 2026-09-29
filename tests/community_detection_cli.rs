@@ -210,4 +210,6 @@ rigger::test_cases! {
         COMMUNITIES.a_malformed_resolution_or_unknown_argument_fails_loudly();
     re_running_a_grain_reproduces_the_byte_identical_live_layer:
         COMMUNITIES.re_running_a_grain_reproduces_the_byte_identical_live_layer();
+    a_pass_whose_fold_is_lost_to_a_lock_says_so_and_the_next_pass_refuses:
+        COMMUNITIES.a_pass_whose_fold_is_lost_to_a_lock_says_so_and_the_next_pass_refuses();
 }

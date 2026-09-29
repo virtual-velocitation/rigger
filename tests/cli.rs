@@ -11139,8 +11139,9 @@ fn replay_re_drives_the_trajectory_and_diffs_stats_without_touching_the_real_str
 
     let (diff, err, ok) = run_rigger(root, &["replay", "latest", "--against", "HEAD"]);
     assert!(
-        ok,
-        "rigger replay must succeed; stderr:\n{err}\nstdout:\n{diff}"
+        ok && !err.contains("run event(s)"),
+        "rigger replay must succeed, and its isolated re-drive - wired to no context graph by \
+         design - says nothing of a fold; stderr:\n{err}\nstdout:\n{diff}"
     );
     assert!(
         diff.contains("replay stats diff")
