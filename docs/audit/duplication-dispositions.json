@@ -480,11 +480,6 @@
     "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
   },
   {
-    "id": "dup-20d63cdc7260",
-    "disposition": "not-a-duplicate",
-    "reason": "`Heartbeat::start` spawns a heartbeat thread while `McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor."
-  },
-  {
     "id": "dup-781b5348543b",
     "disposition": "not-a-duplicate",
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
@@ -563,11 +558,6 @@
     "id": "dup-cf5c8cd56db9",
     "disposition": "not-a-duplicate",
     "reason": "Two property tests over different functions and invariants (module names never carry a dot or slash; credential fragments never survive redaction)."
-  },
-  {
-    "id": "dup-cc43c38b38ca",
-    "disposition": "not-a-duplicate",
-    "reason": "Fold helpers that each build a different event type or payload (inferred edges with and without evidence, doc concepts, doc links, batch refs, unit integration, concept realization, lang-less refs) over the shared `apply_json`."
   },
   {
     "id": "dup-b5bd50de3e2a",
@@ -693,16 +683,6 @@
     "id": "dup-c99581d3e41e",
     "disposition": "not-a-duplicate",
     "reason": "`write_workflow` and `write_store_conn` write different files (the committed workflow versus the per-machine secret)."
-  },
-  {
-    "id": "dup-38bcd5cba1f7",
-    "disposition": "not-a-duplicate",
-    "reason": "Non-boundary tests for two different layers (community assignment versus concept derivation) with different event types and folds."
-  },
-  {
-    "id": "dup-29092fe5ff01",
-    "disposition": "not-a-duplicate",
-    "reason": "Serialized-literal stability tests for two different layers (community versus concept) with different literals."
   },
   {
     "id": "dup-515218e72204",
@@ -933,5 +913,45 @@
     "id": "dup-17929143626a",
     "disposition": "not-a-duplicate",
     "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's current run, the on-disk run stream) and take the id from it."
+  },
+  {
+    "id": "dup-3f117fd28c02",
+    "disposition": "not-a-duplicate",
+    "reason": "`McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor; six call sites open a plain `rigger mcp` session through it."
+  },
+  {
+    "id": "dup-e3a49d3d408e",
+    "disposition": "not-a-duplicate",
+    "reason": "Two unrelated one-line `format!` wrappers sharing only their token shape: the rebuild-owed note a read-only surface prints versus the platform's product binary file name."
+  },
+  {
+    "id": "dup-49b57537de27",
+    "disposition": "not-a-duplicate",
+    "reason": "Fold helpers that each build a different event type or payload (inferred edges with and without evidence, doc concepts, doc links, batch refs, unit integration, lang-less refs) over the shared `apply_json`."
+  },
+  {
+    "id": "dup-c51171ae2133",
+    "disposition": "not-a-duplicate",
+    "reason": "Non-boundary tests for two different layers (community assignment versus concept derivation) with different event types and folds."
+  },
+  {
+    "id": "dup-ddaf372936d3",
+    "disposition": "not-a-duplicate",
+    "reason": "Serialized-literal stability tests for two different layers (community versus concept) with different literals."
+  },
+  {
+    "id": "dup-19f9cf9e5fab",
+    "disposition": "not-a-duplicate",
+    "reason": "Payload builders for two different event types (a `CommunityAssigned` membership versus a `CodeEntityExtracted` definition) whose only shared shape is serializing a `json!` literal."
+  },
+  {
+    "id": "dup-5f6fcac3a66f",
+    "disposition": "not-a-duplicate",
+    "reason": "Accessors of two different optional fields on two different types (the config's traversal depth versus the content-identity policy's declared fact identity); the shared token shape is a one-line `as_ref`."
+  },
+  {
+    "id": "dup-cfb679088c89",
+    "disposition": "not-a-duplicate",
+    "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   }
 ]

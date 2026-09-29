@@ -983,7 +983,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ebca87df825d",
+    "id": "dup-62edbaa1bb5b",
     "classification": "semantic",
     "sites": [
       {
@@ -1088,7 +1088,7 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "name": "\"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \\\n         reset --derived`. Each run's project-ingest pass records the project's derived index - \\\n         the code entities, inferred edges, design links, and doc concepts folded from your \\\n         sources - and a log written before that pass deduplicated across runs holds the WHOLE \\\n         index once per run, which is re-derivable duplication rather than history. `rigger reset \\\n         --derived` keeps the LATEST event per replay key of each derived index type, deletes the \\\n         superseded re-recordings, and compacts the file so events.db shrinks on disk. Every \\\n         other event survives byte-for-byte - lessons, decisions, findings, gate verdicts, and \\\n         the whole run history `rigger stats` and replay read. The live graph is unchanged: every \\\n         recording of one key folds to the same rows, and the prune carries a pruned key's \\\n         EARLIEST recorded valid-time onto the recording it keeps, so a design fact keeps the \\\n         date it first became true rather than being re-dated to whichever recording survived. \\\n         WHAT IT CANNOT RECLAIM, because this decides whether it is worth running at all: it only \\\n         ever sheds DUPLICATE recordings of one key, never the index itself. The last recording \\\n         of every key stays, so on a log that holds no key twice `rigger reset --derived` deletes \\\n         ZERO rows from it and reports so - that is the expected report on a clean log, not a \\\n         failure, and the derived index remains the bulk of the log by design because it is what \\\n         the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, because \\\n         a non-zero prune is otherwise read as a broken dedup: a log written since the dedup \\\n         existed holds one recording per distinct fact EXCEPT where a file's content has \\\n         RETURNED to a generation the log had already recorded - a revert, a branch switch, a \\\n         checkout back - which re-records that file's whole batch by design, since a dedup that \\\n         suppressed an already-recorded key would strand the graph on the version the file has \\\n         since moved past. A prune that sheds rows on such a log is shedding that duplication, \\\n         not covering for a defect; a log written BEFORE the dedup sheds the whole accumulated \\\n         pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \\\n         a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \\\n         space it needs is on whichever filesystem that resolves to rather than on the partition \\\n         holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \\\n         /usr/tmp, /tmp that exists and is writable, which on a Linux box with TMPDIR unset means \\\n         /var/tmp and NOT /tmp. Set TMPDIR yourself if the default lands somewhere too small for \\\n         a second copy of your log. It rewrites only when the FILE is holding reclaimable free \\\n         pages, which is not the same as this run having deleted something: a prune with nothing \\\n         to shed from an already-compact log leaves the file exactly as it found it and reports \\\n         reclaiming zero, while a prune that sheds nothing from a log still holding free pages \\\n         reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \\\n         the deletes have committed, the command still reports what it removed and names the \\\n         failure, and because the deletes are durable and the space they freed is still free in \\\n         the file, re-running it is both safe and the way to reclaim that space. The two flags \\\n         COMPOSE \\\n         and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \\\n         graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \\\n         BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: a \\\n         compaction leaves revision gaps by design, and a writer whose cursor was built before it \\\n         ran could reissue a gap and reorder the log, so it refuses while a `rigger step` holds \\\n         its lock, a unit in the current run is not yet terminal, a spawn is in flight, or a \\\n         driver registration for this store is still live, naming what it found. `--force-live` \\\n         overrides the refusal for an operator certain no writer is using the store; it checks \\\n         nothing.\\n\"",
+        "name": "\"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \\\n         reset --derived`. Each run's project-ingest pass records the project's derived index - \\\n         the code entities, inferred edges, design links, and doc concepts folded from your \\\n         sources - and a log written before that pass deduplicated across runs holds the WHOLE \\\n         index once per run, which is re-derivable duplication rather than history. `rigger reset \\\n         --derived` keeps, for each file, only the recordings of its LATEST generation - the \\\n         content the log last recorded for it - and of those the LATEST event per replay key, \\\n         deletes every superseded generation and re-recording, and compacts the file so \\\n         events.db shrinks on disk. Every other event survives byte-for-byte - lessons, \\\n         decisions, findings, gate verdicts, and the whole run history `rigger stats` and replay \\\n         read. The live graph a rebuild folds is unchanged: a newer generation of a file \\\n         retires every fact the one before it asserted and it does not, so the whole log \\\n         already folds to each file's latest generation; nothing reads a shed recording again \\\n         (a file that returns to an earlier content re-emits its batch); and the prune carries \\\n         a design fact's EARLIEST valid-time within its unbroken run of generations onto the \\\n         recording it keeps, so a design fact keeps the date it first became true rather than \\\n         being re-dated to whichever recording survived. WHAT IT CANNOT RECLAIM, because \\\n         this decides whether it is worth running at all: it never sheds the index itself. The latest generation of every file stays, so on \\\n         a log that holds each file once, at one recording per key, `rigger reset --derived` \\\n         deletes ZERO rows from it and reports so - that is the expected report on a clean log, \\\n         not a failure, and the derived index remains the bulk of the log by design because it \\\n         is what the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, \\\n         because a non-zero prune is otherwise read as a broken dedup: every edit to a file \\\n         records a new generation of its batch and leaves the one before it superseded, and a \\\n         file whose content has RETURNED to a generation the log had already recorded - a \\\n         revert, a branch switch, a checkout back - re-records that file's whole batch by \\\n         design, since a dedup that suppressed an already-recorded key would strand the graph \\\n         on the version the file has since moved past. A prune that sheds rows on such a log is \\\n         shedding exactly that, not covering for a defect; a log written BEFORE the dedup sheds \\\n         the whole accumulated pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \\\n         a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \\\n         space it needs is on whichever filesystem that resolves to rather than on the partition \\\n         holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \\\n         /usr/tmp, /tmp that exists and is writable, which on a Linux box with TMPDIR unset means \\\n         /var/tmp and NOT /tmp. Set TMPDIR yourself if the default lands somewhere too small for \\\n         a second copy of your log. It rewrites only when the FILE is holding reclaimable free \\\n         pages, which is not the same as this run having deleted something: a prune with nothing \\\n         to shed from an already-compact log leaves the file exactly as it found it and reports \\\n         reclaiming zero, while a prune that sheds nothing from a log still holding free pages \\\n         reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \\\n         the deletes have committed, the command still reports what it removed and names the \\\n         failure, and because the deletes are durable and the space they freed is still free in \\\n         the file, re-running it is both safe and the way to reclaim that space. The two flags \\\n         COMPOSE \\\n         and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \\\n         graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \\\n         BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: a \\\n         compaction leaves revision gaps by design, and a writer whose cursor was built before it \\\n         ran could reissue a gap and reorder the log, so it refuses while a `rigger step` holds \\\n         its lock, a unit in the current run is not yet terminal, a spawn is in flight, or a \\\n         driver registration for this store is still live, naming what it found. `--force-live` \\\n         overrides the refusal for an operator certain no writer is using the store; it checks \\\n         nothing.\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -1733,7 +1733,7 @@
       },
       {
         "file": "src/main.rs",
-        "name": "\"rigger - a config-driven, event-sourced multi-agent dev-loop harness\\n\\n\\\nusage:\\n  \\\nrigger run [spec] [opts]    run the workflow (opts below)\\n  \\\nrigger step [--spec <path>]      advance the run one frontier via the replay driver\\n            \\\n[--base <ref>]        and print the newly parked spawn wave + a done flag\\n                              \\\nas JSON. --base (default origin/main) anchors a NEW run\\n                              \\\nbranch; if it is unresolvable the branch is created off\\n                              \\\nHEAD. An existing run branch is reused, never reset.\\n                              \\\n--fresh begins a NEW run for the spec even if the latest\\n                              \\\nmatches (pass on the first step to restart a wedged run);\\n                              \\\n--rebase-definition accepts a drifted definition and\\n                              \\\ncontinues, else a live-run step HALTS on definition drift\\n  \\\nrigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\\n                              \\\nthis project's run stream (else non-zero). A read-only check\\n                              \\\nof whether a spawn reported yet; the death courier records\\n                              \\\natomically instead via `rigger result --if-absent`\\n  \\\nrigger prompt <id>          print the parked spawn's full prompt (persona + task).\\n                              \\\nThe step wave is a slim manifest; each worker fetches its\\n                              \\\nown prompt from the log by spawn id (spawn-by-reference)\\n  \\\nrigger scratch <id>         print spawn <id>'s own rigger-assigned scratch container\\n                              \\\n(the exact dir the per-spawn reclaim reaps at its terminus);\\n                              \\\na worker points agent-created scratch and manual\\n                              \\\nCARGO_TARGET_DIR there instead of an unbucketed literal\\n  \\\nrigger workflow [spec]      turn-key: launch the per-project Node driver, which\\n                              \\\nspawns `rigger serve`, runs each agent via the Agent\\n                              \\\nSDK, and drives the loop (one command; run `rigger\\n                              \\\nsetup` first - it provisions the driver in .rigger/shim/)\\n  \\\nrigger serve [opts]         run as an MCP server the driver connects to\\n  \\\nrigger graph --around <id>  print the context subgraph around a node\\n  \\\nrigger graph --show <entity> print an entity's definition site + line-numbered body\\n                              \\\n(the text half of lookup; resolves a full id or a bare name)\\n  \\\nrigger graph build          fold the project's source into the graph from a cold\\n                              \\\ncheckout (no run required)\\n  \\\nrigger graph communities    derive the code lens's coupling communities offline and\\n                              \\\n[--resolution <r>]          record them as events (deterministic; default r=1.0)\\n  \\\nrigger graph concepts       derive the concepts lens's intent-layer grouping offline\\n                              \\\n[--resolution <r>]          and record them as events (deterministic; default r=1.0)\\n  \\\nrigger stats                print the run's operator metrics: first-pass yield,\\n                              \\\nper-gate remediation counts, escalation rate, and\\n                              \\\nreview approve/reject counts. --canary reports the\\n                              \\\nlatest canary run's judge-the-judges recall scorecard\\n  \\\nrigger canary               run the review panel against the seeded-defect corpus\\n            \\\n[--corpus <dir>]         (default ./canaries) and score per-tier catch rate,\\n                              \\\nadjudicator correctness, and verdict stability under\\n                              \\\nfinding-order shuffle, into the project's canary stream\\n                              \\\n(read back with `rigger stats --canary`)\\n            \\\n[--jobs <n>]              caps the total concurrent review-panel spawns\\n                              \\\nacross sharded items and each item's lens fan-out\\n                              \\\ntogether (default: the crate's default worker\\n                              \\\nwidth, floored at 2)\\n            \\\n[--model <tier>=<id>]    pins a tier's (lens/adversary/adjudicator)\\n                              \\\nmodel for this run only, repeatable; the scorecard\\n                              \\\nheader prints its resolved id\\n  \\\nrigger playbooks --rebuild  reconstruct the distilled playbook pool under\\n                              \\\n.rigger/playbooks/ from the recorded LessonLearned\\n                              \\\nstream: deduplicated, trigger-scoped agent-files the\\n                              \\\nlessons injector ranks by blast-radius relevance (a\\n                              \\\nrebuildable projection of the log, never hand-edited)\\n  \\\nrigger replay <run|latest>  re-drive a completed run's recorded trajectory under a\\n            \\\n--against <rev>          candidate config (workflow + prompts at git <rev>) in an\\n                              \\\nisolated scratch namespace, and print the stats diff\\n                              \\\nvs the recorded baseline. Never writes the real run\\n                              \\\nstream - past runs become a regression corpus for a\\n                              \\\nconfig edit (\\\"did that change regress first-pass yield?\\\")\\n  \\\nrigger status [--json|--line] present the live per-agent view of the current run: for\\n                              \\\neach in-flight agent, what it is doing (latest progress),\\n                              \\\nits heartbeat age, and how long since its last store event\\n                              \\\n(the blackout). --json prints the shim/dash machine shape;\\n                              \\\n--line prints only the one-line statusline (the same line\\n                              \\\n`rigger setup` registers as the editor's status bar)\\n  \\\nrigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\\n                              \\\n(default port 7420) with live past/present/future views;\\n                              \\\n--export <path> writes the equivalent static snapshot\\n  \\\nrigger watch [--interval <s>] the driver-independent watchdog: polls the store,\\n            \\\n[--once]                  process table, and status for the five rigger-watch-a-run\\n                              \\\nsignals (escalated blockers, heartbeat staleness, dash\\n                              \\\nliveness, reject-recurrence trend, frontier progress) plus\\n                              \\\nstore integrity, printing one line per anomaly naming\\n                              \\\nsignal, subject, and response skill. --once prints standing\\n                              \\\nanomalies and exits (cron/CI); default streams (poll every\\n                              \\\n180s, dedup'd) and never talks to the driver - it works\\n                              \\\nwith the driver dead\\n  \\\nrigger ground <query> [k]   print up to k (default 8) repo references the project's\\n                              \\\nconfigured grounder finds for <query>, as `file:line: text`\\n  \\\nrigger reindex <file>...    incrementally re-index the named files in the project's\\n                              \\\npersisted grounding index (the grounder's reindex), so a\\n                              \\\nlater `rigger ground` reflects just-landed changes\\n  \\\nrigger symbols-index [dir]  build + persist the structural symbol index over [dir]\\n                              \\\n(default .) and print its path + file count - the fresh-\\n                              \\\nprocess determinism harness for the symbols grounder (spec 15)\\n  \\\nrigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\\n                              \\\nit into the context graph (the CLI form of rigger_emit)\\n  \\\nrigger progress <id> <act>  record one live progress line for spawn <id> to the\\n                              \\\nseparate .rigger/progress.db (never the run stream), so an\\n                              \\\nobserver can see what a working agent is doing between\\n                              \\\nmilestones - `rigger status` and the dash present it\\n  \\\nrigger result <id> [out]    record a parked spawn's outcome to the run log so the next\\n                              \\\nstep advances past it: <out> (or stdin) is the agent's output\\n                              \\\n(with --error, its failure message); --if-absent records only\\n                              \\\nif the id has no result; --meta <json> adds bookkeeping\\n  \\\nrigger peers [file ...]     print peer decisions, lessons, and findings from the\\n                              \\\ncontext graph, scoped to the given files (the CLI form of\\n                              \\\nrigger_peers)\\n  \\\nrigger reset --runs         drop every superseded / dead run's decisions and\\n                              \\\nfindings from the context graph, keeping every lesson and\\n                              \\\nthe active run's own decisions/findings. Sheds dead-run\\n                              \\\ngrounding noise without wiping the store: it deletes no\\n                              \\\nevent. reset itself does write the log once, on a store\\n                              \\\nstill under the legacy basename namespace: the one-time\\n                              \\\nidentity migration renames those streams and records one\\n                              \\\nDecisionMade before either mode prunes. When no driver is\\n                              \\\nalive, it also closes the current run's units whose branch\\n                              \\\nwork is landed on rigger-run, appending the UnitIntegrated\\n                              \\\na hand landing never recorded\\n  \\\nrigger reset --derived      compact the EVENT LOG: keep the latest event per\\n                              \\\nreplay key of each derived index type, delete the\\n                              \\\nsuperseded re-recordings, and vacuum so the file shrinks\\n                              \\\non disk. Every other event survives. Sheds the\\n                              \\\nduplication a log accreted before the ingest dedup;\\n                              \\\ncomposes with --runs (each prunes its own accumulation).\\n                              \\\nRefuses while run machinery looks live (a held step\\n                              \\\nlock, a non-terminal unit, an in-flight spawn, or a live\\n                              \\\ndriver registration), naming what is live: compaction\\n                              \\\nleaves revision gaps by design, and a stale writer can\\n                              \\\nreissue one and reorder the log - the corruption this\\n                              \\\nguard exists to prevent. --force-live skips the check\\n                              \\\nentirely and checks nothing: pass it only once you are\\n                              \\\ncertain no writer is using this store, since forcing\\n                              \\\npast a genuinely live writer is exactly that corruption\\n  \\\nrigger reset --build-cache  reclaim the SHARED gate build cache (a pure cache,\\n                              \\\nalways safe to cold-rebuild) under the scratch root.\\n                              \\\nComposes freely with --runs/--derived (each sheds its\\n                              \\\nown accumulation); reports the exact bytes reclaimed,\\n                              \\\nor 0 when there was nothing to reclaim. Refuses loudly\\n                              \\\n- never waiting - while a rigger-launched build still\\n                              \\\nholds the cache's guard lock; retry once it is idle\\n  \\\nrigger reset --scratch-orphans\\n                              \\\nreclaim every cache-home scratch root (under\\n                              \\\n$XDG_CACHE_HOME/rigger, else ~/.cache/rigger) whose repo\\n                              \\\nno longer exists: a root keyed on a deleted checkout or a\\n                              \\\ntest fixture's tempdir has no owner left to reclaim it.\\n                              \\\nRigger does this itself whenever it creates a default-\\n                              \\\nplaced root; this is the explicit on-demand form. Reports\\n                              \\\nthe number of roots reclaimed; composes with the others\\n  \\\nrigger validate             load and validate the workflow + agents\\n  \\\nrigger init                 set up a project: scaffold .rigger/ (workflow.yml +\\n                              \\\nan agents/ folder) and install the Claude Code\\n                              \\\nSessionStart hook (it runs `rigger prime`)\\n  \\\nrigger setup                full setup: everything `init` does, PLUS install the\\n                              \\\nnative /rigger Claude Code workflow (.claude/workflows/\\n                              \\\nrigger.js) and provision the JS driver (.rigger/shim/ +\\n                              \\\nnpm install). After it: run `/rigger <spec>` in Claude\\n                              \\\nCode (primary), or `rigger workflow` as a fallback\\n  \\\nrigger docs                 render the code-derived docs (every registry skill and\\n                              \\\nhandbook page) into their committed paths\\n  \\\nrigger prime [<spec>]       print recent decisions (what the hook runs); given a spec\\n                              \\\npath, also names `rigger validate <spec>` (the pre-launch\\n                              \\\nspec lint) as a next step\\n  \\\nrigger instructions         print the instructions every spawned agent is held to:\\n                              \\\nthe built-in law and working discipline, then each\\n                              \\\noperator file in .rigger/instructions/ (filename\\n                              \\\norder)\\n  \\\nrigger version              print the crate version and the build-provenance id\\n                              \\\n(a git commit/describe embedded at build time) so an\\n                              \\\nagent can identify the exact binary. Also `--version`\\n\\n\\\nrun/serve options:\\n  \\\n--driver <cli|workflow>          cli (default): standalone claude subprocess;\\n                                   \\\nworkflow: in-Claude-Code MCP server\\n  \\\n--eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\\n                                   \\\nkurrentdb: shared server backend, always available\\n  \\\n--conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\\n  \\\n--fresh                          begin a NEW run even if the latest run matches this\\n                                   \\\nspec (which is otherwise adopted/resumed). The evented\\n                                   \\\nrestart for a run wedged in a terminal state (e.g. an\\n                                   \\\nescalated plan-critique) whose spec is unchanged; the\\n                                   \\\nprior run stays in the log as history and context\\n  \\\n--rebase-definition              accept an on-disk definition (workflow.yml + agent\\n                                   \\\nprompts) that drifted from what this live run pinned at\\n                                   \\\nstart: record the supersession and continue instead of\\n                                   \\\nhalting. The explicit mid-campaign-edit escape (a live\\n                                   \\\nrun otherwise HALTS loudly on definition drift)\\n\\n\\\nstorage and graph live in ./.rigger/ (per project, like .git/), scoped to the\\n\\\nproject identity so one backend can hold many projects without their data mixing.\\n\"",
+        "name": "\"rigger - a config-driven, event-sourced multi-agent dev-loop harness\\n\\n\\\nusage:\\n  \\\nrigger run [spec] [opts]    run the workflow (opts below)\\n  \\\nrigger step [--spec <path>]      advance the run one frontier via the replay driver\\n            \\\n[--base <ref>]        and print the newly parked spawn wave + a done flag\\n                              \\\nas JSON. --base (default origin/main) anchors a NEW run\\n                              \\\nbranch; if it is unresolvable the branch is created off\\n                              \\\nHEAD. An existing run branch is reused, never reset.\\n                              \\\n--fresh begins a NEW run for the spec even if the latest\\n                              \\\nmatches (pass on the first step to restart a wedged run);\\n                              \\\n--rebase-definition accepts a drifted definition and\\n                              \\\ncontinues, else a live-run step HALTS on definition drift\\n  \\\nrigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\\n                              \\\nthis project's run stream (else non-zero). A read-only check\\n                              \\\nof whether a spawn reported yet; the death courier records\\n                              \\\natomically instead via `rigger result --if-absent`\\n  \\\nrigger prompt <id>          print the parked spawn's full prompt (persona + task).\\n                              \\\nThe step wave is a slim manifest; each worker fetches its\\n                              \\\nown prompt from the log by spawn id (spawn-by-reference)\\n  \\\nrigger scratch <id>         print spawn <id>'s own rigger-assigned scratch container\\n                              \\\n(the exact dir the per-spawn reclaim reaps at its terminus);\\n                              \\\na worker points agent-created scratch and manual\\n                              \\\nCARGO_TARGET_DIR there instead of an unbucketed literal\\n  \\\nrigger workflow [spec]      turn-key: launch the per-project Node driver, which\\n                              \\\nspawns `rigger serve`, runs each agent via the Agent\\n                              \\\nSDK, and drives the loop (one command; run `rigger\\n                              \\\nsetup` first - it provisions the driver in .rigger/shim/)\\n  \\\nrigger serve [opts]         run as an MCP server the driver connects to\\n  \\\nrigger graph --around <id>  print the context subgraph around a node\\n  \\\nrigger graph --show <entity> print an entity's definition site + line-numbered body\\n                              \\\n(the text half of lookup; resolves a full id or a bare name)\\n  \\\nrigger graph build          fold the project's source into the graph from a cold\\n                              \\\ncheckout (no run required)\\n  \\\nrigger graph communities    derive the code lens's coupling communities offline and\\n                              \\\n[--resolution <r>]          record them as events (deterministic; default r=1.0)\\n  \\\nrigger graph concepts       derive the concepts lens's intent-layer grouping offline\\n                              \\\n[--resolution <r>]          and record them as events (deterministic; default r=1.0)\\n  \\\nrigger stats                print the run's operator metrics: first-pass yield,\\n                              \\\nper-gate remediation counts, escalation rate, and\\n                              \\\nreview approve/reject counts. --canary reports the\\n                              \\\nlatest canary run's judge-the-judges recall scorecard\\n  \\\nrigger canary               run the review panel against the seeded-defect corpus\\n            \\\n[--corpus <dir>]         (default ./canaries) and score per-tier catch rate,\\n                              \\\nadjudicator correctness, and verdict stability under\\n                              \\\nfinding-order shuffle, into the project's canary stream\\n                              \\\n(read back with `rigger stats --canary`)\\n            \\\n[--jobs <n>]              caps the total concurrent review-panel spawns\\n                              \\\nacross sharded items and each item's lens fan-out\\n                              \\\ntogether (default: the crate's default worker\\n                              \\\nwidth, floored at 2)\\n            \\\n[--model <tier>=<id>]    pins a tier's (lens/adversary/adjudicator)\\n                              \\\nmodel for this run only, repeatable; the scorecard\\n                              \\\nheader prints its resolved id\\n  \\\nrigger playbooks --rebuild  reconstruct the distilled playbook pool under\\n                              \\\n.rigger/playbooks/ from the recorded LessonLearned\\n                              \\\nstream: deduplicated, trigger-scoped agent-files the\\n                              \\\nlessons injector ranks by blast-radius relevance (a\\n                              \\\nrebuildable projection of the log, never hand-edited)\\n  \\\nrigger replay <run|latest>  re-drive a completed run's recorded trajectory under a\\n            \\\n--against <rev>          candidate config (workflow + prompts at git <rev>) in an\\n                              \\\nisolated scratch namespace, and print the stats diff\\n                              \\\nvs the recorded baseline. Never writes the real run\\n                              \\\nstream - past runs become a regression corpus for a\\n                              \\\nconfig edit (\\\"did that change regress first-pass yield?\\\")\\n  \\\nrigger status [--json|--line] present the live per-agent view of the current run: for\\n                              \\\neach in-flight agent, what it is doing (latest progress),\\n                              \\\nits heartbeat age, and how long since its last store event\\n                              \\\n(the blackout). --json prints the shim/dash machine shape;\\n                              \\\n--line prints only the one-line statusline (the same line\\n                              \\\n`rigger setup` registers as the editor's status bar)\\n  \\\nrigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\\n                              \\\n(default port 7420) with live past/present/future views;\\n                              \\\n--export <path> writes the equivalent static snapshot\\n  \\\nrigger watch [--interval <s>] the driver-independent watchdog: polls the store,\\n            \\\n[--once]                  process table, and status for the five rigger-watch-a-run\\n                              \\\nsignals (escalated blockers, heartbeat staleness, dash\\n                              \\\nliveness, reject-recurrence trend, frontier progress) plus\\n                              \\\nstore integrity, printing one line per anomaly naming\\n                              \\\nsignal, subject, and response skill. --once prints standing\\n                              \\\nanomalies and exits (cron/CI); default streams (poll every\\n                              \\\n180s, dedup'd) and never talks to the driver - it works\\n                              \\\nwith the driver dead\\n  \\\nrigger ground <query> [k]   print up to k (default 8) repo references the project's\\n                              \\\nconfigured grounder finds for <query>, as `file:line: text`\\n  \\\nrigger reindex <file>...    incrementally re-index the named files in the project's\\n                              \\\npersisted grounding index (the grounder's reindex), so a\\n                              \\\nlater `rigger ground` reflects just-landed changes\\n  \\\nrigger symbols-index [dir]  build + persist the structural symbol index over [dir]\\n                              \\\n(default .) and print its path + file count - the fresh-\\n                              \\\nprocess determinism harness for the symbols grounder (spec 15)\\n  \\\nrigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\\n                              \\\nit into the context graph (the CLI form of rigger_emit)\\n  \\\nrigger progress <id> <act>  record one live progress line for spawn <id> to the\\n                              \\\nseparate .rigger/progress.db (never the run stream), so an\\n                              \\\nobserver can see what a working agent is doing between\\n                              \\\nmilestones - `rigger status` and the dash present it\\n  \\\nrigger result <id> [out]    record a parked spawn's outcome to the run log so the next\\n                              \\\nstep advances past it: <out> (or stdin) is the agent's output\\n                              \\\n(with --error, its failure message); --if-absent records only\\n                              \\\nif the id has no result; --meta <json> adds bookkeeping\\n  \\\nrigger peers [file ...]     print peer decisions, lessons, and findings from the\\n                              \\\ncontext graph, scoped to the given files (the CLI form of\\n                              \\\nrigger_peers)\\n  \\\nrigger reset --runs         drop every superseded / dead run's decisions and\\n                              \\\nfindings from the context graph, keeping every lesson and\\n                              \\\nthe active run's own decisions/findings. Sheds dead-run\\n                              \\\ngrounding noise without wiping the store: it deletes no\\n                              \\\nevent. reset itself does write the log once, on a store\\n                              \\\nstill under the legacy basename namespace: the one-time\\n                              \\\nidentity migration renames those streams and records one\\n                              \\\nDecisionMade before either mode prunes. When no driver is\\n                              \\\nalive, it also closes the current run's units whose branch\\n                              \\\nwork is landed on rigger-run, appending the UnitIntegrated\\n                              \\\na hand landing never recorded\\n  \\\nrigger reset --derived      compact the EVENT LOG: keep only each file's latest\\n                              \\\ngeneration of the derived index, at the latest event per\\n                              \\\nreplay key, delete the superseded generations and\\n                              \\\nre-recordings, and vacuum so the file shrinks on disk.\\n                              \\\nEvery other event survives. Sheds what edits and the\\n                              \\\npre-dedup ingest accreted;\\n                              \\\ncomposes with --runs (each prunes its own accumulation).\\n                              \\\nRefuses while run machinery looks live (a held step\\n                              \\\nlock, a non-terminal unit, an in-flight spawn, or a live\\n                              \\\ndriver registration), naming what is live: compaction\\n                              \\\nleaves revision gaps by design, and a stale writer can\\n                              \\\nreissue one and reorder the log - the corruption this\\n                              \\\nguard exists to prevent. --force-live skips the check\\n                              \\\nentirely and checks nothing: pass it only once you are\\n                              \\\ncertain no writer is using this store, since forcing\\n                              \\\npast a genuinely live writer is exactly that corruption\\n  \\\nrigger reset --build-cache  reclaim the SHARED gate build cache (a pure cache,\\n                              \\\nalways safe to cold-rebuild) under the scratch root.\\n                              \\\nComposes freely with --runs/--derived (each sheds its\\n                              \\\nown accumulation); reports the exact bytes reclaimed,\\n                              \\\nor 0 when there was nothing to reclaim. Refuses loudly\\n                              \\\n- never waiting - while a rigger-launched build still\\n                              \\\nholds the cache's guard lock; retry once it is idle\\n  \\\nrigger reset --scratch-orphans\\n                              \\\nreclaim every cache-home scratch root (under\\n                              \\\n$XDG_CACHE_HOME/rigger, else ~/.cache/rigger) whose repo\\n                              \\\nno longer exists: a root keyed on a deleted checkout or a\\n                              \\\ntest fixture's tempdir has no owner left to reclaim it.\\n                              \\\nRigger does this itself whenever it creates a default-\\n                              \\\nplaced root; this is the explicit on-demand form. Reports\\n                              \\\nthe number of roots reclaimed; composes with the others\\n  \\\nrigger validate             load and validate the workflow + agents\\n  \\\nrigger init                 set up a project: scaffold .rigger/ (workflow.yml +\\n                              \\\nan agents/ folder) and install the Claude Code\\n                              \\\nSessionStart hook (it runs `rigger prime`)\\n  \\\nrigger setup                full setup: everything `init` does, PLUS install the\\n                              \\\nnative /rigger Claude Code workflow (.claude/workflows/\\n                              \\\nrigger.js) and provision the JS driver (.rigger/shim/ +\\n                              \\\nnpm install). After it: run `/rigger <spec>` in Claude\\n                              \\\nCode (primary), or `rigger workflow` as a fallback\\n  \\\nrigger docs                 render the code-derived docs (every registry skill and\\n                              \\\nhandbook page) into their committed paths\\n  \\\nrigger prime [<spec>]       print recent decisions (what the hook runs); given a spec\\n                              \\\npath, also names `rigger validate <spec>` (the pre-launch\\n                              \\\nspec lint) as a next step\\n  \\\nrigger instructions         print the instructions every spawned agent is held to:\\n                              \\\nthe built-in law and working discipline, then each\\n                              \\\noperator file in .rigger/instructions/ (filename\\n                              \\\norder)\\n  \\\nrigger version              print the crate version and the build-provenance id\\n                              \\\n(a git commit/describe embedded at build time) so an\\n                              \\\nagent can identify the exact binary. Also `--version`\\n\\n\\\nrun/serve options:\\n  \\\n--driver <cli|workflow>          cli (default): standalone claude subprocess;\\n                                   \\\nworkflow: in-Claude-Code MCP server\\n  \\\n--eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\\n                                   \\\nkurrentdb: shared server backend, always available\\n  \\\n--conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\\n  \\\n--fresh                          begin a NEW run even if the latest run matches this\\n                                   \\\nspec (which is otherwise adopted/resumed). The evented\\n                                   \\\nrestart for a run wedged in a terminal state (e.g. an\\n                                   \\\nescalated plan-critique) whose spec is unchanged; the\\n                                   \\\nprior run stays in the log as history and context\\n  \\\n--rebase-definition              accept an on-disk definition (workflow.yml + agent\\n                                   \\\nprompts) that drifted from what this live run pinned at\\n                                   \\\nstart: record the supersession and continue instead of\\n                                   \\\nhalting. The explicit mid-campaign-edit escape (a live\\n                                   \\\nrun otherwise HALTS loudly on definition drift)\\n\\n\\\nstorage and graph live in ./.rigger/ (per project, like .git/), scoped to the\\n\\\nproject identity so one backend can hold many projects without their data mixing.\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -2927,6 +2927,16 @@
         "content_hash": "647e8aea340be175"
       },
       {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "175029481360777f"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "98eec4bb59ff365c"
@@ -3733,7 +3743,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 549 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 551 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4750,6 +4760,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-5f6fcac3a66f",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/config.rs",
+        "name": "depth",
+        "content_hash": "8057297ca19fb2ad"
+      },
+      {
+        "file": "crates/rigger-domain/src/eventstore.rs",
+        "name": "facts",
+        "content_hash": "8057297ca19fb2ad"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/config.rs, crates/rigger-domain/src/eventstore.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-619325cc4dc0",
     "classification": "near",
     "sites": [
@@ -4875,6 +4904,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-cfb679088c89",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/eventstore.rs",
+        "name": "with_facts",
+        "content_hash": "04f032acde47c500"
+      },
+      {
+        "file": "crates/rigger-domain/src/eventstore.rs",
+        "name": "with_key_parts",
+        "content_hash": "04f032acde47c500"
+      }
+    ],
+    "proposed_home": "eventstore::content_identity",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5458,177 +5506,14 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c650c3e62b50",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "calls_out",
-        "content_hash": "823934e3ec3eb854"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "callers_direct",
-        "content_hash": "823934e3ec3eb854"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-1cee568104ee",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "subgraph_finds_the_governing_decision",
-        "content_hash": "8c826723ce04656b"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs",
-        "content_hash": "61f414add7123d87"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-cc43c38b38ca",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_edge_inferred",
-        "content_hash": "85f0929eee0497a3"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_edge_inferred_evidence",
-        "content_hash": "8bc67119bff75c79"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_doc_concept",
-        "content_hash": "996551ca93317af7"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_doc_link",
-        "content_hash": "85f0929eee0497a3"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_batch_ref",
-        "content_hash": "9cb538193b87692a"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_unit_integrated",
-        "content_hash": "500951845611ec13"
-      },
-      {
-        "file": "tests/code_ingest_events.rs",
-        "name": "apply_ref_json",
-        "content_hash": "500951845611ec13"
-      },
-      {
-        "file": "tests/code_ingest_events.rs",
-        "name": "apply_ref_fresh",
-        "content_hash": "6028722bd16ba494"
-      },
-      {
-        "file": "tests/concepts_fold_periphery.rs",
-        "name": "realized",
-        "content_hash": "02a4512e6d2c56de"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, tests/code_ingest_events.rs, tests/concepts_fold_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-b5bd50de3e2a",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_code_entity_partial",
-        "content_hash": "6a95c2630e09aa17"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_community",
-        "content_hash": "fb58b0c254be782f"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-84342f753367",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "design_intent_link_events_fold_into_the_five_design_intent_edges",
-        "content_hash": "2ad5826ac0fcd978"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges",
-        "content_hash": "489a8a414b017064"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-3e472366e265",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "decision_fold_projects_no_agent_node_or_decided_edge",
-        "content_hash": "321b3edf0b7fb797"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "review_finding_projects_no_raised_edge_even_with_an_event_actor",
-        "content_hash": "3c6453b821df8e1c"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-c76c4d91d8a8",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "edge_projects",
-        "content_hash": "8152209280dd27cb"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "index_names",
-        "content_hash": "c6085ab3c4fa427e"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-7754dca4d470",
+    "id": "dup-af1284c7d42a",
     "classification": "semantic",
     "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "b65be6c1c7285083"
+      },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
@@ -5646,6 +5531,11 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "d23d10dd0d2a7faa"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "Connection::open_with_flags",
         "content_hash": "c9fe8bd11b5e51a4"
       },
@@ -5658,6 +5548,11 @@
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "51b969072f57b125"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "Connection::open",
+        "content_hash": "c9acaf03cef6d3a0"
       },
       {
         "file": "src/cli/mod.rs",
@@ -5703,6 +5598,46 @@
         "file": "tests/common/fixtures/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "c9acaf03cef6d3a0"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "f927f941b4db84e3"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "84d2f61c8ad3452b"
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -5821,7 +5756,170 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 38 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 49 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-c650c3e62b50",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "calls_out",
+        "content_hash": "823934e3ec3eb854"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "callers_direct",
+        "content_hash": "823934e3ec3eb854"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-1cee568104ee",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "subgraph_finds_the_governing_decision",
+        "content_hash": "8c826723ce04656b"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs",
+        "content_hash": "61f414add7123d87"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-49b57537de27",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_edge_inferred",
+        "content_hash": "85f0929eee0497a3"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_edge_inferred_evidence",
+        "content_hash": "8bc67119bff75c79"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_doc_concept",
+        "content_hash": "996551ca93317af7"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_doc_link",
+        "content_hash": "85f0929eee0497a3"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_batch_ref",
+        "content_hash": "9cb538193b87692a"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_unit_integrated",
+        "content_hash": "500951845611ec13"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "name": "apply_ref_json",
+        "content_hash": "500951845611ec13"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "name": "apply_ref_fresh",
+        "content_hash": "6028722bd16ba494"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, tests/code_ingest_events.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-b5bd50de3e2a",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_code_entity_partial",
+        "content_hash": "6a95c2630e09aa17"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "apply_community",
+        "content_hash": "fb58b0c254be782f"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-84342f753367",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "design_intent_link_events_fold_into_the_five_design_intent_edges",
+        "content_hash": "2ad5826ac0fcd978"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges",
+        "content_hash": "489a8a414b017064"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-3e472366e265",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "decision_fold_projects_no_agent_node_or_decided_edge",
+        "content_hash": "321b3edf0b7fb797"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "review_finding_projects_no_raised_edge_even_with_an_event_actor",
+        "content_hash": "3c6453b821df8e1c"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-c76c4d91d8a8",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "edge_projects",
+        "content_hash": "8152209280dd27cb"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "index_names",
+        "content_hash": "c6085ab3c4fa427e"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -7141,25 +7239,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-20d63cdc7260",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "tests/cli.rs",
-        "name": "start",
-        "content_hash": "fbfdf93be3cee8d1"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "start_with",
-        "content_hash": "e46681f6ad70efff"
-      }
-    ],
-    "proposed_home": "cli::mcp_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
-    "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-4fbc57c56116",
     "classification": "near",
     "sites": [
@@ -7389,6 +7468,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-3f117fd28c02",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "tests/common/mcp.rs",
+        "name": "start",
+        "content_hash": "d99774b4d1591d27"
+      },
+      {
+        "file": "tests/common/mcp.rs",
+        "name": "start_with",
+        "content_hash": "5c8623e27b20ac2a"
+      }
+    ],
+    "proposed_home": "mcp::mcp_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
+    "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-c99581d3e41e",
     "classification": "near",
     "sites": [
@@ -7427,7 +7525,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-38bcd5cba1f7",
+    "id": "dup-c51171ae2133",
     "classification": "near",
     "sites": [
       {
@@ -7438,7 +7536,7 @@
       {
         "file": "tests/concepts_fold_periphery.rs",
         "name": "a_concept_derived_event_without_a_fresh_key_is_a_non_boundary_and_never_supersedes",
-        "content_hash": "dec0e907fc16dcbd"
+        "content_hash": "2e978887593253b8"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)",
@@ -7446,7 +7544,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-29092fe5ff01",
+    "id": "dup-ddaf372936d3",
     "classification": "near",
     "sites": [
       {
@@ -7457,10 +7555,48 @@
       {
         "file": "tests/concepts_fold_periphery.rs",
         "name": "the_concept_layer_serialized_literals_are_stable_and_the_fold_matches_the_on_log_type",
-        "content_hash": "e757aad48d9239c7"
+        "content_hash": "d47e64702f88a210"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-19f9cf9e5fab",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "community_of",
+        "content_hash": "dd3b18fc951c09ce"
+      },
+      {
+        "file": "tests/reset_derived_compaction_periphery.rs",
+        "name": "entity",
+        "content_hash": "eb2d9e93f18e7ff8"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-e3a49d3d408e",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "rebuild_owed_note",
+        "content_hash": "b10d50f791eb338a"
+      },
+      {
+        "file": "tests/product_binary_authority_periphery.rs",
+        "name": "product_file_name",
+        "content_hash": "214fd7349ebe59dd"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/product_binary_authority_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
