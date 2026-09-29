@@ -4021,11 +4021,11 @@ fn the_identity_migrations_decision_is_folded_into_the_graph_it_migrates() {
     let migration = format!("identity-migration-{minted}");
     let last = log.last().unwrap();
     assert!(
-        ok && err.contains(&format!(
-            "rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
-             {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
-             decision (position {}) and folded it into the context graph\n",
-            last.position
+        ok && err.contains(&migration_report(
+            &legacy,
+            &minted,
+            last.position,
+            " and folded it into the context graph"
         )),
         "the bare reset migrates the one legacy stream and reports its decision's fold; \
          stderr: {err}"
@@ -4053,6 +4053,16 @@ fn the_identity_migrations_decision_is_folded_into_the_graph_it_migrates() {
         Some(migration.clone()),
         "the migration's decision resolves in the graph under the minted identity"
     );
+}
+
+/// The stderr line a bare `rigger reset` prints when it migrates one legacy stream `legacy` ->
+/// `minted` and records its decision at `position`, ending in what became of that decision's fold.
+fn migration_report(legacy: &str, minted: &str, position: u64, fold: &str) -> String {
+    format!(
+        "rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
+         {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
+         decision (position {position}){fold}\n"
+    )
 }
 
 /// Given a `graph.db` still at the old fold rule, when a courier runs `rigger result`, then the
@@ -4139,5 +4149,63 @@ fn a_result_whose_fold_fails_says_it_was_not_folded() {
             )
         ),
         "the result reports the fold it could not make, with the reason; stderr: {err}"
+    );
+}
+
+/// Given a store still named after its directory whose `graph.db` is at the old fold rule, when
+/// the operator mints the identity and runs a bare `rigger reset`, then the migration renames the
+/// legacy stream and records its decision, but says that decision was not folded, naming the
+/// rebuild it owes, and `graph.db` does not hold it until `rigger setup` rebuilds from the log.
+#[test]
+fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_was_not_folded() {
+    let store = ReleaseEraStore::with_identity(false);
+    let legacy = store.project();
+    let (_, err, ok) = run_rigger(store.root(), &["init"]);
+    assert!(ok, "rigger init mints the identity; stderr: {err}");
+    let minted = store.project();
+    assert_ne!(minted, legacy, "init minted a distinct identity");
+
+    let (_, err, ok) = run_rigger(store.root(), &["reset"]);
+    let log = store.log();
+    let last = log.last().unwrap();
+    assert_eq!(
+        (
+            ok,
+            log.len(),
+            last.type_.as_str(),
+            serde_json::from_slice::<serde_json::Value>(&last.data).unwrap()["id"].clone()
+        ),
+        (
+            true,
+            7,
+            "DecisionMade",
+            serde_json::json!(format!("identity-migration-{minted}"))
+        ),
+        "the migration's decision follows the six moved events on the minted run stream; \
+         stderr: {err}"
+    );
+    assert!(
+        err.contains(&migration_report(
+            &legacy,
+            &minted,
+            last.position,
+            &format!(
+                "; not folded into the context graph: graph: {}",
+                rigger::contextgraph::REBUILD_OWED
+            )
+        )),
+        "the migration reports that its decision skipped the owed graph, with the reason; \
+         stderr: {err}"
+    );
+    assert!(
+        !applied(&store.graph_db, last.position),
+        "the owed graph.db does not hold the migration's decision"
+    );
+
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert!(
+        applied(&store.graph_db, last.position),
+        "setup's rebuild folds the migration's decision from the log"
     );
 }
