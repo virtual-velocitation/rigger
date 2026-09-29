@@ -34,6 +34,7 @@ use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
 use common::fixtures::meta_replay_key;
+use rigger::contextgraph::sqlite::RebuildSink;
 use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
     TYPE_EDGE_INFERRED,
@@ -2246,14 +2247,66 @@ fn a_pre_rule_graph_db(db: &Path, events: &[Event], ledgers: &str) {
 }
 
 /// What a rebuild that reports nothing hands its progress callback.
-fn no_progress(_: usize, _: usize) {}
+fn no_progress(_: rigger::contextgraph::sqlite::RebuildProgress) {}
+
+/// A rebuild source over `log`: every call records the position it was asked to read after, and
+/// hands the events past it in batches of `batch`, each with the log's last position.
+fn source_over<'a>(
+    log: &'a [Event],
+    batch: usize,
+    afters: &'a std::cell::RefCell<Vec<u64>>,
+) -> impl FnMut(u64, &mut RebuildSink) -> Result<(), rigger::contextgraph::Error> + 'a {
+    move |after, sink| {
+        afters.borrow_mut().push(after);
+        let head = log.last().map_or(0, |e| e.position);
+        let gained: Vec<Event> = log.iter().filter(|e| e.position > after).cloned().collect();
+        gained.chunks(batch).try_for_each(|b| sink(b, head))
+    }
+}
+
+/// A rebuild source over `backend`'s live selection of `project`'s run stream, in batches of
+/// `batch` - the source `rigger setup` hands a rebuild.
+fn live_selection_of<'a>(
+    backend: &'a Store,
+    project: &'a str,
+    batch: usize,
+) -> impl FnMut(u64, &mut RebuildSink) -> Result<(), rigger::contextgraph::Error> + 'a {
+    let identity = rigger::ingest::derived_index_identity();
+    move |after, sink| {
+        backend
+            .read_live_selection(
+                &Namespaced::prefix_for(project),
+                rigger::conductor::STREAM,
+                &identity,
+                after,
+                batch,
+                &mut |events, head| {
+                    sink(events, head).map_err(|e| rigger::eventstore::Error::Backend(e.0))
+                },
+            )
+            .map_err(|e| rigger::contextgraph::Error(e.to_string()))
+    }
+}
+
+/// Rebuild the `graph.db` at `db` from `source`, reporting nothing.
+fn rebuild(
+    db: &Path,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+) -> Result<bool, rigger::contextgraph::Error> {
+    rigger::contextgraph::sqlite::Projector::rebuild(
+        db.to_str().unwrap(),
+        PROJECT,
+        source,
+        &mut no_progress,
+    )
+}
 
 /// A `graph.db` folded before the generation rule - with no ledgers at all, or with them in an
-/// older shape - owes one cold rebuild: nothing folds into it until then, the rebuild reaches
-/// exactly what a fresh fold of the log reaches, reporting each event it folds of the whole log,
-/// and it happens once - a paid rebuild never reads the log again.
+/// older shape - owes one rebuild: nothing folds into it until then, the rebuild reaches exactly
+/// what a fresh fold of the log reaches, reporting each batch it folds, and it happens once - a
+/// paid rebuild never reads the log again.
 fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
-    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::sqlite::{Projector, RebuildProgress};
     use rigger::contextgraph::Projection;
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(
@@ -2274,22 +2327,44 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
         rigger::contextgraph::REBUILD_OWED,
         "nothing folds incrementally into a pre-rule graph.db"
     );
+    drop(graph);
+    let afters = std::cell::RefCell::new(Vec::new());
     let mut reported = Vec::new();
-    let ran = graph
-        .rebuild(&|| Ok(log.clone()), &mut |folded, total| {
-            reported.push((folded, total))
-        })
-        .unwrap();
+    let ran = Projector::rebuild(
+        old_db.to_str().unwrap(),
+        PROJECT,
+        &mut source_over(&log, 2, &afters),
+        &mut |at| reported.push(at),
+    )
+    .unwrap();
     assert!(ran, "the owed rebuild runs");
+    let (p, head) = (|i: usize| log[i].position, log[4].position);
+    let at = |through, folded| RebuildProgress {
+        start: 0,
+        through,
+        head,
+        folded,
+    };
     assert_eq!(
         reported,
-        vec![(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)],
-        "the rebuild reports each event it folds of the whole log"
+        vec![at(p(1), 2), at(p(3), 4), at(p(4), 5)],
+        "the rebuild reports each batch it folds"
     );
-    assert!(!graph.rebuild_owed().unwrap(), "the rebuild is recorded");
-    drop(graph);
+    assert_eq!(
+        *afters.borrow(),
+        vec![0, p(4)],
+        "the log is read whole into the shadow, then past it for the tail"
+    );
+    assert_eq!(
+        (
+            dir.path().join("old.db.rebuild").exists(),
+            dir.path().join("old.db.rebuild-journal").exists()
+        ),
+        (false, false),
+        "the shadow and its journal are removed once copied in"
+    );
 
-    fold_in_batches(&fresh_db, PROJECT, &[log]);
+    fold_in_batches(&fresh_db, PROJECT, std::slice::from_ref(&log));
     assert_eq!(
         identity_of(&old_db),
         identity_of(&fresh_db),
@@ -2300,14 +2375,16 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
         !reopened.rebuild_owed().unwrap(),
         "the rebuild happens once"
     );
-    let again = reopened
-        .rebuild(
-            &|| panic!("a paid rebuild never reads the log"),
-            &mut no_progress,
-        )
-        .unwrap();
+    drop(reopened);
+    let again = rebuild(&old_db, &mut |_, _| {
+        panic!("a paid rebuild never reads the log")
+    })
+    .unwrap();
     assert!(!again, "a paid rebuild does not run again");
-    reopened.apply_batch(&later_events()).unwrap();
+    Projector::open(old_db.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .apply_batch(&later_events())
+        .unwrap();
 }
 
 rigger::test_cases! {
@@ -2323,12 +2400,11 @@ rigger::test_cases! {
         );
 }
 
-/// A cold rebuild folds the log one event at a time, as the live fold does: an event whose fold
-/// fails (a malformed payload the log holds) is skipped, never failing the rebuild, and leaves the
-/// rest of the log folded exactly as without it.
+/// A rebuild folds the log one event at a time, as the live fold does: an event whose fold fails
+/// (a malformed payload the log holds) is skipped, never failing the rebuild, and leaves the rest
+/// of the log folded exactly as without it.
 #[test]
 fn a_rebuild_skips_an_event_whose_fold_fails() {
-    use rigger::contextgraph::sqlite::Projector;
     let malformed = Event::new(
         "DecisionMade",
         br#"{"id":"bad","summary":"s","governs":"src/f.rs","supersedes":""}"#.to_vec(),
@@ -2340,10 +2416,8 @@ fn a_rebuild_skips_an_event_whose_fold_fails() {
     let log = run_events(&backend, PROJECT);
     let (rebuilt, clean) = (dir.path().join("rebuilt.db"), dir.path().join("clean.db"));
     a_pre_rule_graph_db(&rebuilt, &log[..1], "");
-    let ran = Projector::open(rebuilt.to_str().unwrap(), PROJECT)
-        .unwrap()
-        .rebuild(&|| Ok(log.clone()), &mut no_progress)
-        .unwrap();
+    let afters = std::cell::RefCell::new(Vec::new());
+    let ran = rebuild(&rebuilt, &mut source_over(&log, 10, &afters)).unwrap();
     assert!(ran, "the owed rebuild runs");
     let without: Vec<Event> = log
         .iter()
@@ -2358,12 +2432,12 @@ fn a_rebuild_skips_an_event_whose_fold_fails() {
     );
 }
 
-/// An event appended while the rebuild ran - after it read the log, by an emit that found the file
-/// still owing and so did not fold - is on the log when the rebuild commits: the rebuild reads the
-/// log once more and folds what it gained, so the rebuilt graph is the whole log's.
+/// An event appended while the rebuild ran - by an emit that found the old file still owing and so
+/// did not fold - is on the log when the shadow is swapped in: the rebuild then reads the log past
+/// the last position it folded, and only past it, and folds what it gained into the new file, so
+/// the rebuilt graph is the whole log's.
 #[test]
 fn a_rebuild_folds_what_the_log_gained_while_it_ran() {
-    use rigger::contextgraph::sqlite::Projector;
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(
         dir.path(),
@@ -2372,31 +2446,225 @@ fn a_rebuild_folds_what_the_log_gained_while_it_ran() {
     let log = run_events(&backend, PROJECT);
     let (rebuilt, fresh) = (dir.path().join("rebuilt.db"), dir.path().join("fresh.db"));
     a_pre_rule_graph_db(&rebuilt, &log[..3], "");
-    let reads = std::cell::Cell::new(0);
-    let ran = Projector::open(rebuilt.to_str().unwrap(), PROJECT)
-        .unwrap()
-        .rebuild(
-            &|| {
-                reads.set(reads.get() + 1);
-                Ok(if reads.get() == 1 {
-                    log[..3].to_vec()
-                } else {
-                    log.clone()
-                })
-            },
-            &mut no_progress,
-        )
-        .unwrap();
-    assert_eq!(
-        (ran, reads.get()),
-        (true, 2),
-        "read before and after the commit"
+    let (afters, before) = (
+        std::cell::RefCell::new(Vec::new()),
+        std::cell::RefCell::new(Vec::new()),
     );
-    fold_in_batches(&fresh, PROJECT, &[log]);
+    let (mut before_run, mut whole) = (
+        source_over(&log[..3], 2, &before),
+        source_over(&log, 2, &afters),
+    );
+    let mut reads = 0;
+    let ran = rebuild(&rebuilt, &mut |after, sink| {
+        reads += 1;
+        if reads == 1 {
+            before_run(after, sink)
+        } else {
+            whole(after, sink)
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        (ran, before.borrow().clone(), afters.borrow().clone()),
+        (true, vec![0], vec![log[2].position]),
+        "the tail is read once, past the last position the shadow folded"
+    );
+    fold_in_batches(&fresh, PROJECT, std::slice::from_ref(&log));
     assert_eq!(
         identity_of(&rebuilt),
         identity_of(&fresh),
         "the events appended during the rebuild are folded after it"
+    );
+}
+
+/// A rebuild interrupted part way leaves `graph.db` byte for byte as it was, still owing, with its
+/// committed batches in the shadow; the next rebuild resumes past the last of them, folding only
+/// what they did not, and reaches exactly the whole log's graph.
+#[test]
+fn an_interrupted_rebuild_leaves_graph_db_untouched_and_resumes_from_its_last_committed_batch() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let log = run_events(&backend, PROJECT);
+    let (db, fresh) = (dir.path().join("graph.db"), dir.path().join("fresh.db"));
+    a_pre_rule_graph_db(&db, &log[..3], "");
+    let before = std::fs::read(&db).unwrap();
+    let interrupted = rebuild(&db, &mut |_, sink| {
+        sink(&log[..2], log[4].position)?;
+        Err(rigger::contextgraph::Error("interrupted".to_string()))
+    });
+    assert_eq!(
+        interrupted.unwrap_err().0,
+        "interrupted",
+        "the interruption fails the rebuild"
+    );
+    assert!(
+        std::fs::read(&db).unwrap() == before
+            && Projector::open(db.to_str().unwrap(), PROJECT)
+                .unwrap()
+                .rebuild_owed()
+                .unwrap(),
+        "graph.db is untouched and still owes the rebuild"
+    );
+    assert!(
+        dir.path().join("graph.db.rebuild").exists(),
+        "the committed batch is kept in the shadow"
+    );
+
+    let (afters, handed) = (
+        std::cell::RefCell::new(Vec::new()),
+        std::cell::RefCell::new(Vec::new()),
+    );
+    let mut source = source_over(&log, 2, &afters);
+    let ran = rebuild(&db, &mut |after, sink| {
+        source(after, &mut |events, head| {
+            handed
+                .borrow_mut()
+                .extend(events.iter().map(|e| e.position));
+            sink(events, head)
+        })
+    })
+    .unwrap();
+    assert_eq!(
+        (ran, afters.borrow().clone(), handed.borrow().clone()),
+        (
+            true,
+            vec![log[1].position, log[4].position],
+            vec![log[2].position, log[3].position, log[4].position]
+        ),
+        "the rerun resumes past the committed batch and never folds it again"
+    );
+    fold_in_batches(&fresh, PROJECT, std::slice::from_ref(&log));
+    assert_eq!(
+        identity_of(&db),
+        identity_of(&fresh),
+        "the resumed rebuild is the whole log's"
+    );
+}
+
+/// A rebuild interrupted after its swap, while folding the tail the log gained, leaves a `graph.db`
+/// that no longer owes the rebuild but still owes that tail: the next rebuild folds only the tail,
+/// past the last position folded, and the one after it has nothing to do.
+#[test]
+fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let log = run_events(&backend, PROJECT);
+    let (db, fresh) = (dir.path().join("graph.db"), dir.path().join("fresh.db"));
+    a_pre_rule_graph_db(&db, &log[..3], "");
+    let mut reads = 0;
+    let interrupted = rebuild(&db, &mut |_, sink| {
+        reads += 1;
+        match reads {
+            1 => sink(&log[..3], log[2].position),
+            _ => Err(rigger::contextgraph::Error("interrupted".to_string())),
+        }
+    });
+    assert_eq!(interrupted.unwrap_err().0, "interrupted");
+    assert_eq!(
+        version_and_owed(&db),
+        (1, false),
+        "the rebuilt file was swapped in"
+    );
+
+    let afters = std::cell::RefCell::new(Vec::new());
+    let ran = rebuild(&db, &mut source_over(&log, 2, &afters)).unwrap();
+    assert_eq!(
+        (ran, afters.borrow().clone()),
+        (true, vec![log[2].position]),
+        "the next rebuild folds only the tail"
+    );
+    let again = rebuild(&db, &mut |_, _| panic!("a finished rebuild reads nothing")).unwrap();
+    assert!(!again, "and the one after it has nothing to do");
+    fold_in_batches(&fresh, PROJECT, &[log]);
+    assert_eq!(identity_of(&db), identity_of(&fresh));
+}
+
+/// The live selection a rebuild folds is exactly what `rigger reset --derived` keeps - every
+/// non-derived event, each identity's latest generation, the carried valid-times - streamed once
+/// in position order, in batches, each with the stream's last position; read past a position it
+/// hands only what follows. The graph folded from it is the whole log's, and the compacted log's.
+#[test]
+fn the_live_selection_is_exactly_what_the_compaction_keeps_and_rebuilds_the_whole_logs_graph() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut events = two_generations_dropping_facts();
+    events.insert(2, governs("src/f.rs::alpha", 15));
+    events.push(keyed(
+        TYPE_DOC_LINK_EXTRACTED,
+        link("src/a.rs"),
+        "gd/docs/f.md@h2#0",
+        25,
+    ));
+    let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
+    let log = run_events(&backend, PROJECT);
+    let head = log.last().unwrap().position;
+    let identity = rigger::ingest::derived_index_identity();
+    let select = |after, batch| {
+        let mut batches: Vec<(Vec<(u64, std::time::SystemTime)>, u64)> = Vec::new();
+        backend
+            .read_live_selection(
+                &Namespaced::prefix_for(PROJECT),
+                rigger::conductor::STREAM,
+                &identity,
+                after,
+                batch,
+                &mut |events, head| {
+                    batches.push((
+                        events.iter().map(|e| (e.position, e.valid_from)).collect(),
+                        head,
+                    ));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        batches
+    };
+    let selected = select(0, 2);
+    let (whole_db, selected_db, compacted_db) = (
+        dir.path().join("whole.db"),
+        dir.path().join("selected.db"),
+        dir.path().join("compacted.db"),
+    );
+    rebuilt_whole(&backend, &whole_db);
+    a_pre_rule_graph_db(&selected_db, &log[..1], "");
+    assert!(rebuild(&selected_db, &mut live_selection_of(&backend, PROJECT, 2)).unwrap());
+
+    backend
+        .prune_derived_index(&Namespaced::prefix_for(PROJECT), &identity)
+        .unwrap();
+    let kept: Vec<(u64, std::time::SystemTime)> = run_events(&backend, PROJECT)
+        .iter()
+        .map(|e| (e.position, e.valid_from))
+        .collect();
+    assert_eq!(
+        selected,
+        kept.chunks(2)
+            .map(|batch| (batch.to_vec(), head))
+            .collect::<Vec<_>>(),
+        "the selection is the compacted log, in batches of two, each with the stream's head"
+    );
+    assert_eq!(
+        select(kept[1].0, 10),
+        vec![(kept[2..].to_vec(), head)],
+        "read past a position it hands only what follows"
+    );
+    rebuilt_whole(&backend, &compacted_db);
+    assert_eq!(
+        identity_of(&selected_db),
+        identity_of(&whole_db),
+        "the graph folded from the live selection is the whole log's"
+    );
+    assert_eq!(
+        identity_of(&compacted_db),
+        identity_of(&whole_db),
+        "and the compacted log's"
     );
 }
 
@@ -2439,14 +2707,12 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(!ok, "reset --derived must refuse; stdout: {out}");
-    let graph_db = rigger_file(root, "graph.db");
     assert!(
         err.contains(&format!(
-            "reset --derived: {} was folded under an older fold rule and must be rebuilt from \
-             the whole event log once before the log is compacted - run `rigger setup`",
-            graph_db.to_str().unwrap()
+            "reset --derived: {}",
+            rigger::contextgraph::REBUILD_OWED
         )),
-        "the refusal names the file and the command that rebuilds it; stderr: {err}"
+        "the refusal is the one owed refusal, naming the command that rebuilds it; stderr: {err}"
     );
     let (_, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "setup must rebuild the graph; stderr: {err}");
@@ -2773,20 +3039,26 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
         .lines()
         .filter(|l| l.contains("graph.db") || l.starts_with("rebuilt "))
         .collect();
+    let head = store.log().last().unwrap().position;
     assert_eq!(
         rebuild,
         vec![
             "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
-             the whole log is refolded once",
-            "rebuilt 1 of 6 events (16%)",
-            "rebuilt 2 of 6 events (33%)",
-            "rebuilt 3 of 6 events (50%)",
-            "rebuilt 4 of 6 events (66%)",
-            "rebuilt 5 of 6 events (83%)",
-            "rebuilt 6 of 6 events (100%)",
-            "rebuilt graph.db from the event log",
+             the log's live selection is refolded once"
+                .to_string(),
+            format!("rebuilt 3 events, through position {head} of {head} (100%)"),
+            "rebuilt graph.db from the event log".to_string(),
         ],
-        "setup says it is rebuilding and how far along it is; stdout: {out}"
+        "setup says it is rebuilding and how far along it is, folding only the live selection - \
+         h1's three superseded recordings are never folded; stdout: {out}"
+    );
+    assert!(
+        !store
+            .root()
+            .join(".rigger")
+            .join("graph.db.rebuild")
+            .exists(),
+        "the shadow is removed once copied in"
     );
 
     let pending_proof_tables: i64 = rusqlite::Connection::open(&store.graph_db)
@@ -2941,11 +3213,11 @@ fn a_fold_dependent_command_refuses_at_the_old_rule_and_an_inspection_answers_as
     );
 }
 
-/// While `rigger setup`'s rebuild holds its one transaction, a read-only open answers from the old
-/// file without waiting and changes nothing, a command that depends on the fold refuses at once
-/// naming `rigger setup` rather than failing on the lock, and an emit appends without folding;
-/// when the rebuild commits, its ledgers are intact and it has folded the emitted event too - the
-/// graph is exactly the whole log's.
+/// While `rigger setup`'s rebuild folds its shadow, a read-only open answers from the old file
+/// without waiting and changes nothing, a command that depends on the fold refuses at once naming
+/// `rigger setup` rather than failing on a lock, and an emit appends without folding; when the
+/// rebuild has swapped the shadow in, its ledgers are intact and it has folded the emitted event
+/// too - the graph is exactly the whole log's.
 #[test]
 fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     use rigger::contextgraph::sqlite::Projector;
@@ -2960,16 +3232,22 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
         let project = store.project();
         std::thread::spawn(move || {
             let backend = Store::open(events_db.to_str().unwrap()).unwrap();
-            let log = || Ok(run_events(&backend, &project));
-            Projector::open(graph_db.to_str().unwrap(), &project)
-                .unwrap()
-                .rebuild(&log, &mut |folded, _| {
-                    if folded == 1 {
+            let mut batches = 0;
+            let mut source = live_selection_of(&backend, &project, 1);
+            let ran = Projector::rebuild(
+                graph_db.to_str().unwrap(),
+                &project,
+                &mut source,
+                &mut |_| {
+                    batches += 1;
+                    if batches == 1 {
                         paused_tx.send(()).unwrap();
                         resume_rx.recv().unwrap();
                     }
-                })
-                .unwrap()
+                },
+            )
+            .unwrap();
+            ran
         })
     };
     paused.recv().unwrap();
