@@ -8744,6 +8744,18 @@ mod tests {
         (backend, graph_path)
     }
 
+    /// Run the identity migration `oldname` -> `mint123` over `backend` wired to `graph`, and
+    /// assert it renamed the one legacy stream and folded its decision into `graph` (`why` names
+    /// the scenario).
+    fn migrates_one_stream_folding_into(backend: &Store, graph: &Projector, why: &str) {
+        let moved = migrate_project_identity(backend, "mint123", "oldname", Some(graph)).unwrap();
+        assert_eq!(
+            moved.map(|(n, decision)| (n, decision.fold)),
+            Some((1, contextgraph::Fold::Folded)),
+            "{why}, and its decision folds into the wired graph"
+        );
+    }
+
     #[test]
     fn migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned() {
         // Spec 28 GC5 (backward-compat): a single-project deployment behaves EXACTLY as before,
@@ -8763,11 +8775,10 @@ mod tests {
         // identity and migrates. Before the re-key fix the graph rows kept the legacy scope, so
         // the minted read returned nothing - the pre-mint history was orphaned.
         let graph = Projector::open(graph_path, "mint123").unwrap();
-        let moved = migrate_project_identity(&backend, "mint123", "oldname", Some(&graph)).unwrap();
-        assert_eq!(
-            moved.map(|(n, decision)| (n, decision.fold)),
-            Some((1, contextgraph::Fold::Folded)),
-            "the one legacy stream is renamed to the minted namespace, and its decision folds into the wired graph"
+        migrates_one_stream_folding_into(
+            &backend,
+            &graph,
+            "the one legacy stream is renamed to the minted namespace",
         );
 
         // Backward-compat: the minted projector still returns the pre-mint decision and its
@@ -8901,11 +8912,10 @@ mod tests {
 
         // Recovery: re-run the migration. It decides `Rename` again (legacy still populated),
         // replays the idempotent re-key, and completes the rename that the crash interrupted.
-        let moved = migrate_project_identity(&backend, "mint123", "oldname", Some(&graph)).unwrap();
-        assert_eq!(
-            moved.map(|(n, decision)| (n, decision.fold)),
-            Some((1, contextgraph::Fold::Folded)),
-            "recovery completes the stream rename the crash interrupted, and its decision folds into the wired graph"
+        migrates_one_stream_folding_into(
+            &backend,
+            &graph,
+            "recovery completes the stream rename the crash interrupted",
         );
         // The re-key was a clean 0-row no-op on the recovery replay: a further replay still moves
         // nothing (idempotent), so recovery never duplicated or re-moved a row.
