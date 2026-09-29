@@ -490,11 +490,6 @@
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-59ab8e8cdb6e",
-    "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
-  },
-  {
     "id": "dup-5d4b1e693e51",
     "disposition": "not-a-duplicate",
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
@@ -933,5 +928,40 @@
     "id": "dup-17929143626a",
     "disposition": "not-a-duplicate",
     "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's current run, the on-disk run stream) and take the id from it."
+  },
+  {
+    "id": "dup-b228202b394c",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, KurrentDB group stream name, spawn-store subject, audit join) over different inputs."
+  },
+  {
+    "id": "dup-05f8d05060a7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the capped-reads test double, each forwarding its own inner call uncharged: the boundary lookup and the group lookup are distinct `EventStore` methods every implementation owes, and neither is a read the cap charges."
+  },
+  {
+    "id": "dup-4979c76ee36f",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the failing-read test double answering their own distinct `EventStore` methods (the boundary lookup and the group lookup), each with the answer that method's contract takes."
+  },
+  {
+    "id": "dup-f5125f873960",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name) is already the one `scoped` both call."
+  },
+  {
+    "id": "dup-b4990598bfd7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different SQL statements over the one shared `group_expr`: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it; the shared expression is already the one function both call."
+  },
+  {
+    "id": "dup-3eb116c3c4c8",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the silent test double answering their own distinct `EventStore` methods (the boundary lookup and the group lookup) with the empty answer each contract allows."
+  },
+  {
+    "id": "dup-6ef712aab260",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
   }
 ]
