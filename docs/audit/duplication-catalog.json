@@ -254,13 +254,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-877fbe028361",
+    "id": "dup-fda12b1e9e42",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "append_and_fold_batch",
-        "content_hash": "22444381bb88a6ba"
+        "content_hash": "77c882820de86e0e"
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
@@ -316,7 +316,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-53779688b166",
+    "id": "dup-eecf9777e79f",
     "classification": "semantic",
     "sites": [
       {
@@ -327,7 +327,7 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-        "content_hash": "f49253da8951d862"
+        "content_hash": "d7af3d74c6051ab1"
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
@@ -5945,18 +5945,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8a6290a04f28",
+    "id": "dup-0b2669324614",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "decision_fold_projects_no_agent_node_or_decided_edge",
-        "content_hash": "662dfdf08c6442bf"
+        "content_hash": "d16b0ab15b3ab1c8"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "review_finding_projects_no_raised_edge_even_with_an_event_actor",
-        "content_hash": "9d69e7d391677114"
+        "content_hash": "7a862fa36f72beff"
       }
     ],
     "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",

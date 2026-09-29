@@ -940,18 +940,18 @@
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error, the not-folded report line, the owed-rebuild refusal); they share only the `format!` shape."
   },
   {
-    "id": "dup-877fbe028361",
-    "disposition": "not-a-duplicate",
-    "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event, delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, and reports the fold that authority returns, rather than re-implementing it."
-  },
-  {
-    "id": "dup-8a6290a04f28",
-    "disposition": "not-a-duplicate",
-    "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
-  },
-  {
     "id": "dup-7e20ee10aa64",
     "disposition": "not-a-duplicate",
     "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through `append_and_fold_batch`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
+  },
+  {
+    "id": "dup-fda12b1e9e42",
+    "disposition": "not-a-duplicate",
+    "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event, delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, and reports a fold that authority could not make through the run's injected log, rather than re-implementing it."
+  },
+  {
+    "id": "dup-0b2669324614",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
   }
 ]
