@@ -104,8 +104,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5002,
-        "end_line": 5007
+        "start_line": 5067,
+        "end_line": 5072
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -2899,8 +2899,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4917,
-        "end_line": 4917
+        "start_line": 4982,
+        "end_line": 4982
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -5205,7 +5205,7 @@
     ]
   },
   {
-    "id": "dup-2f5b618b8013",
+    "id": "dup-f767f6f9c791",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5374,8 +5374,13 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4570,
-        "end_line": 4570
+        "start_line": 4586,
+        "end_line": 4586
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "start_line": 4717,
+        "end_line": 4717
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
