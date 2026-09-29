@@ -92,7 +92,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-59ab8e8cdb6e",
+    "id": "dup-286060b30486",
     "classification": "near",
     "sites": [
       {
@@ -116,12 +116,17 @@
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "closed_unit_line",
+        "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
         "file": "tests/no_os_kill_audit.rs",
         "name": "join",
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/compaction_generations_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -993,7 +998,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b4b6ac6f53d1",
+    "id": "dup-f2d9438d2806",
     "classification": "semantic",
     "sites": [
       {
@@ -2922,6 +2927,11 @@
         "content_hash": "0ab805b5101d6502"
       },
       {
+        "file": "tests/common/layer_cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "c2dfa05b7c5ac948"
+      },
+      {
         "file": "tests/common/mod.rs",
         "name": "\"{}/.rigger-test-scratch\"",
         "content_hash": "87085d501bb35f83"
@@ -3763,7 +3773,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 553 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 554 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5526,7 +5536,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-486c21ad5dfd",
+    "id": "dup-4b044c6d78af",
     "classification": "semantic",
     "sites": [
       {
@@ -5607,6 +5617,11 @@
       {
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
@@ -5683,11 +5698,6 @@
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",

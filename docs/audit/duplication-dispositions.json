@@ -470,9 +470,9 @@
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-59ab8e8cdb6e",
+    "id": "dup-286060b30486",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects) over different inputs."
   },
   {
     "id": "dup-2a5626cb9627",
