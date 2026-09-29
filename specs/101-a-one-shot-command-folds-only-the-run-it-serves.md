@@ -265,6 +265,26 @@ a fact, not only when it adds or moves one.
   that snapshot completing without refolding the batches already committed. Without this, every
   store folded before this spec keeps facts a pre-upgrade generation asserted, and a compacted such
   store disagrees with every future rebuild.
+- *A lost fold is a durable debt.* A `graph.db` owes its rebuild for a second reason: a fold into
+  a current file that fails after the log append succeeded (a write lost past the busy timeout, or
+  any apply error). Both causes share one vocabulary and one refusal text, spelled once in the
+  domain as the `REBUILD_OWED` reason every surface renders and never re-spelled in an adapter. The
+  authoritative record of the debt is the graph file itself: the projection's `applied` ledger
+  (`applied(position)` in `graph.db`) names every log position it has folded, so a position of the
+  live selection missing from the ledger IS the debt, durable in the very file the fold missed. An
+  in-process flag, or a mark file as the sole record, is not an implementation of this: the first
+  dies with every short-lived CLI fold (emit, result, step, `reset --runs`, graph build) and the
+  second is a write that can fail too. `rigger setup` is the payer: on every run it streams the
+  live selection's positions (positions only, never payloads, in one ordered pass) against the
+  ledger and pays the rebuild when any is missing, whether or not a mark exists; nothing else
+  rebuilds implicitly. The owed mark beside `graph.db` is only an accelerator that lets a folding
+  open refuse up front without reading the log. It is written on the failure path when it can be,
+  belongs to the file it describes (dropped when that file is removed or rebuilt; a fresh file is
+  never born owed), and when it cannot be written the command still reports the fold as not made
+  and the ledger hole alone makes the next `rigger setup` rebuild. Tests: a fold lost against a
+  current file in one process, with the mark's directory unwritable, is seen as owed by a fresh
+  process through `rigger setup`, which rebuilds it and folds the lost position; a mark left behind
+  by a removed `graph.db` does not make its replacement owed.
 - *Unkeyed recordings are permanent asserters.* A derived recording without a replay key (written
   before replay keys existed) is an asserter in its own right for the nodes AND edges it folds: a
   keyed generation's retirement never retires a node or edge an unkeyed recording still asserts,
