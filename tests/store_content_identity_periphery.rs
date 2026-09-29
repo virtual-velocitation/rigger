@@ -5,7 +5,7 @@
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::...`), so
 //! they guard boundaries the inside-out unit tests are structurally blind to:
 //!
-//!  - nothing in-crate drives the shared authority `rigger::ingest::append_and_fold_batch`
+//!  - nothing in-crate drives the shared authority `rigger::ingest::FoldingStore::append_and_fold`
 //!    across a PARTIALLY written append, so nothing there pins the property the criterion
 //!    exists for: the fold stamps only the events the store wrote, at the positions the
 //!    store issued. That seam spans three modules (`eventstore` -> `ingest` ->
@@ -41,7 +41,7 @@ use rigger::eventstore::{
     Appended, ContentIdentity, Direction, Error as StoreError, Event, EventStore, ExpectedRevision,
     Filter, Position, Revision, Subscription,
 };
-use rigger::ingest::append_and_fold_batch;
+use rigger::ingest::folding_into;
 
 // ---------------------------------------------------------------------------
 // Doubles and fixtures
@@ -301,7 +301,8 @@ fn the_fold_uses_the_reported_positions_on_a_backend_whose_positions_have_gaps()
         .map(|i| Event::new("Gapped", vec![i as u8]))
         .collect();
 
-    let appended = append_and_fold_batch(&gapped, Some(&cap as &dyn Projection), "run", &events)
+    let appended = folding_into(&gapped, Some(&cap as &dyn Projection), &|_| {})
+        .append_and_fold("run", ExpectedRevision::Any, &events)
         .expect("the append succeeds");
     assert_eq!(appended.fold, rigger::contextgraph::Fold::Folded);
     let appended = appended.appended;
@@ -334,7 +335,8 @@ fn a_port_that_wrote_nothing_is_never_folded_at_a_fabricated_position() {
         .map(|i| Event::new("Silent", vec![i as u8]))
         .collect();
 
-    let appended = append_and_fold_batch(&silent, Some(&cap as &dyn Projection), "run", &events)
+    let appended = folding_into(&silent, Some(&cap as &dyn Projection), &|_| {})
+        .append_and_fold("run", ExpectedRevision::Any, &events)
         .expect("an append that wrote nothing is not an error");
     assert_eq!(
         appended.fold,
@@ -370,7 +372,8 @@ fn a_report_that_does_not_answer_the_batch_is_refused_rather_than_folded() {
         .map(|i| Event::new("Derived", vec![i as u8]))
         .collect();
 
-    let err = append_and_fold_batch(&miscounting, Some(&cap as &dyn Projection), "run", &events)
+    let err = folding_into(&miscounting, Some(&cap as &dyn Projection), &|_| {})
+        .append_and_fold("run", ExpectedRevision::Any, &events)
         .expect_err("a report that cannot name what was written is not a smaller fold");
 
     let message = err.to_string();

@@ -24,50 +24,8 @@ use crate::eventstore::{
 
 pub use rigger_domain::ingest::*;
 
-/// Append a whole batch of events to `stream` in ONE store append and fold them into `graph` in ONE
-/// transaction (via [`Projection::apply_batch`]) - the batched-fold cadence spec 49 needs: one store
-/// transaction per file's batch, not one per event (the measured cold-build throughput was
-/// transaction-cadence bound, not parse-bound). A fold failure never fails the append, which
-/// already landed durably in the log: it is returned as the batch's [`Fold`], beside the store's
-/// own report of what it wrote, for the caller to report.
-///
-/// # Every folded event is stamped with the position THE STORE ISSUED
-///
-/// This function folds exactly the events [`Appended::placed`] names, at the positions the store
-/// reported, and it derives no position of its own. It used to compute them arithmetically as
-/// `base = last + 1 - n`, which is unsound twice over: an append may write FEWER events than it was
-/// handed (a store may recognise an event as already recorded), and the port has never promised a batch lands at CONSECUTIVE positions - only distinct,
-/// strictly increasing ones, which a backend whose position is a byte offset satisfies with gaps.
-/// Either way the arithmetic stamps events at positions the store never issued, and the graph's
-/// applied ledger is keyed BY position: a wrong one marks a location applied forever and silently
-/// swallows the genuine event recorded there. A suppressed event needs no fold at all - it folded
-/// when its content was first recorded.
-///
-/// This is the ONE batched append-and-fold authority both ingest sinks share - the run's keyed emit
-/// and a cold `rigger graph build` - so the batching can never diverge between them. It lives here
-/// beside the walk-and-key authority rather than inside either sink, and it is deliberately NOT
-/// `symbols`-gated: it only moves events through the store and graph ports, which both feature lanes
-/// compile, so the run's single-event mutation path can route its one-event case through it in
-/// either lane.
-pub fn append_and_fold_batch(
-    store: &dyn EventStore,
-    graph: Option<&dyn Projection>,
-    stream: &str,
-    events: &[Event],
-) -> Result<AppendedAndFolded, crate::eventstore::Error> {
-    if events.is_empty() {
-        return Ok(AppendedAndFolded {
-            appended: Appended::default(),
-            fold: Fold::Folded,
-        });
-    }
-    let appended = store.append(stream, ExpectedRevision::Any, events)?;
-    let fold = Fold::of_batch(|| wired(graph), &placed(stream, events, &appended)?);
-    Ok(AppendedAndFolded { appended, fold })
-}
-
 /// Exactly the events `appended` reports the store placed, each stamped with the position the
-/// store issued for it (see [`append_and_fold_batch`]): what a fold of that append folds.
+/// store issued for it (see [`FoldingStore::append_and_fold`]): what a fold of that append folds.
 fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Event>, Error> {
     // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
     // the report against the batch - so a report of a different length is not a smaller
@@ -121,6 +79,72 @@ impl<'a, O> FoldingStore<'a, O> {
     }
 }
 
+/// A [`FoldingStore`] over a graph the caller already holds open, or over none: the one eager
+/// wiring every writer that opened its graph first shares. Wired with none it folds nothing, as
+/// [`FoldingStore::new`] with no opener does.
+pub fn folding_into<'a>(
+    store: &'a dyn EventStore,
+    graph: Option<&'a dyn Projection>,
+    log: &'a (dyn Fn(&str) + Sync),
+) -> FoldingStore<
+    'a,
+    impl Fn() -> Result<&'a dyn Projection, crate::contextgraph::Error> + Send + Sync + 'a,
+> {
+    FoldingStore::new(
+        store,
+        graph.map(|g| move || crate::contextgraph::wired(Some(g))),
+        log,
+    )
+}
+
+impl<'g, O, G> FoldingStore<'_, O>
+where
+    O: Fn() -> Result<G, crate::contextgraph::Error> + Send + Sync,
+    G: std::ops::Deref<Target = dyn Projection + 'g>,
+{
+    /// THE ONE APPEND-THEN-FOLD BODY: append `events` to `stream` under the caller's `expected`
+    /// revision in ONE store append, then fold exactly what the store placed, at the positions it
+    /// issued, in ONE graph transaction - the batched-fold cadence spec 49 needs (one store
+    /// transaction per file's batch, not per event). The append goes to the log first and the
+    /// graph is opened only after it (spec 101: a verb whose job is to append never opens
+    /// `graph.db` before its append). A fold failure never fails the append, which already landed
+    /// durably: it is returned as the batch's [`Fold`] beside the store's own report, for the caller
+    /// to report. A store wired with no graph folds nothing and says so in that [`Fold`]. An empty
+    /// batch and an unmet expectation are the store's to answer, never this body's.
+    ///
+    /// # Every folded event is stamped with the position THE STORE ISSUED
+    ///
+    /// This folds exactly the events [`Appended::placed`] names, at the positions the store
+    /// reported, and derives no position of its own. Computing them arithmetically as
+    /// `base = last + 1 - n` is unsound twice over: an append may write FEWER events than it was
+    /// handed (a store may recognise an event as already recorded), and the port has never
+    /// promised a batch lands at CONSECUTIVE positions - only distinct, strictly increasing ones,
+    /// which a backend whose position is a byte offset satisfies with gaps. The graph's applied
+    /// ledger is keyed BY position, so a wrong one marks a location applied forever and silently
+    /// swallows the genuine event recorded there. A suppressed event needs no fold: it folded when
+    /// its content was first recorded.
+    ///
+    /// Every append-then-fold in the codebase is this body - the run's keyed emit and every other
+    /// run event through [`EventStore::append`] below, a cold `rigger graph build`, the offline
+    /// graph passes and `rigger reset --runs` through this method - so the batching and the fold
+    /// can never diverge between them. It is deliberately NOT `symbols`-gated: it only moves events
+    /// through the store and graph ports, which both feature lanes compile.
+    pub fn append_and_fold(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<AppendedAndFolded, Error> {
+        let appended = self.store.append(stream, expected, events)?;
+        let placed = placed(stream, events, &appended)?;
+        let fold = match &self.graph {
+            Some(open) => Fold::of_batch(open, &placed),
+            None => Fold::of_batch(|| wired(None), &placed),
+        };
+        Ok(AppendedAndFolded { appended, fold })
+    }
+}
+
 impl<'g, O, G> EventStore for FoldingStore<'_, O>
 where
     O: Fn() -> Result<G, crate::contextgraph::Error> + Send + Sync,
@@ -132,19 +156,16 @@ where
         expected: ExpectedRevision,
         events: &[Event],
     ) -> Result<Appended, Error> {
-        let appended = self.store.append(stream, expected, events)?;
-        let placed = placed(stream, events, &appended)?;
-        if let Some(open) = &self.graph {
-            let fold = Fold::of_batch(open, &placed);
-            if let Fold::NotFolded(_) = fold {
-                (self.log)(&format!(
-                    "rigger: recorded {} run event(s){}",
-                    events.len(),
-                    fold_loss_clause(&fold)
-                ));
-            }
+        let done = self.append_and_fold(stream, expected, events)?;
+        // A store wired with no graph folds nothing by design and has nothing to say.
+        if self.graph.is_some() && done.fold != Fold::Folded {
+            (self.log)(&format!(
+                "rigger: recorded {} run event(s){}",
+                events.len(),
+                fold_loss_clause(&done.fold)
+            ));
         }
-        Ok(appended)
+        Ok(done.appended)
     }
 
     fn read_stream(
@@ -200,7 +221,7 @@ where
     }
 }
 
-/// What [`append_and_fold_batch`] did: the store's own report of what it wrote, and what became
+/// What [`FoldingStore::append_and_fold`] did: the store's own report of what it wrote, and what became
 /// of folding it into the context graph - which the caller reports, never drops.
 #[must_use = "a fold that is not reported is a fold that can be silently lost"]
 #[derive(Debug)]
@@ -234,7 +255,7 @@ pub struct IngestStats {
 /// keys is already in the log. This function owns only the walk and the keying; the sink decides
 /// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the
 /// caller. A sink appends the file's batch in ONE store append and folds it in ONE graph
-/// transaction (via [`append_and_fold_batch`]) - the batched-fold cadence spec 49 needs, since the
+/// transaction (via [`FoldingStore::append_and_fold`]) - the batched-fold cadence spec 49 needs, since the
 /// measured cold-build throughput was transaction-cadence bound.
 ///
 /// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two

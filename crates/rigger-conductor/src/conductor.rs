@@ -1469,11 +1469,7 @@ impl<'a> Deps<'a> {
     /// into [`Deps::graph`] after it is on the log and saying through [`Deps::log`] a fold it could
     /// not make - the one folding store every other writer of a verb uses too.
     fn folding(&self) -> impl EventStore + 'a {
-        crate::ingest::FoldingStore::new(
-            self.store,
-            self.graph.map(|g| move || contextgraph::wired(Some(g))),
-            self.log,
-        )
+        crate::ingest::folding_into(self.store, self.graph, self.log)
     }
     /// Whether a step over these dependencies ingests the project into the graph: there is a
     /// graph to fold into and a repo to walk. The one condition both ingest paths check; they
@@ -10253,7 +10249,7 @@ impl RunCtx<'_> {
         // symbols index - so a path the tree has DELETED, or one an edit emptied, still arrives here
         // as a NON-empty batch and does reach a skip decision while that index lists it. And whether
         // an appended batch then FOLDS is
-        // `append_and_fold_batch`'s best-effort contract, not this partition's - a lost fold leaves
+        // `FoldingStore::append_and_fold`'s best-effort contract, not this partition's - a lost fold leaves
         // the log right and the graph behind.
         //
         // The dedup lock is held only around the key set (released before the append), so a concurrent
@@ -20030,13 +20026,10 @@ mod tests {
                 .filter(|(key, _)| seen.insert(key.clone()))
                 .map(|(key, ev)| (*ev).clone().with_meta(META_REPLAY_KEY, key.as_str()))
                 .collect();
-            let done = crate::ingest::append_and_fold_batch(
-                &store,
-                Some(&graph as &dyn Projection),
-                STREAM,
-                &survivors,
-            )
-            .unwrap();
+            let done =
+                crate::ingest::folding_into(&store, Some(&graph as &dyn Projection), &|_| {})
+                    .append_and_fold(STREAM, crate::eventstore::ExpectedRevision::Any, &survivors)
+                    .unwrap();
             assert_eq!(done.fold, crate::contextgraph::Fold::Folded);
         });
         (store, graph)

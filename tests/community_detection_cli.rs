@@ -4,7 +4,7 @@
 //! (`community_detection_pass.rs`) drives `Coupling::from_graph` / `detect` / `events` over a real
 //! `whole()` read but MANUALLY applies the resulting events. So neither exercises the actual
 //! subcommand: its dispatch, its argument parsing, its store bootstrap, or the real
-//! `append_and_fold_batch` seam that appends the `CommunityAssigned` events to the run log AND folds
+//! `FoldingStore::append_and_fold` seam that appends the `CommunityAssigned` events to the run log AND folds
 //! them into live `IN_COMMUNITY` edges under the local `.rigger/`. This file guards exactly that
 //! binary boundary, over the shipped executable and the public projection surface:
 //!
@@ -20,7 +20,7 @@
 //!    memberships and the other grain untouched.
 //!
 //! The seed is built from the ALWAYS-COMPILED entity / call folds (spec 29a / 37), and detection,
-//! the fold, and `append_and_fold_batch` are all always-compiled, so every test here runs
+//! the fold, and `FoldingStore::append_and_fold` are all always-compiled, so every test here runs
 //! identically in BOTH feature lanes.
 
 use std::path::Path;
@@ -32,8 +32,8 @@ use rigger::contextgraph::{
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::Event;
-use rigger::ingest::append_and_fold_batch;
+use rigger::eventstore::{Event, ExpectedRevision};
+use rigger::ingest::folding_into;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
@@ -84,7 +84,7 @@ const COMMUNITIES: LayerCli = LayerCli {
 };
 
 /// Seed a TWO-SUBSYSTEM coupling graph into the fixture's REAL store via the exact production seam
-/// (`append_and_fold_batch` on the run stream): it appends the entity / call events to
+/// (`FoldingStore::append_and_fold` on the run stream): it appends the entity / call events to
 /// `.rigger/events.db` and folds them into `.rigger/graph.db`. Subsystem A spans `src/combat` and
 /// `src/net`; subsystem B spans `src/render` and `src/ui`; a single thin bridge joins them. Every
 /// cross-file call lands on a bare placeholder the pass resolves, so A's entities couple across the
@@ -120,20 +120,16 @@ fn seed_coupling(root: &Path) {
         // A single weak bridge A -> B (one call): too thin to fuse the subsystems.
         call("src/combat/hit.rs", "paint", "strike"),
     ];
-    let done = append_and_fold_batch(
-        &store,
-        Some(&graph as &dyn Projection),
-        conductor::STREAM,
-        &events,
-    )
-    .expect("seed the coupling graph through the real append-and-fold seam");
+    let done = folding_into(&store, Some(&graph as &dyn Projection), &|_| {})
+        .append_and_fold(conductor::STREAM, ExpectedRevision::Any, &events)
+        .expect("seed the coupling graph through the real append-and-fold seam");
     assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
 }
 
 #[test]
 fn the_subcommand_records_a_live_community_layer_over_the_real_store() {
     // Drive the built binary end-to-end: it reads the seeded coupling graph via `whole()`, detects
-    // communities, and records them THROUGH `append_and_fold_batch` into live `IN_COMMUNITY` edges -
+    // communities, and records them THROUGH `FoldingStore::append_and_fold` into live `IN_COMMUNITY` edges -
     // the seam the library-level periphery (which hand-applies events) never exercises.
     let dir = COMMUNITIES.project();
     let root = dir.path();

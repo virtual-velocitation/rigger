@@ -1,7 +1,7 @@
 //! Shared support for the two derived-layer CLI suites (`tests/community_detection_cli.rs`,
 //! `tests/concepts_derivation_cli.rs`): `rigger graph communities` and `rigger graph concepts`
 //! share one shape - a subcommand that reads the project's graph, derives a layer of nodes at a
-//! `--resolution` grain, and records it through `append_and_fold_batch` as live membership
+//! `--resolution` grain, and records it through `FoldingStore::append_and_fold` as live membership
 //! edges. [`LayerCli`] names one such subcommand; its methods are the binary-boundary checks
 //! both suites run against it. Included by each suite through `#[path]`, next to its own
 //! `mod common;`.

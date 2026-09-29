@@ -815,8 +815,11 @@ fn close_landed_units(
             Ok(ev.with_meta(runscope::META_RUN_ID, &run_id))
         })
         .collect::<Result<Vec<Event>, serde_json::Error>>()?;
-    let done =
-        rigger::ingest::append_and_fold_batch(store, Some(graph), conductor::STREAM, &closing)?;
+    let done = rigger::ingest::folding_into(store, Some(graph), &stderr_line).append_and_fold(
+        conductor::STREAM,
+        ExpectedRevision::Any,
+        &closing,
+    )?;
     let lost = fold_loss_clause(&done.fold);
     for (unit, tip) in &landed {
         println!(

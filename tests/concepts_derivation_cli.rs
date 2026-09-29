@@ -3,7 +3,7 @@
 //! `src/concepts.rs` feed a hand-built `Graph` to `derive` / `events` and hand-apply the resulting
 //! events into a `Projector`. So none of them exercises the actual subcommand: its dispatch, its
 //! argument parsing, its store bootstrap, the real `whole()` read it derives over, or the real
-//! `append_and_fold_batch` seam that appends the `ConceptDerived` / `ConceptRealized` events to the
+//! `FoldingStore::append_and_fold` seam that appends the `ConceptDerived` / `ConceptRealized` events to the
 //! run log AND folds them into live `REALIZES` edges under the local `.rigger/`. This file guards
 //! exactly that binary boundary, over the shipped executable and the public projection surface:
 //!
@@ -23,7 +23,7 @@
 //!  - DETERMINISM through the binary: re-running a grain reproduces the byte-identical live layer.
 //!
 //! The intent layer is built from the ALWAYS-COMPILED design-intent folds (spec 29b), and the
-//! derivation, the fold, and `append_and_fold_batch` are all always-compiled, so every test here
+//! derivation, the fold, and `FoldingStore::append_and_fold` are all always-compiled, so every test here
 //! runs identically in BOTH feature lanes.
 
 use std::path::Path;
@@ -37,8 +37,8 @@ use rigger::contextgraph::{
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::Event;
-use rigger::ingest::append_and_fold_batch;
+use rigger::eventstore::{Event, ExpectedRevision};
+use rigger::ingest::folding_into;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
@@ -107,7 +107,7 @@ const CONCEPTS: LayerCli = LayerCli {
 };
 
 /// Seed the canonical spec-54 INTENT layer into the fixture's REAL store via the exact production
-/// seam (`append_and_fold_batch` on the run stream): it appends the design-intent events to
+/// seam (`FoldingStore::append_and_fold` on the run stream): it appends the design-intent events to
 /// `.rigger/events.db` and folds them into `.rigger/graph.db`.
 ///
 /// - Concept A ("The knowledge graph"): a `design-doc` SPECIFIES four files across `src/graph` and
@@ -159,20 +159,16 @@ fn seed_intent(root: &Path) {
     // `decision` node is not an intent-doc, so the layer must EXCLUDE it.
     events.push(decision_noise("d-noise", "src/graph/store.rs"));
 
-    let done = append_and_fold_batch(
-        &store,
-        Some(&graph as &dyn Projection),
-        conductor::STREAM,
-        &events,
-    )
-    .expect("seed the intent layer through the real append-and-fold seam");
+    let done = folding_into(&store, Some(&graph as &dyn Projection), &|_| {})
+        .append_and_fold(conductor::STREAM, ExpectedRevision::Any, &events)
+        .expect("seed the intent layer through the real append-and-fold seam");
     assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
 }
 
 #[test]
 fn the_subcommand_records_a_live_concept_layer_over_the_real_store() {
     // Drive the built binary end-to-end: it reads the seeded intent layer via `whole()`, derives
-    // concepts, and records them THROUGH `append_and_fold_batch` into live `REALIZES` edges - the
+    // concepts, and records them THROUGH `FoldingStore::append_and_fold` into live `REALIZES` edges - the
     // seam the inside-out tests (which hand-apply events) never exercise.
     let dir = CONCEPTS.project();
     let root = dir.path();

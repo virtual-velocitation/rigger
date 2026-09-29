@@ -490,7 +490,7 @@ fn locate_definition_extent(
 /// extraction the walk lowered to nothing - reaches no suppression decision here at all and retires
 /// nothing, whereas a path the tree has DELETED that the persisted index still lists IS handed over
 /// and does reach one. And a batch whose append lands but whose fold does not leaves the log right
-/// and the graph behind (`append_and_fold_batch` folds best-effort by contract). What a re-emitted batch RETIRES is the FOLD's doing and reaches the code half only:
+/// and the graph behind (`FoldingStore::append_and_fold` folds best-effort by contract). What a re-emitted batch RETIRES is the FOLD's doing and reaches the code half only:
 /// a code batch carries a `fresh` head whose 29a mechanism supersedes that file's prior structural
 /// edges, while a design batch sets no `fresh` head, so re-emitting one adds edges without retiring
 /// the ones its earlier generation left live. The light lane compiles no extraction pass, so
@@ -556,6 +556,7 @@ fn ingest_tree(
     // The first fold this build could not make, if any: a lost fold marks a current graph owed,
     // so every batch after it is refused for the same debt - the first names the cause.
     let mut fold = contextgraph::Fold::Folded;
+    let folding = rigger::ingest::folding_into(store, Some(graph), &stderr_line);
     rigger::ingest::sink_walked_batches(
         |sink| {
             rigger::ingest::ingest_project_batched(root, sink);
@@ -568,12 +569,7 @@ fn ingest_tree(
                 .iter()
                 .map(|(key, ev)| rigger::ingest::keyed_derived_event((*ev).clone(), key))
                 .collect();
-            let done = rigger::ingest::append_and_fold_batch(
-                store,
-                Some(graph),
-                conductor::STREAM,
-                &batch,
-            )?;
+            let done = folding.append_and_fold(conductor::STREAM, ExpectedRevision::Any, &batch)?;
             appended += batch.len();
             if fold == contextgraph::Fold::Folded {
                 fold = done.fold;
@@ -677,10 +673,9 @@ fn run_graph_pass(
     )?;
 
     let (events, summary) = derive(&graph.whole()?, resolution);
-    let done = rigger::ingest::append_and_fold_batch(
-        &store,
-        Some(&graph as &dyn Projection),
+    let done = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line).append_and_fold(
         conductor::STREAM,
+        ExpectedRevision::Any,
         &events,
     )?;
     println!("graph {verb}: {summary}{}", fold_loss_clause(&done.fold));
