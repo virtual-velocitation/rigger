@@ -254,18 +254,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-fda12b1e9e42",
+    "id": "dup-bda92b90044e",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "append_and_fold_batch",
-        "content_hash": "77c882820de86e0e"
+        "content_hash": "c9f4606c73133e8f"
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
         "name": "append_and_fold_batch",
-        "content_hash": "fe5199f2d9919154"
+        "content_hash": "87b781209ab35f41"
       }
     ],
     "proposed_home": "one shared `append_and_fold_batch` helper (e.g. relocated into `tests/common`) rather than each file defining its own",

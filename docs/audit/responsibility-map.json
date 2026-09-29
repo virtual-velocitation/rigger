@@ -309,7 +309,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "37ecaa753903f446"
+    "content_hash": "e290f1a03e8069cf"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -357,7 +357,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "618012020c993ab0"
+    "content_hash": "337ab2e5afb06bf5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
