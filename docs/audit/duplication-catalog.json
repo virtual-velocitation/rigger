@@ -5536,7 +5536,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0c5269462bb9",
+    "id": "dup-664997a941f1",
     "classification": "semantic",
     "sites": [
       {
@@ -5697,7 +5697,7 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "c9acaf03cef6d3a0"
+        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
