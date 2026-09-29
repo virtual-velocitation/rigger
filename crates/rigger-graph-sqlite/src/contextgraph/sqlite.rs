@@ -260,7 +260,8 @@ impl Projector {
     }
 
     /// Pay the rebuild the `graph.db` at `path` owes (spec 101), and report whether there was one
-    /// to pay - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
+    /// to pay - `None` when there was not, else how many events it passed over because the fold
+    /// rejects their payload (see `fold_source`) - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
     /// read of its ledger against the log), or because the file itself records an older fold rule
     /// or carries the [`owed_mark`] a failed fold left, both read again here; the mark is dropped
     /// once the rebuilt file is in place. The rebuild folds `source` - the log's live selection, whose cost is bounded by the
@@ -292,8 +293,9 @@ impl Projector {
         owed: bool,
         source: &mut RebuildSource,
         progress: &mut dyn FnMut(RebuildProgress),
-    ) -> Result<bool, Error> {
+    ) -> Result<Option<usize>, Error> {
         let mut live = open_connection(path).map_err(be)?;
+        let mut passed_over = 0;
         let shadow_path = format!("{path}.rebuild");
         let mark = owed_mark(path);
         if owed || !owed_by_file(&live, &mark)?.is_empty() {
@@ -303,7 +305,7 @@ impl Projector {
                 .map_err(be)?;
             schema(&shadow, project)?;
             shadow.execute_batch(REBUILD_CURSOR).map_err(be)?;
-            fold_source(&mut shadow, project, source, progress)?;
+            passed_over += fold_source(&mut shadow, project, source, progress)?;
             shadow
                 .pragma_update(None, "user_version", PROJECTION_VERSION)
                 .map_err(be)?;
@@ -318,17 +320,17 @@ impl Projector {
                 std::fs::remove_file(mark).map_err(be)?;
             }
         } else if !rebuild_tail_owed(&live)? {
-            return Ok(false);
+            return Ok(None);
         }
         // Closed above, so its journal is gone with it; after a crash past the copy it is the
         // leftover the tail's rerun clears.
         if Path::new(&shadow_path).exists() {
             std::fs::remove_file(&shadow_path).map_err(be)?;
         }
-        fold_source(&mut live, project, source, &mut |_| {})?;
+        passed_over += fold_source(&mut live, project, source, &mut |_| {})?;
         live.execute_batch("DROP TABLE rebuild_cursor;")
             .map_err(be)?;
-        Ok(true)
+        Ok(Some(passed_over))
     }
 
     /// Why this file says it owes its rebuild (spec 101), each cause it carries in order - it
@@ -1008,30 +1010,37 @@ fn layered_call_walk(
 
 /// Fold what `source` hands after `conn`'s [`REBUILD_CURSOR`], one committed transaction per
 /// batch that also records the batch's last position as the cursor, reporting each to
-/// `progress`. Each event folds exactly as [`Projection::apply`] folds it and one at a time, so an
-/// event whose fold fails (a malformed payload the log holds) is skipped and the rest still fold -
-/// where the live fold rolls its whole batch back and marks the file owed, the rebuild is what pays
-/// that debt, so it passes over the one event no fold can hold rather than owing it again: its
-/// position is recorded in the `applied` ledger all the same, so the rebuilt file does not miss
-/// it and the next `rigger setup` does not rebuild for it again. One the file already folded is
-/// passed over by the fold's per-position guard.
+/// `progress`, and answer how many events it passed over. Each event folds exactly as
+/// [`Projection::apply`] folds it and one at a time, so an event whose payload the fold rejects
+/// ([`super::check_fold_payload`] - deterministic, so no fold will ever hold it) is passed over and
+/// the rest still fold: where the live fold rolls its whole batch back and marks the file owed, the
+/// rebuild is what pays that debt, so its position is recorded in the `applied` ledger all the
+/// same, and the rebuilt file does not miss it and the next `rigger setup` does not rebuild for it
+/// again. Any other failure is the store's, not the payload's: it propagates with the batch rolled
+/// back, so nothing records the event folded and the next rebuild resumes from the cursor and
+/// folds it. One the file already folded is passed over by the fold's per-position guard.
 fn fold_source(
     conn: &mut Connection,
     project: &str,
     source: &mut RebuildSource,
     progress: &mut dyn FnMut(RebuildProgress),
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     let start: i64 = conn
         .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
         .map_err(be)?;
     let mut folded = 0;
+    let mut passed_over = 0;
     source(start as Position, &mut |events, head| {
         let tx = conn.transaction().map_err(be)?;
         for e in events {
             tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-            if fold_new(&tx, std::slice::from_ref(e), project).is_err() {
+            if let Err(failed) = fold_new(&tx, std::slice::from_ref(e), project) {
+                if super::check_fold_payload(&e.type_, &e.data).is_ok() {
+                    return Err(failed);
+                }
                 tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
                 record_applied(&tx, e.position)?;
+                passed_over += 1;
             }
             tx.execute_batch("RELEASE fold_event").map_err(be)?;
         }
@@ -1047,7 +1056,8 @@ fn fold_source(
             folded,
         });
         Ok(())
-    })
+    })?;
+    Ok(passed_over)
 }
 
 /// Whether the file behind `conn` was swapped in by a [`Projector::rebuild`] that has not yet
@@ -3963,17 +3973,7 @@ mod tests {
             &mut |_| {},
         )
         .unwrap();
-        assert!(!again, "a paid rebuild does not run again");
-    }
-
-    /// A `DecisionMade` at `position` for `id`, governing `file`.
-    fn decision_at(id: &str, file: &str, position: u64) -> Event {
-        let payload = serde_json::json!({
-            "id": id, "summary": "x", "governs": [file], "supersedes": ""
-        });
-        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
-        e.position = position;
-        e
+        assert_eq!(again, None, "a paid rebuild does not run again");
     }
 
     /// An event of `type_` at `position` whose payload is `data`.
@@ -4098,9 +4098,10 @@ mod tests {
             (
                 Some(0),
                 vec![0, 1, 3],
-                vec!["a.rs".to_string(), "b.rs".to_string(), "c.rs".to_string()]
+                vec!["b.rs".to_string(), "a.rs".to_string(), "c.rs".to_string()]
             ),
-            "the next rebuild resumes past the committed batch and folds the event the error lost"
+            "the next rebuild resumes past the committed batch and folds the event the error lost \
+             (the governing edges listed by decision id: d-boom, d1, d3)"
         );
     }
 
@@ -4123,6 +4124,7 @@ mod tests {
             &mut |_| {},
         )
         .unwrap()
+        .is_some()
     }
 
     /// A lost fold owed by the `graph.db` at `path`, then paid: a fresh projector on the file

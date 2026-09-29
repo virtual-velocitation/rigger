@@ -67,10 +67,12 @@ struct ReviewFinding {
 
 /// Checks that `data` has the payload shape the fold reads for an event of type `type_`, by
 /// deserializing it into the fold's own payload type: the one shape definition, so the check can
-/// never drift from what the fold applies. An event whose payload fails here would sit in the log
-/// unfolded (the fold skips it and never records its position), so an emit surface calls this
-/// BEFORE appending. The error names the offending field and the shape expected; a type whose
-/// payload this module does not define passes unchecked.
+/// never drift from what the fold applies. It answers for every type whose payload the fold reads,
+/// so it is the one judge of a payload the fold deterministically rejects: an emit surface calls it
+/// BEFORE appending, so such an event never reaches the log through it, and a rebuild passes over
+/// exactly the events it rejects - any other fold failure is the store's, not the payload's. The
+/// error names the offending field and the shape expected; a type whose payload the fold does not
+/// read passes unchecked.
 pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
     fn shape<T: DeserializeOwned>(type_: &str, data: &[u8]) -> Result<(), String> {
         serde_path_to_error::deserialize::<_, T>(&mut serde_json::Deserializer::from_slice(data))
@@ -87,6 +89,59 @@ pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
         TYPE_DECISION_MADE => shape::<DecisionMade>(type_, data),
         TYPE_LESSON_LEARNED => shape::<LessonLearned>(type_, data),
         TYPE_REVIEW_FINDING => shape::<ReviewFinding>(type_, data),
+        TYPE_UNIT_INTEGRATED => shape::<UnitIntegrated>(type_, data),
+        TYPE_CODE_ENTITY_EXTRACTED => shape::<CodeEntityExtracted>(type_, data),
+        TYPE_EDGE_INFERRED => shape::<EdgeInferred>(type_, data),
+        TYPE_DOC_CONCEPT_EXTRACTED => shape::<DocConceptExtracted>(type_, data),
+        TYPE_DOC_LINK_EXTRACTED => shape::<DocLinkExtracted>(type_, data),
+        TYPE_ALIAS_DEFINED => shape::<AliasDefined>(type_, data),
+        TYPE_ALIAS_UNRESOLVED => shape::<AliasUnresolved>(type_, data),
+        TYPE_COMMUNITY_ASSIGNED => shape::<CommunityAssigned>(type_, data),
+        TYPE_CONCEPT_DERIVED => shape::<ConceptDerived>(type_, data),
+        TYPE_CONCEPT_REALIZED => shape::<ConceptRealized>(type_, data),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every type whose payload the fold reads has its payload judged - so a rebuild passes over
+    /// exactly the events the fold rejects - and a type whose payload the fold does not read
+    /// passes unchecked.
+    #[test]
+    fn every_type_whose_payload_the_fold_reads_is_judged_and_no_other() {
+        let judged = [
+            TYPE_DECISION_MADE,
+            TYPE_LESSON_LEARNED,
+            TYPE_REVIEW_FINDING,
+            TYPE_UNIT_INTEGRATED,
+            TYPE_CODE_ENTITY_EXTRACTED,
+            TYPE_EDGE_INFERRED,
+            TYPE_DOC_CONCEPT_EXTRACTED,
+            TYPE_DOC_LINK_EXTRACTED,
+            TYPE_ALIAS_DEFINED,
+            TYPE_ALIAS_UNRESOLVED,
+            TYPE_COMMUNITY_ASSIGNED,
+            TYPE_CONCEPT_DERIVED,
+            TYPE_CONCEPT_REALIZED,
+        ];
+        assert_eq!(
+            judged
+                .iter()
+                .map(|t| check_fold_payload(t, b"not json"))
+                .collect::<Vec<_>>(),
+            judged
+                .iter()
+                .map(|t| Err(format!("{t} payload: expected ident at line 1 column 2")))
+                .collect::<Vec<_>>(),
+            "each is refused, naming its type"
+        );
+        assert_eq!(
+            [TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, "Unheard"].map(|t| check_fold_payload(t, b"x")),
+            [Ok(()), Ok(()), Ok(())],
+            "a type whose payload the fold does not read passes unchecked"
+        );
     }
 }

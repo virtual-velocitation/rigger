@@ -899,8 +899,8 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
 
 /// Read why the `graph.db` at `graph_db` owes its rebuild - its own records, and its ledger
 /// against the positions `live` streams ([`Projector::owed_against`]) - say so naming each cause,
-/// and pay it by rebuilding from `source`, printing how far along it is; report whether it
-/// rebuilt.
+/// and pay it by rebuilding from `source`, printing how far along it is and how many events it
+/// passed over because the fold rejects their payload; report whether it rebuilt.
 fn pay_owed_rebuild(
     graph_db: &str,
     project: &str,
@@ -921,10 +921,16 @@ fn pay_owed_rebuild(
             println!("{line}");
         }
     })?;
-    if rebuilt {
+    if let Some(passed_over) = rebuilt {
         println!("rebuilt graph.db from the event log");
+        if passed_over > 0 {
+            println!(
+                "passed over {passed_over} event(s) whose payload the fold rejects, recorded as \
+                 folded"
+            );
+        }
     }
-    Ok(rebuilt)
+    Ok(rebuilt.is_some())
 }
 
 /// The progress line a graph rebuild prints at `at`, if any: one each time a batch carries it into
