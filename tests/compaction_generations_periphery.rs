@@ -28,6 +28,7 @@ mod common;
 
 use common::cli::keyed;
 use common::cli::nanos;
+use common::cli::read_run_events;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
@@ -3825,6 +3826,13 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
     );
 }
 
+/// Run `rigger emit DecisionMade` in `root` for a decision `id` governing `src/f.rs`, returning
+/// its stdout, its stderr and whether it exited successfully.
+fn emit_decision(root: &Path, id: &str) -> (String, String, bool) {
+    let args = format!(r#"{{"id":"{id}","summary":"s","governs":["src/f.rs"],"supersedes":""}}"#);
+    run_rigger(root, &["emit", "DecisionMade", &args])
+}
+
 /// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent
 /// runs `rigger emit`, then the event is on the log and the emit reports its position, but it does
 /// not claim to have folded an event its fold failed to write: the graph is current, so no
@@ -3833,10 +3841,7 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
 fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
     let dir = temp_store_project();
     let root = dir.path();
-    let decision = |id: &str| {
-        format!(r#"{{"id":"{id}","summary":"s","governs":["src/f.rs"],"supersedes":""}}"#)
-    };
-    let (out, err, ok) = run_rigger(root, &["emit", "DecisionMade", &decision("d-first")]);
+    let (out, err, ok) = emit_decision(root, "d-first");
     assert!(
         ok && out.ends_with("and folded it into the context graph\n"),
         "an emit into an unlocked graph folds; stdout: {out} stderr: {err}"
@@ -3845,13 +3850,9 @@ fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
     let holder = rusqlite::Connection::open(&graph_db).unwrap();
     holder.execute_batch("BEGIN IMMEDIATE").unwrap();
 
-    let (out, err, ok) = run_rigger(root, &["emit", "DecisionMade", &decision("d-locked")]);
+    let (out, err, ok) = emit_decision(root, "d-locked");
     holder.execute_batch("ROLLBACK").unwrap();
-    let project = run_stream_identity(root);
-    let log = run_events(
-        &Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap(),
-        &project,
-    );
+    let log = read_run_events(root);
     let last = log.last().unwrap();
     assert_eq!(
         (log.len(), last.type_.as_str()),
@@ -3862,11 +3863,61 @@ fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
         !applied(&graph_db, last.position),
         "the locked fold wrote nothing"
     );
+    assert_eq!(
+        (ok, out),
+        (
+            true,
+            format!(
+                "emitted DecisionMade (position {}); not folded into the context graph: \
+                 graph: database is locked\n",
+                last.position
+            )
+        ),
+        "the emit reports the position and the fold it could not make, with the reason; \
+         stderr: {err}"
+    );
+}
+
+/// Given a `graph.db` that cannot be opened as a graph (its bytes are not a database), when an
+/// agent runs `rigger emit`, then the emit still succeeds with its event on the log and reports
+/// the fold it could not make, with the reason, and leaves the unreadable file exactly as it was:
+/// an event already durably appended is never reported as a failed emit.
+#[test]
+fn an_emit_into_a_graph_it_cannot_open_is_on_the_log_and_reported_not_folded() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
     assert!(
-        ok && out.starts_with(&format!(
-            "emitted DecisionMade (position {})",
-            last.position
-        )) && !out.contains("and folded it into the context graph"),
-        "the emit reports the position and does not claim the fold; stdout: {out} stderr: {err}"
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    let garbage = b"this file is not a sqlite database, only text standing in for one".repeat(64);
+    std::fs::write(&graph_db, &garbage).unwrap();
+
+    let (out, err, ok) = emit_decision(root, "d-unopenable");
+    let log = read_run_events(root);
+    let last = log.last().unwrap();
+    assert_eq!(
+        (log.len(), last.type_.as_str()),
+        (2, "DecisionMade"),
+        "the event is on the log"
+    );
+    assert_eq!(
+        (ok, out),
+        (
+            true,
+            format!(
+                "emitted DecisionMade (position {}); not folded into the context graph: \
+                 graph: file is not a database\n",
+                last.position
+            )
+        ),
+        "the emit succeeds and reports the fold it could not make, with the reason; stderr: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&graph_db).unwrap(),
+        garbage,
+        "the unopenable graph.db is left exactly as it was"
     );
 }
