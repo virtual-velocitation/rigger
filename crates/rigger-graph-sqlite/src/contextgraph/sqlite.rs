@@ -4247,6 +4247,96 @@ mod tests {
             .unwrap()
     }
 
+    /// A cold rebuild yields the graph `rigger reset --runs` leaves, never a larger one: before its
+    /// swap it applies the run-closure prune to the shadow, re-deriving the drop set and the edge
+    /// boundary from the run attribution it gathered in the same ordered pass - a closed run's and
+    /// a pre-boundary decision or finding is dropped, a lesson and an id the active run reuses are
+    /// kept - and a rebuild interrupted after its first batch resumes to the very same graph.
+    #[test]
+    fn a_rebuild_applies_the_run_closure_prune_before_its_swap_even_when_resumed() {
+        use rigger_domain::run::{superseded_edge_boundary, superseded_graph_nodes};
+        let run_started = |run: &str, at| {
+            event_at(
+                rigger_domain::run::TYPE_RUN_STARTED,
+                format!(r#"{{"run":"{run}","spec":"s.md"}}"#).as_bytes(),
+                at,
+            )
+        };
+        let log = [
+            decision_at("d-pre", "p.rs", 1),
+            run_started("r1", 2),
+            decision_at("d-dead", "a.rs", 3),
+            event_at(
+                TYPE_REVIEW_FINDING,
+                br#"{"id":"f-dead","about":["a.rs"]}"#,
+                4,
+            ),
+            decision_at("shared", "s.rs", 5),
+            event_at(TYPE_LESSON_LEARNED, br#"{"id":"l1","about":["a.rs"]}"#, 6),
+            run_started("r2", 7),
+            decision_at("d-live", "b.rs", 8),
+            decision_at("shared", "s.rs", 9),
+        ];
+        let provenance = |p: &Projector| -> Vec<String> {
+            let mut ids: Vec<String> = p
+                .whole()
+                .unwrap()
+                .nodes
+                .into_iter()
+                .filter(|n| [KIND_DECISION, KIND_FINDING, KIND_LESSON].contains(&n.kind.as_str()))
+                .map(|n| n.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+        let live = Projector::open(":memory:", "test").unwrap();
+        crate::test_support::folds(&live, &log);
+        live.prune(
+            &superseded_graph_nodes(&log),
+            superseded_edge_boundary(&log),
+        )
+        .unwrap();
+        let expected = vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()];
+        assert_eq!(provenance(&live), expected, "what reset --runs leaves");
+
+        let dir = tempfile::tempdir().unwrap();
+        let whole = dir.path().join("whole.db");
+        let whole = whole.to_str().unwrap();
+        drop(Projector::open(whole, "test").unwrap());
+        rebuild_in_batches(whole, &log, 2, &mut Vec::new()).unwrap();
+
+        let resumed = dir.path().join("resumed.db");
+        let resumed = resumed.to_str().unwrap();
+        drop(Projector::open(resumed, "test").unwrap());
+        let interrupted = Projector::rebuild(
+            resumed,
+            "test",
+            true,
+            &mut |after, sink| {
+                let first = stream_past(&log, after, 2, sink);
+                first.and(Err(Error("interrupted after the first batch".to_string())))
+            },
+            &mut |_| {},
+        );
+        assert!(interrupted.is_err(), "the first rebuild is interrupted");
+        rebuild_in_batches(resumed, &log, 2, &mut Vec::new()).unwrap();
+
+        assert_eq!(
+            (
+                provenance(&Projector::open(whole, "test").unwrap()),
+                provenance(&Projector::open(resumed, "test").unwrap()),
+                serde_json::to_string(&Projector::open(whole, "test").unwrap().whole().unwrap())
+                    .unwrap(),
+            ),
+            (
+                expected.clone(),
+                expected,
+                serde_json::to_string(&live.whole().unwrap()).unwrap(),
+            ),
+            "the rebuilt graph, whole or resumed, holds what reset --runs leaves, node and edge"
+        );
+    }
+
     /// A `DecisionMade` `id` governing `file` at log position `position`.
     fn decision_at(id: &str, file: &str, position: u64) -> Event {
         let payload = serde_json::json!({

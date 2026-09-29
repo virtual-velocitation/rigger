@@ -5175,3 +5175,102 @@ fn a_failed_fold_into_an_in_memory_graph_marks_nothing_owed_and_the_next_batch_f
     good.position = 2;
     common::fixtures::folds(&graph, &[good]);
 }
+
+/// The decision, finding and lesson node ids the `graph.db` of `root` holds, sorted.
+fn provenance_nodes(root: &Path) -> Vec<String> {
+    use rigger::contextgraph::Projection;
+    let graph = rigger::contextgraph::sqlite::Projector::open(
+        rigger_file(root, "graph.db").to_str().unwrap(),
+        &run_stream_identity(root),
+    )
+    .unwrap();
+    let mut ids: Vec<String> = graph
+        .whole()
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|n| ["decision", "finding", "lesson"].contains(&n.kind.as_str()))
+        .map(|n| n.id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Given a log holding a closed run's decision and finding, a lesson, and an active run that
+/// reuses one of the closed run's ids, whose closed-run nodes `rigger reset --runs` pruned from
+/// the live graph, when the operator's `graph.db` is replaced by an empty one and `rigger setup`
+/// cold-rebuilds it from the log, then the rebuilt graph holds exactly the decision, finding and lesson nodes the
+/// live graph held - never the pruned ones.
+#[test]
+fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graphs_nodes() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let decision = |id: &str| {
+        format!(r#"{{"id":"{id}","summary":"s","governs":["src/f.rs"],"supersedes":""}}"#)
+    };
+    let (d_dead, shared, d_live) = (decision("d-dead"), decision("shared"), decision("d-live"));
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok,
+        "setup mints the project identity; stdout: {out} stderr: {err}"
+    );
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "LessonLearned",
+            r#"{"id":"l1","summary":"s","about":["src/f.rs"]}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stdout: {out} stderr: {err}"
+    );
+    common::cli::seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","spec":"s.md"}"#),
+            ("DecisionMade", &d_dead),
+            ("ReviewFinding", r#"{"id":"f-dead","about":["src/f.rs"]}"#),
+            ("DecisionMade", &shared),
+            ("RunStarted", r#"{"run":"r2","spec":"s.md"}"#),
+            ("DecisionMade", &d_live),
+            ("DecisionMade", &shared),
+        ],
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok,
+        "the first setup folds the seeded log; stdout: {out} stderr: {err}"
+    );
+    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert!(
+        ok,
+        "reset --runs prunes the closed run; stdout: {out} stderr: {err}"
+    );
+    let live = provenance_nodes(root);
+
+    let graph_db = rigger_file(root, "graph.db");
+    std::fs::remove_file(&graph_db).unwrap();
+    drop(
+        rigger::contextgraph::sqlite::Projector::open(
+            graph_db.to_str().unwrap(),
+            &run_stream_identity(root),
+        )
+        .unwrap(),
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok,
+        "setup rebuilds the lost graph; stdout: {out} stderr: {err}"
+    );
+    assert_eq!(
+        (live, provenance_nodes(root)),
+        (
+            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
+            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
+        ),
+        "the rebuilt graph holds the live graph's decision, finding and lesson nodes, never the \
+         pruned ones; stdout: {out}"
+    );
+}

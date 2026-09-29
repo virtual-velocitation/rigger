@@ -349,6 +349,71 @@ impl RunStart {
 
 #[cfg(test)]
 mod tests {
+    /// The run-closure rule reads only the types [`super::RUN_CLOSURE_TYPES`] names: over a log
+    /// mixing them with every other kind of event, it answers exactly what it answers over that
+    /// log's events of those types alone - so a rebuild that keeps only those types while it folds
+    /// derives the drop set and the edge boundary `rigger reset --runs` derives from the whole log.
+    #[test]
+    fn the_run_closure_rule_reads_only_the_run_closure_types() {
+        use super::*;
+        let at = |t: &str, body: &str, secs: u64| {
+            let mut e = Event::new(t, body.as_bytes().to_vec());
+            e.valid_from = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+            e
+        };
+        let decision =
+            |id: &str| format!(r#"{{"id":"{id}","summary":"s","governs":[],"supersedes":""}}"#);
+        let log = vec![
+            at(TYPE_DECISION_MADE, &decision("d-pre"), 1),
+            at("UnitStarted", r#"{"id":"u1"}"#, 2),
+            at(TYPE_RUN_STARTED, r#"{"run":"r1","spec":"s.md"}"#, 3),
+            at(TYPE_DECISION_MADE, &decision("d-dead"), 4),
+            at(TYPE_REVIEW_FINDING, r#"{"id":"f-dead","about":[]}"#, 5),
+            at(TYPE_DECISION_MADE, &decision("shared"), 6),
+            at(TYPE_LESSON_LEARNED, r#"{"id":"l1","about":[]}"#, 7),
+            at("EdgeInferred", r#"{"file":"a.rs","name":"f"}"#, 8),
+            at(TYPE_RUN_STARTED, r#"{"run":"r2","spec":"s.md"}"#, 9),
+            at("UnitIntegrated", r#"{"id":"u1"}"#, 10),
+            at(TYPE_DECISION_MADE, &decision("d-live"), 11),
+            at(TYPE_DECISION_MADE, &decision("shared"), 12),
+        ];
+        let kept: Vec<Event> = log
+            .iter()
+            .filter(|e| RUN_CLOSURE_TYPES.contains(&e.type_.as_str()))
+            .cloned()
+            .collect();
+        let rule = |events: &[Event]| {
+            (
+                superseded_graph_nodes(events),
+                superseded_edge_boundary(events),
+            )
+        };
+        assert_eq!(
+            (rule(&log), rule(&kept), kept.len()),
+            (
+                (
+                    vec![
+                        "d-dead".to_string(),
+                        "d-pre".to_string(),
+                        "f-dead".to_string()
+                    ],
+                    Some(9_000_000_000)
+                ),
+                (
+                    vec![
+                        "d-dead".to_string(),
+                        "d-pre".to_string(),
+                        "f-dead".to_string()
+                    ],
+                    Some(9_000_000_000)
+                ),
+                8
+            ),
+            "the closed runs' and pre-boundary nodes drop, the reused id and the lesson stay, and \
+             the kept types alone answer the same"
+        );
+    }
+
     use super::*;
     use crate::test_support::ev;
 
