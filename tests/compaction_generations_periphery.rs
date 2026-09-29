@@ -2448,21 +2448,20 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
                     stream: run(),
                     handed: n,
                 },
-                CountedRead::Stream {
+                CountedRead::StreamBatched {
                     stream: run(),
                     from: 0,
-                    forward: true,
-                    materialized: n,
+                    batches: [vec![2; n / 2], vec![1; n % 2]].concat(),
                 },
-                CountedRead::Stream {
+                CountedRead::StreamBatched {
                     stream: run(),
                     from: n as i64,
-                    forward: true,
-                    materialized: 1,
+                    batches: vec![1],
                 },
             ]
         ),
-        "positions alone, then each event read once across the fold and its tail"
+        "positions alone, then each event read once across the fold and its tail, no read \
+         handing more than the batch bound of two"
     );
     assert_eq!(
         serde_json::to_string(

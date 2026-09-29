@@ -32,6 +32,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     last_position_answers_the_newest_boundary_without_reading_the_stream(store);
     typed_read_hands_back_only_the_selected_types_from_a_revision(store);
     positions_read_hands_every_position_of_the_stream_in_order_in_batches(store);
+    batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_head(store);
     latest_in_group_answers_the_newest_member_without_reading_the_stream(store);
     a_grouped_append_under_an_unmet_expectation_records_nothing(store);
     latest_generation_answers_what_the_reference_answers_on_the_same_log(store);
@@ -253,6 +254,85 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
         ],
         "the change moves a.rs to h2, the revert moves b.rs back to h1, and a never-recorded \
          identity answers none"
+    );
+}
+
+/// THE BATCHED READ (spec 101): `read_stream_batched` hands the sink the events of THAT stream from
+/// revision `from` - exactly what a full read of it from `from` holds, in position order - in
+/// batches of at most `batch`, each with the position of the stream's last event, and nothing of
+/// another stream; a stream the store does not hold, or a `from` past its end, hands nothing, and
+/// a sink's error ends the read with that error.
+fn batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_head(
+    store: &dyn EventStore,
+) {
+    let at = |t: &str| Event::new(t, t.as_bytes().to_vec());
+    for (stream, t) in [
+        ("c-batched", "A"),
+        ("c-batched-sibling", "S"),
+        ("c-batched", "B"),
+        ("c-batched", "C"),
+        ("c-batched-sibling", "S"),
+        ("c-batched", "D"),
+        ("c-batched", "E"),
+        ("c-batched", "F"),
+    ] {
+        store
+            .append(stream, ExpectedRevision::Any, &[at(t)])
+            .expect("the fixture stream appends");
+    }
+    let held = store
+        .read_stream("c-batched", 0, Direction::Forward)
+        .expect("the stream reads");
+    let head = held.last().unwrap().position;
+    let batches = |stream: &str, from| -> Vec<(Vec<(u64, String, Vec<u8>)>, u64)> {
+        let mut out = Vec::new();
+        store
+            .read_stream_batched(stream, from, 2, &mut |events, head| {
+                out.push((
+                    events
+                        .iter()
+                        .map(|e| (e.position, e.type_.clone(), e.data.clone()))
+                        .collect(),
+                    head,
+                ));
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("the batched read must succeed: {e}"));
+        out
+    };
+    let full = |range: std::ops::Range<usize>| -> Vec<(u64, String, Vec<u8>)> {
+        held[range]
+            .iter()
+            .map(|e| (e.position, e.type_.clone(), e.data.clone()))
+            .collect()
+    };
+    assert_eq!(
+        batches("c-batched", 1),
+        vec![(full(1..3), head), (full(3..5), head), (full(5..6), head)],
+        "the stream from revision 1, in order, in batches of at most two, each with the head"
+    );
+    assert_eq!(
+        batches("c-batched", 0).len(),
+        3,
+        "from revision 0 the six events hand in three batches of two"
+    );
+    assert_eq!(
+        (
+            batches("c-batched", 6),
+            batches("c-batched-never-written", 0)
+        ),
+        (Vec::new(), Vec::new()),
+        "a from past the end, and a stream the store does not hold, hand nothing"
+    );
+    let mut calls = 0;
+    let refused = store.read_stream_batched("c-batched", 0, 2, &mut |_, _| {
+        calls += 1;
+        Err(Error::Backend("the sink refused".to_string()))
+    });
+    assert_eq!(
+        (refused.map_err(|e| e.to_string()), calls),
+        (Err("event store: the sink refused".to_string()), 1),
+        "a sink's error ends the read with that error"
     );
 }
 

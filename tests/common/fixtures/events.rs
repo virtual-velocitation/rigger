@@ -317,6 +317,13 @@ pub enum CountedRead {
         stream: String,
         handed: usize,
     },
+    /// A batched stream read: `batches` is how many events each batch it handed the caller
+    /// held, in order - so a test pins both the total and the bound on any one batch.
+    StreamBatched {
+        stream: String,
+        from: Revision,
+        batches: Vec<usize>,
+    },
     /// A group lookup: it hands back no event, only the newest member's position, type and
     /// metadata.
     LatestInGroup {
@@ -343,6 +350,7 @@ impl CountedRead {
             | CountedRead::Typed { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
+            CountedRead::StreamBatched { batches, .. } => batches.iter().sum(),
             CountedRead::LastPosition { .. }
             | CountedRead::StreamPositions { .. }
             | CountedRead::LatestInGroup { .. } => 0,
@@ -360,12 +368,13 @@ impl CountedRead {
             | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
             CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
             CountedRead::StreamPositions { handed, .. } => *handed = 0,
+            CountedRead::StreamBatched { batches, .. } => batches.clear(),
         }
         read
     }
 
-    /// Add `n` handed-back events - or positions, for a positions read - to this call's count; a
-    /// lookup hands back none.
+    /// Add `n` handed-back events - or positions, for a positions read, or one batch of `n`, for a
+    /// batched read - to this call's count; a lookup hands back none.
     fn add(&mut self, n: usize) {
         match self {
             CountedRead::Stream { materialized, .. }
@@ -374,6 +383,7 @@ impl CountedRead {
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
             CountedRead::StreamPositions { handed, .. } => *handed += n,
+            CountedRead::StreamBatched { batches, .. } => batches.push(n),
             CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
         }
     }
