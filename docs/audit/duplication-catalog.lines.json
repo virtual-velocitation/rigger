@@ -104,8 +104,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4484,
-        "end_line": 4489
+        "start_line": 4521,
+        "end_line": 4526
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -2889,13 +2889,13 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4076,
-        "end_line": 4076
+        "start_line": 4113,
+        "end_line": 4113
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4399,
-        "end_line": 4399
+        "start_line": 4436,
+        "end_line": 4436
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -5339,28 +5339,28 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3734,
-        "end_line": 3734
+        "start_line": 3771,
+        "end_line": 3771
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3746,
-        "end_line": 3746
+        "start_line": 3783,
+        "end_line": 3783
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3870,
-        "end_line": 3870
+        "start_line": 3907,
+        "end_line": 3907
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3930,
-        "end_line": 3930
+        "start_line": 3967,
+        "end_line": 3967
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4138,
-        "end_line": 4138
+        "start_line": 4175,
+        "end_line": 4175
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -6994,8 +6994,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3329,
-        "end_line": 3334
+        "start_line": 3366,
+        "end_line": 3371
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
