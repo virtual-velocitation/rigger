@@ -74,9 +74,11 @@ struct ReviewFinding {
 /// error names the offending field and the shape expected; a type whose payload the fold does not
 /// read passes unchecked.
 pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
+    // The fold parses with `serde_json::from_slice`, which also refuses bytes trailing the value,
+    // so the judge ends the same parse the same way.
     fn shape<T: DeserializeOwned>(type_: &str, data: &[u8]) -> Result<(), String> {
-        serde_path_to_error::deserialize::<_, T>(&mut serde_json::Deserializer::from_slice(data))
-            .map(drop)
+        let mut de = serde_json::Deserializer::from_slice(data);
+        serde_path_to_error::deserialize::<_, T>(&mut de)
             .map_err(|e| {
                 let why = e.inner().to_string().replace("a sequence", "an array");
                 match e.path().to_string().as_str() {
@@ -84,6 +86,7 @@ pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
                     field => format!("{type_} payload field `{field}`: {why}"),
                 }
             })
+            .and_then(|_| de.end().map_err(|e| format!("{type_} payload: {e}")))
     }
     match type_ {
         TYPE_DECISION_MADE => shape::<DecisionMade>(type_, data),
