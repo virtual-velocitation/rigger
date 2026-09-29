@@ -3157,7 +3157,7 @@ fn an_emit_at_the_old_rule_appends_says_it_skipped_the_fold_and_leaves_graph_db_
     assert_eq!(
         out,
         format!(
-            "emitted DecisionMade (position {}); not folded into the context graph: {}\n",
+            "emitted DecisionMade (position {}); not folded into the context graph: graph: {}\n",
             last.position,
             rigger::contextgraph::REBUILD_OWED
         ),
@@ -3418,15 +3418,20 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
         })
     };
     let emitted = tool_call(&mut mcp, "rigger_emit", decision("d-owed"));
-    assert!(
-        emitted.get("error").is_none(),
-        "the emit succeeds; got: {emitted}"
-    );
     let log = store.log();
     assert_eq!(
         (log.len(), log.last().unwrap().type_.as_str()),
         (7, "DecisionMade"),
         "the emit appended to the log"
+    );
+    assert_eq!(
+        emitted["result"]["structuredContent"],
+        serde_json::json!({
+            "position": log.last().unwrap().position,
+            "folded": false,
+            "reason": format!("graph: {}", rigger::contextgraph::REBUILD_OWED),
+        }),
+        "the emit succeeds and says it was not folded, naming the rebuild; got: {emitted}"
     );
     assert!(
         store.graph_bytes() == before,
@@ -3448,9 +3453,10 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
         "the same session answers from the rebuilt graph; got: {around}"
     );
     let emitted = tool_call(&mut mcp, "rigger_emit", decision("d-paid"));
-    assert!(
-        emitted.get("error").is_none(),
-        "the emit succeeds; got: {emitted}"
+    assert_eq!(
+        emitted["result"]["structuredContent"],
+        serde_json::json!({"position": store.log().last().unwrap().position, "folded": true}),
+        "the emit succeeds and says it folded; got: {emitted}"
     );
     let finished = mcp.finish();
     assert!(
@@ -3875,6 +3881,72 @@ fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
         ),
         "the emit reports the position and the fold it could not make, with the reason; \
          stderr: {err}"
+    );
+}
+
+/// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent's
+/// `rigger mcp` session calls `rigger_emit`, then the event is on the log and the tool answers its
+/// position and that it was not folded, with the reason: the graph is current, so no rebuild will
+/// ever re-derive the event, and an answer that looked like a fold would hide the divergence.
+#[test]
+fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+    let decision = |id: &str| {
+        serde_json::json!({
+            "type": "DecisionMade",
+            "data": {"id": id, "summary": "s", "governs": ["src/f.rs"], "supersedes": ""},
+        })
+    };
+    let mut mcp = common::mcp::McpSession::start_with(root, &["mcp", "--spawn", "u/implementer#0"]);
+    let free = tool_call(&mut mcp, "rigger_emit", decision("d-free"));
+    let free_at = read_run_events(root).last().unwrap().position;
+    assert_eq!(
+        free["result"]["structuredContent"],
+        serde_json::json!({"position": free_at, "folded": true}),
+        "an emit into an unlocked graph folds; got: {free}"
+    );
+
+    let graph_db = rigger_file(root, "graph.db");
+    let holder = rusqlite::Connection::open(&graph_db).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let locked = tool_call(&mut mcp, "rigger_emit", decision("d-locked"));
+    holder.execute_batch("ROLLBACK").unwrap();
+    let finished = mcp.finish();
+    assert!(
+        finished.status.success(),
+        "the session exits cleanly on EOF; stderr: {}",
+        String::from_utf8_lossy(&finished.stderr)
+    );
+
+    let log = read_run_events(root);
+    let last = log.last().unwrap();
+    assert_eq!(
+        (log.len(), last.type_.as_str()),
+        (3, "DecisionMade"),
+        "the locked emit's event is on the log"
+    );
+    assert_eq!(
+        locked["result"]["structuredContent"],
+        serde_json::json!({
+            "position": last.position,
+            "folded": false,
+            "reason": "graph: database is locked",
+        }),
+        "the tool answers the position and the fold it could not make, with the reason; got: {locked}"
+    );
+    assert_eq!(
+        (
+            applied(&graph_db, free_at),
+            applied(&graph_db, last.position)
+        ),
+        (true, false),
+        "the free emit folded and the locked fold wrote nothing"
     );
 }
 
