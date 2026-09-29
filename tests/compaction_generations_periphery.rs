@@ -4017,14 +4017,19 @@ fn the_identity_migrations_decision_is_folded_into_the_graph_it_migrates() {
     assert_ne!(minted, legacy, "init minted a distinct identity");
 
     let (_, err, ok) = run_rigger(root, &["reset"]);
-    assert!(
-        ok && err.contains("rigger: migrated project identity - renamed 1 stream(s)"),
-        "the bare reset migrates the one legacy stream; stderr: {err}"
-    );
-
     let log = read_run_events(root);
     let migration = format!("identity-migration-{minted}");
     let last = log.last().unwrap();
+    assert!(
+        ok && err.contains(&format!(
+            "rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
+             {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
+             decision (position {}) and folded it into the context graph\n",
+            last.position
+        )),
+        "the bare reset migrates the one legacy stream and reports its decision's fold; \
+         stderr: {err}"
+    );
     assert_eq!(
         (
             log.len(),
@@ -4047,5 +4052,92 @@ fn the_identity_migrations_decision_is_folded_into_the_graph_it_migrates() {
         common::cli::open_graph(root).resolve(&migration).unwrap(),
         Some(migration.clone()),
         "the migration's decision resolves in the graph under the minted identity"
+    );
+}
+
+/// Given a `graph.db` still at the old fold rule, when a courier runs `rigger result`, then the
+/// result is on the log and the courier exits successfully, but it says the result was not folded,
+/// naming `rigger setup`, and `graph.db` is left byte for byte as it was: a command whose job is
+/// to append skips the fold while the rebuild is owed and says so.
+#[test]
+fn a_result_at_the_old_rule_is_on_the_log_and_says_it_skipped_the_fold() {
+    let store = ReleaseEraStore::new();
+    let before = store.graph_bytes();
+    let (out, err, ok) = run_rigger(store.root(), &["result", "u/implementer#0", "did the work"]);
+    let log = store.log();
+    let last = log.last().unwrap();
+    assert_eq!(
+        (ok, log.len(), last.type_.as_str()),
+        (true, 7, "SpawnResult"),
+        "the result is appended to the log and the courier succeeds; stderr: {err}"
+    );
+    assert_eq!(
+        out,
+        format!(
+            "recorded result for u/implementer#0 (position {})\n\
+             not folded into the context graph: graph: {}\n",
+            last.position,
+            rigger::contextgraph::REBUILD_OWED
+        ),
+        "the result says it skipped the fold and names the rebuild"
+    );
+    assert!(
+        store.graph_bytes() == before,
+        "a result at the old rule writes nothing to graph.db"
+    );
+}
+
+/// Given a current `graph.db` another writer holds locked past the busy timeout, when a courier
+/// runs `rigger result`, then the result is on the log and the courier exits successfully, but it
+/// says the result was not folded, with the reason: the graph is current, so no rebuild will ever
+/// re-derive it, and a silent miss would keep an adjudicator's discarded findings in grounding.
+#[test]
+fn a_result_whose_fold_fails_says_it_was_not_folded() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (out, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok && out.ends_with("and folded it into the context graph\n"),
+        "an emit into an unlocked graph folds; stdout: {out} stderr: {err}"
+    );
+    let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "first"]);
+    let free = read_run_events(root).last().unwrap().position;
+    assert_eq!(
+        (ok, out),
+        (
+            true,
+            format!("recorded result for u/implementer#0 (position {free})\n")
+        ),
+        "a result into an unlocked graph folds silently; stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    let holder = rusqlite::Connection::open(&graph_db).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["result", "v/implementer#0", "second"]);
+    holder.execute_batch("ROLLBACK").unwrap();
+    let log = read_run_events(root);
+    let last = log.last().unwrap();
+    assert_eq!(
+        (log.len(), last.type_.as_str()),
+        (3, "SpawnResult"),
+        "the locked result is on the log"
+    );
+    assert_eq!(
+        (applied(&graph_db, free), applied(&graph_db, last.position)),
+        (true, false),
+        "the free result folded and the locked fold wrote nothing"
+    );
+    assert_eq!(
+        (ok, out),
+        (
+            true,
+            format!(
+                "recorded result for v/implementer#0 (position {})\n\
+                 not folded into the context graph: graph: database is locked\n",
+                last.position
+            )
+        ),
+        "the result reports the fold it could not make, with the reason; stderr: {err}"
     );
 }
