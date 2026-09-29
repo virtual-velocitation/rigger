@@ -15,7 +15,8 @@ use crate::sqlite::open_connection;
 
 use super::{
     from_nanos, to_nanos, Appended, ContentIdentity, Direction, Error, Event, EventStore,
-    ExpectedRevision, Filter, Position, Revision, Subscription, TypeSelection, NO_STREAM,
+    ExpectedRevision, Filter, GroupHead, Position, Revision, Subscription, TypeSelection,
+    META_GROUP, NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -39,6 +40,39 @@ CREATE INDEX IF NOT EXISTS idx_events_stream_type ON events(stream, type, positi
 /// `idx_events_stream_type` to the stream-and-type run's highest position.
 const LAST_POSITION_SQL: &str =
     "SELECT revision FROM events WHERE stream = ?1 AND type = ?2 ORDER BY position DESC LIMIT 1";
+
+/// The expression the group index and the group lookup both name: the [`META_GROUP`] entry of a
+/// row's `meta` as [`key_expr`] reads it, and NULL for a row whose `meta` is not JSON - so a row a
+/// broken writer left undecodable is simply not indexed, never an error that fails every later
+/// write or the open that creates the index.
+fn group_expr() -> String {
+    format!(
+        "CASE WHEN json_valid(meta) THEN {} END",
+        key_expr(META_GROUP)
+    )
+}
+
+/// The group index behind [`EventStore::latest_in_group`] (spec 101): a PARTIAL expression index
+/// over the stream and [`group_expr`], holding only the rows that carry a group, created with the
+/// schema. The lookup's `WHERE` names the identical expression, so the planner seeks it.
+fn group_index_sql() -> String {
+    let group = group_expr();
+    format!(
+        "CREATE INDEX IF NOT EXISTS idx_events_group ON events(stream, {group}, position) \
+         WHERE {group} IS NOT NULL"
+    )
+}
+
+/// The group lookup: one seek of `idx_events_group` to the group's highest position, handing back
+/// the row's position, type and metadata - never its data.
+fn latest_in_group_sql() -> String {
+    let group = group_expr();
+    format!(
+        "SELECT position, type, meta FROM events INDEXED BY idx_events_group \
+         WHERE stream = ?1 AND {group} = ?2 AND {group} IS NOT NULL \
+         ORDER BY position DESC LIMIT 1"
+    )
+}
 
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
 
@@ -79,6 +113,7 @@ impl Store {
     pub fn open(path: &str) -> Result<Self, Error> {
         let conn = open_connection(path).map_err(be)?;
         conn.execute_batch(SCHEMA).map_err(be)?;
+        conn.execute_batch(&group_index_sql()).map_err(be)?;
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -856,12 +891,7 @@ impl EventStore for Store {
             .optional()
             .map_err(be)?
             .unwrap_or(NO_STREAM);
-        let ok = match expected {
-            ExpectedRevision::Any => true,
-            ExpectedRevision::NoStream => last_revision == NO_STREAM,
-            ExpectedRevision::Exact(v) => last_revision == v,
-        };
-        if !ok {
+        if !expected.admits(last_revision) {
             return Err(Error::Conflict {
                 stream: stream.to_string(),
                 expected,
@@ -1035,6 +1065,20 @@ impl EventStore for Store {
             .query_map(rusqlite::params_from_iter(binds), row_to_event)
             .map_err(be)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(be)
+    }
+
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(&latest_in_group_sql(), params![stream, group], |r| {
+            let meta: String = r.get(2)?;
+            Ok(GroupHead {
+                position: r.get::<_, i64>(0)? as Position,
+                type_: r.get(1)?,
+                meta: parse_meta(&meta),
+            })
+        })
+        .optional()
+        .map_err(be)
     }
 }
 

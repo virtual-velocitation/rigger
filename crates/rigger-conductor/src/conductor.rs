@@ -1463,11 +1463,11 @@ pub struct Deps<'a> {
 
 impl Deps<'_> {
     /// Whether a step over these dependencies ingests the project into the graph: there is a
-    /// graph to fold into, a repo to walk, and the `symbols` pass to extract with. The one
-    /// condition both ingest paths check, and the one that decides whether a step seeds the
-    /// latest recorded generations (spec 101): a step that does not ingest weighs no batch.
+    /// graph to fold into and a repo to walk. The one condition both ingest paths check; they
+    /// exist only in the `symbols` lane, which compiles the pass to extract with.
+    #[cfg(feature = "symbols")]
     fn ingests(&self) -> bool {
-        cfg!(feature = "symbols") && self.graph.is_some() && !self.repo.is_empty()
+        self.graph.is_some() && !self.repo.is_empty()
     }
 }
 
@@ -1579,56 +1579,22 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     //
     // The set is a PARTITION over two scopes, decided BY EVENT TYPE FIRST (spec 60):
     //
-    // - RUN-SCOPED (this arm): unit lifecycle, gate verdicts, breaker trips - every key whose
-    //   recurrence is a property of THIS run. Seeded from the current run's slice exactly as
-    //   before, so a prior run's residue can never suppress this run's own keyed emit (the Gap 11
-    //   zombie boundary).
-    // - PROJECT-SCOPED (below): the derived index the project-ingest pass re-derives. A file's
-    //   content hash does not change because a new run started, so scoping those keys to the run
-    //   made every new run re-append the WHOLE index. They are seeded from the WHOLE stream
-    //   instead, via the one predicate that owns the content-key format
-    //   ([`crate::ingest::project_scoped_latest_generations`]) - latest-generation-per-file, never
-    //   ever-recorded, so a file reverted to earlier content still re-emits.
+    // - RUN-SCOPED (this seed): unit lifecycle, gate verdicts, breaker trips - every key whose
+    //   recurrence is a property of THIS run. Seeded from the current run's slice, so a prior run's
+    //   residue can never suppress this run's own keyed emit (the Gap 11 zombie boundary).
+    // - PROJECT-SCOPED: the derived index the project-ingest pass re-derives. A file's content hash
+    //   does not change because a new run started, so those keys are not seeded here at all: the
+    //   ingest sink asks the store for each identity's latest recorded generation the FIRST time it
+    //   meets that identity in this process (spec 101, [`crate::ingest::batch_is_latest_recorded`]
+    //   over the group lookup), so no step reads a derived event to seed them.
     //
-    // This is the SEED only. Both arms feed ONE set that the emit sinks then EXTEND with every key
-    // they append; the project-scoped half can also SHRINK in place, one identity's stale
-    // generation at a time, once the sink's own in-process tracking
-    // ([`replayed_generations`](RunCtx::replayed_generations), seeded below from the SAME map)
-    // sees a fresh generation for that identity - see [`replayed_keys`](RunCtx::replayed_keys) for
-    // the two-phase reading and why the seed is the phase that governs.
-    //
-    // The type test comes first in BOTH arms, so the partition is a property of the code rather
-    // than of the key's spelling: a derived event is excluded here even if its key looks like a
-    // lifecycle key, and a non-derived event is ineligible below even if its key looks like a
-    // content key. `prior_events` is the read of the run this function already took - no extra
-    // store round-trip.
-    let mut replayed_keys: HashSet<String> = prior_events
+    // The type test comes first, so the partition is a property of the code rather than of the
+    // key's spelling: a derived event is excluded here even if its key looks like a lifecycle key.
+    // `prior_events` is the read of the run this function already took - no extra store round-trip.
+    let replayed_keys: HashSet<String> = prior_events
         .iter()
         .filter(|e| !crate::ingest::is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
-        .collect();
-    // ONE read of the derived events feeds BOTH `replayed_keys`' project-scoped extension and
-    // `replayed_generations`' seed (spec 86 criterion 3) - never two independent aggregations
-    // that could drift apart. Taken only by a step that ingests (spec 101): the seed's only
-    // reader weighs an ingest batch, so a step that ingests nothing reads no derived event.
-    let latest_generations = if deps.ingests() {
-        crate::ingest::project_scoped_latest_generations(&deps.store.read_stream_typed(
-            STREAM,
-            0,
-            crate::eventstore::TypeSelection::Only(&crate::ingest::DERIVED_INDEX_TYPES),
-        )?)
-    } else {
-        Default::default()
-    };
-    replayed_keys.extend(
-        latest_generations
-            .values()
-            .flat_map(|(_, keys)| keys.iter().cloned()),
-    );
-    #[cfg(feature = "symbols")]
-    let replayed_generations: HashMap<String, (String, HashSet<String>)> = latest_generations
-        .into_iter()
-        .map(|(identity, (hash, keys))| (identity, (hash, keys.into_iter().collect())))
         .collect();
     // Cross-step spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
     // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
@@ -1800,7 +1766,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_resume_bound,
         replayed_keys: Mutex::new(replayed_keys),
         #[cfg(feature = "symbols")]
-        replayed_generations: Mutex::new(replayed_generations),
+        replayed_generations: Mutex::new(HashMap::new()),
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
         stale_units: Mutex::new(stale_units),
@@ -2579,11 +2545,13 @@ struct RunCtx<'a> {
     /// The PROJECT-SCOPED half is the four derived index types' content keys, and it has a
     /// TWO-PHASE life that must be read as two phases:
     ///
-    /// 1. SEEDED at run start from the WHOLE stream through
-    ///    [`crate::ingest::project_scoped_replay_keys`], which returns each file's LATEST recorded
-    ///    generation and no earlier one. In that phase membership means "already recorded for this
-    ///    project by ANY run", so it names keys this run has not itself emitted - the opposite of
-    ///    the run-scoped half's meaning, and the phase every suppression decision is made in.
+    /// 1. SEEDED per identity at FIRST SIGHT (spec 101): the first time
+    ///    [`emit_keyed_batch`](RunCtx::emit_keyed_batch) meets a batch identity in this process it
+    ///    asks the store's group lookup ([`crate::ingest::batch_is_latest_recorded`]) whether the
+    ///    batch is that identity's LATEST recorded generation, and installs the batch's keys when it
+    ///    is. In that phase membership means "already recorded for this project by ANY run", so it
+    ///    names keys this run has not itself emitted - the opposite of the run-scoped half's
+    ///    meaning, and the phase every suppression decision is made in.
     /// 2. EXTENDED by its sole consumer [`emit_keyed_batch`](RunCtx::emit_keyed_batch), which
     ///    inserts EVERY key it appends and, since spec 86 criterion 3, ALSO retires a batch
     ///    identity's own STALE generation's keys the moment a fresh generation for that SAME
@@ -2622,9 +2590,9 @@ struct RunCtx<'a> {
     /// already names a DIFFERENT generation here, that stale generation's own keys are removed
     /// from `replayed_keys` first, so the fresh generation's boundary (or ordinary) event can
     /// never be shadowed by an earlier generation's still-resident key merely because the two
-    /// happen to hash identically. Seeded ONCE at run start from the SAME whole-stream walk
-    /// [`replayed_keys`](RunCtx::replayed_keys)'s own project-scoped seed is flattened from
-    /// ([`crate::ingest::project_scoped_latest_generations`], not a second aggregation), and never
+    /// happen to hash identically. Starts EMPTY in every process: an identity enters it at first
+    /// sight, seeded from the store's group lookup exactly when
+    /// [`replayed_keys`](RunCtx::replayed_keys)' project-scoped half is (spec 101), and it is never
     /// read or written anywhere else - only the four derived index types key a per-file generation
     /// at all, so a run-scoped (lifecycle/gate/breaker) key never enters this map.
     ///
@@ -2966,7 +2934,7 @@ impl RunCtx<'_> {
     /// per file, so any two exclusions of the same file do) or because in-process content reverted
     /// to a generation already recorded. An unparseable key (`keyed` is empty, or its first key is
     /// not the `key_batch` shape) fails safe to the plain dedup above, tracking no generation - the
-    /// same fail-safe direction [`crate::ingest::project_scoped_replay_keys`] itself takes on an
+    /// same fail-safe direction [`crate::ingest::project_scoped_latest_generations`] itself takes on an
     /// unparseable key. `replayed_generations` is locked OUTER and `replayed_keys` NESTED inside
     /// it, and this is the ONLY site that ever acquires both, so that order is never reversed and no
     /// deadlock is reachable.
@@ -2980,6 +2948,18 @@ impl RunCtx<'_> {
         let identity_generation = keyed
             .first()
             .and_then(|(k, _)| crate::ingest::derived_key_parts(k));
+        // FIRST SIGHT (spec 101): the first time this process meets the batch's identity it asks
+        // the store whether the batch is that identity's latest recorded generation - one group
+        // lookup, taken BEFORE the dedup locks. From then on `replayed_generations` governs it.
+        let first_sight = identity_generation.is_some_and(|(identity, _)| {
+            !self
+                .replayed_generations
+                .lock()
+                .unwrap()
+                .contains_key(identity)
+        });
+        let recorded =
+            first_sight && crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed)?;
         let survivors: Vec<Event> = {
             let mut gens = self.replayed_generations.lock().unwrap();
             let mut keys = self.replayed_keys.lock().unwrap();
@@ -2992,6 +2972,14 @@ impl RunCtx<'_> {
                         keys.remove(&stale_key);
                     }
                     slot.0 = generation.to_string();
+                }
+                // The recorded generation IS this batch (a key is a pure function of the batch's
+                // bytes): install its keys, so the dedup below appends none of them.
+                if recorded {
+                    for (key, _) in keyed {
+                        keys.insert(key.clone());
+                        slot.1.insert(key.clone());
+                    }
                 }
             }
             keyed
@@ -3010,7 +2998,10 @@ impl RunCtx<'_> {
                         }
                     }
                     let data = serde_json::to_vec(&payload).ok()?;
-                    Some(Event::new(&ev.type_, data).with_meta(META_REPLAY_KEY, key.as_str()))
+                    Some(crate::ingest::keyed_derived_event(
+                        Event::new(&ev.type_, data),
+                        key,
+                    ))
                 })
                 .collect()
         };
@@ -10261,8 +10252,8 @@ impl RunCtx<'_> {
         // WHAT A RE-INGEST APPENDS is decided by `replayed_keys`, which is a PARTITION over two
         // scopes, not one seed (spec 60): every NON-derived key is seeded from THIS run's slice,
         // because its recurrence is a property of one run, while the four derived index types are
-        // seeded from the WHOLE stream through the ONE shared predicate
-        // ([`crate::ingest::project_scoped_replay_keys`]), because a file's content hash does not
+        // seeded per identity at first sight from the store's group lookup
+        // ([`crate::ingest::batch_is_latest_recorded`]), because a file's content hash does not
         // change because a new run started. That half is SEEDED latest-generation-per-file and then
         // EXTENDED with every key this process emits (see [`replayed_keys`](RunCtx::replayed_keys)),
         // so what a run suppresses is decided by the SEED - the run reaches this walk at most once

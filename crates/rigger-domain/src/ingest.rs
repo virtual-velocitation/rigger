@@ -1,8 +1,8 @@
-//! The ingest fold rules: the replay-key vocabulary of the derived index and the project-scoped
-//! suppression predicate both ingest sinks seed from. The walk that builds the keys lives in the
-//! root crate's `ingest` module.
+//! The ingest fold rules: the replay-key vocabulary of the derived index, the group stamp every
+//! keyed derived event carries, and the latest-generation lookup both ingest sinks seed from. The
+//! walk that builds the keys lives in the root crate's `ingest` module.
 
-use crate::eventstore::Event;
+use crate::eventstore::{Error, Event, EventStore, META_GROUP};
 
 /// The metadata key under which an event carries its deterministic REPLAY KEY (spec 04, criterion
 /// 4): the name a content key is STAMPED under and read back from, so this module owns the wire
@@ -16,7 +16,7 @@ use crate::eventstore::Event;
 /// projections ignore it, like [`crate::contextgraph::META_ACTOR`].
 ///
 /// It is DEFINED HERE, beside [`key_batch`] which builds the `<prefix>/<file>@<hash>#<i>` form and
-/// [`project_scoped_replay_keys`] which parses it back, rather than in the orchestrator that also
+/// [`project_scoped_latest_generations`] which parses it back, rather than in the orchestrator that also
 /// stamps it. That predicate is the shared suppression authority BOTH a live run and a cold
 /// `rigger graph build` call, so reading the name out of `crate::conductor` would point this module
 /// UP at the orchestrator and couple every future caller of the predicate to it for a wire-format
@@ -94,6 +94,61 @@ pub fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
     Some((&key[identity], &key[generation]))
 }
 
+/// A KEYED DERIVED EVENT (spec 101): `event` stamped with its replay `key` and, when the key is the
+/// content-key shape, with the batch identity [`derived_key_parts`] cuts from it as its
+/// [`META_GROUP`]. The one builder both ingest sinks record a derived event through, so every
+/// recording carries the group [`latest_generation`] is answered from. A key that is not the
+/// content-key shape names no identity, so its event carries no group and is never answered.
+pub fn keyed_derived_event(event: Event, key: &str) -> Event {
+    let event = event.with_meta(META_REPLAY_KEY, key);
+    match derived_key_parts(key) {
+        Some((identity, _)) => event.with_meta(META_GROUP, identity),
+        None => event,
+    }
+}
+
+/// THE LATEST RECORDED GENERATION of the batch identity `identity` on `stream` (spec 101), answered
+/// by the store's group lookup ([`EventStore::latest_in_group`]) - never by reading the stream.
+/// TYPE FIRST: a newest match outside [`DERIVED_INDEX_TYPES`] answers no generation, as does one
+/// whose replay key does not parse - the fail-safe direction, since a batch with no recorded
+/// generation re-emits.
+pub fn latest_generation(
+    store: &dyn EventStore,
+    stream: &str,
+    identity: &str,
+) -> Result<Option<String>, Error> {
+    let Some(head) = store.latest_in_group(stream, identity)? else {
+        return Ok(None);
+    };
+    if !is_derived_index_type(&head.type_) {
+        return Ok(None);
+    }
+    Ok(head
+        .meta
+        .get(META_REPLAY_KEY)
+        .and_then(|key| derived_key_parts(key))
+        .map(|(_, generation)| generation.to_string()))
+}
+
+/// FIRST-SIGHT SEEDING (spec 101): whether the keyed batch `keyed` - one file's whole batch, every
+/// key sharing one identity and one generation - is already its identity's latest recorded
+/// generation on `stream`. Both ingest sinks ask this the first time they meet an identity in a
+/// process: `true` means the batch's keys ARE the recorded ones (a key is a pure function of the
+/// batch's bytes), so the sink installs them and the batch appends nothing; `false` - a changed
+/// file, a reverted one, a never-recorded one, or a batch whose key does not parse - means it
+/// appends.
+pub fn batch_is_latest_recorded(
+    store: &dyn EventStore,
+    stream: &str,
+    keyed: &[(String, &Event)],
+) -> Result<bool, Error> {
+    let Some((identity, generation)) = keyed.first().and_then(|(key, _)| derived_key_parts(key))
+    else {
+        return Ok(false);
+    };
+    Ok(latest_generation(store, stream, identity)?.as_deref() == Some(generation))
+}
+
 /// The derived index's CONTENT-IDENTITY POLICY as one value: the metadata key a derived event
 /// carries its content key under, the four types that carry content identity, and WHICH of those
 /// types re-assert a fact in place rather than superseding the subject's prior recording.
@@ -126,12 +181,15 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
         .collect()
 }
 
-/// The ONE project-scoped suppression predicate, expressed as the set of replay keys a derived-index
-/// emit may be suppressed against, derived from the WHOLE prior stream.
+/// The project-scoped suppression predicate as a PURE REFERENCE over a slice of the log:
+/// `identity -> (that identity's latest recorded generation hash, the keys of that generation)`,
+/// derived from the events handed in.
 ///
-/// Both ingest sinks - the run's keyed emit and a cold `rigger graph build` - seed from this and
-/// neither copies it, because the `<prefix>/<file>@<hash>#<i>` format is built by [`key_batch`]
-/// here and must not fork. The rule, in the order it is applied:
+/// Neither ingest sink reads a slice to seed itself (spec 101): both ask
+/// [`batch_is_latest_recorded`], answered by the store's group lookup. This is the reference that
+/// lookup is held to - the lookup's contract test asserts it answers what this answers on the same
+/// log - and the reader `rigger validate`'s index-lag sample uses. The rule, in the order it is
+/// applied:
 ///
 /// 1. **Type first.** Only the four [`DERIVED_INDEX_TYPES`] are eligible. Every other event is
 ///    passed over whatever its replay key looks like, so a unit or stage whose id happened to read
@@ -140,37 +198,14 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 ///    generation ([`derived_key_parts`]); a key that is not that shape names no generation and is
 ///    passed over (the fail-safe direction - it re-emits).
 /// 3. **Latest per file, never ever-recorded.** Only the keys of each identity's LATEST recorded
-///    generation are returned. A file's earlier generations are deliberately absent: content
-///    REVERTED to a generation the file has since moved past differs from its latest recorded
-///    batch, so it must re-emit. An ever-recorded key set would match the old records, re-emit
-///    nothing, and strand the graph on a superseded version of that file forever. Whether the
-///    re-emitted batch then RETIRES the newer structural edges is the FOLD's business, not this
-///    predicate's: only the code half's `fresh` head drives `supersede_file_edges`, and the design
-///    half sets no `fresh` head at all.
+///    generation are kept. A file's earlier generations are deliberately absent: content REVERTED
+///    to a generation the file has since moved past differs from its latest recorded batch, so it
+///    must re-emit. An ever-recorded key set would match the old records, re-emit nothing, and
+///    strand the graph on a superseded version of that file forever.
 ///
 /// This is project-scoped ON PURPOSE: derived index facts are facts about the project's files, not
 /// about a run, so a NEW run inherits them and an unchanged file appends nothing on every
-/// subsequent run forever. Run-scoped seeding stays exactly as it is for every other replay key
-/// (unit lifecycle, gate verdicts, breaker trips), whose recurrence IS a property of one run.
-///
-/// What this function returns is a SEED, and a seed only. Each sink owns the set it builds from it
-/// and both EXTEND that set with the keys they emit without retiring a superseded generation, so
-/// "latest generation per file" is a statement about this return value at the moment it is taken,
-/// never about a sink's set once the sink has run.
-pub fn project_scoped_replay_keys(prior: &[Event]) -> std::collections::HashSet<String> {
-    project_scoped_latest_generations(prior)
-        .into_values()
-        .flat_map(|(_, keys)| keys)
-        .collect()
-}
-
-/// [`project_scoped_replay_keys`]'s own per-identity working set, BEFORE it flattens to the
-/// keys-only return value that function's callers want: `identity -> (that identity's latest
-/// recorded generation hash, the keys of that generation)`. Extracted as its own
-/// `pub(crate)` function (spec 86 criterion 3) so `conductor::RunCtx` can seed its
-/// `replayed_generations` field from the SAME one whole-stream walk
-/// [`project_scoped_replay_keys`] already does, rather than a second hand-rolled aggregation
-/// that could drift from it - the two are ONE authority read two ways, never two authorities.
+/// subsequent run forever.
 pub fn project_scoped_latest_generations(
     prior: &[Event],
 ) -> std::collections::HashMap<String, (String, Vec<String>)> {
@@ -210,7 +245,7 @@ pub fn project_scoped_latest_generations(
 /// is criterion 3's.
 #[cfg(test)]
 mod dedup_tests {
-    use super::{derived_key_parts, project_scoped_replay_keys, META_REPLAY_KEY};
+    use super::{derived_key_parts, project_scoped_latest_generations, META_REPLAY_KEY};
     use crate::contextgraph::{
         TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
         TYPE_REVIEW_FINDING,

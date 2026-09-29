@@ -8,8 +8,8 @@
 //! backend - dependency inversion buying the single implementation.
 
 use super::{
-    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription, TypeSelection,
+    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead, Position,
+    Revision, Subscription, TypeSelection,
 };
 
 /// Namespaced wraps an EventStore so all of its data is scoped to one project.
@@ -144,6 +144,10 @@ impl EventStore for Namespaced<'_> {
             .inner
             .read_stream_typed(&self.scoped(stream), from, selection)?;
         Ok(self.strip(events))
+    }
+
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        self.inner.latest_in_group(&self.scoped(stream), group)
     }
 }
 

@@ -4,12 +4,13 @@
 //! drift between the two ingest entries.
 //!
 //! Each caller supplies its OWN emit sink - the run's replay-keyed, concurrency-safe
-//! `emit_keyed`; the cold build's log-seeded seen-set plus a direct append-and-fold - because
-//! their mutation semantics legitimately differ. What must NOT fork is the drift-prone part:
-//! the walk over the project's per-file extraction batches, the `<prefix>/<file>@<hash>#<i>`
-//! content key, and the predicate that decides which recorded keys a fresh emit is redundant
-//! against ([`project_scoped_replay_keys`]). Those are derived here, once, so the run and a cold
-//! `graph build` agree on every key and never double-ingest one another's work.
+//! `emit_keyed`; the cold build's direct append-and-fold - because their mutation semantics
+//! legitimately differ. What must NOT fork is the drift-prone part: the walk over the project's
+//! per-file extraction batches, the `<prefix>/<file>@<hash>#<i>` content key, the keyed derived
+//! event both record ([`keyed_derived_event`]), and the first-sight question that decides whether a
+//! batch is already its identity's latest recorded generation ([`batch_is_latest_recorded`]).
+//! Those are derived once, so the run and a cold `graph build` agree on every key and never
+//! double-ingest one another's work.
 //!
 //! Symbols-gated: the walk lowers the tree through the `symbols` extraction pass, so the light
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
@@ -107,7 +108,7 @@ pub struct IngestStats {
 /// of the batch's bytes ALONE, so the same content always yields the same keys and different
 /// content always yields different ones. A key is therefore a CONTENT GENERATION of a file, not a
 /// mark that the file has been seen: whether a given key is redundant is a question about the
-/// file's LATEST recorded generation ([`project_scoped_replay_keys`] answers it), which is why a
+/// file's LATEST recorded generation ([`batch_is_latest_recorded`] answers it), which is why a
 /// file reverted to content it held earlier re-emits its whole batch even though every one of its
 /// keys is already in the log. This function owns only the walk and the keying; the sink decides
 /// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the

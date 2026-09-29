@@ -52,6 +52,19 @@ pub enum ExpectedRevision {
     Exact(Revision),
 }
 
+impl ExpectedRevision {
+    /// Whether this expectation admits an append to a stream whose last revision is `last`
+    /// ([`NO_STREAM`] for a stream that does not exist) - the one reading of an expectation every
+    /// backend checks before it writes.
+    pub fn admits(self, last: Revision) -> bool {
+        match self {
+            ExpectedRevision::Any => true,
+            ExpectedRevision::NoStream => last == NO_STREAM,
+            ExpectedRevision::Exact(v) => last == v,
+        }
+    }
+}
+
 /// A read/subscription filter over the global log.
 #[derive(Clone, Debug, Default)]
 pub struct Filter {
@@ -65,6 +78,20 @@ pub struct Filter {
 pub enum TypeSelection<'a> {
     Only(&'a [&'a str]),
     Except(&'a [&'a str]),
+}
+
+/// The metadata key under which an event carries its GROUP (spec 101): the identity of the batch
+/// it was recorded in, so [`EventStore::latest_in_group`] answers the newest recording of one
+/// identity without reading the stream. Folds and projections ignore it, like the replay key.
+pub const META_GROUP: &str = "group";
+
+/// The newest event of a group, as [`EventStore::latest_in_group`] answers it: where it sits, its
+/// type and its metadata - never its data, so the lookup materializes no event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupHead {
+    pub position: Position,
+    pub type_: String,
+    pub meta: BTreeMap<String, String>,
 }
 
 /// Event is a single immutable fact. Callers populate the input fields; the store
@@ -622,6 +649,12 @@ pub trait EventStore: Send + Sync {
         from: Revision,
         selection: TypeSelection,
     ) -> Result<Vec<Event>, Error>;
+
+    /// The NEWEST event on `stream` whose [`META_GROUP`] entry is `group` - its position, type and
+    /// metadata, never its data - or `None` when no event of the stream carries that group
+    /// (spec 101). A backend answers from its own group index or group stream, never by reading
+    /// the stream and never by materializing it.
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error>;
 }
 
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.

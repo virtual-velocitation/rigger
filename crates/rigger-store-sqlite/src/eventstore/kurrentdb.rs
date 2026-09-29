@@ -12,6 +12,16 @@
 //! direction; it owns the port's HONESTY obligation in full, and reports positions the
 //! server issued rather than any it could derive.
 //!
+//! ## Group streams
+//!
+//! The group lookup ([`EventStore::latest_in_group`], spec 101) is answered from one GROUP STREAM
+//! per identity (`rigger-group/<stream>/<group>`) holding KurrentDB link events (`$>`, the server's
+//! own link type): an append whose events carry a group first links, in each group's stream, the
+//! revision that group's newest event in the append will take, then appends the events expecting exactly the
+//! revision it linked against. A crash can therefore leave a dangling link, never an unlinked
+//! recording, and the lookup skips a link that does not resolve to an event of its group. No link
+//! reaches a caller: every read and subscription skips a record whose type is a system (`$`) type.
+//!
 //! ## Boundary normalization
 //!
 //! The [`EventStore`] trait fixes the `from` boundary convention (see its doc):
@@ -38,7 +48,7 @@ use uuid::Uuid;
 
 use super::{
     from_nanos, to_nanos, Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter,
-    Position, Revision, Subscription, TypeSelection, NO_STREAM,
+    GroupHead, Position, Revision, Subscription, TypeSelection, META_GROUP, NO_STREAM,
 };
 
 /// The envelope carrying Rigger's metadata and valid-time in KurrentDB's custom
@@ -181,16 +191,23 @@ fn original(ev: &ResolvedEvent) -> Option<&RecordedEvent> {
     ev.event.as_ref().or(ev.link.as_ref())
 }
 
-/// Convert a recorded event, skipping system streams and applying the prefix filter.
+/// Whether a record of `stream` of type `event_type` reaches a caller under `filter`: never a
+/// system stream's record nor a system (`$`) record - a group stream's links among them - and only
+/// a record of a stream the filter's prefix admits.
+fn delivered(stream: &str, event_type: &str, filter: &Filter) -> bool {
+    !stream.starts_with('$')
+        && !event_type.starts_with('$')
+        && filter
+            .stream_prefix
+            .as_ref()
+            .is_none_or(|p| stream.starts_with(p.as_str()))
+}
+
+/// Convert a recorded event, skipping every record [`delivered`] refuses.
 fn to_event(rec: &RecordedEvent, filter: &Filter) -> Option<Event> {
     let stream = rec.stream_id();
-    if stream.starts_with('$') {
+    if !delivered(stream, &rec.event_type, filter) {
         return None;
-    }
-    if let Some(p) = &filter.stream_prefix {
-        if !stream.starts_with(p.as_str()) {
-            return None;
-        }
     }
     let env: Envelope = serde_json::from_slice(&rec.custom_metadata).unwrap_or_default();
     Some(Event {
@@ -262,7 +279,125 @@ fn records_of<R>(
     Ok(out)
 }
 
+/// The group stream holding `group`'s links for `stream` (spec 101).
+fn group_stream(stream: &str, group: &str) -> String {
+    format!("rigger-group/{stream}/{group}")
+}
+
+/// The link event naming the event at `revision` of `stream`: the server's own `$>` link, whose
+/// data is `<revision>@<stream>`.
+fn link_event(stream: &str, revision: Revision) -> Event {
+    Event::new("$>", format!("{revision}@{stream}").into_bytes())
+}
+
+/// The links an append of `events` after revision `last` takes: for every distinct group among
+/// the events, in first-appearance order, the revision that group's NEWEST event in the append
+/// will take - the member the lookup must answer.
+fn group_links(last: Revision, events: &[Event]) -> Vec<(&str, Revision)> {
+    let mut links: Vec<(&str, Revision)> = Vec::new();
+    for (revision, event) in (last + 1..).zip(events) {
+        if let Some(group) = event.meta.get(META_GROUP) {
+            match links.iter_mut().find(|(linked, _)| linked == group) {
+                Some(link) => link.1 = revision,
+                None => links.push((group.as_str(), revision)),
+            }
+        }
+    }
+    links
+}
+
+/// The expectation an append pinned to `last` writes under: the stream must still end at `last`
+/// (or still not exist).
+fn pinned(last: Revision) -> ExpectedRevision {
+    if last == NO_STREAM {
+        ExpectedRevision::NoStream
+    } else {
+        ExpectedRevision::Exact(last)
+    }
+}
+
+/// THE GROUP-LINK PROTOCOL of an append whose events carry a group (spec 101), over the three
+/// server calls it makes: read the stream's `last_revision`, `link` each group's first revision in
+/// its group stream, then `write` the events pinned to that revision. An expectation the stream
+/// does not meet is refused before anything is linked; a pinned write that conflicts is retried
+/// from a fresh read when the caller expected `Any`, and is the caller's conflict otherwise.
+fn append_linked(
+    stream: &str,
+    expected: ExpectedRevision,
+    events: &[Event],
+    mut last_revision: impl FnMut() -> Result<Revision, Error>,
+    mut link: impl FnMut(&str, Revision) -> Result<(), Error>,
+    mut write: impl FnMut(ExpectedRevision) -> Result<Appended, Error>,
+) -> Result<Appended, Error> {
+    loop {
+        let last = last_revision()?;
+        if !expected.admits(last) {
+            return Err(Error::Conflict {
+                stream: stream.to_string(),
+                expected,
+                actual: last,
+            });
+        }
+        for (group, revision) in group_links(last, events) {
+            link(group, revision)?;
+        }
+        match write(pinned(last)) {
+            Err(Error::Conflict { .. }) if expected == ExpectedRevision::Any => continue,
+            written => return written,
+        }
+    }
+}
+
+/// The group lookup's scan over a group stream's newest-first links, each resolved to the event
+/// it names (`None` for a link that resolves to nothing): the first resolved event of `stream`
+/// carrying `group`, pulling nothing past it. A link naming another group's event, another
+/// stream's, or nothing is skipped; a group stream the server does not know has no member.
+fn newest_in_group<I>(resolved: I, stream: &str, group: &str) -> Result<Option<GroupHead>, Error>
+where
+    I: IntoIterator<Item = Result<Option<Event>, kurrentdb::Error>>,
+{
+    for pulled in resolved {
+        match pulled {
+            Ok(Some(event))
+                if event.stream == stream
+                    && event.meta.get(META_GROUP).map(String::as_str) == Some(group) =>
+            {
+                return Ok(Some(GroupHead {
+                    position: event.position,
+                    type_: event.type_,
+                    meta: event.meta,
+                }));
+            }
+            Ok(_) => {}
+            Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
+            Err(e) => return Err(Error::Backend(format!("kurrentdb: latest in group: {e}"))),
+        }
+    }
+    Ok(None)
+}
+
 impl Store {
+    /// The revision of `stream`'s last event - a backward read of one event - or [`NO_STREAM`]
+    /// for a stream that does not exist.
+    fn last_revision(&self, stream: &str) -> Result<Revision, Error> {
+        let opts = ReadStreamOptions::default()
+            .position(StreamPosition::End)
+            .backwards()
+            .max_count(1);
+        self.rt.block_on(async {
+            let mut rs = match self.client.read_stream(stream, &opts).await {
+                Ok(rs) => rs,
+                Err(kurrentdb::Error::ResourceNotFound) => return Ok(NO_STREAM),
+                Err(e) => return Err(Error::Backend(format!("kurrentdb: last revision: {e}"))),
+            };
+            match rs.next().await {
+                Ok(Some(ev)) => Ok(original(&ev).map_or(NO_STREAM, |r| r.revision as Revision)),
+                Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => Ok(NO_STREAM),
+                Err(e) => Err(Error::Backend(format!("kurrentdb: last revision: {e}"))),
+            }
+        })
+    }
+
     /// Read a stream forward from `from` (inclusive revision), stopping once `limit`
     /// events have been collected. This is the ONE stream read this adapter drives: the
     /// port's `read_stream` passes `usize::MAX` (no bound), and the append's position
@@ -407,8 +542,10 @@ fn placement_of_ack(
     Ok(AckPlacement::ReadBackFrom(first))
 }
 
-impl EventStore for Store {
-    fn append(
+impl Store {
+    /// Write `events` to `stream` under `expected` exactly as handed, reporting the positions the
+    /// server issued: the one write every append - and every group link - goes through.
+    fn append_raw(
         &self,
         stream: &str,
         expected: ExpectedRevision,
@@ -488,6 +625,36 @@ impl EventStore for Store {
             }),
             Err(e) => Err(Error::Backend(format!("kurrentdb: append: {e}"))),
         }
+    }
+}
+
+impl EventStore for Store {
+    /// An append whose events carry no group is written as is; one whose events carry a group
+    /// runs the group-link protocol ([`append_linked`]) around that same write.
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        if events.iter().all(|e| !e.meta.contains_key(META_GROUP)) {
+            return self.append_raw(stream, expected, events);
+        }
+        append_linked(
+            stream,
+            expected,
+            events,
+            || self.last_revision(stream),
+            |group, revision| {
+                self.append_raw(
+                    &group_stream(stream, group),
+                    ExpectedRevision::Any,
+                    &[link_event(stream, revision)],
+                )
+                .map(|_| ())
+            },
+            |pinned| self.append_raw(stream, pinned, events),
+        )
     }
 
     fn read_stream(
@@ -661,6 +828,34 @@ impl EventStore for Store {
         records_of(pulls, stream, |ev| {
             original(ev).and_then(|rec| to_event(rec, &Filter::default()))
         })
+    }
+
+    /// A backward read of the identity's group stream with its links resolved, ending at the
+    /// newest link whose event is of `group` ([`newest_in_group`]); each link is pulled from the
+    /// server only when the scan asks for it, and the project stream itself is never read.
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        let opts = ReadStreamOptions::default()
+            .position(StreamPosition::End)
+            .backwards()
+            .resolve_link_tos();
+        let links = group_stream(stream, group);
+        match self
+            .rt
+            .block_on(self.client.read_stream(links.as_str(), &opts))
+        {
+            Err(e) => newest_in_group([Err(e)], stream, group),
+            Ok(mut rs) => {
+                let resolved =
+                    std::iter::from_fn(|| self.rt.block_on(rs.next()).transpose()).map(|pulled| {
+                        pulled.map(|ev| {
+                            ev.event
+                                .as_ref()
+                                .and_then(|rec| to_event(rec, &Filter::default()))
+                        })
+                    });
+                newest_in_group(resolved, stream, group)
+            }
+        }
     }
 }
 
