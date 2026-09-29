@@ -945,9 +945,14 @@
     "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through `append_and_fold_batch`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
   },
   {
-    "id": "dup-bda92b90044e",
+    "id": "dup-75a85e1ce37a",
     "disposition": "not-a-duplicate",
-    "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and appends through `ingest::FoldingStore`, whose fold is the one `ingest::append_and_fold_batch` folds with and which reports a lost fold through the run's injected log, rather than re-implementing either."
+    "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and appends through the run's one folding store (`Deps::folding`, an `ingest::FoldingStore`), whose fold is the one `ingest::append_and_fold_batch` folds with and which reports a lost fold through the run's injected log, rather than re-implementing either."
+  },
+  {
+    "id": "dup-033af83f765c",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the append-only port double refuses every read; the port method's signature is what makes them look alike."
   },
   {
     "id": "dup-0b2669324614",

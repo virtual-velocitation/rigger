@@ -289,10 +289,18 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "folding",
+    "is_test": false,
+    "proposed_module": "conductor::deps",
+    "reason": "method inside `impl <'a> Deps<'a>`; grouped with its other `Deps` methods.",
+    "content_hash": "8ce21fd6cf4647a1"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ingests",
     "is_test": false,
     "proposed_module": "conductor::deps",
-    "reason": "method inside `impl Deps<'_>`; grouped with its other `Deps` methods.",
+    "reason": "method inside `impl <'a> Deps<'a>`; grouped with its other `Deps` methods.",
     "content_hash": "7e62cc6af1f83bc8"
   },
   {
@@ -309,7 +317,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "e290f1a03e8069cf"
+    "content_hash": "b345a50eefc180c4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -357,7 +365,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "337ab2e5afb06bf5"
+    "content_hash": "87a0e1dee1d1d476"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4937,11 +4945,19 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "read_stream_positions",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6c24727fa08335b0"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_whose_width_is_filled_by_parked_units_returns_instead_of_re_reading_the_stream",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "294988757db27de6"
+    "content_hash": "f9359076119b2dc9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7325,7 +7341,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "fb17da873d064a84"
+    "content_hash": "686297ae9a96722f"
   },
   {
     "file": "src/cli/mod.rs",

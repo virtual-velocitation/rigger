@@ -254,18 +254,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-bda92b90044e",
+    "id": "dup-75a85e1ce37a",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "append_and_fold_batch",
-        "content_hash": "c9f4606c73133e8f"
+        "content_hash": "3d998b5eebd50ef6"
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
         "name": "append_and_fold_batch",
-        "content_hash": "87b781209ab35f41"
+        "content_hash": "cbf859dff1ba5761"
       }
     ],
     "proposed_home": "one shared `append_and_fold_batch` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
@@ -316,7 +316,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-eecf9777e79f",
+    "id": "dup-2835846b7eeb",
     "classification": "semantic",
     "sites": [
       {
@@ -333,6 +333,11 @@
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "no_result_error",
         "content_hash": "4a002dd947bf783c"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it",
+        "content_hash": "018a3b1da8851e79"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -371,7 +376,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 10 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 11 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5536,13 +5541,23 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-664997a941f1",
+    "id": "dup-2f5b618b8013",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "b65be6c1c7285083"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "a53e241130fed625"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "a53e241130fed625"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5816,7 +5831,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 55 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -7462,6 +7477,25 @@
       }
     ],
     "proposed_home": "events::silent_store",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-033af83f765c",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "read_stream_positions",
+        "content_hash": "bc8216f4bd60487b"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "name": "read_stream_positions",
+        "content_hash": "8dc989744dd28ef8"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/common/fixtures/events.rs, tests/store_content_identity_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
