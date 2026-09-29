@@ -67,6 +67,7 @@ fn a_pre_gate_attempt_commit_bypasses_an_installed_refusing_hook() {
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
 
     let rs = run(&cfg, &deps).expect(

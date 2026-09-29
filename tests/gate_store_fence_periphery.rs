@@ -814,6 +814,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
     let _ = run(&cfg, &deps);
 

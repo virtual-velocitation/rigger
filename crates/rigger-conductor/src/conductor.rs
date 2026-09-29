@@ -1459,6 +1459,9 @@ pub struct Deps<'a> {
     /// The spec's acceptance criteria; when non-empty the coverage gate refuses a
     /// run unless every criterion is covered by a stage.
     pub criteria: Vec<String>,
+    /// Where the run says what the operator must hear that is not an event: a fold into the
+    /// wired graph it could not make. The composition root wires it to stderr.
+    pub log: &'a (dyn Fn(&str) + Sync),
 }
 
 impl Deps<'_> {
@@ -13136,6 +13139,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria,
+                log: &|_| {},
             }
         }
 
@@ -13215,6 +13219,46 @@ mod tests {
         }
     }
     use support::*;
+
+    /// Given a run wired to a graph, when it records an event the graph folds, then its log sink
+    /// hears nothing; when it records one into a graph that owes its rebuild, then the fold it
+    /// could not make is said through the injected sink - how many events it recorded and why
+    /// they were not folded - and nowhere else.
+    #[test]
+    fn a_fold_the_run_could_not_make_is_said_through_its_injected_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let graph =
+            crate::contextgraph::sqlite::Projector::open(path.to_str().unwrap(), "test").unwrap();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let lines = Mutex::new(Vec::<String>::new());
+        let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+        let deps = Deps {
+            graph: Some(&graph),
+            log: &log,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        ctx.emit_with_actor("", contextgraph::TYPE_DECISION_MADE, json!({"id": "d1"}))
+            .unwrap();
+        assert_eq!(
+            snapshot(&lines),
+            Vec::<String>::new(),
+            "a fold that lands is not reported"
+        );
+        std::fs::write(dir.path().join("graph.db.owed"), b"").unwrap();
+        ctx.emit_with_actor("", contextgraph::TYPE_DECISION_MADE, json!({"id": "d2"}))
+            .unwrap();
+        assert_eq!(
+            snapshot(&lines),
+            vec![format!(
+                "rigger: recorded 1 run event(s); not folded into the context graph: graph: {}",
+                contextgraph::REBUILD_OWED
+            )]
+        );
+    }
 
     // ---- FAILURE CLASS (spec 104 criterion 5): pure functions, moved here with the code
     // they test (adj-u104c5 REQUIRED FIX 3) ----
@@ -13916,6 +13960,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -13996,6 +14041,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -14092,6 +14138,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["u-halt"].status, ledger::Status::Verified);
@@ -14982,6 +15029,7 @@ mod tests {
                 "the spec is decomposed".into(),
                 "the feature is implemented".into(),
             ],
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -15251,6 +15299,7 @@ mod tests {
             grounder: Some(&grep),
             graph: Some(&graph),
             criteria: vec![criterion.to_string()],
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -17510,6 +17559,7 @@ mod tests {
             grounder: Some(&grep),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt and points the implementer at `rigger_peers` instead), so a REVIEW/planner
@@ -17580,6 +17630,7 @@ mod tests {
             grounder: Some(&grep),
             graph: Some(&graph),
             criteria: vec![criterion.trim().to_string()],
+            log: &|_| {},
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let verbatim = criterion.trim();
@@ -17700,6 +17751,7 @@ mod tests {
             grounder: Some(&grep),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let seed = vec!["modifier.rs".to_string()];
@@ -17800,6 +17852,7 @@ mod tests {
             grounder: Some(&grep),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt), so this cap behavior is exercised through `GroundingSlice::Full` for the
@@ -18351,6 +18404,7 @@ mod tests {
             grounder: Some(&grep),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let prompt = ctx.graph_context(&seed, GroundingSlice::Full);
@@ -18529,6 +18583,7 @@ mod tests {
             grounder: None,
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -18706,6 +18761,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -18805,6 +18861,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -18911,6 +18968,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -19015,6 +19073,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -19114,6 +19173,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -19251,6 +19311,7 @@ mod tests {
             grounder: None,
             graph: Some(&graph),
             criteria: vec!["first criterion".into()],
+            log: &|_| {},
         };
         run_isolated(&cfg1, &deps1).unwrap();
 
@@ -19280,6 +19341,7 @@ mod tests {
             grounder: None,
             graph: Some(&graph),
             criteria: vec!["second criterion".into()],
+            log: &|_| {},
         };
         run_isolated(&cfg2, &deps2).unwrap();
 
@@ -19485,6 +19547,7 @@ mod tests {
             grounder: None,
             graph: Some(&graph),
             criteria: vec![criterion.to_string()],
+            log: &|_| {},
         };
 
         // Run one records generation A of both files and the design doc.
@@ -19662,6 +19725,7 @@ mod tests {
             grounder: None,
             graph: Some(&graph),
             criteria: vec![criterion.to_string()],
+            log: &|_| {},
         };
         let mut campaigns = 0;
         let mut run_over_the_tree = |criterion: &'static str| {
@@ -19977,6 +20041,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20126,6 +20191,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -21934,6 +22000,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
             run_isolated(&cfg, &deps)
@@ -22052,6 +22119,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).map(|_| ())
         };
@@ -22975,6 +23043,7 @@ mod tests {
             grounder: None,
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
@@ -23474,6 +23543,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         // The caller asserts on the recorded run state + the store (the routing marker and
@@ -23747,6 +23817,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -24144,6 +24215,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -24407,6 +24479,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -24742,6 +24815,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -26129,6 +26203,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -28223,6 +28298,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -28658,6 +28734,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
             // "solo"'s own per-unit CARGO_TARGET_DIR (spec 77 c1): the SAME single-source
@@ -28833,6 +28910,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -28897,6 +28975,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -28970,6 +29049,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -29280,6 +29360,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -30758,6 +30839,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -30840,6 +30922,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let result = run_isolated(&cfg, &deps);
         assert!(
@@ -30974,6 +31057,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -31155,6 +31239,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -31686,6 +31771,7 @@ mod tests {
             grounder: None,
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph
@@ -31804,6 +31890,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
@@ -32320,6 +32407,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["s1", "s2", "s3"] {
@@ -32438,6 +32526,7 @@ mod tests {
             grounder: Some(&grep),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
@@ -32600,6 +32689,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -32829,6 +32919,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         // A persistently failing gate never integrates (an infra HOLD still charges a
@@ -32908,6 +32999,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
             let runs = always_fail.runs.load(Ordering::SeqCst);
@@ -33633,6 +33725,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
@@ -33925,6 +34018,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -33971,6 +34065,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -34165,6 +34260,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let base = RunCtx::for_test(&cfg, &base_deps).grounded_blast_radius(&st);
         assert_eq!(
@@ -34184,6 +34280,7 @@ mod tests {
             grounder: Some(&grep),
             graph: Some(&graph),
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let r = RunCtx::for_test(&cfg, &deps).grounded_blast_radius(&st);
 
@@ -34275,6 +34372,7 @@ mod tests {
             grounder: Some(&symbols),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -34382,6 +34480,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let batches = ctx.partition_wave(&stages, &ready);
@@ -34601,6 +34700,7 @@ mod tests {
             grounder: Some(&structural),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let radii = ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -34634,6 +34734,7 @@ mod tests {
             grounder: Some(&plain),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let plain_ctx = RunCtx::for_test(&cfg, &plain_deps);
         let plain_radii = plain_ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -34792,6 +34893,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["alpha", "beta", "gamma"] {
@@ -34964,6 +35066,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -35121,6 +35224,7 @@ mod tests {
             grounder: Some(&grounder),
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -35325,6 +35429,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -35783,6 +35888,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -36028,6 +36134,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -37549,6 +37656,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -37596,6 +37704,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -37626,6 +37735,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -37695,6 +37805,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -37802,6 +37913,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -37936,6 +38048,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap()
         };
@@ -37972,6 +38085,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -38042,6 +38156,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -38205,6 +38320,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -39129,6 +39245,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![criterion.to_string()],
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -39227,6 +39344,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![crit.to_string()],
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -39270,6 +39388,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -39358,6 +39477,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -39400,6 +39520,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![criterion.to_string()],
+            log: &|_| {},
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
 
@@ -39703,6 +39824,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![crit.to_string()],
+            log: &|_| {},
         };
         let rs1 = run_isolated(&cfg, &deps1).unwrap();
         assert_eq!(
@@ -39724,6 +39846,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![crit.to_string()],
+            log: &|_| {},
         };
         let rs2 = run_isolated(&cfg, &deps2).unwrap();
         assert_eq!(
@@ -39887,6 +40010,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
+            log: &|_| {},
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -39948,6 +40072,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![criterion.to_string()],
+            log: &|_| {},
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
 
@@ -40092,6 +40217,7 @@ mod tests {
             grounder: Some(&grep),
             graph: None,
             criteria: vec![criterion.to_string()],
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
 

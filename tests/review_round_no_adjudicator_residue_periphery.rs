@@ -123,6 +123,7 @@ fn a_lenses_only_panels_residue_is_restored_and_never_merged() {
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
 
     let rs = run(&cfg, &deps).expect(

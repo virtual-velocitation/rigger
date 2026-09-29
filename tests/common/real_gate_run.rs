@@ -125,5 +125,6 @@ fn deps<'a>(store: &'a Store, driver: &'a RealDriverSpy) -> Deps<'a> {
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     }
 }

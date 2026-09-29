@@ -128,6 +128,7 @@ fn run_over(
         grounder: None,
         graph: None,
         criteria: criteria.to_vec(),
+        log: &|_| {},
     };
     run(cfg, &deps).unwrap()
 }

@@ -71,6 +71,7 @@ fn a_speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_rev
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
     let rs = run(&cfg, &deps).expect("the winning candidate must integrate cleanly");
 

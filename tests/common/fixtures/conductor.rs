@@ -324,6 +324,7 @@ pub fn bare_deps<'a>(
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     }
 }
 

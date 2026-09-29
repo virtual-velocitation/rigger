@@ -135,6 +135,7 @@ fn a_landed_units_file_is_fresh_in_the_graph_immediately_after_integration() {
         grounder: None,
         graph: Some(&graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
 
     let rs = run(&cfg, &deps).unwrap();

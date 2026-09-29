@@ -385,6 +385,11 @@ impl StoreSelection {
     }
 }
 
+/// The run's report sink ([`conductor::Deps::log`]) at this composition root: one line to stderr.
+pub(crate) fn stderr_line(line: &str) {
+    eprintln!("{line}");
+}
+
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
 /// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
 /// the local identity migration - which needs the concrete [`Store`] for its stream-rename
@@ -2473,6 +2478,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             grounder: None,
             graph: None,
             criteria,
+            log: &stderr_line,
         };
         let drive = conductor::run(&candidate_cfg, &deps);
 

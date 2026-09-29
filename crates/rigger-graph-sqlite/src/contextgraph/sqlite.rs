@@ -177,6 +177,12 @@ fn owed_mark(path: &str) -> Option<PathBuf> {
     (path != ":memory:").then(|| PathBuf::from(format!("{path}.owed")))
 }
 
+/// Why a graph file owes its rebuild: it records an older fold rule.
+pub const OWED_OLDER_RULE: &str = "it was folded under an older fold rule";
+
+/// Why a graph file owes its rebuild: a fold into it failed.
+pub const OWED_LOST_FOLD: &str = "a fold into it failed";
+
 /// Whether `mark` is present: a fold into its graph file failed and the rebuild is owed.
 fn marked(mark: &Option<PathBuf>) -> bool {
     mark.as_ref().is_some_and(|m| m.exists())
@@ -291,6 +297,16 @@ impl Projector {
         live.execute_batch("DROP TABLE rebuild_cursor;")
             .map_err(be)?;
         Ok(true)
+    }
+
+    /// Why this file owes its rebuild, each cause it carries in order; none when it owes nothing.
+    pub fn owed_because(&self) -> Result<Vec<&'static str>, Error> {
+        Ok(Vec::new())
+    }
+
+    /// Drop the owed mark of the graph file at `path` once that file is gone.
+    pub fn forget_orphaned_mark(_path: &str) -> Result<(), Error> {
+        Ok(())
     }
 
     /// Fold `events` in ONE transaction, rolled back whole on any failure.
@@ -3845,6 +3861,117 @@ mod tests {
         )
         .unwrap();
         assert!(!again, "a paid rebuild does not run again");
+    }
+
+    /// A batch that fails to fold into a current `graph.db` whose owed mark cannot be written (its
+    /// directory is not writable) is never silent: the fold's own error comes back with the mark's
+    /// failure beside it, and the projector that lost the fold answers as owed from then on,
+    /// naming the lost fold as the cause, and refuses every later fold.
+    #[test]
+    fn a_failed_fold_whose_owed_mark_cannot_be_written_says_so_and_still_owes() {
+        use crate::contextgraph::Fold;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let mark = dir.path().join("graph.db.owed");
+        let p = Projector::open(path, "test").unwrap();
+        let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+        poison.position = 1;
+        let fold_error = match Fold::of_batch(Some(&p), std::slice::from_ref(&poison)) {
+            Fold::NotFolded(why) => why,
+            Fold::Folded => panic!("the poison folds nothing"),
+        };
+        drop(p);
+        std::fs::remove_file(&mark).unwrap();
+
+        let p = Projector::open(path, "test").unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let folded = Fold::of_batch(Some(&p), std::slice::from_ref(&poison));
+        let (owed, why, marked) = (
+            p.rebuild_owed().unwrap(),
+            p.owed_because().unwrap(),
+            mark.exists(),
+        );
+        let refused = Fold::of_batch(Some(&p), std::slice::from_ref(&poison));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            folded,
+            Fold::NotFolded(format!(
+                "{fold_error}; the mark that graph.db owes its rebuild was not written ({}: \
+                 Permission denied (os error 13)), so only this process knows it",
+                mark.display()
+            )),
+            "the fold's error comes back with the mark's failure beside it"
+        );
+        assert_eq!(
+            (owed, why, marked),
+            (true, vec![OWED_LOST_FOLD], false),
+            "the projector that lost the fold owes its rebuild though no mark was written"
+        );
+        assert_eq!(
+            refused,
+            Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
+            "and it refuses every later fold"
+        );
+    }
+
+    /// A graph file owes its rebuild for what it says: an older fold rule, a lost fold, or both -
+    /// and a current file that lost nothing owes nothing.
+    #[test]
+    fn a_graph_file_owes_its_rebuild_for_each_cause_it_carries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let mark = dir.path().join("graph.db.owed");
+        let p = Projector::open(path, "test").unwrap();
+        crate::test_support::apply_decision(&p, 1, "d1", "x", &["a.rs"], "");
+        assert_eq!(p.owed_because().unwrap(), Vec::<&str>::new());
+        std::fs::write(&mark, b"").unwrap();
+        assert_eq!(p.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
+        p.conn
+            .lock()
+            .unwrap()
+            .pragma_update(None, "user_version", PROJECTION_VERSION - 1)
+            .unwrap();
+        assert_eq!(
+            p.owed_because().unwrap(),
+            vec![OWED_OLDER_RULE, OWED_LOST_FOLD]
+        );
+        std::fs::remove_file(&mark).unwrap();
+        assert_eq!(p.owed_because().unwrap(), vec![OWED_OLDER_RULE]);
+    }
+
+    /// The owed mark belongs to the graph file whose fold it lost: once that file is gone the mark
+    /// is dropped, so a file made in its place owes nothing - and while the file stands its mark
+    /// is kept.
+    #[test]
+    fn the_owed_mark_of_a_graph_file_that_is_gone_is_dropped_and_one_that_stands_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let mark = dir.path().join("graph.db.owed");
+        std::fs::write(&mark, b"").unwrap();
+        Projector::forget_orphaned_mark(path).unwrap();
+        assert!(
+            !mark.exists(),
+            "the mark of a graph file that is gone is dropped"
+        );
+        assert_eq!(
+            Projector::open(path, "test")
+                .unwrap()
+                .owed_because()
+                .unwrap(),
+            Vec::<&str>::new(),
+            "a file made in its place owes nothing"
+        );
+        std::fs::write(&mark, b"").unwrap();
+        Projector::forget_orphaned_mark(path).unwrap();
+        assert!(
+            mark.exists(),
+            "the mark of a graph file that stands is kept"
+        );
+        Projector::forget_orphaned_mark(":memory:").unwrap();
     }
 
     /// Every LIVE `GOVERNS` edge as `(from, to, source, valid_from)`, read straight from the

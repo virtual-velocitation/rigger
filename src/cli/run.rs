@@ -787,6 +787,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         grounder: Some(grounder.as_ref()),
         graph: Some(&graph),
         criteria,
+        log: &stderr_line,
     };
     let rs = conductor::run(&cfg, &deps)?;
 
@@ -1479,6 +1480,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
         grounder: Some(grounder.as_ref()),
         graph: Some(&graph),
         criteria,
+        log: &stderr_line,
     };
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
@@ -1721,6 +1723,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
                 grounder: Some(grounder.as_ref()),
                 graph: Some(&graph),
                 criteria,
+                log: &stderr_line,
             };
             if let Err(e) = conductor::run(&cfg, &deps) {
                 eprintln!("rigger: conductor: {e}");

@@ -178,6 +178,7 @@ fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
     run(&cfg, &deps1).expect(
         "a same-chunk sibling park on a lenses-only panel must not fail the run - the round \
@@ -213,6 +214,7 @@ fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
     let rs = run(&cfg, &deps2).expect("the resumed window must finish the round");
     assert_eq!(

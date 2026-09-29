@@ -74,6 +74,7 @@ fn a_speculation_winner_with_no_merge_reviewed_sha_stays_the_round_start_sha_acr
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
     let result = run(&cfg, &deps);
     assert!(

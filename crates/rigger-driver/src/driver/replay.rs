@@ -1138,6 +1138,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1206,6 +1207,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -1294,6 +1296,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
 
         let rs = run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure");
@@ -1327,6 +1330,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1351,6 +1355,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1388,6 +1393,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
 
         run_isolated(&cfg, &deps).expect("parking a whole wave is not a run failure");
@@ -1440,6 +1446,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
 
@@ -1490,6 +1497,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
         }
@@ -1550,6 +1558,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1577,6 +1586,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1647,6 +1657,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1674,6 +1685,7 @@ mod tests {
                 grounder: None,
                 graph: None,
                 criteria: Vec::new(),
+                log: &|_| {},
             };
             // The run HALTS cleanly - the review-tier refusal is not a run error.
             run_isolated(&cfg, &deps)
@@ -1754,6 +1766,7 @@ mod tests {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run_isolated(cfg, &deps).map(|_| ())
     }

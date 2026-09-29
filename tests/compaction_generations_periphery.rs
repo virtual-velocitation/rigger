@@ -4282,6 +4282,17 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
     assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("rebuilding graph.db"))
+            .collect::<Vec<_>>(),
+        vec![
+            "rebuilding graph.db from the event log: a fold into it failed, so the log's live \
+             selection is refolded once"
+        ],
+        "setup names the cause the graph owes its rebuild for - the lost fold, not an older \
+         rule; stdout: {out}"
+    );
+    assert_eq!(
         (applied(&graph_db, lost), applied(&graph_db, after)),
         (true, true),
         "setup's rebuild folds the lost event and the one emitted while owed"
@@ -4295,6 +4306,42 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
     assert!(
         ok && out.starts_with("reset --derived: pruned 0 redundant derived-index event(s)"),
         "once setup has paid the rebuild the compaction runs; stdout: {out} stderr: {err}"
+    );
+}
+
+/// Given a `graph.db` a lost fold left owed, when the operator removes the graph file and runs
+/// `rigger setup`, then setup drops the mark the removed file left behind, so the next emit makes a
+/// fresh graph and folds into it rather than inheriting a debt that file no longer carries.
+#[test]
+fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_folds() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    let mark = rigger_file(root, "graph.db.owed");
+    with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
+    assert!(mark.exists(), "the lost fold marks the graph owed");
+    for file in ["graph.db", "graph.db-wal", "graph.db-shm"] {
+        let path = rigger_file(root, file);
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert!(
+        !mark.exists(),
+        "setup drops the mark of the removed graph file"
+    );
+    let (out, err, ok) = emit_decision(root, "d-fresh");
+    assert!(
+        ok && out.ends_with(" and folded it into the context graph\n"),
+        "the next emit folds into a fresh graph; stdout: {out} stderr: {err}"
     );
 }
 

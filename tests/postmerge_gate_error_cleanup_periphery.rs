@@ -137,6 +137,7 @@ impl PostmergeFixture {
             grounder: None,
             graph: None,
             criteria: Vec::new(),
+            log: &|_| {},
         };
         run(&self.cfg, &deps).is_err()
     }

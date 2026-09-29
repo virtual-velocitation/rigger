@@ -217,6 +217,7 @@ fn run_and_capture_prompts_grounded(
         grounder: Some(grounder),
         graph: Some(graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition
     // (integrate / not) is irrelevant to what this periphery layer observes.
@@ -274,6 +275,7 @@ fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
         grounder: Some(&grounder),
         graph: Some(graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     let _ = run(&cfg, &deps);
     let prompts = driver.prompts.lock().unwrap().clone();
@@ -655,6 +657,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         grounder: Some(&grounder),
         graph: Some(graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition is
     // irrelevant to what this periphery layer observes.
@@ -722,6 +725,7 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
         grounder: Some(&grounder),
         graph: Some(graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     // Prompts are captured before each spawn returns, so the run's terminal disposition is irrelevant
     // to what this periphery layer observes.

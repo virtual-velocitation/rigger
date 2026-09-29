@@ -100,6 +100,7 @@ fn a_real_ungated_fanout_template_decomposes_and_every_baseline_unit_still_integ
             "the auth module lands".to_string(),
             "the billing module lands".to_string(),
         ],
+        log: &|_| {},
     };
     let rs = run(&cfg, &deps).expect(
         "an authored ungated fan-out template must run to completion through the real \
@@ -246,6 +247,7 @@ fn a_genuinely_new_unmatched_proposal_under_a_gated_template_spawns_gated_via_in
         grounder: None,
         graph: None,
         criteria: vec!["the auth module lands".to_string()],
+        log: &|_| {},
     };
 
     let rs = run(&cfg, &deps).unwrap_or_else(|e| {

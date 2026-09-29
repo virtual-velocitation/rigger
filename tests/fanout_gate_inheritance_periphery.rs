@@ -117,6 +117,7 @@ fn proposal_integrates_verified_by(proposals: &[&[&str]], output: &'static str, 
         grounder: None,
         graph: None,
         criteria: vec![CRITERION.to_string()],
+        log: &|_| {},
     };
     let rs = run(&cfg, &deps).unwrap();
 

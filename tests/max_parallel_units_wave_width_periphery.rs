@@ -164,6 +164,7 @@ fn max_parallel_units_bounds_real_concurrent_agent_spawns_through_a_real_conduct
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
 
     run(&cfg, &deps)

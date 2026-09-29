@@ -96,6 +96,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
         grounder: None,
         graph: None,
         criteria: vec![criterion.to_string()],
+        log: &|_| {},
     };
     run(&cfg, &deps).unwrap().units[UNIT].status
 }

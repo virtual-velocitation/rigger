@@ -447,6 +447,7 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
         grounder: None,
         graph: None,
         criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        log: &|_| {},
     };
     let rs = run(&cfg, &deps).unwrap();
 
