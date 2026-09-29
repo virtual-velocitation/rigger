@@ -13174,6 +13174,9 @@ mod tests {
             fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
                 Ok(None)
             }
+            fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
+                Ok(false)
+            }
         }
     }
     use support::*;

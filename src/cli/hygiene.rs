@@ -408,10 +408,10 @@ fn reset_derived(loc: &StoreLocation) -> Res {
 /// rebuild such a file, and a compacted log no longer holds what its old folds asserted. A project
 /// with no `graph.db` has nothing to rebuild.
 fn refuse_derived_reset_before_graph_rebuild(graph_db: &str, project: &str) -> Res {
-    if Path::new(graph_db).exists() && Projector::open(graph_db, project)?.rebuild_owed() {
+    if Path::new(graph_db).exists() && Projector::open(graph_db, project)?.rebuild_owed()? {
         return Err(format!(
             "reset --derived: {graph_db} was folded under an older fold rule and must be rebuilt \
-             from the whole event log once before the log is compacted - run `rigger graph build` \
+             from the whole event log once before the log is compacted - run `rigger setup` \
              (it rebuilds graph.db from the log), then re-run `rigger reset --derived`. Refusing \
              rather than compacting away the history that rebuild needs."
         )

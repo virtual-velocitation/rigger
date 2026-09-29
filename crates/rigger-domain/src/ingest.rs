@@ -127,6 +127,11 @@ pub fn derived_index_identity() -> crate::eventstore::ContentIdentity {
     crate::eventstore::ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES)
         .with_reasserting_types(reasserted_derived_types())
         .with_key_parts(derived_key_parts)
+        .with_facts(crate::eventstore::FactIdentity {
+            alias_type: crate::contextgraph::TYPE_ALIAS_DEFINED,
+            alias: crate::contextgraph::alias_definition,
+            fact: crate::contextgraph::asserted_fact,
+        })
 }
 
 /// The derived index types whose recordings RE-ASSERT a fact that was already true, rather than

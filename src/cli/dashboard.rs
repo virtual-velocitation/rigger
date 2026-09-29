@@ -50,6 +50,11 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     let graph_db = db_path("graph.db");
     let progress_db = db_path("progress.db");
     let identity = project_identity();
+    // The dashboard only reads the graph: one that owes its rebuild is served as it stands, and
+    // the dash says so once at start (spec 101).
+    if let Some(note) = graph_rebuild_owed_note(&graph_db, &identity) {
+        eprintln!("{note}");
+    }
     // The scratch root whose markers rigger stats to present each agent's liveness age (spec
     // 14). Resolved once; a repo-less invocation with no `RIGGER_TMPDIR`/configured `workdir`
     // either leaves it empty and the view omits ages (see the resolution below for why an
@@ -823,7 +828,10 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&grounder_name);
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
+    // Opened as it stands: an emit this server serves appends whether or not the graph owes its
+    // rebuild (the fold refuses while it does), and the graph and grounding tools, which depend
+    // on the fold, refuse naming `rigger setup` until it is paid (spec 101).
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = rigger::driver::workflow::Driver::new();
 
     // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's

@@ -527,6 +527,12 @@ pub struct ConceptRealized {
 #[error("graph: {0}")]
 pub struct Error(pub String);
 
+/// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
+/// fold, and what every command that depends on the fold says when it refuses: the one spelling of
+/// the refusal, naming the one command that pays the rebuild.
+pub const REBUILD_OWED: &str = "graph.db was folded under an older fold rule and owes one \
+     rebuild from the event log - run `rigger setup` to rebuild it";
+
 /// Projection is the context-graph read model. `apply` folds one event; `subgraph`
 /// and `resolve` query it, returning only currently valid edges.
 pub trait Projection: Send + Sync {
@@ -549,6 +555,12 @@ pub trait Projection: Send + Sync {
         }
         Ok(())
     }
+
+    /// Whether this projection was folded under an older fold rule and owes one rebuild from the
+    /// log (spec 101): until `rigger setup` pays it nothing folds into it, and nothing whose answer
+    /// depends on the fold may answer from it - it refuses with [`REBUILD_OWED`]. Only a
+    /// projection persisted across binaries can have been folded under an older rule.
+    fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops,
     /// following only currently valid edges (the FEED arc / an agent's blast radius).
@@ -769,6 +781,71 @@ pub struct DocLinkExtracted {
     pub rel: String,
 }
 
+impl DocConceptExtracted {
+    /// The node this concept asserts, as the fold asserts it: its id resolved through `resolve`
+    /// (the name aliases the graph holds when it folds the recording).
+    pub fn asserted(&self, resolve: &dyn Fn(&str) -> String) -> String {
+        resolve(&self.id)
+    }
+}
+
+impl DocLinkExtracted {
+    /// The link this recording asserts, as the fold asserts it: `(from, rel, to)` with both
+    /// endpoints resolved through `resolve` (the name aliases the graph holds when it folds the
+    /// recording).
+    pub fn asserted(&self, resolve: &dyn Fn(&str) -> String) -> (String, String, String) {
+        (resolve(&self.from), self.rel.clone(), resolve(&self.to))
+    }
+}
+
+/// The `AliasDefined` payload: `alias` names the node `canonical` names. The fold records the
+/// latest definition of each alias and resolves every later mention of it through that one hop.
+#[derive(Deserialize)]
+pub struct AliasDefined {
+    /// The name being defined.
+    pub alias: String,
+    /// The node id it resolves to.
+    pub canonical: String,
+}
+
+/// `(alias, canonical)` of an `AliasDefined` payload, or `None` for one the fold cannot read (and
+/// so never folds).
+pub fn alias_definition(data: &[u8]) -> Option<(String, String)> {
+    serde_json::from_slice::<AliasDefined>(data)
+        .ok()
+        .map(|a| (a.alias, a.canonical))
+}
+
+/// THE FACT a recording of a re-asserting type ([`refold_supersedes_prior_edges`] answers `false`)
+/// asserts, keyed exactly as the fold keys it (spec 101): a `DocLinkExtracted` asserts its link's
+/// resolved `(from, rel, to)` and a `DocConceptExtracted` its resolved node id, each through the
+/// payload's own [`DocLinkExtracted::asserted`] / [`DocConceptExtracted::asserted`] the fold calls,
+/// with names resolved through `resolve`. Two recordings assert the same fact exactly when their
+/// keys are equal, however their payloads are spelled. A payload the fold cannot read asserts no
+/// fact (`None`: it folds nothing). A recording of any other type - one the fold supersedes rather
+/// than re-asserts - is keyed by its exact payload bytes: the fold revives nothing of it, so no
+/// coarser identity is claimed, and a policy that wrongly declares such a type re-asserting still
+/// carries between byte-identical recordings, as its declaration says.
+///
+/// Published because log MAINTENANCE has to agree with the fold on it: a compaction that carries a
+/// re-asserted fact's earliest valid-time onto the recording it keeps must group recordings into
+/// facts exactly as the fold revives them, or a rebuild of the compacted log re-dates the fact.
+pub fn asserted_fact(
+    type_: &str,
+    data: &[u8],
+    resolve: &dyn Fn(&str) -> String,
+) -> Option<Vec<u8>> {
+    match type_ {
+        TYPE_DOC_LINK_EXTRACTED => serde_json::from_slice::<DocLinkExtracted>(data)
+            .ok()
+            .and_then(|l| serde_json::to_vec(&l.asserted(resolve)).ok()),
+        TYPE_DOC_CONCEPT_EXTRACTED => serde_json::from_slice::<DocConceptExtracted>(data)
+            .ok()
+            .map(|c| c.asserted(resolve).into_bytes()),
+        _ => Some(data.to_vec()),
+    }
+}
+
 /// Periphery layer (spec 37 criterion 2): the round-trip + back-compat CONTRACT of the
 /// [`EdgeInferred`] wire form now that it carries `caller`. This is the emit->log->fold seam,
 /// not the emit pass itself: the feature-gated `extract_events` (its own inside-out unit tests
@@ -856,24 +933,11 @@ mod caller_wire_contract {
     }
 }
 
-/// Spec 101: a projection that is not persisted across binaries is never folded under an older
-/// rule, so the port's default owes no rebuild.
-#[cfg(test)]
-mod rebuild_owed_default {
-    use super::Projection;
-    use crate::test_support::MinimalProjection;
-
-    #[test]
-    fn a_projection_with_no_override_owes_no_rebuild() {
-        assert_eq!(MinimalProjection.rebuild_owed().unwrap(), false);
-    }
-}
-
 /// Spec 101: the fact a re-asserting recording asserts, keyed as the fold keys it.
 #[cfg(test)]
 mod asserted_fact_tests {
     use super::{
-        alias_definition, asserted_fact, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+        alias_definition, asserted_fact, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED,
         TYPE_DOC_LINK_EXTRACTED,
     };
 
@@ -907,15 +971,15 @@ mod asserted_fact_tests {
     }
 
     #[test]
-    fn a_payload_the_fold_cannot_read_or_another_type_asserts_no_fact() {
+    fn a_payload_the_fold_cannot_read_asserts_no_fact_and_another_type_is_its_bytes() {
         let link = br#"{"from":"d.md","to":"a.rs","rel":"SPECIFIES"}"#;
         assert_eq!(
             [
                 asserted_fact(TYPE_DOC_LINK_EXTRACTED, br#"{"from":"d.md"}"#, &upper),
                 asserted_fact(TYPE_DOC_CONCEPT_EXTRACTED, b"[]", &upper),
-                asserted_fact(TYPE_DECISION_MADE, link, &upper),
+                asserted_fact(TYPE_CODE_ENTITY_EXTRACTED, link, &upper),
             ],
-            [None, None, None]
+            [None, None, Some(link.to_vec())]
         );
     }
 

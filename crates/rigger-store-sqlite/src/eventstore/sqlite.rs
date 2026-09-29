@@ -14,8 +14,9 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use crate::sqlite::open_connection;
 
 use super::{
-    from_nanos, to_nanos, Appended, ContentIdentity, Direction, Error, Event, EventStore,
-    ExpectedRevision, Filter, Position, Revision, Subscription, NO_STREAM,
+    from_nanos, to_nanos, AliasHistory, Appended, ContentIdentity, Direction, Error, Event,
+    EventStore, ExpectedRevision, FactIdentity, Filter, Position, Revision, Subscription,
+    NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -142,7 +143,8 @@ impl Store {
     ///    fact to whichever recording survived - and for the design-intent edge class the date IS
     ///    the value. The policy's own declaration ([`ContentIdentity::reasserts`]) names the types
     ///    this is true of; each of their surviving rows takes the `MIN(valid_from)` of every
-    ///    recording of its identity with the same payload before the deletes run. Because a minimum is
+    ///    recording of its identity asserting the same fact, as the policy's
+    ///    [`ContentIdentity::facts`] keys it, before the deletes run. Because a minimum is
     ///    associative and every deleted row's valid-time is at or above the minimum retained on
     ///    its survivor, the compacted log then yields exactly the valid-times the whole log
     ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
@@ -458,14 +460,37 @@ struct FactRun {
     broken: bool,
 }
 
-/// A re-asserted fact's payload as the fold reads it: parsed and re-serialized with its object
-/// keys sorted, so the two ingest sinks, which spell one fact's keys in different orders, record
-/// the same fact. A payload that does not parse as a JSON object is its own bytes.
-fn canonical_payload(payload: Vec<u8>) -> Vec<u8> {
-    serde_json::from_slice::<std::collections::BTreeMap<String, serde_json::Value>>(&payload)
-        .ok()
-        .and_then(|fields| serde_json::to_vec(&fields).ok())
-        .unwrap_or(payload)
+/// The aliases each stream under `stream_prefix` defines, replayed from the log in position order
+/// through the policy's own reading of a definition ([`FactIdentity::alias`]).
+fn alias_histories(
+    conn: &Connection,
+    stream_prefix: &str,
+    facts: &FactIdentity,
+) -> Result<std::collections::HashMap<String, AliasHistory>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT position, stream, data FROM events
+              WHERE type = ?2 AND substr(stream, 1, length(?1)) = ?1
+              ORDER BY position",
+        )
+        .map_err(be)?;
+    let mut rows = stmt
+        .query(params![stream_prefix, facts.alias_type])
+        .map_err(be)?;
+    let mut histories: std::collections::HashMap<String, AliasHistory> =
+        std::collections::HashMap::new();
+    while let Some(row) = rows.next().map_err(be)? {
+        let position: i64 = row.get(0).map_err(be)?;
+        let stream: String = row.get(1).map_err(be)?;
+        let data: Vec<u8> = row.get(2).map_err(be)?;
+        if let Some((alias, canonical)) = (facts.alias)(&data) {
+            histories
+                .entry(stream)
+                .or_default()
+                .define(position as Position, alias, canonical);
+        }
+    }
+    Ok(histories)
 }
 
 /// The ONE selection of a derived-index compaction, shared by the prune, its read-only preview
@@ -485,8 +510,9 @@ fn canonical_payload(payload: Vec<u8>) -> Vec<u8> {
 /// WITHOUT A BREAK: a newer generation revives each fact its prior generation asserted, and a
 /// fact a generation dropped is new again when a later one asserts it. So the walk numbers each
 /// identity's RUNS - maximal stretches of recordings of one generation, run 0 the latest - and a
-/// surviving row takes the minimum valid-time over the recordings of the same identity with the
-/// same parsed payload ([`canonical_payload`], the same fact) in consecutive runs from its own,
+/// surviving row takes the minimum valid-time over the recordings of the same identity asserting
+/// the same fact - keyed by the policy's [`FactIdentity`], the fold's own key, with names resolved
+/// through the aliases its stream defined before each recording - in consecutive runs from its own,
 /// stopping at the first run that does not assert it, and over the earlier recordings of its own
 /// exact key in its own run, however their payloads are spelled. That carries a fact every
 /// generation re-asserted back to the generation that first asserted it, and never past a
@@ -513,10 +539,14 @@ fn plan_derived_prune(
     );
     let mut stmt = conn.prepare(&sql).map_err(be)?;
     let mut rows = stmt.query(params![stream_prefix]).map_err(be)?;
+    let aliases = match identity.facts() {
+        Some(facts) => alias_histories(conn, stream_prefix, facts)?,
+        None => std::collections::HashMap::new(),
+    };
     // (stream, identity) -> (latest generation, generation of the run being walked, its number).
     let mut runs: HashMap<(String, String), (String, String, usize)> = HashMap::new();
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
-    // (stream, type, identity, canonical payload) -> the fact's run so far.
+    // (stream, type, identity, fact key) -> the fact's run so far.
     type Fact = (String, String, String, Vec<u8>);
     let mut facts: HashMap<Fact, FactRun> = HashMap::new();
     // (stream, type, key) of a surviving re-asserting row -> (its run, the earliest valid-time of
@@ -563,13 +593,24 @@ fn plan_derived_prune(
         if superseded {
             plan.superseded += 1;
         }
-        if let Some(payload) = payload {
+        let fact = payload.and_then(|payload| match identity.facts() {
+            Some(facts) => {
+                let history = aliases.get(&stream);
+                let resolve = |mention: &str| match history {
+                    Some(h) => h.resolve(mention, position as Position),
+                    None => mention.to_string(),
+                };
+                (facts.fact)(&type_, &payload, &resolve)
+            }
+            None => Some(payload),
+        });
+        if let Some(fact) = fact {
             if let Some((key_run, earliest)) = keys.get_mut(&exact) {
                 if *key_run == run {
                     *earliest = (*earliest).min(valid_from);
                 }
             }
-            let fact_key = (stream, type_, batch, canonical_payload(payload));
+            let fact_key = (stream, type_, batch, fact);
             let fact = facts.entry(fact_key.clone()).or_insert(FactRun {
                 earliest: valid_from,
                 run,

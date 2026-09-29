@@ -394,19 +394,53 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
     Ok(Store::open(path)?)
 }
 
-/// Open this project's `graph.db` for folding (spec 101): a file folded under an older fold rule
-/// is first rebuilt cold from `log` (the project's namespaced store, whose run stream holds every
-/// event the graph folds), once, so nothing ever folds incrementally onto it.
+/// Open this project's `graph.db` for `command`, whose answer depends on the fold (spec 101): a
+/// file folded under an older fold rule is refused at once, naming `rigger setup` - the one
+/// command that rebuilds it - never waited on, rebuilt or folded into here. The open itself writes
+/// nothing to such a file.
 fn open_graph(
     graph_db: &str,
     project: &str,
-    log: &dyn EventStore,
+    command: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
     let graph = Projector::open(graph_db, project)?;
-    if graph.rebuild_owed() {
-        graph.rebuild(&log.read_stream(conductor::STREAM, 0, Direction::Forward)?)?;
+    if graph.rebuild_owed()? {
+        return Err(format!("{command}: {}", contextgraph::REBUILD_OWED).into());
     }
     Ok(graph)
+}
+
+/// What a read-only surface (graph inspection, `rigger validate`, the dashboard) says when this
+/// project's `graph.db` owes its rebuild (spec 101): it answers from the projection as it stands,
+/// and names the command that pays the rebuild. `None` when there is no file (never creating
+/// one), when it owes nothing, or when it cannot be read.
+fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
+    if !Path::new(graph_db).exists() {
+        return None;
+    }
+    let owed = Projector::open(graph_db, project)
+        .ok()?
+        .rebuild_owed()
+        .ok()?;
+    owed.then(|| {
+        format!(
+            "note: {} - until then the context graph answers as it stands",
+            contextgraph::REBUILD_OWED
+        )
+    })
+}
+
+/// Open this project's `graph.db` for a read-only inspection: it answers from the projection as
+/// it stands, saying on stderr first when that projection owes its rebuild
+/// ([`graph_rebuild_owed_note`]). The open writes nothing to such a file.
+fn open_graph_to_read(
+    graph_db: &str,
+    project: &str,
+) -> Result<Projector, Box<dyn std::error::Error>> {
+    if let Some(note) = graph_rebuild_owed_note(graph_db, project) {
+        eprintln!("{note}");
+    }
+    Ok(Projector::open(graph_db, project)?)
 }
 
 /// The `KURRENTDB_CONN` connection string from the environment, treating an empty value as

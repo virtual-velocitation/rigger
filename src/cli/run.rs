@@ -666,7 +666,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         return Err(e);
     }
 
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), "step")?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     // The store state BEFORE this step's own liveness sweep runs (spec 69, criterion 5):
     // used below to scope the sweep's marker reads to THIS run (a slug-colliding re-run
@@ -1464,7 +1464,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // unchanged spec. `false`: this is the standalone CLI path, so stdout is the normal
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
     fresh_run_if_requested(parsed, &store, &criteria, false, &base_tip)?;
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
     // NOT YET the agent host (spec 104 criterion 2 decision d-u104-stream-defer-composition-
     // swap): `driver::claude_code::Driver` now conforms to `AgentDriver` (this criterion),
     // but flipping THIS composition root breaks the argv/stdio CONTRACT `tests/cli.rs`'s own
@@ -1689,7 +1689,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
     // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
     fresh_run_if_requested(parsed, &store, &criteria, true, &base_tip)?;
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;

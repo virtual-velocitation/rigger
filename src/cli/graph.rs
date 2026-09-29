@@ -47,7 +47,7 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     if around.is_empty() {
         return Err("graph: --around <id> or --show <entity> is required".into());
     }
-    let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
+    let gp = open_graph_to_read(&db_path("graph.db"), &project_identity())?;
     let g = gp.subgraph(&[around.clone()], depth)?;
     println!("subgraph around {around:?} (depth {depth}):");
     print_around_subgraph(&g, &around);
@@ -176,7 +176,7 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 ///
 /// Read-only over the projection and the working tree; deterministic for a given tree and graph.
 fn cmd_graph_show(entity: &str) -> Res {
-    let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
+    let gp = open_graph_to_read(&db_path("graph.db"), &project_identity())?;
     match gp.locate(entity)? {
         Located::None => {
             println!(
@@ -506,7 +506,7 @@ fn cmd_graph_build(_args: &[String]) -> Res {
     let selection = store_selection(None, None)?;
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), "graph build")?;
 
     // The tree to fold: the git top-level, so a build launched from a subdirectory still ingests
     // the WHOLE project (the same root a run's `deps.repo` carries), falling back to the cwd
@@ -670,7 +670,11 @@ fn run_graph_pass(
     let selection = store_selection(None, None)?;
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &store)?;
+    let graph = open_graph(
+        &db_path("graph.db"),
+        &project_identity(),
+        &format!("graph {verb}"),
+    )?;
 
     let (events, summary) = derive(&graph.whole()?, resolution);
     rigger::ingest::append_and_fold_batch(
@@ -926,11 +930,10 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     refresh_registry_entry(&loc, &selection);
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let graph = open_graph(&loc.file("graph.db"), &loc.identity(), &store)?;
 
-    // Same args shape the MCP tool receives, so emit_event - the shared core both
-    // surfaces call - behaves identically here and over MCP. A non-empty `--spawn <id>`
-    // rides in `meta.spawn`, the same key the MCP server's `stamp_current_spawn` writes.
+    // Same args shape the MCP tool receives, so the append - the shared core both surfaces
+    // call - behaves identically here and over MCP. A non-empty `--spawn <id>` rides in
+    // `meta.spawn`, the same key the MCP server's `stamp_current_spawn` writes.
     let mut tool_args = serde_json::json!({ "type": typ, "data": data });
     if let Some(spawn) = spawn.filter(|s| !s.is_empty()) {
         let mut meta = serde_json::Map::new();
@@ -943,7 +946,21 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
             .expect("json! built an object")
             .insert("meta".to_string(), serde_json::Value::Object(meta));
     }
-    let pos = mcpserver::emit_event(&store, conductor::STREAM, Some(&graph), &tool_args)?;
+    // The event goes on the log FIRST, before `graph.db` is opened (spec 101): an emit never
+    // waits on, or fails over, the context graph. It is then folded only into a graph that owes
+    // no rebuild; one that does re-derives it from the log when `rigger setup` rebuilds it.
+    let event = mcpserver::append_emit(&store, conductor::STREAM, &tool_args)?;
+    let pos = event.position;
+    let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
+    if graph.rebuild_owed()? {
+        println!(
+            "emitted {typ} (position {pos}); not folded into the context graph: {}",
+            contextgraph::REBUILD_OWED
+        );
+        return Ok(());
+    }
+    // Best-effort, exactly as over MCP: the event is already durably on the log.
+    let _ = graph.apply(&event);
     println!("emitted {typ} (position {pos}) and folded it into the context graph");
     Ok(())
 }

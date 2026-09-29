@@ -292,6 +292,62 @@ pub struct ContentIdentity {
     /// `None` when this policy's keys carry no generation (see
     /// [`with_key_parts`](Self::with_key_parts)).
     key_parts: Option<KeyParts>,
+    /// How a re-asserting recording names the fact it asserts, or `None` when this policy never
+    /// declared it (see [`with_facts`](Self::with_facts)).
+    facts: Option<FactIdentity>,
+}
+
+/// How a policy's re-asserting recordings name the FACT each asserts, declared by the layer that
+/// folds them, so a compaction groups recordings into facts exactly as the fold does (spec 101).
+/// A fact is keyed over names resolved through the aliases the log defines as of the recording:
+/// `alias_type` is the event type that defines one, `alias` reads a definition's
+/// `(alias, canonical)`, and `fact` keys the fact a recording of a type with a payload asserts,
+/// resolving each name it holds through the resolver it is handed - `None` when it asserts none
+/// the fold would fold. The store replays the definitions ([`AliasHistory`]) and only compares
+/// the keys.
+#[derive(Clone, Copy, Debug)]
+pub struct FactIdentity {
+    /// The event type whose recordings define a name alias.
+    pub alias_type: &'static str,
+    /// `(alias, canonical)` of an alias definition's payload, or `None` for one the fold cannot
+    /// read.
+    pub alias: fn(&[u8]) -> Option<(String, String)>,
+    /// The key of the fact a recording asserts, from its type and payload, its names resolved
+    /// through the resolver.
+    pub fact: FactKey,
+}
+
+/// A fact-key function: the key of the fact a recording of a type with a payload asserts, its
+/// names resolved through the resolver, or `None` when it asserts none.
+pub type FactKey = fn(&str, &[u8], &dyn Fn(&str) -> String) -> Option<Vec<u8>>;
+
+/// The name aliases one stream defines, replayed so any recording's names resolve as the fold
+/// resolved them when it folded that recording: through the LATEST definition of the name
+/// recorded BEFORE it, one hop, and to itself when none was.
+#[derive(Clone, Debug, Default)]
+pub struct AliasHistory {
+    /// alias -> every `(position, canonical)` defining it, in position order.
+    defined: BTreeMap<String, Vec<(Position, String)>>,
+}
+
+impl AliasHistory {
+    /// Record that the recording at `at` defines `alias` as `canonical`. Definitions are recorded
+    /// in position order.
+    pub fn define(&mut self, at: Position, alias: String, canonical: String) {
+        self.defined.entry(alias).or_default().push((at, canonical));
+    }
+
+    /// What `mention` resolves to for the recording at `at`.
+    pub fn resolve(&self, mention: &str, at: Position) -> String {
+        let before = |defs: &Vec<(Position, String)>| {
+            let n = defs.partition_point(|(p, _)| *p < at);
+            n.checked_sub(1).map(|last| defs[last].1.clone())
+        };
+        self.defined
+            .get(mention)
+            .and_then(before)
+            .unwrap_or_else(|| mention.to_string())
+    }
 }
 
 /// A content-key parser: `(the batch identity the key belongs to, that batch's content
@@ -311,7 +367,23 @@ impl ContentIdentity {
             types: types.into_iter().map(Into::into).collect(),
             reasserting: None,
             key_parts: None,
+            facts: None,
         }
+    }
+
+    /// Declare how a re-asserting recording names the fact it asserts ([`FactIdentity`]), so a
+    /// compaction carries a fact's earliest valid-time across exactly the recordings the fold
+    /// treats as one fact. A policy that never declared it treats two recordings as one fact
+    /// only when their payloads are byte-identical (the fail-safe direction: nothing is carried
+    /// between recordings the policy cannot show assert the same thing).
+    pub fn with_facts(mut self, facts: FactIdentity) -> Self {
+        self.facts = Some(facts);
+        self
+    }
+
+    /// The declared [`FactIdentity`], or `None`.
+    pub fn facts(&self) -> Option<&FactIdentity> {
+        self.facts.as_ref()
     }
 
     /// Declare how a content key names its batch identity and content generation, so a

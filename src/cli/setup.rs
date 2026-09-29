@@ -638,6 +638,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
     let scaffold = init_project(root)?;
+    // Pay the one cold rebuild a `graph.db` folded under an older fold rule owes (spec 101): the
+    // only command that rebuilds it, because it is the verb every install already runs.
+    let graph_rebuilt = rebuild_owed_graph()?;
     let workflow = install_workflow(root)?;
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
     // loadable front-door DISTINCT from the `/rigger` workflow, with this repo's project
@@ -693,6 +696,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
     let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
     if !scaffold.changed()
+        && !graph_rebuilt
         && !workflow_changed
         && !skill_changed
         && !hook_changed
@@ -803,6 +807,60 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // quiet and never re-prints it (spec 05 crit 4: a rerun prints nothing surprising).
     print_orientation();
     Ok(())
+}
+
+/// Rebuild this project's `graph.db` cold from the event log when it was folded under an older fold
+/// rule (spec 101), saying so and reporting how far along it is, and report whether it did. A
+/// project with no `graph.db`, or one that owes nothing, is left untouched. The rebuild is one
+/// transaction ([`Projector::rebuild`]): an emit racing it appends and is folded after it, a
+/// command that depends on the fold refuses until it commits, and a read sees the old file or the
+/// rebuilt one, never half of either.
+fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
+    let graph_db = db_path("graph.db");
+    if !Path::new(&graph_db).exists() {
+        return Ok(false);
+    }
+    let graph = Projector::open(&graph_db, &project_identity())?;
+    if !graph.rebuild_owed()? {
+        return Ok(false);
+    }
+    // The scaffold may just have minted the durable identity: the log moves to it first (the
+    // migration every run driver performs on open), so the rebuild reads the history the legacy
+    // namespace still holds.
+    migrate_local_identity()?;
+    let backend = resolve_store(&store_selection(None, None)?, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
+    println!(
+        "rebuilding graph.db from the event log: it was folded under an older fold rule, so the \
+         whole log is refolded once"
+    );
+    let log = || {
+        store
+            .read_stream(conductor::STREAM, 0, Direction::Forward)
+            .map_err(|e| contextgraph::Error(e.to_string()))
+    };
+    let rebuilt = graph.rebuild(&log, &mut |folded, total| {
+        if let Some(line) = rebuild_progress_line(folded, total) {
+            println!("{line}");
+        }
+    })?;
+    if rebuilt {
+        println!("rebuilt graph.db from the event log");
+    }
+    Ok(rebuilt)
+}
+
+/// The progress line a graph rebuild prints after folding `folded` of `total` events: one each
+/// time the count crosses a tenth of the log, the last on the final event, so a long rebuild
+/// reports how far along it is in ten steps however long the log is.
+fn rebuild_progress_line(folded: usize, total: usize) -> Option<String> {
+    let tenth = |n: usize| n * 10 / total;
+    (tenth(folded) > tenth(folded - 1)).then(|| {
+        format!(
+            "rebuilt {folded} of {total} events ({}%)",
+            folded * 100 / total
+        )
+    })
 }
 
 /// Install the graph-first lookup hook (spec 92, criterion 4): merges the PreToolUse

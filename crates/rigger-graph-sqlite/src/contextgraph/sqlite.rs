@@ -3,24 +3,24 @@
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::query::name_suffix;
 use super::{
     CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, Error, Graph, Located,
     Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
-    KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE, REL_ABOUT, REL_CALLS,
-    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY,
-    REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
-    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
-    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE, REBUILD_OWED,
+    REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
+    REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES,
+    REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS,
+    TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
+    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{to_nanos, Event, Position};
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
@@ -93,9 +93,10 @@ CREATE TABLE IF NOT EXISTS relabel_owed (
 ";
 
 /// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. A file at an
-/// older version was folded before generations superseded their predecessors (spec 101): it holds
-/// facts a superseded generation asserted and has no assertion ledgers to retire them from, so it
-/// is rebuilt cold from the log once ([`Projector::rebuild`]) and never folded incrementally again.
+/// older version that folded anything was folded before generations superseded their predecessors
+/// (spec 101): it holds facts a superseded generation asserted and has no assertion ledgers to
+/// retire them from, so it owes one cold rebuild from the log ([`Projector::rebuild`], which only
+/// `rigger setup` runs) and nothing folds into it incrementally until then.
 const PROJECTION_VERSION: i64 = 1;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
@@ -138,9 +139,6 @@ const FOLD_TABLES: [&str; 11] = [
 pub struct Projector {
     conn: Mutex<Connection>,
     project: String,
-    /// The file was folded under an older [`PROJECTION_VERSION`]: nothing folds into it
-    /// incrementally until [`Projector::rebuild`] has refolded the log.
-    rebuild_owed: AtomicBool,
 }
 
 /// What one [`Projector::prune`] reclaimed, both in the same transaction: the dead-run
@@ -171,80 +169,63 @@ impl Projector {
     /// single-project deployment behaves exactly as before.
     pub fn open(path: &str, project: &str) -> Result<Self, Error> {
         let conn = open_connection(path).map_err(be)?;
-        let version: i64 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .map_err(be)?;
-        if version < PROJECTION_VERSION {
-            // A file from before this rule may hold its ledgers in an older shape; they are
-            // recreated in the current one (and refilled by the rebuild the file then owes).
-            conn.execute_batch(DROP_LEDGERS).map_err(be)?;
-        }
-        conn.execute_batch(SCHEMA).map_err(be)?;
-        migrate_project_scope(&conn, project)?;
-        migrate_edge_tier(&conn)?;
-        migrate_indexes(&conn)?;
-        let folded: bool = conn
-            .query_row("SELECT EXISTS (SELECT 1 FROM applied)", [], |r| r.get(0))
-            .map_err(be)?;
-        let outdated = version < PROJECTION_VERSION;
-        if outdated && !folded {
-            conn.pragma_update(None, "user_version", PROJECTION_VERSION)
-                .map_err(be)?;
+        // A file that owes its rebuild is opened exactly as it stands: no schema, no migration,
+        // no ledger drop. Every write it needs happens inside the rebuild's one transaction, so an
+        // open racing that rebuild - a read, or a folding command about to refuse - can neither
+        // undo nor observe half of it, and never waits on its lock.
+        if !rebuild_owed(&conn)? {
+            open_current(&conn, project)?;
         }
         Ok(Projector {
             conn: Mutex::new(conn),
             project: project.to_string(),
-            rebuild_owed: AtomicBool::new(outdated && folded),
         })
     }
 
-    /// Whether this `graph.db` was folded under an older fold rule and must be rebuilt cold from
-    /// the log ([`Projector::rebuild`]) before anything folds into it (spec 101: an old file holds
-    /// facts a superseded generation asserted and no ledger to retire them from).
-    pub fn rebuild_owed(&self) -> bool {
-        self.rebuild_owed.load(Ordering::SeqCst)
-    }
-
-    /// Rebuild the projection COLD from `events` (the project's whole log, in position order): in
-    /// one transaction every fold-state table is emptied, every event is folded exactly as
+    /// Pay an owed rebuild: refold the log COLD in ONE write transaction taken immediately, and
+    /// report whether it ran. Under that lock the file's version is read again - a rebuild another
+    /// process committed first leaves nothing owed, so this returns `false` without reading the
+    /// log - and only then is `log` read. The old ledgers are dropped and recreated in their
+    /// current shape, every fold-state table is emptied, every event is folded exactly as
     /// [`Projection::apply`] folds it - one at a time, so an event whose fold fails (a malformed
-    /// payload) is skipped exactly as the live fold skips it, never failing the rebuild - and the
-    /// current [`PROJECTION_VERSION`] is recorded, so the rebuild happens once and incremental
-    /// folding resumes on the rebuilt file. The file is this project's local projection, so
-    /// emptying it loses nothing the log does not hold.
-    pub fn rebuild(&self, events: &[Event]) -> Result<(), Error> {
+    /// payload) is skipped exactly as the live fold skips it - reporting `(folded, total)` to
+    /// `progress` after each, and the current [`PROJECTION_VERSION`] is stamped, all before the
+    /// one commit. A concurrent open therefore sees either the old file, which it neither changes
+    /// nor folds into, or the rebuilt one.
+    ///
+    /// An emit that finds the file still owing appends without folding. One that appended after
+    /// `log` was read yet saw the old version did so before the commit, so `log` is read once more
+    /// after it and folded in a second transaction the same way: the fold's per-position guard
+    /// passes over every event the rebuild already folded and folds what the log gained, and an
+    /// emit that sees the new version folds its own event, the same guard making the two meet
+    /// exactly once.
+    pub fn rebuild(
+        &self,
+        log: &dyn Fn() -> Result<Vec<Event>, Error>,
+        progress: &mut dyn FnMut(usize, usize),
+    ) -> Result<bool, Error> {
         let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(be)?;
+        if !rebuild_owed(&tx)? {
+            return Ok(false);
+        }
+        let events = log()?;
+        tx.execute_batch(DROP_LEDGERS).map_err(be)?;
+        schema(&tx, &self.project)?;
         for table in FOLD_TABLES {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(be)?;
         }
-        for e in events {
-            tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-            let settle = match fold_new(&tx, std::slice::from_ref(e), &self.project) {
-                Ok(()) => "RELEASE fold_event",
-                Err(_) => "ROLLBACK TO fold_event; RELEASE fold_event",
-            };
-            tx.execute_batch(settle).map_err(be)?;
-        }
+        fold_each(&tx, &events, &self.project, progress)?;
         tx.pragma_update(None, "user_version", PROJECTION_VERSION)
             .map_err(be)?;
         tx.commit().map_err(be)?;
-        self.rebuild_owed.store(false, Ordering::SeqCst);
-        Ok(())
-    }
-
-    /// Refuse an incremental fold into a file whose rebuild is owed: folding onto a projection
-    /// built under an older rule never converges on what a rebuild of the same log holds.
-    fn refuse_if_rebuild_owed(&self) -> Result<(), Error> {
-        if self.rebuild_owed() {
-            return Err(Error(
-                "graph.db was folded under an older fold rule and must be rebuilt from the log \
-                 before anything folds into it (rigger graph build rebuilds it)"
-                    .to_string(),
-            ));
-        }
-        Ok(())
+        let tx = guard.transaction().map_err(be)?;
+        fold_each(&tx, &log()?, &self.project, &mut |_, _| {})?;
+        tx.commit().map_err(be)?;
+        Ok(true)
     }
 
     /// The WHOLE live projection for this project: every node plus every currently-valid edge
@@ -853,6 +834,85 @@ fn layered_call_walk(
     Ok((nodes, call_edges))
 }
 
+/// Fold `events` in order inside `tx`, each exactly as [`Projection::apply`] folds it and one at a
+/// time, so an event whose fold fails (a malformed payload the log holds) is skipped exactly as the
+/// live fold skips it and the rest still fold; `progress` hears `(folded, total)` after each. An
+/// event the file already folded is passed over by the fold's per-position guard.
+fn fold_each(
+    tx: &Transaction,
+    events: &[Event],
+    project: &str,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<(), Error> {
+    for (folded, e) in events.iter().enumerate() {
+        tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
+        let settle = match fold_new(tx, std::slice::from_ref(e), project) {
+            Ok(()) => "RELEASE fold_event",
+            Err(_) => "ROLLBACK TO fold_event; RELEASE fold_event",
+        };
+        tx.execute_batch(settle).map_err(be)?;
+        progress(folded + 1, events.len());
+    }
+    Ok(())
+}
+
+/// Whether `conn`'s file records a fold rule older than [`PROJECTION_VERSION`].
+fn stale(conn: &Connection) -> Result<bool, Error> {
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(be)?;
+    Ok(version < PROJECTION_VERSION)
+}
+
+/// Whether the file behind `conn` owes its cold rebuild: it records an older fold rule AND folded
+/// something under it. A file at the old rule that never folded anything holds nothing a rebuild
+/// could change.
+fn rebuild_owed(conn: &Connection) -> Result<bool, Error> {
+    if !stale(conn)? {
+        return Ok(false);
+    }
+    let folded: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'applied')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(be)?;
+    if !folded {
+        return Ok(false);
+    }
+    conn.query_row("SELECT EXISTS (SELECT 1 FROM applied)", [], |r| r.get(0))
+        .map_err(be)
+}
+
+/// Bring a file that owes no rebuild to the current schema. One at an older fold rule has folded
+/// nothing, so it takes the current shape and version at once, in one immediate transaction that
+/// reads the version again under its lock: two first opens never both drop ledgers the other has
+/// begun to fill.
+fn open_current(conn: &Connection, project: &str) -> Result<(), Error> {
+    if !stale(conn)? {
+        return schema(conn, project);
+    }
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(be)?;
+    if stale(&tx)? {
+        tx.execute_batch(DROP_LEDGERS).map_err(be)?;
+        tx.pragma_update(None, "user_version", PROJECTION_VERSION)
+            .map_err(be)?;
+    }
+    schema(&tx, project)?;
+    tx.commit().map_err(be)
+}
+
+/// Create what [`SCHEMA`] declares and run the in-place migrations, so a file of any earlier
+/// shape answers every query in the current one. A pre-spec-28 graph.db (no `project` column) is
+/// migrated in place, backfilling its rows with `project`.
+fn schema(conn: &Connection, project: &str) -> Result<(), Error> {
+    conn.execute_batch(SCHEMA).map_err(be)?;
+    migrate_project_scope(conn, project)?;
+    migrate_edge_tier(conn)?;
+    migrate_indexes(conn)
+}
+
 /// Additive backward-compat migration (spec 28, criterion 1). A graph.db created before the
 /// project scope existed has `nodes(id, kind, attrs)` and `edges(..., source)` with no
 /// `project` column. Bring it to the scoped shape WITHOUT wiping it: recreate `nodes` with the
@@ -974,6 +1034,12 @@ impl Projection for Projector {
         self.apply_batch(std::slice::from_ref(e))
     }
 
+    /// Read from the file on every call, never remembered: another process's
+    /// [`Projector::rebuild`] may pay it at any moment.
+    fn rebuild_owed(&self) -> Result<bool, Error> {
+        rebuild_owed(&self.conn.lock().unwrap())
+    }
+
     /// Fold a whole batch of events in ONE transaction (spec 49's batched-fold cadence): the store's
     /// transaction cost is paid ONCE for the whole file batch instead of once per event, which is the
     /// load-bearing fix for a cold `graph build` whose measured throughput was transaction-cadence
@@ -985,7 +1051,9 @@ impl Projection for Projector {
         if events.is_empty() {
             return Ok(());
         }
-        self.refuse_if_rebuild_owed()?;
+        if self.rebuild_owed()? {
+            return Err(Error(REBUILD_OWED.to_string()));
+        }
         let mut guard = self.conn.lock().unwrap();
         let tx = guard.transaction().map_err(be)?;
         fold_new(&tx, events, &self.project)?;
@@ -1991,7 +2059,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 KIND_AGENT => KIND_AGENT,
                 _ => return Ok(()),
             };
-            let id = resolve_in_tx(tx, &c.id);
+            let id = c.asserted(&|mention| resolve_in_tx(tx, mention));
             ensure_node(
                 tx,
                 by,
@@ -2033,7 +2101,8 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // authority for both passes' links; c2 owns the edge relations, criterion 1 owns the
             // node kinds.
             let l: super::DocLinkExtracted = serde_json::from_slice(&e.data).map_err(be)?;
-            let rel = match l.rel.as_str() {
+            let (from, rel, to) = l.asserted(&|mention| resolve_in_tx(tx, mention));
+            let rel = match rel.as_str() {
                 REL_SPECIFIES => REL_SPECIFIES,
                 REL_CONSTRAINS => REL_CONSTRAINS,
                 REL_GOVERNS => REL_GOVERNS,
@@ -2045,8 +2114,6 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 REL_REVIEWS_LIGHT => REL_REVIEWS_LIGHT,
                 _ => return Ok(()),
             };
-            let from = resolve_in_tx(tx, &l.from);
-            let to = resolve_in_tx(tx, &l.to);
             ensure_node(tx, by, &from, KIND_ARTIFACT, &[], project)?;
             ensure_node(tx, by, &to, KIND_ARTIFACT, &[], project)?;
             assert_link(tx, by, &from, &to, rel, at, e.position, project)?;

@@ -133,6 +133,9 @@ macro_rules! projection_reads_nothing {
         fn resolve(&self, _mention: &str) -> Result<Option<String>, rigger::contextgraph::Error> {
             Ok(None)
         }
+        fn rebuild_owed(&self) -> Result<bool, rigger::contextgraph::Error> {
+            Ok(false)
+        }
     };
 }
 

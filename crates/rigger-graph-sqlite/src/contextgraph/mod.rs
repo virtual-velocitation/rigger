@@ -41,12 +41,6 @@ struct UnitIntegrated {
 }
 #[derive(Deserialize)]
 #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
-struct AliasDefined {
-    alias: String,
-    canonical: String,
-}
-#[derive(Deserialize)]
-#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct AliasUnresolved {
     mention: String,
 }

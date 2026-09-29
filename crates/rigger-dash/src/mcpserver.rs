@@ -617,6 +617,7 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .ok_or("rigger_ground: missing query")?;
         let k = args.get("k").and_then(Value::as_u64).unwrap_or(8) as usize;
+        self.refuse_if_rebuild_owed("rigger_ground")?;
         if let Some(reason) = &self.grounder_unavailable {
             // Honest, lazy failure (spec 57's never-silently-degrade contract) - exactly what
             // the pre-fix operator surface reported when `select_grounder` erred, just now
@@ -637,6 +638,20 @@ impl<'a> Server<'a> {
         Ok(json!({"results": results}))
     }
 
+    /// Refuse `tool`, whose answer depends on the fold, while the wired graph owes its rebuild
+    /// (spec 101): at once, naming `rigger setup`, never answering from a projection folded under
+    /// an older rule. Asked on every call, so a rebuild paid while this server runs is seen.
+    fn refuse_if_rebuild_owed(&self, tool: &str) -> Result<(), ToolError> {
+        let owed = match self.graph {
+            Some(graph) => graph.rebuild_owed().map_err(|e| e.to_string())?,
+            None => false,
+        };
+        if owed {
+            return Err(format!("{tool}: {}", crate::contextgraph::REBUILD_OWED).into());
+        }
+        Ok(())
+    }
+
     /// `rigger_graph` (spec 92, criterion 4's fix round): the STRUCTURE (`around`) and
     /// resolution (`show`) lookups, both over the SAME `graph` port `with_graph` already wires
     /// for the workflow bridge's event fold - `around` calls the trait's existing
@@ -653,6 +668,7 @@ impl<'a> Server<'a> {
         let graph = self
             .graph
             .ok_or("rigger_graph: no context graph is wired on this server")?;
+        self.refuse_if_rebuild_owed("rigger_graph")?;
         if !show.is_empty() {
             let located = graph.locate(show).map_err(|e| e.to_string())?;
             return Ok(match located {
@@ -801,6 +817,24 @@ pub fn emit_event(
     graph: Option<&dyn Projection>,
     args: &Value,
 ) -> Result<crate::eventstore::Position, String> {
+    let event = append_emit(store, stream, args)?;
+    let pos = event.position;
+    // Fold the appended event into the live graph (when wired), so a ReviewFinding
+    // or DecisionMade an agent emits becomes retrievable through `graph_context` by
+    // the agents that ground afterwards - the graph is the cross-agent memory the
+    // review tiers communicate through. Best-effort: a fold failure must not fail
+    // the emit, which already landed durably in the log - and a graph that owes its
+    // rebuild refuses the fold, which that rebuild re-derives from the log.
+    if let Some(g) = graph {
+        let _ = g.apply(&event);
+    }
+    Ok(pos)
+}
+
+/// The append half of [`emit_event`], for a caller that decides for itself whether to fold
+/// (`rigger emit` opens `graph.db` only after its event is on the log): refuse what the emit
+/// surface refuses, append the event, and return it carrying the position the store issued.
+pub fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Event, String> {
     let typ = args
         .get("type")
         .and_then(Value::as_str)
@@ -843,21 +877,11 @@ pub fn emit_event(
         event = event.with_valid_from(parse_valid_from(vf)?);
     }
 
-    let pos = store
+    event.position = store
         .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
         .and_then(|appended| appended.one(&format!("the {typ} on {stream:?}")))
         .map_err(|e| e.to_string())?;
-    // Fold the appended event into the live graph (when wired), so a ReviewFinding
-    // or DecisionMade an agent emits becomes retrievable through `graph_context` by
-    // the agents that ground afterwards - the graph is the cross-agent memory the
-    // review tiers communicate through. Best-effort: a fold failure must not fail
-    // the emit, which already landed durably in the log.
-    if let Some(g) = graph {
-        let mut folded = event;
-        folded.position = pos;
-        let _ = g.apply(&folded);
-    }
-    Ok(pos)
+    Ok(event)
 }
 
 /// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):
