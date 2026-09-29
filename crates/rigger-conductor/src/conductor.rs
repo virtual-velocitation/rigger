@@ -19041,6 +19041,281 @@ mod tests {
         );
     }
 
+    /// The message [`FirstLookup`] refuses its first group lookup with.
+    #[cfg(feature = "symbols")]
+    const LOOKUP_REFUSED: &str = "the group lookup is unanswered";
+
+    /// What [`FirstLookup`] does with the FIRST group lookup it is asked.
+    #[cfg(feature = "symbols")]
+    enum FirstLookupPlay {
+        /// Answer it with a backend error carrying [`LOOKUP_REFUSED`].
+        Refuse,
+        /// Read the store's answer, signal `entered`, then hold that answer from the caller until
+        /// the test sends on `release`.
+        Hold {
+            entered: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+        },
+    }
+
+    /// A store double for the run sink's first-sight lookup (spec 101): every method forwards to
+    /// `inner`, except that the FIRST `latest_in_group` call plays `first` before it forwards (or,
+    /// refused, instead of forwarding).
+    #[cfg(feature = "symbols")]
+    struct FirstLookup<'a> {
+        inner: &'a dyn EventStore,
+        first: Mutex<Option<FirstLookupPlay>>,
+    }
+
+    #[cfg(feature = "symbols")]
+    impl<'a> FirstLookup<'a> {
+        fn new(inner: &'a dyn EventStore, first: FirstLookupPlay) -> Self {
+            FirstLookup {
+                inner,
+                first: Mutex::new(Some(first)),
+            }
+        }
+    }
+
+    #[cfg(feature = "symbols")]
+    impl EventStore for FirstLookup<'_> {
+        fn append(
+            &self,
+            stream: &str,
+            expected: ExpectedRevision,
+            events: &[Event],
+        ) -> Result<Appended, crate::eventstore::Error> {
+            self.inner.append(stream, expected, events)
+        }
+        crate::delegate_event_store_reads!(stream);
+        fn latest_in_group(
+            &self,
+            stream: &str,
+            group: &str,
+        ) -> Result<Option<crate::eventstore::GroupHead>, crate::eventstore::Error> {
+            let play = self.first.lock().unwrap().take();
+            if let Some(FirstLookupPlay::Refuse) = play {
+                return Err(crate::eventstore::Error::Backend(LOOKUP_REFUSED.into()));
+            }
+            let answer = self.inner.latest_in_group(stream, group);
+            if let Some(FirstLookupPlay::Hold { entered, release }) = play {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+            answer
+        }
+    }
+
+    /// The replay keys of every derived index event `store` holds on the run stream, in log order.
+    #[cfg(feature = "symbols")]
+    fn derived_keys(store: &dyn EventStore) -> Vec<String> {
+        store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .filter(|e| crate::ingest::is_derived_index_type(&e.type_))
+            .map(|e| e.meta.get(META_REPLAY_KEY).cloned().unwrap_or_default())
+            .collect()
+    }
+
+    /// A project tree holding one source file whose batch carries a definition and a reference to
+    /// it, and every key the shipped walk emits for it, in walk order.
+    #[cfg(feature = "symbols")]
+    fn one_file_tree() -> (tempfile::TempDir, String, Vec<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/a.rs"),
+            "pub fn a() {}\npub fn b() { a(); }\n",
+        )
+        .unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        let mut walked = Vec::new();
+        crate::ingest::ingest_project_batched(&root, |keyed| {
+            walked.extend(keyed.iter().map(|(key, _)| key.clone()));
+        });
+        (dir, root, walked)
+    }
+
+    /// Spec 101 (the run sink's seeding): GIVEN a tree whose one file the store never recorded,
+    /// over a store whose group lookup goes unanswered the first time it is asked, WHEN the run's
+    /// whole-tree ingest walks it, THEN the ingest fails naming the store's error and appends
+    /// nothing for that batch - an unanswered lookup is never read as "nothing to append" - and
+    /// the once-per-process guard stays open, so the next prompt walks again, its lookup answers,
+    /// and the batch appends whole.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_run_ingest_whose_group_lookup_is_unanswered_fails_appends_nothing_and_walks_again() {
+        let (_dir, root, walked) = one_file_tree();
+        assert_eq!(
+            walked.len(),
+            4,
+            "sanity: the file's batch is its two definitions, their file and the reference; \
+             walked {walked:?}"
+        );
+        let inner = Store::open(":memory:").unwrap();
+        let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root,
+            grounder: None,
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let unanswered = format!("{:?}", ctx.ingest_project_into_graph());
+        assert!(
+            unanswered.starts_with("Err(") && unanswered.contains(LOOKUP_REFUSED),
+            "an ingest whose lookup goes unanswered fails with the store's error; got {unanswered}"
+        );
+        assert_eq!(
+            derived_keys(&inner),
+            Vec::<String>::new(),
+            "the batch whose lookup went unanswered appends nothing"
+        );
+
+        assert_eq!(format!("{:?}", ctx.ingest_project_into_graph()), "Ok(())");
+        assert_eq!(
+            derived_keys(&inner),
+            walked,
+            "the next ingest walks again and, its lookup answered, appends the batch whole"
+        );
+    }
+
+    /// Spec 101 (the run sink's seeding): GIVEN a store whose group lookup goes unanswered, WHEN
+    /// an integration reindexes the file it landed, THEN the reindex fails naming the store's
+    /// error and appends nothing for that file's batch.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn an_integration_reindex_whose_group_lookup_is_unanswered_fails_and_appends_nothing() {
+        let (_dir, root, _walked) = one_file_tree();
+        let inner = Store::open(":memory:").unwrap();
+        let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root,
+            grounder: None,
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let unanswered = format!(
+            "{:?}",
+            ctx.ingest_files_into_graph(&["src/a.rs".to_string()])
+        );
+        assert!(
+            unanswered.starts_with("Err(") && unanswered.contains(LOOKUP_REFUSED),
+            "a reindex whose lookup goes unanswered fails with the store's error; got {unanswered}"
+        );
+        assert_eq!(derived_keys(&inner), Vec::<String>::new());
+    }
+
+    /// Spec 101 (FIRST SIGHT IS ATOMIC): GIVEN a store recording `h1` as a file's latest
+    /// generation, WHEN one stage (a whole-tree ingest reading `h1`) is inside its first-sight
+    /// lookup while another (a post-merge ingest reading `h2`) meets the same identity, THEN the
+    /// second waits for the first to install what it looked up, appends `h2` once, and the process
+    /// ends tracking `h2` - the generation the store holds - so a later in-process revert to `h1`
+    /// appends, and a later `h2` appends again only after that revert.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_first_sight_lookup_racing_a_newer_generation_leaves_the_process_on_the_stored_generation()
+    {
+        const IDENTITY: &str = "gc/src/a.rs";
+        let (h1_key, h2_key) = (format!("{IDENTITY}@h1#0"), format!("{IDENTITY}@h2#0"));
+        let ev = |name: &str| {
+            Event::new(
+                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                serde_json::to_vec(&json!({"file": "src/a.rs", "name": name})).unwrap(),
+            )
+        };
+        let (ev1, ev2) = (ev("first"), ev("second"));
+        let h1 = [(h1_key.clone(), &ev1)];
+        let h2 = [(h2_key.clone(), &ev2)];
+
+        let inner = Store::open(":memory:").unwrap();
+        inner
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[crate::ingest::keyed_derived_event(ev1.clone(), &h1_key)],
+            )
+            .unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let store = FirstLookup::new(
+            &inner,
+            FirstLookupPlay::Hold {
+                entered: entered_tx,
+                release: release_rx,
+            },
+        );
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = &RunCtx::for_test(&cfg, &deps);
+
+        std::thread::scope(|s| {
+            let whole_tree = s.spawn(|| ctx.emit_keyed_batch(&h1));
+            entered_rx.recv().unwrap();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let newer = &h2;
+            let post_merge = s.spawn(move || {
+                let emitted = ctx.emit_keyed_batch(newer);
+                done_tx.send(()).unwrap();
+                emitted
+            });
+            // Give the post-merge stage every chance to run its whole emit while the whole-tree
+            // stage still holds its lookup's answer uninstalled.
+            let _ = done_rx.recv_timeout(std::time::Duration::from_millis(500));
+            release_tx.send(()).unwrap();
+            whole_tree.join().unwrap().unwrap();
+            post_merge.join().unwrap().unwrap();
+        });
+
+        assert_eq!(
+            derived_keys(&inner),
+            vec![h1_key.clone(), h2_key.clone()],
+            "the recorded h1 appends nothing and the newer h2 appends once"
+        );
+        assert_eq!(
+            crate::ingest::latest_generation(&inner, STREAM, IDENTITY).unwrap(),
+            Some("h2".to_string())
+        );
+        assert_eq!(
+            ctx.replayed_generations.lock().unwrap()[IDENTITY].0,
+            "h2",
+            "the process tracks the generation the store holds"
+        );
+
+        ctx.emit_keyed_batch(&h1).unwrap();
+        ctx.emit_keyed_batch(&h2).unwrap();
+        assert_eq!(
+            derived_keys(&inner),
+            vec![h1_key.clone(), h2_key.clone(), h1_key, h2_key],
+            "an in-process revert to h1 appends, and h2 after it appends again"
+        );
+    }
+
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): `empty_structural_boundary_event`'s
     /// payload is CONSTANT per `(file, lang)` - it carries no content-derived field at all - so
     /// re-excluding the SAME file within one long-lived process hashes to the IDENTICAL replay
@@ -31689,6 +31964,64 @@ mod tests {
                     == Some(identity)
             }),
             "every appended event carries its batch identity as its group"
+        );
+    }
+
+    /// A `rigger step` WHOSE GROUP LOOKUP GOES UNANSWERED FAILS (spec 101): a step that parks a
+    /// stage's spawn walks and ingests the tree, and when the store cannot answer the first batch's
+    /// lookup the step fails with the store's error - an unanswered lookup is never read as
+    /// "nothing to append" - appends nothing for that batch, and appends every batch whose lookup
+    /// answered, whole and in walk order.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_step_whose_group_lookup_goes_unanswered_fails_and_appends_nothing_for_that_batch() {
+        use crate::test_support::git_commit_all;
+
+        let repo = temp_git_project_with_commit();
+        let root = repo.path();
+        let root_str = root.to_str().unwrap().to_string();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "pub fn a() {}\n").unwrap();
+        std::fs::write(root.join("src/b.rs"), "pub fn b() {}\n").unwrap();
+        git_commit_all(root, "tree");
+        let mut walked: Vec<Vec<String>> = Vec::new();
+        crate::ingest::ingest_project_batched(&root_str, |keyed| {
+            walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
+        });
+        assert_eq!(
+            walked.len(),
+            2,
+            "sanity: the walk emits one batch per source file; walked {walked:?}"
+        );
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                ..Default::default()
+            },
+        );
+        let inner = Store::open(":memory:").unwrap();
+        let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let deps = Deps {
+            repo: root_str,
+            graph: Some(&graph),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+
+        let step = format!("{:?}", run_isolated(&cfg, &deps).map(|_| ()));
+        assert!(
+            step.starts_with("Err(") && step.contains(LOOKUP_REFUSED),
+            "a step whose lookup goes unanswered fails with the store's error; got {step}"
+        );
+        assert_eq!(
+            derived_keys(&inner),
+            walked[1],
+            "the unanswered batch appends nothing and the answered one appends whole"
         );
     }
 
