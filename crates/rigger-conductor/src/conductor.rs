@@ -2939,8 +2939,9 @@ impl RunCtx<'_> {
     /// it, and this is the ONLY site that ever acquires both, so that order is never reversed and no
     /// deadlock is reachable.
     ///
-    /// The two locks are held only around the two sets (released before the append), so concurrent
-    /// units in a wave still append their own keyed events in parallel.
+    /// The two locks are held only around the two sets and the first-sight group lookup (released
+    /// before the append), so concurrent units in a wave still append their own keyed events in
+    /// parallel.
     ///
     /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
     #[cfg(feature = "symbols")]
@@ -2948,20 +2949,21 @@ impl RunCtx<'_> {
         let identity_generation = keyed
             .first()
             .and_then(|(k, _)| crate::ingest::derived_key_parts(k));
-        // FIRST SIGHT (spec 101): the first time this process meets the batch's identity it asks
-        // the store whether the batch is that identity's latest recorded generation - one group
-        // lookup, taken BEFORE the dedup locks. From then on `replayed_generations` governs it.
-        let first_sight = identity_generation.is_some_and(|(identity, _)| {
-            !self
-                .replayed_generations
-                .lock()
-                .unwrap()
-                .contains_key(identity)
-        });
-        let recorded =
-            first_sight && crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed)?;
         let survivors: Vec<Event> = {
             let mut gens = self.replayed_generations.lock().unwrap();
+            // FIRST SIGHT (spec 101): the first time this process meets the batch's identity it
+            // asks the store whether the batch is that identity's latest recorded generation - one
+            // group lookup, taken UNDER the generations lock so the unseen check, the answer and
+            // the slot it installs are one step: a concurrent stage meeting the same identity waits,
+            // then finds the slot, so no answer is installed over a generation it never saw. An
+            // unanswered lookup is this call's error and creates no slot, so the next sight asks
+            // again. From then on `replayed_generations` governs the identity.
+            let recorded = match identity_generation {
+                Some((identity, _)) if !gens.contains_key(identity) => {
+                    crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed)?
+                }
+                _ => false,
+            };
             let mut keys = self.replayed_keys.lock().unwrap();
             if let Some((identity, generation)) = identity_generation {
                 let slot = gens
@@ -4676,8 +4678,11 @@ impl RunCtx<'_> {
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
         // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
         // gets the trimmed implement slice like the implementer it authors periphery tests alongside.
-        let sdet_prompt =
-            self.build_prompt_with_failure(st, &PriorFailure::default(), GroundingSlice::Implement);
+        let sdet_prompt = self.build_prompt_with_failure(
+            st,
+            &PriorFailure::default(),
+            GroundingSlice::Implement,
+        )?;
         let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
         match self
             .reviewer_spawn_opts(
@@ -5030,7 +5035,7 @@ impl RunCtx<'_> {
                 // ONLY the implement stage, so the slice is keyed on the implement stage specifically
                 // via `implement_slice`: a true implement stage gets the trimmed slice, a producer
                 // keeps the FULL context (adv-u36c1-planner-first-spawn-trimmed).
-                let prompt = self.build_prompt_with_failure(st, &prior, implement_slice(st));
+                let prompt = self.build_prompt_with_failure(st, &prior, implement_slice(st))?;
                 // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
                 // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
@@ -5643,7 +5648,7 @@ impl RunCtx<'_> {
                 st,
                 &PriorFailure::default(),
                 GroundingSlice::Implement,
-            );
+            )?;
             let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
             match isolation_check.and_then(|()| {
@@ -6499,7 +6504,7 @@ impl RunCtx<'_> {
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
         // each finding to its ROLE token so the courier path carries attribution too.
-        let prompt = self.build_review_prompt(st, &lens_role(agent_id));
+        let prompt = self.build_review_prompt(st, &lens_role(agent_id))?;
         self.run_reviewer(
             st,
             "lens",
@@ -6868,7 +6873,7 @@ impl RunCtx<'_> {
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
         // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
         // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
-        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY);
+        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY)?;
         self.run_reviewer(
             st,
             "adversary",
@@ -6925,7 +6930,7 @@ impl RunCtx<'_> {
         // riskiest one (spec 64 c3's own worktree-deletion tests are all adjudicator-
         // driven) - so it carries the SAME worktree-discipline sentence those two tiers
         // get via `review_protocol` (spec 103, criterion 6), appended directly here.
-        let prompt = format!("{}{REVIEWER_WORKTREE_DISCIPLINE}", self.build_prompt(st));
+        let prompt = format!("{}{REVIEWER_WORKTREE_DISCIPLINE}", self.build_prompt(st)?);
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -7119,7 +7124,7 @@ impl RunCtx<'_> {
              under a NEW id does NOT refine - it adds a second unit for that criterion, \
              the duplicate-ownership defect this gate rejects.\n\n{}",
             feedback.trim(),
-            self.build_prompt(plan_st)
+            self.build_prompt(plan_st)?
         );
         // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-undercosted):
         // stamp META_SPAWN with THIS re-plan spawn's own deterministic id, mirroring the
@@ -9051,7 +9056,7 @@ impl RunCtx<'_> {
             // integration touched - bounded by the merge's own file list, never a whole-project
             // walk - right alongside the grounder's own (already-existing) reindex above, so the
             // two stay in lockstep from every integration on.
-            self.ingest_files_into_graph(&files);
+            self.ingest_files_into_graph(&files)?;
         }
         // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
         // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects
@@ -10075,7 +10080,7 @@ impl RunCtx<'_> {
         )
     }
 
-    fn build_prompt(&self, st: &Stage) -> String {
+    fn build_prompt(&self, st: &Stage) -> Result<String, Error> {
         // Every caller of `build_prompt` assembles a NON-implement prompt: the three review tiers
         // (via `build_review_prompt`) and the planner re-spawn (`re_plan`). Spec 36 trims ONLY the
         // implement stage, so `build_prompt` renders the FULL grounding slice - the review tiers and
@@ -10092,8 +10097,12 @@ impl RunCtx<'_> {
     /// from the graph, and a reviewer who emits its own findings feeds the next tier the
     /// same way; the `by`-carried `actor` also lets the review-quality folds attribute the
     /// finding on the out-of-process path (see [`review_protocol`]).
-    fn build_review_prompt(&self, st: &Stage, actor: &str) -> String {
-        format!("{}{}", self.build_prompt(st), review_protocol(actor))
+    fn build_review_prompt(&self, st: &Stage, actor: &str) -> Result<String, Error> {
+        Ok(format!(
+            "{}{}",
+            self.build_prompt(st)?,
+            review_protocol(actor)
+        ))
     }
 
     /// Build a stage's prompt. Sections, in order: the first-class prior-failure block
@@ -10110,7 +10119,7 @@ impl RunCtx<'_> {
         st: &Stage,
         prior: &PriorFailure,
         slice: GroundingSlice,
-    ) -> String {
+    ) -> Result<String, Error> {
         let mut b = String::new();
         b.push_str(&prior.block());
         b.push_str(&task_block(st));
@@ -10121,7 +10130,7 @@ impl RunCtx<'_> {
         // the prod graph stayed empty while tests passed). So the traversal returns REAL nodes the
         // run ingested, not ones a test fixture folded. A no-op in the light lane (no extraction
         // pass compiled) and when there is no project tree to read or no graph to fold into.
-        self.ingest_project_into_graph();
+        self.ingest_project_into_graph()?;
         // Spec 29c criterion 1: structural grounding is ONE seeded traversal over the UNIFIED
         // graph, not a separate structural-grounder call stitched together with a graph read. The
         // grounder still ANSWERS the grounding query and its result SEEDS the traversal (the
@@ -10139,7 +10148,7 @@ impl RunCtx<'_> {
         // so it knows the baseline already exists and proposes only criterion-mapped
         // refinements (never re-decomposing, never scope creep).
         b.push_str(&self.plan_protocol(st));
-        b
+        Ok(b)
     }
 
     fn graph_context(&self, seed: &[String], slice: GroundingSlice) -> String {
@@ -10218,15 +10227,22 @@ impl RunCtx<'_> {
     /// rather than the set the ingest sink extends as it emits (see
     /// [`ingested`](RunCtx::ingested) for the two-walk sequence that would otherwise suppress a
     /// revert).
+    ///
+    /// A walk that fails (a batch's group lookup went unanswered) reopens the guard before it returns
+    /// the error, so the graph is never taken as reflecting a tree whose walk did not complete: the
+    /// next prompt walks again.
     #[cfg(feature = "symbols")]
-    fn ingest_project_into_graph(&self) {
+    fn ingest_project_into_graph(&self) -> Result<(), Error> {
         if self
             .ingested
             .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
-            return;
+            return Ok(());
         }
-        self.ingest_project_batches();
+        self.ingest_project_batches().inspect_err(|_| {
+            self.ingested
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        })
     }
 
     /// The walk-and-emit half of [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)
@@ -10234,10 +10250,13 @@ impl RunCtx<'_> {
     /// Emits every file's code (29a) and design-intent (29b) extraction batch through the ONE keyed
     /// emit authority. Ingestion is OFF when there is no project tree to read (`repo` empty) or no
     /// graph to fold into - the shipped non-repo / graph-less paths stay byte-for-byte unchanged.
+    ///
+    /// A batch whose group lookup goes unanswered is never read as "nothing to append": it appends
+    /// nothing, the walk goes on, and the first such error is returned once the walk ends.
     #[cfg(feature = "symbols")]
-    fn ingest_project_batches(&self) {
+    fn ingest_project_batches(&self) -> Result<(), Error> {
         if !self.deps.ingests() {
-            return;
+            return Ok(());
         }
         let root = self.deps.repo.clone();
         // The walk over the project's per-file extraction batches AND their `<prefix>/<file>@<hash>#<i>`
@@ -10291,15 +10310,35 @@ impl RunCtx<'_> {
         //
         // The dedup lock is held only around the key set (released before the append), so a concurrent
         // unit in the wave still appends its own keyed events in parallel.
-        crate::ingest::ingest_project_batched(&root, |keyed| {
-            let _ = self.emit_keyed_batch(keyed);
+        self.emit_walked_batches(|sink| {
+            crate::ingest::ingest_project_batched(&root, sink);
+        })
+    }
+
+    /// Drive `walk` into the one keyed emit sink [`emit_keyed_batch`](RunCtx::emit_keyed_batch),
+    /// answering the first batch error the walk met, if any. A failed batch appends nothing and
+    /// the walk goes on, so every batch whose group lookup answered still lands; the error is
+    /// never swallowed.
+    #[cfg(feature = "symbols")]
+    fn emit_walked_batches(
+        &self,
+        walk: impl FnOnce(&mut dyn FnMut(&[(String, &Event)])),
+    ) -> Result<(), Error> {
+        let mut failed = None;
+        walk(&mut |keyed| {
+            if let Err(e) = self.emit_keyed_batch(keyed) {
+                failed.get_or_insert(e);
+            }
         });
+        failed.map_or(Ok(()), Err)
     }
 
     /// Light lane: no extraction pass is compiled, so there is nothing to ingest - the always-
     /// compiled fold still folds a design/code log if one exists, but PRODUCING it is extraction.
     #[cfg(not(feature = "symbols"))]
-    fn ingest_project_into_graph(&self) {}
+    fn ingest_project_into_graph(&self) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Reindex the CONTEXT GRAPH for exactly `files` (spec 92 criterion 1, FRESH ON EVERY
     /// INTEGRATION): the scoped counterpart to [`ingest_project_batches`](RunCtx::
@@ -10312,20 +10351,24 @@ impl RunCtx<'_> {
     /// second lowering or dedup path - so a file's scoped generation here is byte-identical to what
     /// a full walk would have produced for it. Off (a no-op) when there is no graph to fold into,
     /// mirroring [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)'s own guard.
+    /// A batch whose group lookup goes unanswered fails the reindex, exactly as it fails the whole-
+    /// tree walk.
     #[cfg(feature = "symbols")]
-    fn ingest_files_into_graph(&self, files: &[String]) {
+    fn ingest_files_into_graph(&self, files: &[String]) -> Result<(), Error> {
         if !self.deps.ingests() || files.is_empty() {
-            return;
+            return Ok(());
         }
         let root = self.deps.repo.clone();
-        crate::ingest::ingest_files_batched(&root, files, |keyed| {
-            let _ = self.emit_keyed_batch(keyed);
-        });
+        self.emit_walked_batches(|sink| {
+            crate::ingest::ingest_files_batched(&root, files, sink);
+        })
     }
 
     /// Light lane: no extraction pass is compiled, so there is nothing to reindex.
     #[cfg(not(feature = "symbols"))]
-    fn ingest_files_into_graph(&self, _files: &[String]) {}
+    fn ingest_files_into_graph(&self, _files: &[String]) -> Result<(), Error> {
+        Ok(())
+    }
 
     fn emit_lesson(&self, wt: Option<&Worktree>, unit_name: &str, summary: &str) {
         // The lesson is ABOUT the files the unit touched. The conductor commits the
@@ -17554,11 +17597,9 @@ mod tests {
 
         // (a)+(b) First attempt: the prompt OPENS with the unit's name and its verbatim criterion,
         // ahead of the code neighborhood.
-        let first = ctx.build_prompt_with_failure(
-            &unit,
-            &PriorFailure::default(),
-            GroundingSlice::Implement,
-        );
+        let first = ctx
+            .build_prompt_with_failure(&unit, &PriorFailure::default(), GroundingSlice::Implement)
+            .unwrap();
         assert!(
             first.starts_with(header),
             "the implement prompt must open by naming its unit; prompt was:\n{first}"
@@ -17579,7 +17620,9 @@ mod tests {
             gate_evidence: vec!["FAIL\nGATE_EVIDENCE_x".into()],
             ..Default::default()
         };
-        let retry = ctx.build_prompt_with_failure(&unit, &prior, GroundingSlice::Implement);
+        let retry = ctx
+            .build_prompt_with_failure(&unit, &prior, GroundingSlice::Implement)
+            .unwrap();
         let lead = prior.block();
         assert!(
             retry.starts_with(&lead),
@@ -17601,14 +17644,14 @@ mod tests {
         );
 
         // Review tiers judge against the same criterion text.
-        let review = ctx.build_review_prompt(&unit, "lens");
+        let review = ctx.build_review_prompt(&unit, "lens").unwrap();
         assert!(
             review.starts_with(header) && review.contains(verbatim),
             "a review prompt must carry the unit's task block; prompt was:\n{review}"
         );
 
         // (d) The producer/planner gets no task block.
-        let plan = ctx.build_prompt(&planner);
+        let plan = ctx.build_prompt(&planner).unwrap();
         assert!(
             !plan.contains("UNIT: ") && !plan.contains("ACCEPTANCE CRITERION"),
             "the planner prompt must carry no per-unit task block; prompt was:\n{plan}"
@@ -17620,11 +17663,9 @@ mod tests {
             agent: "a".into(),
             ..Default::default()
         };
-        let bare_prompt = ctx.build_prompt_with_failure(
-            &bare,
-            &PriorFailure::default(),
-            GroundingSlice::Implement,
-        );
+        let bare_prompt = ctx
+            .build_prompt_with_failure(&bare, &PriorFailure::default(), GroundingSlice::Implement)
+            .unwrap();
         assert!(
             !bare_prompt.contains("UNIT: "),
             "a stage without a criterion gets no task block; prompt was:\n{bare_prompt}"
@@ -18685,8 +18726,9 @@ mod tests {
         // The decisions/findings this claim asserts render on the FULL slice (spec 36 trims them from
         // the implement slice); the code-neighborhood-from-traversal claim holds on both, so this
         // exercises the full slice to keep both halves of the claim in one assembly.
-        let prompt =
-            ctx.build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Full);
+        let prompt = ctx
+            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Full)
+            .unwrap();
 
         assert!(
             prompt.contains("run_unit"),
@@ -18783,11 +18825,9 @@ mod tests {
         };
         // This asserts only the code neighborhood, which BOTH slices keep; drive the implement slice
         // (this is a plain implement stage) so it exercises the production doer path.
-        let prompt = ctx.build_prompt_with_failure(
-            &stage,
-            &PriorFailure::default(),
-            GroundingSlice::Implement,
-        );
+        let prompt = ctx
+            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Implement)
+            .unwrap();
 
         // (1) The RUN emitted all four extraction event types into the store - it ingested the
         // project itself, closing the empty-prod-graph gap.
@@ -18896,7 +18936,7 @@ mod tests {
         };
 
         // First ingest: both files extract into the graph and the store.
-        ctx.ingest_project_batches();
+        ctx.ingest_project_batches().unwrap();
         assert_eq!(
             code_names_for("src/stable.rs"),
             vec!["stable_symbol".to_string()],
@@ -18922,7 +18962,7 @@ mod tests {
         // emitted. The two agree here because churn.rs moves FORWARD to a generation neither set
         // holds; they differ on a REVERT, which criterion 3's proof owns and which nothing in this
         // test exercises.
-        ctx.ingest_project_batches();
+        ctx.ingest_project_batches().unwrap();
 
         // Unchanged file: NOT re-ingested - its recorded symbol is still emitted exactly once.
         assert_eq!(
@@ -18999,7 +19039,7 @@ mod tests {
         };
 
         // Baseline: both files ingested (as a run-start `ingest_project_into_graph` would).
-        ctx.ingest_project_batches();
+        ctx.ingest_project_batches().unwrap();
         assert!(
             is_live("src/touched.rs", "before_touch"),
             "baseline touched"
@@ -19017,7 +19057,8 @@ mod tests {
             "pub fn after_no_touch() {}\n",
         )
         .unwrap();
-        ctx.ingest_files_into_graph(&["src/touched.rs".to_string()]);
+        ctx.ingest_files_into_graph(&["src/touched.rs".to_string()])
+            .unwrap();
 
         // The NAMED file's graph reflects its NEW content.
         assert!(
@@ -19060,11 +19101,12 @@ mod tests {
 
     /// A store double for the run sink's first-sight lookup (spec 101): every method forwards to
     /// `inner`, except that the FIRST `latest_in_group` call plays `first` before it forwards (or,
-    /// refused, instead of forwarding).
+    /// refused, instead of forwarding). It counts every group lookup it is asked in `asked`.
     #[cfg(feature = "symbols")]
     struct FirstLookup<'a> {
         inner: &'a dyn EventStore,
         first: Mutex<Option<FirstLookupPlay>>,
+        asked: AtomicU32,
     }
 
     #[cfg(feature = "symbols")]
@@ -19073,6 +19115,7 @@ mod tests {
             FirstLookup {
                 inner,
                 first: Mutex::new(Some(first)),
+                asked: AtomicU32::new(0),
             }
         }
     }
@@ -19093,6 +19136,7 @@ mod tests {
             stream: &str,
             group: &str,
         ) -> Result<Option<crate::eventstore::GroupHead>, crate::eventstore::Error> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
             let play = self.first.lock().unwrap().take();
             if let Some(FirstLookupPlay::Refuse) = play {
                 return Err(crate::eventstore::Error::Backend(LOOKUP_REFUSED.into()));
@@ -19314,6 +19358,12 @@ mod tests {
             vec![h1_key.clone(), h2_key.clone(), h1_key, h2_key],
             "an in-process revert to h1 appends, and h2 after it appends again"
         );
+        assert_eq!(
+            store.asked.load(Ordering::SeqCst),
+            1,
+            "the identity is looked up once, at first sight, however many stages and generations \
+             meet it after"
+        );
     }
 
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): `empty_structural_boundary_event`'s
@@ -19374,7 +19424,7 @@ mod tests {
 
         // Generation 1: real, defines target_symbol.
         std::fs::write(&target, "pub fn target_symbol() {}\n").unwrap();
-        ctx.ingest_project_batches();
+        ctx.ingest_project_batches().unwrap();
         assert!(is_live("target_symbol"), "gen 1 must fold live");
 
         // Generation 2: excluded (in-file #[cfg(test)]) - the constant structural sentinel.
@@ -19383,7 +19433,7 @@ mod tests {
             "#[cfg(test)]\nmod hidden {\n    pub fn target_symbol() {}\n}\n",
         )
         .unwrap();
-        ctx.ingest_project_batches();
+        ctx.ingest_project_batches().unwrap();
         assert!(
             !is_live("target_symbol"),
             "gen 2's exclusion must retire gen 1's entity"
@@ -19391,7 +19441,7 @@ mod tests {
 
         // Generation 3: real again, a DIFFERENT symbol - not a byte-identical revert to gen 1.
         std::fs::write(&target, "pub fn target_symbol_v2() {}\n").unwrap();
-        ctx.ingest_project_batches();
+        ctx.ingest_project_batches().unwrap();
         assert!(is_live("target_symbol_v2"), "gen 3 must fold live");
 
         // Generation 4: excluded again - the SAME constant sentinel bytes (and so the SAME
@@ -19402,7 +19452,7 @@ mod tests {
             "#[cfg(test)]\nmod hidden {\n    pub fn target_symbol_v2() {}\n}\n",
         )
         .unwrap();
-        ctx.ingest_project_batches();
+        ctx.ingest_project_batches().unwrap();
         assert!(
             !is_live("target_symbol_v2"),
             "gen 4's exclusion must retire gen 3's entity even though its own boundary event's \
@@ -20221,7 +20271,7 @@ mod tests {
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
 
-        ctx.ingest_project_batches();
+        ctx.ingest_project_batches().unwrap();
 
         let appends = store.appends.lock().unwrap().clone();
         let batch_folds = graph.batch_folds.lock().unwrap().clone();
@@ -20377,11 +20427,9 @@ mod tests {
         };
         // Design intent is on BOTH slices (spec 36 keeps the intent layer on the trimmed implement
         // prompt); drive the implement slice so this exercises the production doer path.
-        let prompt = ctx.build_prompt_with_failure(
-            &stage,
-            &PriorFailure::default(),
-            GroundingSlice::Implement,
-        );
+        let prompt = ctx
+            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Implement)
+            .unwrap();
 
         // (1) RENDERED: the handbook rule that GOVERNS the file and the RA section that SPECIFIES it
         // are both surfaced, each naming its relation and the touched file.
@@ -31843,7 +31891,9 @@ mod tests {
                 ..stub_deps(&inner, &driver, Vec::new())
             };
             let history_cfg = Config::default();
-            RunCtx::for_test(&history_cfg, &deps).ingest_project_batches();
+            RunCtx::for_test(&history_cfg, &deps)
+                .ingest_project_batches()
+                .unwrap();
         };
         tree(&[
             ("src/unchanged.rs", "pub fn kept() {}\n"),
