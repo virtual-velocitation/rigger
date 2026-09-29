@@ -1644,7 +1644,7 @@ mandatory sweep: Command::new call sites - 85 site(s), collected mechanically re
 - `crates/rigger-process/src/budget.rs:198-198` `Command::new`
 - `crates/rigger-process/src/budget.rs:236-236` `Command::new`
 - `crates/rigger-process/src/budget.rs:247-247` `Command::new`
-- `crates/rigger-process/src/holders.rs:49-49` `Command::new`
+- `crates/rigger-process/src/holders.rs:70-70` `Command::new`
 - `crates/rigger-process/src/subprocess.rs:18-18` `Command::new`
 - `crates/rigger-worktree-git/src/worktree.rs:3551-3551` `Command::new`
 - `src/cli/mod.rs:5096-5096` `Command::new`
@@ -3068,8 +3068,8 @@ mandatory sweep: /proc-path string literals - 51 site(s), collected mechanically
 - `crates/rigger-dash/src/dash.rs:8401-8401` `"/proc"`
 - `crates/rigger-dash/src/dash.rs:8425-8425` `"/proc"`
 - `crates/rigger-dash/src/dash.rs:8467-8467` `"/proc"`
-- `crates/rigger-process/src/holders.rs:17-17` `"/proc"`
-- `crates/rigger-process/src/holders.rs:32-32` `"/proc"`
+- `crates/rigger-process/src/holders.rs:25-25` `"/proc"`
+- `crates/rigger-process/src/holders.rs:53-53` `"/proc"`
 - `crates/rigger-process/src/reap.rs:133-133` `"/proc"`
 - `crates/rigger-process/src/reap.rs:215-215` `"/proc/{pid}/stat"`
 - `crates/rigger-process/src/reap.rs:234-234` `"/proc/{pid}/status"`
@@ -4814,7 +4814,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7216 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7218 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13748-13770` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17859-17912` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
