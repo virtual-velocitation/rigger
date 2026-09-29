@@ -639,8 +639,8 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // criterion 4).
     let scaffold = init_project(root)?;
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
-    // a fold into it failed: the only command that rebuilds it, because it is the verb every
-    // install already runs.
+    // missing an event the log holds: the only command that rebuilds it, because it is the verb
+    // every install already runs.
     let graph_rebuilt = rebuild_owed_graph()?;
     let workflow = install_workflow(root)?;
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
@@ -816,10 +816,12 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
 const REBUILD_BATCH: usize = 10_000;
 
 /// Rebuild this project's `graph.db` from the event log when it owes that rebuild (spec 101) -
-/// it was folded under an older fold rule, or a fold into it failed - saying so, naming the cause,
-/// and reporting how far along it is, and report whether it did. A `graph.db` that owes nothing is
-/// left untouched; with no `graph.db` there is nothing to rebuild, and the owed mark a removed one
-/// left behind is dropped, so the file a later command makes in its place starts owing nothing. The rebuild folds the
+/// it was folded under an older fold rule, or it misses an event the log holds, which setup finds
+/// on every run by reading the file's ledger of folded positions against the log's live selection
+/// whether or not a mark says so - saying so, naming the cause, reporting how far along it is, and
+/// report whether it did. A `graph.db` that owes nothing is left untouched; with no `graph.db`
+/// there is nothing to rebuild, and the owed mark a removed one left behind is dropped, so the
+/// file a later command makes in its place starts owing nothing it recorded. The rebuild folds the
 /// log's live selection - the rows `rigger reset --derived` keeps - into a shadow file that
 /// replaces `graph.db` in one step ([`Projector::rebuild`]), streaming the log once and resuming
 /// an interrupted rebuild from its last committed batch.
@@ -834,29 +836,28 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     // namespace still holds.
     migrate_local_identity()?;
     let project = project_identity();
-    let causes = Projector::open(&graph_db, &project)?.owed_because()?;
-    if !causes.is_empty() {
-        println!(
-            "rebuilding graph.db from the event log: {}, so the log's live selection is refolded \
-             once",
-            causes.join(", and ")
-        );
-    }
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
-    let mut printed = 0;
-    let mut progress = |at: contextgraph::sqlite::RebuildProgress| {
-        if let Some(line) = rebuild_progress_line(at, &mut printed) {
-            println!("{line}");
-        }
-    };
-    let rebuilt = match store_selection(None, None)? {
+    match store_selection(None, None)? {
         StoreSelection::Sqlite => {
             let store = open_sqlite_store(&db_path("events.db"))?;
             let prefix = Namespaced::prefix_for(&project);
             let identity = rigger::ingest::derived_index_identity();
-            Projector::rebuild(
+            pay_owed_rebuild(
                 &graph_db,
                 &project,
+                &mut |sink| {
+                    store
+                        .read_live_positions(
+                            &prefix,
+                            conductor::STREAM,
+                            &identity,
+                            REBUILD_BATCH,
+                            &mut |positions| {
+                                sink(positions).map_err(|e| rigger::eventstore::Error::Backend(e.0))
+                            },
+                        )
+                        .map_err(graph_error)
+                },
                 &mut |after, sink| {
                     store
                         .read_live_selection(
@@ -872,27 +873,54 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                         )
                         .map_err(graph_error)
                 },
-                &mut progress,
-            )?
+            )
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
         // its live selection is its run stream as it stands.
         selection => {
             let backend = resolve_store(&selection, &db_path("events.db"))?;
             let store = Namespaced::new(backend.as_ref(), &project);
-            Projector::rebuild(
+            let log = || {
+                store
+                    .read_stream(conductor::STREAM, 0, Direction::Forward)
+                    .map_err(graph_error)
+            };
+            pay_owed_rebuild(
                 &graph_db,
                 &project,
+                &mut |sink| contextgraph::sqlite::positions_in(&log()?, REBUILD_BATCH, sink),
                 &mut |after, sink| {
-                    let log = store
-                        .read_stream(conductor::STREAM, 0, Direction::Forward)
-                        .map_err(graph_error)?;
-                    contextgraph::sqlite::stream_past(&log, after, REBUILD_BATCH, sink)
+                    contextgraph::sqlite::stream_past(&log()?, after, REBUILD_BATCH, sink)
                 },
-                &mut progress,
-            )?
+            )
         }
-    };
+    }
+}
+
+/// Read why the `graph.db` at `graph_db` owes its rebuild - its own records, and its ledger
+/// against the positions `live` streams ([`Projector::owed_against`]) - say so naming each cause,
+/// and pay it by rebuilding from `source`, printing how far along it is; report whether it
+/// rebuilt.
+fn pay_owed_rebuild(
+    graph_db: &str,
+    project: &str,
+    live: &mut contextgraph::sqlite::PositionSource,
+    source: &mut contextgraph::sqlite::RebuildSource,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let causes = Projector::open(graph_db, project)?.owed_against(live)?;
+    if !causes.is_empty() {
+        println!(
+            "rebuilding graph.db from the event log: {}, so the log's live selection is refolded \
+             once",
+            causes.join(", and ")
+        );
+    }
+    let mut printed = 0;
+    let rebuilt = Projector::rebuild(graph_db, project, !causes.is_empty(), source, &mut |at| {
+        if let Some(line) = rebuild_progress_line(at, &mut printed) {
+            println!("{line}");
+        }
+    })?;
     if rebuilt {
         println!("rebuilt graph.db from the event log");
     }

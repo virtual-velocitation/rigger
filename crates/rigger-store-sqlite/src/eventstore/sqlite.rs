@@ -70,8 +70,8 @@ fn typed_read_sql(selection: TypeSelection) -> String {
 }
 
 /// Where [`Store::read_live_selection`] hands each batch of the selection, with the stream's last
-/// position.
-pub type SelectionSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 's;
+/// position - each row an [`Event`], or what another reader of the selection reads of it.
+pub type SelectionSink<'s, T = Event> = dyn FnMut(&[T], Position) -> Result<(), Error> + 's;
 
 /// Store is the SQLite-backed EventStore. The connection is shared (Arc) so a
 /// subscription's polling thread reads the same database the writers append to.
@@ -436,6 +436,58 @@ impl Store {
         batch: usize,
         sink: &mut SelectionSink,
     ) -> Result<(), Error> {
+        self.read_live(
+            (stream_prefix, stream, identity),
+            after,
+            batch,
+            COLS,
+            &|row, carried| {
+                let mut e = row_to_event(row)?;
+                if let Some(earliest) = carried {
+                    e.valid_from = from_nanos(earliest);
+                }
+                Ok(e)
+            },
+            sink,
+        )
+    }
+
+    /// Stream the POSITIONS of the live selection of `stream_prefix` + `stream` (spec 101) - the
+    /// selection [`Store::read_live_selection`] hands, read the same way from the same plan, but
+    /// the positions alone, never an event's payload - to `sink` in batches of at most `batch`:
+    /// what `rigger setup` reads a graph's ledger of folded positions against.
+    pub fn read_live_positions(
+        &self,
+        stream_prefix: &str,
+        stream: &str,
+        identity: &ContentIdentity,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.read_live(
+            (stream_prefix, stream, identity),
+            0,
+            batch,
+            "position",
+            &|row, _| row.get::<_, i64>(0).map(|p| p as Position),
+            &mut |positions, _| sink(positions),
+        )
+    }
+
+    /// The one reader of a live selection: plan it ([`plan_derived_prune`]) for the
+    /// `(stream_prefix, stream, identity)` it names, then read the stream's rows past `after` -
+    /// the columns `cols`, the position first - in position order, skip every row the plan sheds,
+    /// and hand `sink` each surviving row as `row` reads it, given the earliest valid-time the plan
+    /// carries onto it, in batches of at most `batch` with the stream's last position.
+    fn read_live<T>(
+        &self,
+        (stream_prefix, stream, identity): (&str, &str, &ContentIdentity),
+        after: Position,
+        batch: usize,
+        cols: &str,
+        row: &dyn Fn(&rusqlite::Row, Option<i64>) -> rusqlite::Result<T>,
+        sink: &mut SelectionSink<T>,
+    ) -> Result<(), Error> {
         let reasserting = reasserting_types(identity)?;
         let mut guard = self.conn.lock().unwrap();
         let tx = guard.transaction().map_err(be)?;
@@ -453,30 +505,24 @@ impl Store {
             .map_err(be)?;
         let mut stmt = tx
             .prepare(&format!(
-                "SELECT {COLS} FROM events WHERE stream = ?1 AND position > ?2 ORDER BY position"
+                "SELECT {cols} FROM events WHERE stream = ?1 AND position > ?2 ORDER BY position"
             ))
             .map_err(be)?;
-        let rows = stmt
-            .query_map(params![stream, after as i64], row_to_event)
-            .map_err(be)?;
-        let mut events = Vec::with_capacity(batch);
-        for row in rows {
-            let mut e = row.map_err(be)?;
-            let position = e.position as i64;
+        let mut rows = stmt.query(params![stream, after as i64]).map_err(be)?;
+        let mut kept = Vec::with_capacity(batch);
+        while let Some(r) = rows.next().map_err(be)? {
+            let position: i64 = r.get(0).map_err(be)?;
             if shed.contains(&position) {
                 continue;
             }
-            if let Some(earliest) = carried.get(&position) {
-                e.valid_from = from_nanos(*earliest);
-            }
-            events.push(e);
-            if events.len() == batch {
-                sink(&events, head as Position)?;
-                events.clear();
+            kept.push(row(r, carried.get(&position).copied()).map_err(be)?);
+            if kept.len() == batch {
+                sink(&kept, head as Position)?;
+                kept.clear();
             }
         }
-        if !events.is_empty() {
-            sink(&events, head as Position)?;
+        if !kept.is_empty() {
+            sink(&kept, head as Position)?;
         }
         Ok(())
     }

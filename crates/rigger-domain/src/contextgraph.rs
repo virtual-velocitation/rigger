@@ -612,15 +612,15 @@ macro_rules! owed_older_rule {
 /// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED`] is composed from it.
 macro_rules! owed_lost_fold {
     () => {
-        "a fold into it failed"
+        "it misses an event the log holds"
     };
 }
 
 /// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
 pub const OWED_OLDER_RULE: &str = owed_older_rule!();
 
-/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): a fold into it failed, so it no
-/// longer holds an event the log does.
+/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it does not hold an event the log
+/// does - a fold into it failed, or its process died between the append and the fold.
 pub const OWED_LOST_FOLD: &str = owed_lost_fold!();
 
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
@@ -664,10 +664,12 @@ pub trait Projection: Send + Sync {
         Ok(())
     }
 
-    /// Whether this projection owes one rebuild from the log (spec 101) - it was folded under an
-    /// older fold rule, or a fold into it failed, so it no longer holds what the log does: until
-    /// `rigger setup` pays it nothing folds into it, and nothing whose answer depends on the fold
-    /// may answer from it - it refuses with [`REBUILD_OWED`].
+    /// Whether this projection says, without reading the log, that it owes one rebuild from it
+    /// (spec 101) - it was folded under an older fold rule, or a fold into it failed and marked it
+    /// as missing an event the log holds: until `rigger setup` pays it nothing folds into it, and
+    /// nothing whose answer depends on the fold may answer from it - it refuses with
+    /// [`REBUILD_OWED`]. An event it misses that nothing marked is found by `rigger setup`, which
+    /// reads the projection's record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops,
