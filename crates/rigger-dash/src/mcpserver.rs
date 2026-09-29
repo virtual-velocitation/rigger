@@ -2178,10 +2178,9 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let grounder = Nop;
         let graph = Owing;
-        let server = Server::new(&driver, &store, "run", &peers)
+        let server = Server::new(&driver, &store, "run")
             .with_graph(&graph)
             .with_grounder(Ok(&grounder))
             .with_spawn("u/implementer#0");
