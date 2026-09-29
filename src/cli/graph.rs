@@ -946,77 +946,82 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
     select_grounder(name)
 }
 
-#[cfg(all(test, feature = "symbols"))]
+#[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_support::{FailAppendMetaContaining, GroupLookupOnly, MinimalProjection};
-    use rigger::eventstore::Error;
+    /// The walk these tests drive is the `symbols` extraction pass, which the light lane compiles
+    /// out.
+    #[cfg(feature = "symbols")]
+    mod walk {
+        use super::super::*;
+        use crate::test_support::{FailAppendMetaContaining, GroupLookupOnly, MinimalProjection};
+        use rigger::eventstore::Error;
 
-    /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS with
-    /// that error rather than skipping the batch and reporting success - an unanswered lookup is
-    /// never read as "already recorded", the fail-unsafe direction.
-    #[test]
-    fn a_build_whose_recorded_generation_is_unreadable_fails_with_that_error() {
-        let tree = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tree.path().join("src")).unwrap();
-        std::fs::write(
-            tree.path().join("src/lib.rs"),
-            "pub fn answer() -> u32 { 42 }\n",
-        )
-        .unwrap();
-        let store = GroupLookupOnly::new(Err("group index unreadable".into()));
-        match ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()) {
-            Err(Error::Backend(msg)) => assert_eq!(msg, "group index unreadable"),
-            other => panic!("the lookup's failure is the build's, got {other:?}"),
+        /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS with
+        /// that error rather than skipping the batch and reporting success - an unanswered lookup is
+        /// never read as "already recorded", the fail-unsafe direction.
+        #[test]
+        fn a_build_whose_recorded_generation_is_unreadable_fails_with_that_error() {
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(tree.path().join("src")).unwrap();
+            std::fs::write(
+                tree.path().join("src/lib.rs"),
+                "pub fn answer() -> u32 { 42 }\n",
+            )
+            .unwrap();
+            let store = GroupLookupOnly::new(Err("group index unreadable".into()));
+            match ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()) {
+                Err(Error::Backend(msg)) => assert_eq!(msg, "group index unreadable"),
+                other => panic!("the lookup's failure is the build's, got {other:?}"),
+            }
+            assert_eq!(
+                store.asked(),
+                [(conductor::STREAM.to_string(), "gc/src/lib.rs".to_string())],
+                "the build asked the lookup for the one batch the walk emitted, and appended nothing"
+            );
         }
-        assert_eq!(
-            store.asked(),
-            [(conductor::STREAM.to_string(), "gc/src/lib.rs".to_string())],
-            "the build asked the lookup for the one batch the walk emitted, and appended nothing"
-        );
-    }
 
-    /// Spec 101 (ONE ANSWER FOR A FAILED APPEND): a `graph build` whose store refuses one batch's
-    /// append FAILS with that error - the answer the run's sink gives for the same failure - rather
-    /// than reporting success over a batch it never recorded, and still appends every other batch.
-    #[test]
-    fn a_build_whose_append_fails_fails_with_that_error_and_appends_every_other_batch() {
-        let tree = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tree.path().join("src")).unwrap();
-        std::fs::write(tree.path().join("src/a.rs"), "pub fn a() {}\n").unwrap();
-        std::fs::write(tree.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
-        let root = tree.path().to_str().unwrap();
-        let mut walked: Vec<Vec<String>> = Vec::new();
-        rigger::ingest::ingest_project_batched(root, |keyed| {
-            walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
-        });
-        assert_eq!(
-            walked.len(),
-            2,
-            "sanity: one batch per file; walked {walked:?}"
-        );
+        /// Spec 101 (ONE ANSWER FOR A FAILED APPEND): a `graph build` whose store refuses one batch's
+        /// append FAILS with that error - the answer the run's sink gives for the same failure - rather
+        /// than reporting success over a batch it never recorded, and still appends every other batch.
+        #[test]
+        fn a_build_whose_append_fails_fails_with_that_error_and_appends_every_other_batch() {
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(tree.path().join("src")).unwrap();
+            std::fs::write(tree.path().join("src/a.rs"), "pub fn a() {}\n").unwrap();
+            std::fs::write(tree.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
+            let root = tree.path().to_str().unwrap();
+            let mut walked: Vec<Vec<String>> = Vec::new();
+            rigger::ingest::ingest_project_batched(root, |keyed| {
+                walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
+            });
+            assert_eq!(
+                walked.len(),
+                2,
+                "sanity: one batch per file; walked {walked:?}"
+            );
 
-        let inner = Store::open(":memory:").unwrap();
-        let store = FailAppendMetaContaining {
-            inner: &inner,
-            needle: "gc/src/a.rs",
-        };
-        match ingest_tree(&store, &MinimalProjection, root) {
-            Err(Error::Backend(msg)) => assert_eq!(
-                msg,
-                "simulated store failure appending an event whose metadata contains \"gc/src/a.rs\""
-            ),
-            other => panic!("the append's failure is the build's, got {other:?}"),
+            let inner = Store::open(":memory:").unwrap();
+            let store = FailAppendMetaContaining {
+                inner: &inner,
+                needle: "gc/src/a.rs",
+            };
+            match ingest_tree(&store, &MinimalProjection, root) {
+                Err(Error::Backend(msg)) => assert_eq!(
+                    msg,
+                    "simulated store failure appending an event whose metadata contains \"gc/src/a.rs\""
+                ),
+                other => panic!("the append's failure is the build's, got {other:?}"),
+            }
+            let recorded: Vec<String> = inner
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .map(|e| e.meta[rigger::ingest::META_REPLAY_KEY].clone())
+                .collect();
+            assert_eq!(
+                recorded, walked[1],
+                "the refused batch records nothing and the other appends whole"
+            );
         }
-        let recorded: Vec<String> = inner
-            .read_stream(conductor::STREAM, 0, Direction::Forward)
-            .unwrap()
-            .iter()
-            .map(|e| e.meta[rigger::ingest::META_REPLAY_KEY].clone())
-            .collect();
-        assert_eq!(
-            recorded, walked[1],
-            "the refused batch records nothing and the other appends whole"
-        );
     }
 }
