@@ -139,6 +139,59 @@ mod ingest_sinks {
         dir
     }
 
+    /// A raw connection of its own to `root`'s events file, for planting what the store's API
+    /// never writes.
+    fn events_db(root: &Path) -> rusqlite::Connection {
+        rusqlite::Connection::open(common::cli::rigger_file(root, "events.db")).unwrap()
+    }
+
+    /// Set the type of the one recording grouped under `identity` to the SQL literal `type_sql`,
+    /// asserting exactly one row carries that group.
+    fn set_recording_type(root: &Path, identity: &str, type_sql: &str) {
+        let rows = events_db(root)
+            .execute(
+                &format!(
+                    "UPDATE events SET type = {type_sql} WHERE json_extract(meta, '$.group') = ?1"
+                ),
+                [identity],
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "exactly one recording is grouped under {identity}");
+    }
+
+    /// Record a stale generation of `identity`'s batch, then make that recording unreadable to the
+    /// group lookup (its type is not text), so the store cannot answer `identity`'s lookup. Returns
+    /// the run stream's length once the recording is appended, before it is made unreadable.
+    fn plant_unreadable_recording(root: &Path, identity: &str) -> usize {
+        with_run_store(root, |store| {
+            store
+                .append(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[keyed_derived_event(
+                        Event::new(
+                            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                            b"{}".to_vec(),
+                        ),
+                        &format!("{identity}@stale#0"),
+                    )],
+                )
+                .unwrap();
+        });
+        let recorded = read_run_events(root).len();
+        set_recording_type(root, identity, "X'FF'");
+        recorded
+    }
+
+    /// Give `identity`'s planted recording back its text type, so the log reads back whole.
+    fn restore_recording(root: &Path, identity: &str) {
+        set_recording_type(
+            root,
+            identity,
+            &format!("'{}'", rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED),
+        );
+    }
+
     /// `rigger graph build` in `root`, which must succeed.
     fn graph_build(root: &Path, what: &str) {
         let (out, err, ok) = run_rigger(root, &["graph", "build"]);
@@ -273,38 +326,7 @@ mod ingest_sinks {
         );
         let now = walk(root);
         let broken = format!("gc/{BROKEN}");
-        with_run_store(root, |store| {
-            store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &[keyed_derived_event(
-                        Event::new(
-                            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                            b"{}".to_vec(),
-                        ),
-                        &format!("{broken}@stale#0"),
-                    )],
-                )
-                .unwrap();
-        });
-        let before = read_run_events(root).len();
-        let set_type = |type_sql: &str| {
-            rusqlite::Connection::open(common::cli::rigger_file(root, "events.db"))
-                .unwrap()
-                .execute(
-                    &format!(
-                        "UPDATE events SET type = {type_sql} WHERE json_extract(meta, '$.group') = ?1"
-                    ),
-                    [&broken],
-                )
-                .unwrap()
-        };
-        assert_eq!(
-            set_type("X'FF'"),
-            1,
-            "sanity: exactly the one recording is made unreadable"
-        );
+        let before = plant_unreadable_recording(root, &broken);
 
         let (out, err, ok) = run_rigger(root, &["graph", "build"]);
         assert!(
@@ -321,13 +343,7 @@ mod ingest_sinks {
         );
 
         // Restore the recording's type so the log reads back; the build has already run.
-        assert_eq!(
-            set_type(&format!(
-                "'{}'",
-                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED
-            )),
-            1
-        );
+        restore_recording(root, &broken);
         let others: Vec<String> = now
             .iter()
             .filter(|(identity, _, _)| *identity != broken)
@@ -349,6 +365,75 @@ mod ingest_sinks {
             "every batch whose lookup answered is appended whole, and the unreadable one is not"
         );
         assert_eq!(meta_of(&appended, META_GROUP), identities_of(&others));
+    }
+
+    /// Replace the store's group index with one of the same name that no group lookup can use (a
+    /// partial index over no row), so every group lookup fails to plan while every other read -
+    /// none of which names that index - still answers. Opening the store keeps it, since the index
+    /// the schema creates already exists by that name.
+    fn break_group_index(root: &Path) {
+        events_db(root)
+            .execute_batch(
+                "DROP INDEX idx_events_group; \
+                 CREATE INDEX idx_events_group ON events(position) WHERE 0",
+            )
+            .unwrap();
+    }
+
+    /// Drop the unusable group index, so the next open of the store rebuilds the real one.
+    fn repair_group_index(root: &Path) {
+        events_db(root)
+            .execute_batch("DROP INDEX idx_events_group")
+            .unwrap();
+    }
+
+    /// GIVEN a project whose store cannot answer a group lookup (its group index is unusable) while
+    /// every other read still answers,
+    /// WHEN a `rigger step` parks a stage and so walks and ingests the tree,
+    /// THEN the step FAILS rather than parking its stage: the run sink never reads an unanswered
+    /// lookup as "nothing to append", so the step exits non-zero naming the store's error, prints no
+    /// step line, and appends no derived event;
+    /// AND once the store answers again, the next `rigger step` succeeds and appends the whole walk,
+    /// every batch whole, grouped and in walk order - the failed step recorded nothing that spares
+    /// a batch it never appended.
+    #[test]
+    fn a_step_whose_group_lookup_is_unanswered_fails_and_appends_nothing() {
+        let dir = ingestable_project();
+        let root = dir.path();
+        tree(root, &[(UNCHANGED, "pub fn kept() {}\n")]);
+        let all: Vec<String> = walk(root)
+            .into_iter()
+            .flat_map(|(_, _, keys)| keys)
+            .collect();
+        break_group_index(root);
+        let before = read_run_events(root).len();
+
+        let (out, err, ok) = run_rigger(root, &["step"]);
+        assert!(
+            !ok,
+            "a step whose lookup cannot be answered must fail; stdout: {out}; stderr: {err}"
+        );
+        assert_eq!(out.trim(), "", "a failed step prints no step line");
+        assert!(
+            err.contains("rigger: conductor: event store: no query solution"),
+            "the step fails with the store's lookup error; stderr: {err}"
+        );
+        assert_eq!(
+            meta_of(&derived_since(root, before), META_REPLAY_KEY),
+            Vec::<String>::new(),
+            "no batch is appended when no lookup answered"
+        );
+
+        repair_group_index(root);
+        let failed = read_run_events(root).len();
+        step_line(root, "the step once the store answers again");
+        let appended = derived_since(root, failed);
+        assert_eq!(
+            meta_of(&appended, META_REPLAY_KEY),
+            all,
+            "the next step appends every batch the failed step could not, whole and in walk order"
+        );
+        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&all));
     }
 
     /// GIVEN a log whose derived events were recorded BEFORE the group stamp - each keyed, none
