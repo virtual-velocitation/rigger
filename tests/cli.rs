@@ -33,9 +33,10 @@ use common::cli::temp_project;
 use common::cli::temp_repoless_project;
 use common::cli::temp_store_project;
 use common::cli::validate_after_init;
+use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
-    write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
-    REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
+    write_scaffold, write_workflow_fixture, WorkflowFixture, REVIEWLESS_GIT_UNIT_WORKFLOW,
+    UNISOLATED_WORKER,
 };
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::pgid_of;
@@ -4888,27 +4889,6 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
     );
 }
 
-/// The escalating twin of [`REVIEWLESS_GIT_UNIT_WORKFLOW`]: identical shape, but
-/// `defaults.max_retries: 1` means `safety::remediate(0, 1)` escalates on the FIRST failed
-/// attempt (`bounded_then_escalates` in `src/safety.rs` pins that arithmetic), so a single
-/// crashed implementer spawn - never a park - is enough to drive the unit terminal without
-/// ever integrating.
-const REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
-    worker: ISOLATED_WORKER,
-    body: r#"defaults:
-  grounder: nop
-  budget: 60
-  max_retries: 1
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: merge
-"#,
-};
-
 /// Step 1 of a single-unit (`solo`) git-backed run: the unit is ready, so its implementer
 /// parks - and the real, git-backed isolation creates the unit's own durable worktree right
 /// here, before the implementer has produced any diff. Returns that worktree's path.
@@ -5070,41 +5050,6 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
         )
         .is_some(),
         "an escalated unit's branch must be RETAINED, not deleted alongside its worktree"
-    );
-}
-
-/// Spec 88, criterion 3 (ESCALATION RESUMES) shared setup: drive `solo` to a genuine
-/// terminal escalation through the REAL two-process replay lifecycle (park, then an
-/// out-of-process crash report), exactly as
-/// [`step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalation`]
-/// does, and assert the fixpoint before returning - every `resume-unit` test below
-/// builds on this SAME real, git-backed escalated unit.
-fn escalate_solo_unit(root: &Path) {
-    write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
-        "step 1 parks the implementer; got: {out:?}"
-    );
-    let (_o, err, ok) = run_rigger(
-        root,
-        &[
-            "result",
-            "solo/implementer#0",
-            "boundary-genuine-crash-marker",
-            "--error",
-        ],
-    );
-    assert!(ok, "recording the crash must succeed; stderr: {err}");
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok,
-        "an escalation-fixpoint step still exits 0; stderr: {err}"
-    );
-    assert!(
-        out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
-        "the crash must exhaust remediation into an escalated fixpoint; got: {out:?}"
     );
 }
 

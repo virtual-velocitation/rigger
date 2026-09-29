@@ -485,6 +485,60 @@ stages:
 "#,
 };
 
+/// The escalating twin of [`REVIEWLESS_GIT_UNIT_WORKFLOW`]: identical shape, but
+/// `defaults.max_retries: 1` means `safety::remediate(0, 1)` escalates on the FIRST failed
+/// attempt (`bounded_then_escalates` in `src/safety.rs` pins that arithmetic), so a single
+/// crashed implementer spawn - never a park - is enough to drive the unit terminal without
+/// ever integrating.
+pub const REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 1
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#,
+};
+
+/// Spec 88, criterion 3 (ESCALATION RESUMES) shared setup: drive `solo` to a genuine
+/// terminal escalation through the REAL two-process replay lifecycle (park, then an
+/// out-of-process crash report), and assert the fixpoint before returning - every `resume-unit` test
+/// builds on this SAME real, git-backed escalated unit.
+pub fn escalate_solo_unit(root: &Path) {
+    write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "solo/implementer#0",
+            "boundary-genuine-crash-marker",
+            "--error",
+        ],
+    );
+    assert!(ok, "recording the crash must succeed; stderr: {err}");
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "an escalation-fixpoint step still exits 0; stderr: {err}"
+    );
+    assert!(
+        out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
+        "the crash must exhaust remediation into an escalated fixpoint; got: {out:?}"
+    );
+}
+
 /// Seed `<root>/.rigger/events.db` with rows in `project`'s run stream whose position order and
 /// revision order DISAGREE (spec 71's corruption signature) by inserting directly - bypassing the
 /// store's own always-increasing revision assignment, the only way to reach this shape. Three
