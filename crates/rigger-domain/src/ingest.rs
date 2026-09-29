@@ -394,7 +394,8 @@ mod dedup_tests {
 #[cfg(test)]
 mod group_lookup_tests {
     use super::{
-        batch_is_latest_recorded, keyed_derived_event, latest_generation, META_REPLAY_KEY,
+        batch_is_latest_recorded, keyed_derived_event, latest_generation, sink_walked_batches,
+        META_REPLAY_KEY,
     };
     use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_REVIEW_FINDING};
     use crate::eventstore::{Event, GroupHead, META_GROUP};
@@ -530,6 +531,47 @@ mod group_lookup_tests {
             store.asked().len(),
             2,
             "a batch that names no identity asks the store nothing"
+        );
+    }
+
+    #[test]
+    fn a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error() {
+        let ev = Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]);
+        let batches: Vec<Vec<(String, &Event)>> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|file| vec![(format!("gc/{file}.rs@h#0"), &ev)])
+            .collect();
+        let walk = |sink: &mut dyn FnMut(&[(String, &Event)])| {
+            for batch in &batches {
+                sink(batch);
+            }
+        };
+
+        let mut sunk = Vec::new();
+        let answer = sink_walked_batches(walk, |keyed| {
+            let key = keyed[0].0.clone();
+            sunk.push(key.clone());
+            if key.starts_with("gc/b") || key.starts_with("gc/d") {
+                Err(key)
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            answer,
+            Err("gc/b.rs@h#0".to_string()),
+            "the walk answers its FIRST failed batch's error, never a later one's"
+        );
+        assert_eq!(
+            sunk,
+            ["gc/a.rs@h#0", "gc/b.rs@h#0", "gc/c.rs@h#0", "gc/d.rs@h#0"],
+            "a failed batch never stops the walk: every batch reaches the sink, in walk order"
+        );
+
+        assert_eq!(
+            sink_walked_batches(walk, |_| Ok::<(), String>(())),
+            Ok(()),
+            "a walk whose every batch lands answers Ok"
         );
     }
 }
