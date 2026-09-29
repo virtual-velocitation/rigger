@@ -2517,17 +2517,24 @@ CREATE INDEX idx_pending_proof_name ON pending_proof(project, name);
 /// and the design link a superseded generation asserted, and the proof waiting in `pending_proof`.
 struct ReleaseEraStore {
     dir: tempfile::TempDir,
-    project: String,
     events_db: std::path::PathBuf,
     graph_db: std::path::PathBuf,
 }
 
 impl ReleaseEraStore {
+    /// The store with its durable identity already minted, so `rigger setup` keeps its namespace.
     fn new() -> Self {
+        Self::with_identity(true)
+    }
+
+    /// The store, with its durable identity `minted` already or still named after its directory
+    /// (which `rigger setup` then mints, moving the log to it).
+    fn with_identity(minted: bool) -> Self {
         let dir = temp_store_project();
         let root = dir.path();
-        // The durable identity is already minted, so `rigger setup` keeps the namespace.
-        std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
+        if minted {
+            std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
+        }
         let project = run_stream_identity(root);
         let mut log = two_generations_dropping_facts();
         log.push(keyed(
@@ -2579,7 +2586,6 @@ impl ReleaseEraStore {
         drop(conn);
         ReleaseEraStore {
             dir,
-            project,
             events_db,
             graph_db,
         }
@@ -2589,11 +2595,16 @@ impl ReleaseEraStore {
         self.dir.path()
     }
 
+    /// The project's identity as the binary resolves it now.
+    fn project(&self) -> String {
+        run_stream_identity(self.root())
+    }
+
     /// The project's run stream as the log now records it.
     fn log(&self) -> Vec<Event> {
         run_events(
             &Store::open(self.events_db.to_str().unwrap()).unwrap(),
-            &self.project,
+            &self.project(),
         )
     }
 
@@ -2606,7 +2617,7 @@ impl ReleaseEraStore {
     /// fold of the whole log.
     fn graph_and_a_fresh_fold_of_the_log(&self) -> ((String, Vec<String>), (String, Vec<String>)) {
         use rigger::contextgraph::sqlite::Projector;
-        let whole = Projector::open(self.graph_db.to_str().unwrap(), &self.project)
+        let whole = Projector::open(self.graph_db.to_str().unwrap(), &self.project())
             .unwrap()
             .whole()
             .unwrap();
@@ -2617,7 +2628,7 @@ impl ReleaseEraStore {
                 fold_state(&self.graph_db),
             ),
             (
-                fold_in_batches(&fresh, &self.project, &[self.log()]),
+                fold_in_batches(&fresh, &self.project(), &[self.log()]),
                 fold_state(&fresh),
             ),
         )
@@ -2669,7 +2680,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
         (1, 0),
         "the rebuilt file records the current rule and no longer holds the old table"
     );
-    let rebuilt = Projector::open(store.graph_db.to_str().unwrap(), &store.project).unwrap();
+    let rebuilt = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
     assert!(!rebuilt.rebuild_owed().unwrap(), "the rebuild was paid");
     let whole = rebuilt.whole().unwrap();
     drop(rebuilt);
@@ -2692,6 +2703,38 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
     assert!(
         !out.contains("graph.db"),
         "a paid rebuild is not owed or reported again; stdout: {out}"
+    );
+}
+
+/// Given a release-era store whose durable identity `rigger setup` has yet to mint, when the
+/// operator runs `rigger setup`, then the log moves to the minted identity before the rebuild reads
+/// it, and the rebuilt `graph.db` is the whole log's under that identity - never an empty graph
+/// folded from a namespace the history has not reached yet.
+#[test]
+fn rigger_setup_rebuilds_from_the_log_under_the_identity_it_mints() {
+    let store = ReleaseEraStore::with_identity(false);
+    let legacy = store.project();
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_ne!(store.project(), legacy, "setup minted the durable identity");
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert!(
+        graph.0.contains("src/f.rs::alpha"),
+        "the rebuild read the moved history; graph: {}",
+        graph.0
+    );
+    assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
+}
+
+/// Given a project with no `graph.db`, `rigger setup` owes and reports no rebuild and creates none.
+#[test]
+fn rigger_setup_on_a_project_without_a_graph_db_creates_none() {
+    let dir = common::cli::temp_project();
+    let (out, err, ok) = run_rigger_envs(dir.path(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stderr: {err}");
+    assert!(
+        !rigger_file(dir.path(), "graph.db").exists() && !out.contains("graph.db"),
+        "no graph.db is created or rebuilt; stdout: {out}"
     );
 }
 
@@ -2795,7 +2838,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     let (resume, resume_rx) = channel::<()>();
     let rebuilder = {
         let (events_db, graph_db) = (store.events_db.clone(), store.graph_db.clone());
-        let project = store.project.clone();
+        let project = store.project();
         std::thread::spawn(move || {
             let backend = Store::open(events_db.to_str().unwrap()).unwrap();
             let log = || Ok(run_events(&backend, &project));
@@ -2813,7 +2856,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     paused.recv().unwrap();
 
     let started = Instant::now();
-    let reader = Projector::open(store.graph_db.to_str().unwrap(), &store.project).unwrap();
+    let reader = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
     let (owed, whole) = (reader.rebuild_owed().unwrap(), reader.whole().unwrap());
     drop(reader);
     assert_eq!(

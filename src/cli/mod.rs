@@ -4884,6 +4884,44 @@ mod tests {
     use crate::test_support::CwdGuard;
     use std::process::Command;
 
+    /// Spec 101: the note a read-only surface prints names `rigger setup` exactly when `graph.db`
+    /// owes its rebuild - never for a current file, and never by creating an absent one.
+    #[test]
+    fn the_rebuild_owed_note_speaks_only_for_a_graph_db_that_owes_it_and_creates_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let graph_db = path.to_str().unwrap();
+        assert_eq!(graph_rebuild_owed_note(graph_db, "p"), None);
+        assert!(!path.exists(), "an absent graph.db is never created");
+
+        let mut decision = Event::new(
+            contextgraph::TYPE_DECISION_MADE,
+            br#"{"id":"d","summary":"s","governs":[],"supersedes":""}"#.to_vec(),
+        );
+        decision.position = 1;
+        Projector::open(graph_db, "p")
+            .unwrap()
+            .apply(&decision)
+            .unwrap();
+        assert_eq!(
+            graph_rebuild_owed_note(graph_db, "p"),
+            None,
+            "a current file owes nothing"
+        );
+
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("PRAGMA user_version = 0;")
+            .unwrap();
+        assert_eq!(
+            graph_rebuild_owed_note(graph_db, "p"),
+            Some(format!(
+                "note: {} - until then the context graph answers as it stands",
+                contextgraph::REBUILD_OWED
+            ))
+        );
+    }
+
     /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt`
     /// (so it cannot drift from the labels), every optional field empty.
     fn test_request(
