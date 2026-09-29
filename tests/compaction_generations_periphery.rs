@@ -2234,12 +2234,9 @@ fn two_generations_dropping_facts() -> Vec<Event> {
 fn a_pre_rule_graph_db(db: &Path, events: &[Event], ledgers: &str) {
     use rigger::contextgraph::sqlite::Projector;
 
-    assert_eq!(
-        Fold::of_batch(
-            Some(&Projector::open(db.to_str().unwrap(), PROJECT).unwrap()),
-            events
-        ),
-        Fold::Folded
+    common::fixtures::folds(
+        &Projector::open(db.to_str().unwrap(), PROJECT).unwrap(),
+        events,
     );
     let conn = rusqlite::Connection::open(db).unwrap();
     conn.execute_batch(&format!(
@@ -2385,12 +2382,9 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     })
     .unwrap();
     assert!(!again, "a paid rebuild does not run again");
-    assert_eq!(
-        Fold::of_batch(
-            Some(&Projector::open(old_db.to_str().unwrap(), PROJECT).unwrap()),
-            &later_events()
-        ),
-        Fold::Folded
+    common::fixtures::folds(
+        &Projector::open(old_db.to_str().unwrap(), PROJECT).unwrap(),
+        &later_events(),
     );
 }
 
@@ -2702,15 +2696,9 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
             .unwrap();
         use rigger::contextgraph::sqlite::Projector;
 
-        assert_eq!(
-            Fold::of_batch(
-                Some(
-                    &Projector::open(graph_db.to_str().unwrap(), &run_stream_identity(root))
-                        .unwrap()
-                ),
-                &log[..3]
-            ),
-            Fold::Folded
+        common::fixtures::folds(
+            &Projector::open(graph_db.to_str().unwrap(), &run_stream_identity(root)).unwrap(),
+            &log[..3],
         );
         rusqlite::Connection::open(&graph_db)
             .unwrap()
@@ -3114,7 +3102,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
 }
 
 /// Given a `graph.db` that owes its rebuild for both causes at once - the release before the
-/// generation rule folded it, and a fold into it was lost - when the operator runs `rigger setup`,
+/// generation rule folded it, and a fold into it failed - when the operator runs `rigger setup`,
 /// then setup names both causes in order, pays both with its one rebuild (the lost fold's mark is
 /// gone and the file records the current rule), and a second `rigger setup` owes nothing.
 #[test]
