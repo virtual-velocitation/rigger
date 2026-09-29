@@ -602,11 +602,37 @@ pub fn fold_loss_clause(fold: &Fold) -> String {
     }
 }
 
+/// The one spelling of [`OWED_OLDER_RULE`], a literal so [`REBUILD_OWED`] is composed from it.
+macro_rules! owed_older_rule {
+    () => {
+        "it was folded under an older fold rule"
+    };
+}
+
+/// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED`] is composed from it.
+macro_rules! owed_lost_fold {
+    () => {
+        "a fold into it failed"
+    };
+}
+
+/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
+pub const OWED_OLDER_RULE: &str = owed_older_rule!();
+
+/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): a fold into it failed, so it no
+/// longer holds an event the log does.
+pub const OWED_LOST_FOLD: &str = owed_lost_fold!();
+
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
 /// fold, and what every command that depends on the fold says when it refuses: the one spelling of
-/// the refusal, naming the one command that pays the rebuild.
-pub const REBUILD_OWED: &str = "graph.db owes one rebuild from the event log (it was folded \
-     under an older fold rule, or a fold into it was lost) - run `rigger setup` to rebuild it";
+/// the refusal, naming both causes a rebuild is owed for and the one command that pays it.
+pub const REBUILD_OWED: &str = concat!(
+    "graph.db owes one rebuild from the event log (",
+    owed_older_rule!(),
+    ", or ",
+    owed_lost_fold!(),
+    ") - run `rigger setup` to rebuild it"
+);
 
 /// The refusal `command`, whose answer depends on the fold, gives while the graph owes its
 /// rebuild.
