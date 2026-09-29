@@ -4027,7 +4027,7 @@ mod tests {
             .unwrap()
             .busy_timeout(std::time::Duration::from_millis(1))
             .unwrap();
-        let writer = Connection::open(path).unwrap();
+        let writer = open_connection(path).unwrap();
         writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
 
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
