@@ -768,20 +768,31 @@ is deduped under can never drift between them. Four properties define it:
   was transaction-cadence bound, not parse-bound - one transaction per file, not per event.
 - **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
   `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). One predicate (`ingest::project_scoped_replay_keys`, beside the key authority that
-  builds that format) decides what a fresh emit is redundant against, and both sinks - the run's
-  keyed emit and a cold `graph build` - call it rather than carrying their own copy. It applies
-  three rules in order:
+  design). Every derived event is built by one helper (`ingest::keyed_derived_event`) that stamps
+  it with that key AND with its GROUP (`eventstore::META_GROUP`): the batch identity
+  `<prefix>/<file>` cut from the key by the one key parser. The store answers, per group, the newest
+  event carrying it (`EventStore::latest_in_group`: position, type and metadata, never data) from
+  its own group index - a partial expression index on the embedded store, one link stream per
+  identity on the server-backed one - so the question "what is this file's latest recorded
+  generation?" (`ingest::latest_generation`) never reads the stream. Both sinks - the run's keyed
+  emit and a cold `graph build` - seed through one first-sight helper
+  (`ingest::batch_is_latest_recorded`): the first time a process meets an identity it asks the
+  lookup, and when the answer is the batch's own generation it installs the batch's keys (a key is
+  a pure function of the batch's bytes, so they are the recorded keys) and appends nothing;
+  otherwise it appends the batch. From then on the process's own record of each identity's
+  generation governs. The decision applies three rules in order:
   - **Type first.** Only the four derived index types (`CodeEntityExtracted`, `EdgeInferred`,
-    `DocConceptExtracted`, `DocLinkExtracted`) are eligible. Every other event is passed over
-    whatever its replay key looks like, so no domain event can be dropped by this path and the
-    partition is a property of the code, not of a naming convention.
-  - **Project scope, not run scope.** The eligible keys are read from the WHOLE stream, because a
+    `DocConceptExtracted`, `DocLinkExtracted`) answer a generation. A newest group member of any
+    other type, or one whose key does not parse, answers none, so the batch re-emits - the
+    fail-safe direction - and no domain event can be dropped by this path; the partition is a
+    property of the code, not of a naming convention.
+  - **Project scope, not run scope.** The lookup spans the project's whole stream, because a
     file's content hash does not change because a new run started. A derived index fact is a fact
     about the project's files; run scoping belongs to keys whose recurrence is a property of one
     run (unit lifecycle, gate verdicts, breaker trips), and those still seed from the current run's
     slice. So an unchanged file appends **zero** events on every subsequent run, forever - the log
-    stops re-accumulating a re-derivable index.
+    stops re-accumulating a re-derivable index - and a step that ingests reads no derived event to
+    decide it. A lookup the store cannot answer fails the ingest; it is never read as "recorded".
   - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
     equals the hash of the LATEST batch recorded for that same file. A changed file - **including
     one reverted to content it held at an earlier recorded generation** - differs from its latest
@@ -793,7 +804,7 @@ is deduped under can never drift between them. Four properties define it:
     spec 29a mechanism. The design half sets no `fresh` head at all, so a re-emitted design batch
     adds its edges without retiring the ones its earlier generation left live.
 
-  The net contract is stated against the LOG, because the log is the only thing this predicate
+  The net contract is stated against the LOG, because the log is the only thing the skip
   decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
   generation **as the walk lowered it** in full, and only what changed is ever re-emitted. That
   qualifier is load-bearing and the last bullet below is why: the walk's view of a file is not always

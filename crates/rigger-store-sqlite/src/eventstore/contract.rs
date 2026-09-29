@@ -5,7 +5,10 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use super::{Direction, Error, Event, EventStore, ExpectedRevision, Filter, TypeSelection};
+use super::{
+    Direction, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead, TypeSelection,
+    META_GROUP,
+};
 
 /// Run every contract check against a store, panicking on any violation.
 pub fn assert_contract(store: &dyn EventStore) {
@@ -29,6 +32,228 @@ pub fn assert_contract(store: &dyn EventStore) {
     last_position_answers_the_newest_boundary_without_reading_the_stream(store);
     typed_read_hands_back_only_the_selected_types_from_a_revision(store);
     positions_read_hands_every_position_of_the_stream_in_order_in_batches(store);
+    latest_in_group_answers_the_newest_member_without_reading_the_stream(store);
+    a_grouped_append_under_an_unmet_expectation_records_nothing(store);
+    latest_generation_answers_what_the_reference_answers_on_the_same_log(store);
+}
+
+/// An event of type `t` stamped with `group` (when given) and a `tag` entry naming it.
+fn grouped(t: &str, group: Option<&str>, tag: &str) -> Event {
+    let event = Event::new(t, b"{}".to_vec()).with_meta("tag", tag);
+    match group {
+        Some(group) => event.with_meta(META_GROUP, group),
+        None => event,
+    }
+}
+
+/// THE GROUP LOOKUP (spec 101): `latest_in_group` answers the NEWEST event of THAT stream stamped
+/// with THAT group - its position, type and metadata - from the backend's own group index or group
+/// stream, never by reading the stream. Pinned here so every backend owes it: the newest member
+/// (not the first), of that group (not the newest event), on that stream (not a sibling's later
+/// member), and the counting double proves the lookup handed back no event and issued no read.
+fn latest_in_group_answers_the_newest_member_without_reading_the_stream(store: &dyn EventStore) {
+    let appended = store
+        .append(
+            "c-group",
+            ExpectedRevision::NoStream,
+            &[
+                grouped("X", Some("gc/a.rs"), "a-first"),
+                grouped("X", Some("gc/b.rs"), "b-only"),
+                grouped("X", None, "ungrouped"),
+                grouped("Y", Some("gc/a.rs"), "a-newest"),
+                grouped("X", None, "ungrouped-after"),
+            ],
+        )
+        .expect("the grouped stream appends");
+    let at: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
+    store
+        .append(
+            "c-group-sibling",
+            ExpectedRevision::NoStream,
+            &[grouped("Z", Some("gc/a.rs"), "sibling")],
+        )
+        .expect("the sibling stream appends");
+
+    let counted = crate::event_fixtures::ReadCountingStore::new(store);
+    let lookup = |stream: &str, group: &str| {
+        counted
+            .latest_in_group(stream, group)
+            .unwrap_or_else(|e| panic!("the group lookup on {stream:?} must succeed: {e}"))
+    };
+    let head = |position: u64, t: &str, group: &str, tag: &str| GroupHead {
+        position,
+        type_: t.to_string(),
+        meta: [(META_GROUP, group), ("tag", tag)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    };
+    assert_eq!(
+        lookup("c-group", "gc/a.rs"),
+        Some(head(at[3], "Y", "gc/a.rs", "a-newest")),
+        "the NEWEST member of the group, with its type and metadata"
+    );
+    assert_eq!(
+        lookup("c-group", "gc/b.rs"),
+        Some(head(at[1], "X", "gc/b.rs", "b-only")),
+        "each group answers its own newest member, however many events follow it"
+    );
+    assert_eq!(
+        lookup("c-group", "gc/never.rs"),
+        None,
+        "a group the stream never recorded has no member"
+    );
+    assert_eq!(
+        lookup("c-group-never-written", "gc/a.rs"),
+        None,
+        "a stream that does not exist has no member"
+    );
+    assert_eq!(
+        lookup("c-group-sibling", "gc/a.rs").map(|h| h.type_),
+        Some("Z".to_string()),
+        "a sibling stream's member answers only for that sibling"
+    );
+    assert_eq!(
+        counted.materialized(),
+        0,
+        "the lookup hands back no event: {:?}",
+        counted.reads()
+    );
+    let lookups_only = counted
+        .reads()
+        .iter()
+        .all(|r| matches!(r, crate::event_fixtures::CountedRead::LatestInGroup { .. }));
+    assert!(
+        lookups_only && counted.reads().len() == 5,
+        "the lookup issues no stream or $all read: {:?}",
+        counted.reads()
+    );
+    assert_eq!(
+        store
+            .read_stream("c-group", 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .map(|e| e.type_.as_str())
+            .collect::<Vec<_>>(),
+        ["X", "X", "X", "Y", "X"],
+        "grouping adds no event to the stream a caller reads"
+    );
+}
+
+/// A grouped append whose expectation the stream does not meet is the caller's conflict and
+/// records nothing: the group's latest member is unchanged, so a refused append can never be
+/// answered as a recording.
+fn a_grouped_append_under_an_unmet_expectation_records_nothing(store: &dyn EventStore) {
+    store
+        .append(
+            "c-group-refused",
+            ExpectedRevision::NoStream,
+            &[grouped("X", Some("gc/a.rs"), "recorded")],
+        )
+        .expect("the first grouped append lands");
+    for expected in [ExpectedRevision::Exact(5), ExpectedRevision::NoStream] {
+        match store.append(
+            "c-group-refused",
+            expected,
+            &[grouped("X", Some("gc/a.rs"), "refused")],
+        ) {
+            Err(Error::Conflict { actual, .. }) => assert_eq!(actual, 0, "{expected:?}"),
+            other => panic!("an unmet expectation {expected:?} must conflict: {other:?}"),
+        }
+    }
+    let tag = store
+        .latest_in_group("c-group-refused", "gc/a.rs")
+        .unwrap()
+        .and_then(|h| h.meta.get("tag").cloned());
+    assert_eq!(tag.as_deref(), Some("recorded"));
+    store
+        .append(
+            "c-group-refused",
+            ExpectedRevision::Exact(0),
+            &[grouped("X", Some("gc/a.rs"), "met")],
+        )
+        .expect("a met expectation appends");
+    let tag = store
+        .latest_in_group("c-group-refused", "gc/a.rs")
+        .unwrap()
+        .and_then(|h| h.meta.get("tag").cloned());
+    assert_eq!(tag.as_deref(), Some("met"), "a met expectation records");
+}
+
+/// THE REFERENCE (spec 101): over one log of keyed derived events - three identities, a change, a
+/// revert to an earlier generation and a re-recording of the same generation, among unkeyed derived
+/// noise - the domain reader over the group lookup answers, for every identity, exactly the
+/// generation the whole-stream reference `project_scoped_latest_generations` answers, and a
+/// never-recorded identity answers none.
+fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &dyn EventStore) {
+    use rigger_domain::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
+    use rigger_domain::ingest::{
+        keyed_derived_event, latest_generation, project_scoped_latest_generations,
+    };
+    let stream = "c-generations";
+    let batch = |file: &str, generation: &str| -> Vec<Event> {
+        [TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                keyed_derived_event(
+                    Event::new(*t, b"{}".to_vec()),
+                    &format!("{file}@{generation}#{i}"),
+                )
+            })
+            .collect()
+    };
+    let noise = || vec![Event::new(TYPE_EDGE_INFERRED, b"{}".to_vec())];
+    for events in [
+        batch("gc/a.rs", "h1"),
+        batch("gc/b.rs", "h1"),
+        noise(),
+        batch("gd/a.rs", "h1"),
+        batch("gc/a.rs", "h2"),
+        batch("gc/b.rs", "h2"),
+        noise(),
+        batch("gc/b.rs", "h1"),
+        batch("gd/a.rs", "h1"),
+    ] {
+        store
+            .append(stream, ExpectedRevision::Any, &events)
+            .expect("the generations log appends");
+    }
+    let reference = project_scoped_latest_generations(
+        &store.read_stream(stream, 0, Direction::Forward).unwrap(),
+    );
+    let answered: Vec<(String, Option<String>)> = ["gc/a.rs", "gc/b.rs", "gd/a.rs", "gc/c.rs"]
+        .iter()
+        .map(|identity| {
+            let generation = latest_generation(store, stream, identity)
+                .unwrap_or_else(|e| panic!("the lookup of {identity} must succeed: {e}"));
+            (identity.to_string(), generation)
+        })
+        .collect();
+    let expected: Vec<(String, Option<String>)> = ["gc/a.rs", "gc/b.rs", "gd/a.rs", "gc/c.rs"]
+        .iter()
+        .map(|identity| {
+            (
+                identity.to_string(),
+                reference.get(*identity).map(|(hash, _)| hash.clone()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        answered, expected,
+        "the lookup answers what the reference answers"
+    );
+    assert_eq!(
+        answered,
+        [
+            ("gc/a.rs".to_string(), Some("h2".to_string())),
+            ("gc/b.rs".to_string(), Some("h1".to_string())),
+            ("gd/a.rs".to_string(), Some("h1".to_string())),
+            ("gc/c.rs".to_string(), None),
+        ],
+        "the change moves a.rs to h2, the revert moves b.rs back to h1, and a never-recorded \
+         identity answers none"
+    );
 }
 
 /// THE POSITIONS READ (spec 101): `read_stream_positions` hands the sink the global position of

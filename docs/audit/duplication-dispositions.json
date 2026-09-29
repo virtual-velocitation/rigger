@@ -470,11 +470,6 @@
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-286060b30486",
-    "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects) over different inputs."
-  },
-  {
     "id": "dup-2a5626cb9627",
     "disposition": "not-a-duplicate",
     "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
@@ -950,11 +945,6 @@
     "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and appends through the run's one folding store (`Deps::folding`, an `ingest::FoldingStore`), whose fold is the one `ingest::append_and_fold_batch` folds with and which reports a lost fold through the run's injected log, rather than re-implementing either."
   },
   {
-    "id": "dup-033af83f765c",
-    "disposition": "not-a-duplicate",
-    "reason": "Two port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the append-only port double refuses every read; the port method's signature is what makes them look alike."
-  },
-  {
     "id": "dup-0b2669324614",
     "disposition": "not-a-duplicate",
     "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
@@ -963,5 +953,55 @@
     "id": "dup-36ebafe7bb7e",
     "disposition": "not-a-duplicate",
     "reason": "`holds_table` asks a graph.db's sqlite_master whether a named table exists through the file's one `exists` query helper, while `poison` rewrites a run stream's meta column to invalid bytes through `rewrite_run_stream`; they share only a one-call delegating body."
+  },
+  {
+    "id": "dup-05f8d05060a7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the capped-reads test double, each forwarding its own inner call uncharged: the boundary lookup and the group lookup are distinct `EventStore` methods every implementation owes, and neither is a read the cap charges."
+  },
+  {
+    "id": "dup-4979c76ee36f",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the failing-read test double answering their own distinct `EventStore` methods (the boundary lookup and the group lookup), each with the answer that method's contract takes."
+  },
+  {
+    "id": "dup-f5125f873960",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name) is already the one `scoped` both call."
+  },
+  {
+    "id": "dup-b4990598bfd7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different SQL statements over the one shared `group_expr`: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it; the shared expression is already the one function both call."
+  },
+  {
+    "id": "dup-3eb116c3c4c8",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the silent test double answering their own distinct `EventStore` methods (the boundary lookup and the group lookup) with the empty answer each contract allows."
+  },
+  {
+    "id": "dup-6ef712aab260",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
+  },
+  {
+    "id": "dup-649d686bdf2a",
+    "disposition": "not-a-duplicate",
+    "reason": "Three one-line queries of three different sets, each behind its own owner's lock: the conductor's stale-unit set, and the replay-key set's own insert and membership test; they share only the `lock().unwrap()` idiom."
+  },
+  {
+    "id": "dup-5e40086810a8",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects) over different inputs."
+  },
+  {
+    "id": "dup-e10b6988960c",
+    "disposition": "not-a-duplicate",
+    "reason": "The folding store forwards two different port methods (the boundary lookup and the group lookup) to the store it wraps; each is a one-line delegation the port's signature makes look alike."
+  },
+  {
+    "id": "dup-2423568cdaba",
+    "disposition": "not-a-duplicate",
+    "reason": "Three port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the group-lookup-only double panics on any other read, the append-only port double refuses every read; the port method's signature is what makes them look alike."
   }
 ]

@@ -92,7 +92,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-286060b30486",
+    "id": "dup-5e40086810a8",
     "classification": "near",
     "sites": [
       {
@@ -111,6 +111,11 @@
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
+        "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
+        "name": "group_stream",
+        "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
         "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
         "name": "what",
         "content_hash": "5d23ae9ae3e76aee"
@@ -126,7 +131,7 @@
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/compaction_generations_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/compaction_generations_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -273,6 +278,30 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-649d686bdf2a",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "is_stale",
+        "content_hash": "35f07935722fa2b3"
+      },
+      {
+        "file": "crates/rigger-conductor/src/replay_keys.rs",
+        "name": "insert",
+        "content_hash": "f668e0df1bdefdf5"
+      },
+      {
+        "file": "crates/rigger-conductor/src/replay_keys.rs",
+        "name": "contains",
+        "content_hash": "e34d58c0828b6a2e"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-conductor/src/replay_keys.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-4e1d0e78e3c6",
     "classification": "semantic",
     "sites": [
@@ -316,7 +345,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2835846b7eeb",
+    "id": "dup-36f8e7fc34e4",
     "classification": "semantic",
     "sites": [
       {
@@ -333,6 +362,11 @@
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "no_result_error",
         "content_hash": "4a002dd947bf783c"
+      },
+      {
+        "file": "crates/rigger-domain/src/ingest.rs",
+        "name": "a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error",
+        "content_hash": "bdcec90893345b11"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -376,7 +410,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 11 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 12 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -3820,6 +3854,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-05f8d05060a7",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "last_position",
+        "content_hash": "457a347049088f57"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "latest_in_group",
+        "content_hash": "457a347049088f57"
+      }
+    ],
+    "proposed_home": "conductor::capped_reads",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-ae7ef878296c",
     "classification": "near",
     "sites": [
@@ -5379,6 +5432,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-4979c76ee36f",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-driver/src/driver/claude_code.rs",
+        "name": "last_position",
+        "content_hash": "df5f4d167b3eb22b"
+      },
+      {
+        "file": "crates/rigger-driver/src/driver/claude_code.rs",
+        "name": "latest_in_group",
+        "content_hash": "08b5d169e4df714f"
+      }
+    ],
+    "proposed_home": "claude_code::failing_read_store",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-cd5c22f2a701",
     "classification": "semantic",
     "sites": [
@@ -5541,7 +5613,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f767f6f9c791",
+    "id": "dup-b71b82f84693",
     "classification": "semantic",
     "sites": [
       {
@@ -5566,6 +5638,11 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "1953385dcb5ae89a"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "1953385dcb5ae89a"
       },
@@ -5735,6 +5812,11 @@
         "content_hash": "21e10304a9cde36f"
       },
       {
+        "file": "tests/group_lookup_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "3e9483c78f23ac0d"
+      },
+      {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
@@ -5836,7 +5918,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 58 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6308,6 +6390,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-e10b6988960c",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "last_position",
+        "content_hash": "e416b40149cd2e62"
+      },
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "latest_in_group",
+        "content_hash": "e416b40149cd2e62"
+      }
+    ],
+    "proposed_home": "ingest::folding_store",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-6bdc4cb72e31",
     "classification": "near",
     "sites": [
@@ -6439,6 +6540,44 @@
       }
     ],
     "proposed_home": "namespace::namespaced",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-f5125f873960",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
+        "name": "last_position",
+        "content_hash": "038f3716f98c5bf3"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
+        "name": "latest_in_group",
+        "content_hash": "038f3716f98c5bf3"
+      }
+    ],
+    "proposed_home": "namespace::namespaced",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-b4990598bfd7",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "group_index_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "latest_in_group_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -7486,7 +7625,26 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-033af83f765c",
+    "id": "dup-3eb116c3c4c8",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "last_position",
+        "content_hash": "91c5e36e26d2d9cc"
+      },
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "latest_in_group",
+        "content_hash": "91c5e36e26d2d9cc"
+      }
+    ],
+    "proposed_home": "events::silent_store",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-2423568cdaba",
     "classification": "near",
     "sites": [
       {
@@ -7495,12 +7653,36 @@
         "content_hash": "bc8216f4bd60487b"
       },
       {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "read_stream_positions",
+        "content_hash": "ec5e1dbfb7f41d30"
+      },
+      {
         "file": "tests/store_content_identity_periphery.rs",
         "name": "read_stream_positions",
         "content_hash": "8dc989744dd28ef8"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/common/fixtures/events.rs, tests/store_content_identity_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-6ef712aab260",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "last_position",
+        "content_hash": "477c2a99d211ae86"
+      },
+      {
+        "file": "tests/common/fixtures/events.rs",
+        "name": "latest_in_group",
+        "content_hash": "477c2a99d211ae86"
+      }
+    ],
+    "proposed_home": "events::read_counting_store",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

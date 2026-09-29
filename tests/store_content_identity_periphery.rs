@@ -253,6 +253,30 @@ impl EventStore for PortDouble {
     ) -> Result<(), StoreError> {
         Err(unreadable())
     }
+    fn latest_in_group(
+        &self,
+        _stream: &str,
+        group: &str,
+    ) -> Result<Option<rigger::eventstore::GroupHead>, StoreError> {
+        if self.reads_empty {
+            return Ok(self
+                .replayed
+                .iter()
+                .rev()
+                .find(|e| {
+                    e.meta
+                        .get(rigger::eventstore::META_GROUP)
+                        .map(String::as_str)
+                        == Some(group)
+                })
+                .map(|e| rigger::eventstore::GroupHead {
+                    position: e.position,
+                    type_: e.type_.clone(),
+                    meta: e.meta.clone(),
+                }));
+        }
+        Err(unreadable())
+    }
 }
 
 // ---------------------------------------------------------------------------

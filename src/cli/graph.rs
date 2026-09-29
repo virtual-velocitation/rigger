@@ -473,14 +473,11 @@ fn locate_definition_extent(
 /// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
 /// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
 /// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
-/// store it refreshes incrementally through the ONE shared suppression predicate
-/// ([`rigger::ingest::project_scoped_replay_keys`]) the live run also seeds from, never a second
-/// copy here. The seen-key set lives in two phases: it is SEEDED with the keys of each file's
-/// LATEST recorded derived-index batch and no earlier one, then EXTENDED with every key this build
-/// appends, retiring nothing - so "latest generation per file" describes the seed, not the set
-/// after the first batch. The SEED is what every suppression decision is taken against, because one
-/// walk hands this command each batch identity (`gc`/`gd` per file) exactly once and this command
-/// walks once. On that seed an unchanged file's batch
+/// store it refreshes incrementally through the ONE first-sight helper
+/// ([`rigger::ingest::batch_is_latest_recorded`]) the live run's keyed sink also calls: each batch
+/// is weighed against its identity's LATEST recorded generation, answered by the store's group
+/// lookup, never by reading the log - one walk hands this command each batch identity (`gc`/`gd`
+/// per file) exactly once and this command walks once. So an unchanged file's batch
 /// is already wholly recorded and re-ingests nothing, while a file whose content AS THE WALK LOWERED
 /// IT differs from its latest recorded batch re-emits every event the walk extracted for it. That
 /// includes a file REVERTED to content it held at an earlier generation - its keys are byte-identical
@@ -520,77 +517,71 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         }
     };
 
-    // Seed the seen-keys from the existing log so a re-build refreshes incrementally (spec 45: "on
-    // an existing one it refreshes incrementally"), through the ONE predicate that owns the
-    // content-key format ([`rigger::ingest::project_scoped_replay_keys`]) - the same predicate the
-    // run's `replayed_keys` seeding calls, never a second copy here, so a build and a run can never
-    // disagree about which recorded key a fresh emit is redundant against.
-    //
-    // The predicate is TYPE-FIRST and LATEST-PER-FILE, which is what this seeding used to get
-    // wrong in both directions: it collected EVERY event's replay key with no type test (so a
-    // non-derived key could suppress a derived emit that happened to share its spelling) and it
-    // treated a key as redundant whenever it had EVER been recorded (so a file reverted to content
-    // it held at an earlier generation re-emitted nothing and stranded the graph on the superseded
-    // version). Only the LATEST recorded generation of each file suppresses now.
-    let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let mut seen: std::collections::HashSet<String> =
-        rigger::ingest::project_scoped_replay_keys(&prior);
-
-    // The walk and content key are the shared authority; the cold build's emit SINK appends each
-    // file's WHOLE batch to the run stream in ONE append and folds it into the graph in ONE
-    // transaction (the code-ingest fold), skipping any key already seen. This is spec 49's
-    // batched-fold cadence: the measured cold-build throughput was transaction-cadence bound, so a
-    // per-file batch pays the store's transaction cost ONCE, not once per event. There is no run to
-    // stamp, so the events carry no run id - matching the run's own ingest events when no run id is
-    // set. The batched append-and-fold + position assignment is the SAME shared authority the run's
-    // keyed sink uses ([`rigger::ingest::append_and_fold_batch`]), so a build and a run fold a file's
-    // batch identically.
-    let mut appended = 0usize;
-    // The first fold this build could not make, if any: a lost fold marks a current graph owed,
-    // so every batch after it is refused for the same debt - the first names the cause.
-    let mut fold = contextgraph::Fold::Folded;
-    rigger::ingest::ingest_project_batched(&root, |keyed| {
-        // Keep only the not-yet-seen events of this file's batch, stamping each survivor with its
-        // replay key (the same content-keyed dedup a run seeds from the log). A batch already wholly
-        // recorded (an unchanged file on a re-build) survives to nothing and appends nothing.
-        // `insert` both TESTS and EXTENDS `seen`: every key this build keeps joins the set and no
-        // superseded generation is retired from it, so from here on `seen` is the log-derived seed
-        // PLUS this build's own emissions. That is harmless because the walk yields each batch
-        // identity (`gc`/`gd` per file) once and this command walks once, so no later batch is ever
-        // weighed against a key an earlier one added.
-        let survivors: Vec<Event> = keyed
-            .iter()
-            .filter(|(key, _)| seen.insert(key.clone()))
-            .map(|(key, ev)| {
-                (*ev)
-                    .clone()
-                    .with_meta(conductor::META_REPLAY_KEY, key.as_str())
-            })
-            .collect();
-        // A fold failure must not fail the ingest, which already landed durably in the log; it is
-        // reported on the build's line instead.
-        match rigger::ingest::append_and_fold_batch(
-            &store,
-            Some(&graph as &dyn Projection),
-            conductor::STREAM,
-            &survivors,
-        ) {
-            Ok(done) => {
-                appended += survivors.len();
-                if fold == contextgraph::Fold::Folded {
-                    fold = done.fold;
-                }
-            }
-            Err(e) => eprintln!("graph build: skipping a batch that failed to append: {e}"),
-        }
-    });
-
+    let (appended, fold) = ingest_tree(&store, &graph, &root)?;
     println!(
         "graph build: ingested {appended} code-ingest event(s) into {}{}",
         db_path("graph.db"),
         fold_loss_clause(&fold)
     );
     Ok(())
+}
+
+/// The walk of the tree at `root` into `store` and `graph`, answering how many events it appended.
+///
+/// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
+/// this each batch identity (`gc`/`gd` per file) exactly once, so each batch asks the store, through
+/// the group lookup, whether it is already its identity's latest recorded generation
+/// ([`rigger::ingest::batch_is_latest_recorded`], the one first-sight helper the run's keyed sink
+/// also calls). An unchanged file's batch is, and appends nothing; a changed, reverted or
+/// never-recorded file's batch is not, and appends whole - a revert re-emits because the records its
+/// keys match are no longer the file's latest generation.
+///
+/// Each appended event is built by the one keyed derived-event builder
+/// ([`rigger::ingest::keyed_derived_event`]), so it carries its replay key and its group, and the
+/// batch is appended and folded in ONE store append and ONE graph transaction through the shared
+/// batched append-and-fold authority (spec 49), exactly as the run's keyed sink does. There is no
+/// run to stamp, so the events carry no run id.
+///
+/// The walk runs under the one walk policy both ingest sinks share
+/// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose
+/// append the store refuses, records nothing, the walk goes on, and the first such error is the
+/// build's - an unanswered lookup is not an answer in either direction, and a refused append is not
+/// a skipped batch.
+fn ingest_tree(
+    store: &dyn EventStore,
+    graph: &dyn Projection,
+    root: &str,
+) -> Result<(usize, contextgraph::Fold), rigger::eventstore::Error> {
+    let mut appended = 0usize;
+    // The first fold this build could not make, if any: a lost fold marks a current graph owed,
+    // so every batch after it is refused for the same debt - the first names the cause.
+    let mut fold = contextgraph::Fold::Folded;
+    rigger::ingest::sink_walked_batches(
+        |sink| {
+            rigger::ingest::ingest_project_batched(root, sink);
+        },
+        |keyed| {
+            if rigger::ingest::batch_is_latest_recorded(store, conductor::STREAM, keyed)? {
+                return Ok(());
+            }
+            let batch: Vec<Event> = keyed
+                .iter()
+                .map(|(key, ev)| rigger::ingest::keyed_derived_event((*ev).clone(), key))
+                .collect();
+            let done = rigger::ingest::append_and_fold_batch(
+                store,
+                Some(graph),
+                conductor::STREAM,
+                &batch,
+            )?;
+            appended += batch.len();
+            if fold == contextgraph::Fold::Folded {
+                fold = done.fold;
+            }
+            Ok(())
+        },
+    )?;
+    Ok((appended, fold))
 }
 
 /// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
@@ -974,4 +965,84 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
 /// authority, not two to keep in sync by hand.
 fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     select_grounder(name)
+}
+
+#[cfg(test)]
+mod tests {
+    /// The walk these tests drive is the `symbols` extraction pass, which the light lane compiles
+    /// out.
+    #[cfg(feature = "symbols")]
+    mod walk {
+        use super::super::*;
+        use crate::test_support::{FailAppendMetaContaining, GroupLookupOnly, MinimalProjection};
+        use rigger::eventstore::Error;
+
+        /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS with
+        /// that error rather than skipping the batch and reporting success - an unanswered lookup is
+        /// never read as "already recorded", the fail-unsafe direction.
+        #[test]
+        fn a_build_whose_recorded_generation_is_unreadable_fails_with_that_error() {
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(tree.path().join("src")).unwrap();
+            std::fs::write(
+                tree.path().join("src/lib.rs"),
+                "pub fn answer() -> u32 { 42 }\n",
+            )
+            .unwrap();
+            let store = GroupLookupOnly::new(Err("group index unreadable".into()));
+            match ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()) {
+                Err(Error::Backend(msg)) => assert_eq!(msg, "group index unreadable"),
+                other => panic!("the lookup's failure is the build's, got {other:?}"),
+            }
+            assert_eq!(
+                store.asked(),
+                [(conductor::STREAM.to_string(), "gc/src/lib.rs".to_string())],
+                "the build asked the lookup for the one batch the walk emitted, and appended nothing"
+            );
+        }
+
+        /// Spec 101 (ONE ANSWER FOR A FAILED APPEND): a `graph build` whose store refuses one batch's
+        /// append FAILS with that error - the answer the run's sink gives for the same failure - rather
+        /// than reporting success over a batch it never recorded, and still appends every other batch.
+        #[test]
+        fn a_build_whose_append_fails_fails_with_that_error_and_appends_every_other_batch() {
+            let tree = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(tree.path().join("src")).unwrap();
+            std::fs::write(tree.path().join("src/a.rs"), "pub fn a() {}\n").unwrap();
+            std::fs::write(tree.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
+            let root = tree.path().to_str().unwrap();
+            let mut walked: Vec<Vec<String>> = Vec::new();
+            rigger::ingest::ingest_project_batched(root, |keyed| {
+                walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
+            });
+            assert_eq!(
+                walked.len(),
+                2,
+                "sanity: one batch per file; walked {walked:?}"
+            );
+
+            let inner = Store::open(":memory:").unwrap();
+            let store = FailAppendMetaContaining {
+                inner: &inner,
+                needle: "gc/src/a.rs",
+            };
+            match ingest_tree(&store, &MinimalProjection, root) {
+                Err(Error::Backend(msg)) => assert_eq!(
+                    msg,
+                    "simulated store failure appending an event whose metadata contains \"gc/src/a.rs\""
+                ),
+                other => panic!("the append's failure is the build's, got {other:?}"),
+            }
+            let recorded: Vec<String> = inner
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .map(|e| e.meta[rigger::ingest::META_REPLAY_KEY].clone())
+                .collect();
+            assert_eq!(
+                recorded, walked[1],
+                "the refused batch records nothing and the other appends whole"
+            );
+        }
+    }
 }

@@ -33,6 +33,8 @@ mod conductor;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod fold;
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod ingest;
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod sqlite;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod store;
@@ -42,6 +44,8 @@ pub use canary::*;
 pub use conductor::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use fold::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use ingest::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use sqlite::*;
 #[cfg(any(feature = "store", not(feature = "core")))]

@@ -1431,6 +1431,13 @@ mod tests {
         ) -> Result<(), crate::eventstore::Error> {
             Err(FailingReadStore::read_failure())
         }
+        fn latest_in_group(
+            &self,
+            _stream: &str,
+            _group: &str,
+        ) -> Result<Option<crate::eventstore::GroupHead>, crate::eventstore::Error> {
+            Err(FailingReadStore::read_failure())
+        }
     }
 
     #[test]

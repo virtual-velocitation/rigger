@@ -1,8 +1,8 @@
 //! Event fixtures.
 
 use rigger::eventstore::{
-    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription, TypeSelection,
+    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead, Position,
+    Revision, Subscription, TypeSelection,
 };
 
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
@@ -34,10 +34,21 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 
 /// The read, subscribe and boundary-lookup methods of an `EventStore` decorator that intercepts only
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
-/// decorator's `impl EventStore` block.
+/// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
+/// for a decorator that also intercepts `latest_in_group`.
 #[macro_export]
 macro_rules! delegate_event_store_reads {
     () => {
+        $crate::delegate_event_store_reads!(stream);
+        fn latest_in_group(
+            &self,
+            stream: &str,
+            group: &str,
+        ) -> Result<Option<rigger::eventstore::GroupHead>, rigger::eventstore::Error> {
+            self.inner.latest_in_group(stream, group)
+        }
+    };
+    (stream) => {
         fn read_stream(
             &self,
             stream: &str,
@@ -164,6 +175,110 @@ impl EventStore for SilentStore {
     ) -> Result<(), Error> {
         Ok(())
     }
+    fn latest_in_group(&self, _stream: &str, _group: &str) -> Result<Option<GroupHead>, Error> {
+        Ok(None)
+    }
+}
+
+/// A store whose ONLY reachable port method is the group lookup (spec 101): it answers every group
+/// with one fixed answer - a newest member, no member, or a backend error - and records each
+/// `(stream, group)` it was asked. Every other method panics, so a caller that reads the stream,
+/// subscribes or appends where it should only have asked the lookup fails.
+pub struct GroupLookupOnly {
+    answer: Result<Option<GroupHead>, String>,
+    asked: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl GroupLookupOnly {
+    /// A store answering every group with `answer`: `Ok` the newest member (or none), `Err` a
+    /// backend error carrying that message.
+    pub fn new(answer: Result<Option<GroupHead>, String>) -> Self {
+        GroupLookupOnly {
+            answer,
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Every `(stream, group)` the lookup was asked, in order.
+    pub fn asked(&self) -> Vec<(String, String)> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl EventStore for GroupLookupOnly {
+    fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
+        panic!("only the group lookup is reachable: nothing appends")
+    }
+    fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
+        panic!("only the group lookup is reachable: nothing reads the stream")
+    }
+    fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
+        panic!("only the group lookup is reachable: nothing reads the log")
+    }
+    fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
+        panic!("only the group lookup is reachable: nothing subscribes")
+    }
+    fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
+        panic!("only the group lookup is reachable: nothing subscribes")
+    }
+    fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
+        panic!("only the group lookup is reachable: nothing looks up a boundary")
+    }
+    fn read_stream_typed(
+        &self,
+        _: &str,
+        _: Revision,
+        _: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        panic!("only the group lookup is reachable: nothing reads by type")
+    }
+    fn read_stream_positions(
+        &self,
+        _: &str,
+        _: usize,
+        _: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        panic!("only the group lookup is reachable: nothing reads positions")
+    }
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((stream.to_string(), group.to_string()));
+        self.answer.clone().map_err(Error::Backend)
+    }
+}
+
+/// An `EventStore` decorator that forwards every call to `inner` unchanged except `append`, which
+/// refuses (a real `Backend` error, indistinguishable from a genuine backend fault) any batch
+/// holding an event that carries a metadata VALUE containing `needle`. It matches metadata, never
+/// the payload, because what tells one write from another often lives only there: a
+/// `GateVerdict`'s pre-merge-vs-post-merge identity is its replay key (`gate:` vs
+/// `postmerge-gate:`), and a derived index batch's file is its group and replay key.
+pub struct FailAppendMetaContaining<'a> {
+    pub inner: &'a dyn EventStore,
+    pub needle: &'static str,
+}
+
+impl EventStore for FailAppendMetaContaining<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        if events
+            .iter()
+            .any(|e| e.meta.values().any(|v| v.contains(self.needle)))
+        {
+            return Err(Error::Backend(format!(
+                "simulated store failure appending an event whose metadata contains {:?}",
+                self.needle
+            )));
+        }
+        self.inner.append(stream, expected, events)
+    }
+    crate::delegate_event_store_reads!();
 }
 
 /// One call a [`ReadCountingStore`] forwarded, with how many events it handed back - the unit a
@@ -202,6 +317,12 @@ pub enum CountedRead {
         stream: String,
         handed: usize,
     },
+    /// A group lookup: it hands back no event, only the newest member's position, type and
+    /// metadata.
+    LatestInGroup {
+        stream: String,
+        group: String,
+    },
     /// A typed read: `only` is whether the selection named the types it hands back (`Only`)
     /// or the ones it refuses (`Except`), and `types` are those names in the order given.
     Typed {
@@ -222,7 +343,9 @@ impl CountedRead {
             | CountedRead::Typed { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
-            CountedRead::LastPosition { .. } | CountedRead::StreamPositions { .. } => 0,
+            CountedRead::LastPosition { .. }
+            | CountedRead::StreamPositions { .. }
+            | CountedRead::LatestInGroup { .. } => 0,
         }
     }
 
@@ -235,7 +358,7 @@ impl CountedRead {
             | CountedRead::Typed { materialized, .. } => *materialized = 0,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
-            CountedRead::LastPosition { .. } => {}
+            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
             CountedRead::StreamPositions { handed, .. } => *handed = 0,
         }
         read
@@ -251,7 +374,7 @@ impl CountedRead {
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
             CountedRead::StreamPositions { handed, .. } => *handed += n,
-            CountedRead::LastPosition { .. } => {}
+            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
         }
     }
 }
@@ -432,6 +555,15 @@ impl EventStore for ReadCountingStore<'_> {
             })?;
         self.land_interleaved(at);
         Ok(())
+    }
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        let at = self.record(CountedRead::LatestInGroup {
+            stream: stream.to_string(),
+            group: group.to_string(),
+        });
+        let head = self.inner.latest_in_group(stream, group);
+        self.land_interleaved(at);
+        head
     }
 }
 

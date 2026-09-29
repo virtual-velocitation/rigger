@@ -115,26 +115,30 @@ that step-wide assertion. Neither unit builds the other's half.
   stamp lives in the event row, so it is atomic with the append.
 - *The server-backed KurrentDB store* answers from one group stream per identity
   (`rigger-group/<stream>/<group>`) holding KurrentDB link events (`$>`, the server's own link
-  type, not a rigger event type). Before an append whose events carry a group, the adapter reads
-  the stream's last revision (a backward read of one event), appends to each group's stream a
-  link naming the revision that group's first event will take, then appends the events expecting
-  that revision; when the caller's expectation is `Any`, a conflict re-reads and re-links, and any
-  other expectation's conflict is the caller's as today. The lookup reads the group stream
-  backward and answers from the newest link whose resolved event carries that group; a link whose
-  revision holds another group's event, or nothing, is skipped. Because the link is written before
-  its events, every recorded batch has a link at its exact revision: a crash can leave a dangling
-  link, never an unlinked recording, so the newest resolving link names the latest recording and
-  a revert can never be suppressed against a stale answer. The adapter's `$all` reads and
-  subscriptions skip records whose type begins with `$`, so no link reaches a caller. This is
+  type, not a rigger event type). Before an append whose events carry a group, the adapter assigns
+  every event its id, reads the stream's last revision (a backward read of one event), appends to
+  each group's stream a link naming the revision that group's last event in the append will take
+  and carrying that event's id in its meta, then appends the events expecting that revision; when
+  the caller's expectation is `Any`, a conflict re-reads and re-links, and any other expectation's
+  conflict is the caller's as today. The lookup reads the group stream backward and answers from
+  the newest link whose resolved event is exactly the event the link names (the same id); a link
+  whose revision holds another event - another writer's, or an older member of the same group - or
+  nothing, is skipped. Because the link is written before its events, every recorded batch has a
+  link at its exact revision: a crash can leave a dangling link, never an unlinked recording, so
+  the newest link whose named event is present names the latest recording and a revert can never
+  be suppressed against a stale answer. The adapter's `$all` reads and subscriptions skip records
+  whose type begins with `$`, so no link reaches a caller. This is
   chosen over a backward read of the project stream per identity, which is unbounded: proving a
   never-recorded identity absent walks to position 0, and a file last ingested long ago walks
   nearly the whole stream. The KurrentDB half runs only where the contract suite's container is
   reachable, which the gates do not guarantee: the adjudicator demands that run's evidence.
 - *The seeding.* Both sinks ask the lookup the first time they meet an identity in a process,
-  through one `ingest` helper, before the conductor takes its dedup locks. When the answer
-  equals the batch's generation, the sink installs that generation with the batch's keys (a key
-  is a pure function of the batch's bytes, so they are the recorded keys) and the batch appends
-  nothing; otherwise it seeds nothing and the batch appends. From then on the in-process
+  through one `ingest` helper, and the conductor asks it while holding its `replayed_generations`
+  lock, so the unseen check, the lookup and the generation install are one atomic step and a
+  racing stage waits and then sees the installed slot; appends run outside both locks. When the
+  answer equals the batch's generation, the sink installs that generation with the batch's keys
+  (a key is a pure function of the batch's bytes, so they are the recorded keys) and the batch
+  appends nothing; otherwise it seeds nothing and the batch appends. From then on the in-process
   `replayed_generations` governs that identity exactly as spec 86 decided, and
   `ingest_project_into_graph`'s once-per-process guard stays. The upfront whole-stream seed in
   `conductor::run` and the whole-stream read at `src/cli/graph.rs:535` are removed.
@@ -143,11 +147,15 @@ that step-wide assertion. Neither unit builds the other's half.
   (the latest generation of every file the walk emits), stamped; every later lookup answers. That
   one re-emission is the upgrade cost on both backends, and criterion 4's exact-key dedup reclaims
   the unstamped copies. No migration rewrites recorded events.
-- *The reference.* `project_scoped_latest_generations` and `project_scoped_replay_keys` stay as the
-  pure reference over a slice: `rigger validate` (a project-health command that already reads the
-  whole stream for its other advisories, out of scope like the cross-run commands) keeps its
-  index-lag sample on them, and the lookup's contract test asserts that the lookup answers what
-  they answer on the same log, on both backends.
+- *The reference.* `project_scoped_latest_generations` is the one pure reference over a slice:
+  `rigger validate` (a project-health command that already reads the whole stream for its other
+  advisories, out of scope like the cross-run commands) keeps its index-lag sample on it, and the
+  lookup's contract test asserts that the lookup answers what it answers on the same log, on both
+  backends. `project_scoped_replay_keys` is retired the moment its last production caller seeds by
+  group lookup: an uncalled production function fails the dead-code gate, so keeping it is not an
+  option. A test that wants the keys-only view flattens the reference through one test-support
+  helper per test boundary (the domain crate's tests, the conductor crate's `test_support`, the
+  root `tests/common`), never an inline copy per test.
 
 **THE CONSTRAINTS WALK OVER CRITERIA 2 AND 3.**
 - *Empty store:* no group is recorded, so every identity the walk emits appends, exactly a first
@@ -231,7 +239,16 @@ a fact, not only when it adds or moves one.
   live selection - every non-derived event plus each identity's latest generation, exactly the rows
   the compaction plan keeps, so the rebuild and `rigger reset --derived` agree by construction - and
   never a superseded generation, which criterion 4's identity licenses; its cost is bounded by the
-  live projection, not the log's age. It streams the log once, in order, and never materializes the
+  live projection, not the log's age. The rebuild yields the graph the live one would hold, never
+  a larger one: after folding the live selection into the shadow and before the swap, it applies
+  the same run-closure prune `rigger reset --runs` applies, the keep/drop set spec 21 defines (every
+  decision and finding node that is neither the active run's nor a lesson is dropped, an id the
+  active run reuses is kept), derived from the log's own run attribution exactly as the prune
+  derives it and gathered in the same ordered pass. The prune set is never recorded and never
+  guessed, it is re-derived, so the rebuilt and the live graph agree by construction the way the
+  rebuild and `rigger reset --derived` already do. A rebuild that skips the prune and leaves it to a
+  later `rigger reset --runs` is not an implementation of this, because every command between the
+  two reads the resurrected nodes. It streams the log once, in order, and never materializes the
   run stream in memory or reads it twice. It folds into a fresh shadow graph file beside the live
   one in committed batches, recording the last folded position in the shadow, then stamps the
   projection version and renames the shadow into place in one step: a racing open of either kind
@@ -251,12 +268,34 @@ a fact, not only when it adds or moves one.
   says so. Tests: a cold rebuild through `rigger setup` stamps the version; an emit at the old
   version appends and skips the fold, leaving `graph.db` unchanged; a fold-dependent command at the
   old version refuses naming `rigger setup` without writing; a read-only open racing the rebuild
-  leaves the rebuilt file intact and a folding open during it refuses rather than failing locked.
+  leaves the rebuilt file intact and a folding open during it refuses rather than failing locked;
+  a cold rebuild of a log whose closed runs were pruned yields a graph with the same decision and
+  finding nodes as the live one, never the pruned ones.
   The criterion 4 unit's evidence MUST include the rebuild completing through `rigger setup` on a
   snapshot of a real log with wall time and peak memory recorded, and an interrupt-then-rerun on
   that snapshot completing without refolding the batches already committed. Without this, every
   store folded before this spec keeps facts a pre-upgrade generation asserted, and a compacted such
   store disagrees with every future rebuild.
+- *A lost fold is a durable debt.* A `graph.db` owes its rebuild for a second reason: a fold into
+  a current file that fails after the log append succeeded (a write lost past the busy timeout, or
+  any apply error). Both causes share one vocabulary and one refusal text, spelled once in the
+  domain as the `REBUILD_OWED` reason every surface renders and never re-spelled in an adapter. The
+  authoritative record of the debt is the graph file itself: the projection's `applied` ledger
+  (`applied(position)` in `graph.db`) names every log position it has folded, so a position of the
+  live selection missing from the ledger IS the debt, durable in the very file the fold missed. An
+  in-process flag, or a mark file as the sole record, is not an implementation of this: the first
+  dies with every short-lived CLI fold (emit, result, step, `reset --runs`, graph build) and the
+  second is a write that can fail too. `rigger setup` is the payer: on every run it streams the
+  live selection's positions (positions only, never payloads, in one ordered pass) against the
+  ledger and pays the rebuild when any is missing, whether or not a mark exists; nothing else
+  rebuilds implicitly. The owed mark beside `graph.db` is only an accelerator that lets a folding
+  open refuse up front without reading the log. It is written on the failure path when it can be,
+  belongs to the file it describes (dropped when that file is removed or rebuilt; a fresh file is
+  never born owed), and when it cannot be written the command still reports the fold as not made
+  and the ledger hole alone makes the next `rigger setup` rebuild. Tests: a fold lost against a
+  current file in one process, with the mark's directory unwritable, is seen as owed by a fresh
+  process through `rigger setup`, which rebuilds it and folds the lost position; a mark left behind
+  by a removed `graph.db` does not make its replacement owed.
 - *Unkeyed recordings are permanent asserters.* A derived recording without a replay key (written
   before replay keys existed) is an asserter in its own right for the nodes AND edges it folds: a
   keyed generation's retirement never retires a node or edge an unkeyed recording still asserts,

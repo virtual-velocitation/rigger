@@ -4,12 +4,13 @@
 //! drift between the two ingest entries.
 //!
 //! Each caller supplies its OWN emit sink - the run's replay-keyed, concurrency-safe
-//! `emit_keyed`; the cold build's log-seeded seen-set plus a direct append-and-fold - because
-//! their mutation semantics legitimately differ. What must NOT fork is the drift-prone part:
-//! the walk over the project's per-file extraction batches, the `<prefix>/<file>@<hash>#<i>`
-//! content key, and the predicate that decides which recorded keys a fresh emit is redundant
-//! against ([`project_scoped_replay_keys`]). Those are derived here, once, so the run and a cold
-//! `graph build` agree on every key and never double-ingest one another's work.
+//! `emit_keyed`; the cold build's direct append-and-fold - because their mutation semantics
+//! legitimately differ. What must NOT fork is the drift-prone part: the walk over the project's
+//! per-file extraction batches, the `<prefix>/<file>@<hash>#<i>` content key, the keyed derived
+//! event both record ([`keyed_derived_event`]), and the first-sight question that decides whether a
+//! batch is already its identity's latest recorded generation ([`batch_is_latest_recorded`]).
+//! Those are derived once, so the run and a cold `graph build` agree on every key and never
+//! double-ingest one another's work.
 //!
 //! Symbols-gated: the walk lowers the tree through the `symbols` extraction pass, so the light
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
@@ -17,8 +18,8 @@
 
 use crate::contextgraph::{fold_loss_clause, wired, Fold, Projection};
 use crate::eventstore::{
-    Appended, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision, Subscription,
-    TypeSelection,
+    Appended, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead, Position, Revision,
+    Subscription, TypeSelection,
 };
 
 pub use rigger_domain::ingest::*;
@@ -193,6 +194,10 @@ where
     ) -> Result<(), Error> {
         self.store.read_stream_positions(stream, batch, sink)
     }
+
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        self.store.latest_in_group(stream, group)
+    }
 }
 
 /// What [`append_and_fold_batch`] did: the store's own report of what it wrote, and what became
@@ -224,7 +229,7 @@ pub struct IngestStats {
 /// of the batch's bytes ALONE, so the same content always yields the same keys and different
 /// content always yields different ones. A key is therefore a CONTENT GENERATION of a file, not a
 /// mark that the file has been seen: whether a given key is redundant is a question about the
-/// file's LATEST recorded generation ([`project_scoped_replay_keys`] answers it), which is why a
+/// file's LATEST recorded generation ([`batch_is_latest_recorded`] answers it), which is why a
 /// file reverted to content it held earlier re-emits its whole batch even though every one of its
 /// keys is already in the log. This function owns only the walk and the keying; the sink decides
 /// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the
@@ -243,10 +248,7 @@ pub struct IngestStats {
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
 /// invisible. The returned [`IngestStats`] is informational.
 #[cfg(feature = "symbols")]
-pub fn ingest_project_batched(
-    root: &str,
-    on_batch: impl FnMut(&[(String, &Event)]),
-) -> IngestStats {
+pub fn ingest_project_batched(root: &str, on_batch: impl BatchSink) -> IngestStats {
     ingest_project_batched_paced(root, crate::parallel::default_workers(), on_batch)
 }
 
@@ -262,7 +264,7 @@ pub fn ingest_project_batched(
 pub fn ingest_project_batched_paced(
     root: &str,
     workers: usize,
-    on_batch: impl FnMut(&[(String, &Event)]),
+    on_batch: impl BatchSink,
 ) -> IngestStats {
     walk_batches(root, workers, on_batch)
 }
@@ -271,11 +273,7 @@ pub fn ingest_project_batched_paced(
 /// each file's WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first,
 /// then the design half, then the workflow-definition half), each batch in `#i` order.
 #[cfg(feature = "symbols")]
-fn walk_batches(
-    root: &str,
-    workers: usize,
-    mut on_batch: impl FnMut(&[(String, &Event)]),
-) -> IngestStats {
+fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> IngestStats {
     let mut batches_emitted = 0usize;
     // The code half (spec 29a): parallel parse feeds this ordered emit. Reuses the `symbols`
     // grounder's persisted index when present (no re-parse), so in a live run this is a cheap read of
@@ -328,7 +326,7 @@ fn walk_batches(
 pub fn ingest_files_batched(
     root: &str,
     files: &[String],
-    mut on_batch: impl FnMut(&[(String, &Event)]),
+    mut on_batch: impl BatchSink,
 ) -> IngestStats {
     let batches = crate::grounder::symbols::events::file_batches(root, files);
     let mut batches_emitted = 0usize;
@@ -345,12 +343,7 @@ pub fn ingest_files_batched(
 /// Light lane: no extraction pass is compiled, so there is nothing to walk - a no-op that hands the
 /// sink no batches, mirroring [`ingest_project_batched`]'s own light-lane stub.
 #[cfg(not(feature = "symbols"))]
-pub fn ingest_files_batched(
-    _root: &str,
-    _files: &[String],
-    _on_batch: impl FnMut(&[(String, &crate::eventstore::Event)]),
-) {
-}
+pub fn ingest_files_batched(_root: &str, _files: &[String], _on_batch: impl BatchSink) {}
 
 /// Sampled files whose CURRENT code extraction disagrees with what `graph.db` has recorded as their
 /// latest `gc/` generation (spec 92, FRESH ON EVERY INTEGRATION) - `rigger validate`'s graph INDEX
@@ -462,12 +455,7 @@ pub fn graph_index_lag_sample(_root: &str, _prior: &[Event]) -> Vec<String> {
 /// the change-detection key is one content-identity authority), so every event of a file shares one
 /// `<hash>`. The batch bytes are JSON the emit pass just serialized, so they are valid UTF-8.
 #[cfg(feature = "symbols")]
-fn key_batch(
-    prefix: &str,
-    file: &str,
-    batch: &[Event],
-    on_batch: &mut impl FnMut(&[(String, &Event)]),
-) {
+fn key_batch(prefix: &str, file: &str, batch: &[Event], on_batch: &mut impl BatchSink) {
     let concat: String = batch
         .iter()
         .filter_map(|e| std::str::from_utf8(&e.data).ok())
@@ -485,11 +473,7 @@ fn key_batch(
 /// sink no batches. `graph build` still opens (creating) the store and degrades to an empty graph,
 /// never an error, in either lane (the batched append-and-fold kernel above stays compiled in both).
 #[cfg(not(feature = "symbols"))]
-pub fn ingest_project_batched(
-    _root: &str,
-    _on_batch: impl FnMut(&[(String, &crate::eventstore::Event)]),
-) {
-}
+pub fn ingest_project_batched(_root: &str, _on_batch: impl BatchSink) {}
 
 #[cfg(all(test, feature = "symbols"))]
 mod tests {

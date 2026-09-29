@@ -15,8 +15,8 @@ use crate::sqlite::open_connection;
 
 use super::{
     from_nanos, to_nanos, AliasHistory, Appended, ContentIdentity, Direction, Error, Event,
-    EventStore, ExpectedRevision, FactIdentity, Filter, Position, Revision, Subscription,
-    TypeSelection, NO_STREAM,
+    EventStore, ExpectedRevision, FactIdentity, Filter, GroupHead, Position, Revision,
+    Subscription, TypeSelection, META_GROUP, NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -40,6 +40,39 @@ CREATE INDEX IF NOT EXISTS idx_events_stream_type ON events(stream, type, positi
 /// `idx_events_stream_type` to the stream-and-type run's highest position.
 const LAST_POSITION_SQL: &str =
     "SELECT revision FROM events WHERE stream = ?1 AND type = ?2 ORDER BY position DESC LIMIT 1";
+
+/// The expression the group index and the group lookup both name: the [`META_GROUP`] entry of a
+/// row's `meta` as [`key_expr`] reads it, and NULL for a row whose `meta` is not JSON - so a row a
+/// broken writer left undecodable is simply not indexed, never an error that fails every later
+/// write or the open that creates the index.
+fn group_expr() -> String {
+    format!(
+        "CASE WHEN json_valid(meta) THEN {} END",
+        key_expr(META_GROUP)
+    )
+}
+
+/// The group index behind [`EventStore::latest_in_group`] (spec 101): a PARTIAL expression index
+/// over the stream and [`group_expr`], holding only the rows that carry a group, created with the
+/// schema. The lookup's `WHERE` names the identical expression, so the planner seeks it.
+fn group_index_sql() -> String {
+    let group = group_expr();
+    format!(
+        "CREATE INDEX IF NOT EXISTS idx_events_group ON events(stream, {group}, position) \
+         WHERE {group} IS NOT NULL"
+    )
+}
+
+/// The group lookup: one seek of `idx_events_group` to the group's highest position, handing back
+/// the row's position, type and metadata - never its data.
+fn latest_in_group_sql() -> String {
+    let group = group_expr();
+    format!(
+        "SELECT position, type, meta FROM events INDEXED BY idx_events_group \
+         WHERE stream = ?1 AND {group} = ?2 AND {group} IS NOT NULL \
+         ORDER BY position DESC LIMIT 1"
+    )
+}
 
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
 
@@ -84,6 +117,7 @@ impl Store {
     pub fn open(path: &str) -> Result<Self, Error> {
         let conn = open_connection(path).map_err(be)?;
         conn.execute_batch(SCHEMA).map_err(be)?;
+        conn.execute_batch(&group_index_sql()).map_err(be)?;
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -1128,12 +1162,7 @@ impl EventStore for Store {
             .optional()
             .map_err(be)?
             .unwrap_or(NO_STREAM);
-        let ok = match expected {
-            ExpectedRevision::Any => true,
-            ExpectedRevision::NoStream => last_revision == NO_STREAM,
-            ExpectedRevision::Exact(v) => last_revision == v,
-        };
-        if !ok {
+        if !expected.admits(last_revision) {
             return Err(Error::Conflict {
                 stream: stream.to_string(),
                 expected,
@@ -1330,6 +1359,19 @@ impl EventStore for Store {
             sink,
         )
     }
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(&latest_in_group_sql(), params![stream, group], |r| {
+            let meta: String = r.get(2)?;
+            Ok(GroupHead {
+                position: r.get::<_, i64>(0)? as Position,
+                type_: r.get(1)?,
+                meta: parse_meta(&meta),
+            })
+        })
+        .optional()
+        .map_err(be)
+    }
 }
 
 /// The watermark a subscription's polling thread advances as it delivers events.
@@ -1406,24 +1448,82 @@ mod tests {
         crate::eventstore::contract::assert_contract(&Store::open(":memory:").unwrap());
     }
 
-    /// THE BOUNDARY IS A QUERY, on this backend an INDEXED LOOKUP (spec 101): sqlite's own plan
-    /// for the lookup is one search of the stream-and-type index, never a scan of the table, so
-    /// its cost does not grow with the derived events the stream holds.
+    /// EVERY LOOKUP IS ONE SEEK (spec 101): sqlite's own plan for the boundary lookup is one search
+    /// of the stream-and-type index, and for the group lookup one search of the partial group index
+    /// over the stream and the group entry - never a scan of the table and never a sort step, so
+    /// neither cost grows with the events the stream holds.
     #[test]
-    fn the_boundary_lookup_is_one_seek_of_the_stream_and_type_index() {
+    fn each_lookup_is_one_seek_of_its_index() {
         let s = Store::open(":memory:").unwrap();
         let conn = s.conn.lock().unwrap();
-        let plan: Vec<String> = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {LAST_POSITION_SQL}"))
-            .unwrap()
-            .query_map(params!["rigger", "RunStarted"], |r| r.get::<_, String>(3))
-            .unwrap()
-            .collect::<Result<_, _>>()
+        for (sql, key, plan) in [
+            (
+                LAST_POSITION_SQL.to_string(),
+                "RunStarted",
+                "SEARCH events USING INDEX idx_events_stream_type (stream=? AND type=?)",
+            ),
+            (
+                latest_in_group_sql(),
+                "gc/a.rs",
+                "SEARCH events USING INDEX idx_events_group (stream=? AND <expr>=?)",
+            ),
+        ] {
+            let got: Vec<String> = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(params!["rigger", key], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(
+                got,
+                [plan],
+                "a single index search with no scan and no sort step"
+            );
+        }
+    }
+
+    /// An events file written before the group index existed gains it when it is opened, so the
+    /// first lookup on an upgraded store is answered by the index over the rows already recorded.
+    #[test]
+    fn an_events_file_from_before_the_group_index_is_indexed_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        {
+            let old = Connection::open(path).unwrap();
+            old.execute_batch(SCHEMA).unwrap();
+            old.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+                 VALUES ('rigger', 'X', 'e0', x'', ?1, 0, 0, 0)",
+                params![r#"{"group":"gc/a.rs","tag":"before"}"#],
+            )
             .unwrap();
+            // A row a broken writer left with undecodable metadata: the index skips it.
+            old.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+                 VALUES ('rigger', 'X', 'e1', x'', x'ff', 0, 0, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(path).expect("an undecodable row never fails the index's creation");
+        s.conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE events SET meta = x'ff' WHERE id = 'e1'", [])
+            .expect("nor a later write of one");
+        let head = s.latest_in_group("rigger", "gc/a.rs").unwrap();
         assert_eq!(
-            plan,
-            ["SEARCH events USING INDEX idx_events_stream_type (stream=? AND type=?)"],
-            "the lookup must be a single index search with no scan and no sort step"
+            head,
+            Some(GroupHead {
+                position: 1,
+                type_: "X".to_string(),
+                meta: [("group", "gc/a.rs"), ("tag", "before")]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            })
         );
     }
 

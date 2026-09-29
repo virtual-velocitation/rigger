@@ -12,6 +12,20 @@
 //! direction; it owns the port's HONESTY obligation in full, and reports positions the
 //! server issued rather than any it could derive.
 //!
+//! ## Group streams
+//!
+//! The group lookup ([`EventStore::latest_in_group`], spec 101) is answered from one GROUP STREAM
+//! per identity (`rigger-group/<stream>/<group>`) holding KurrentDB link events (`$>`, the server's
+//! own link type). An append whose events carry a group gives every event its id first, then links,
+//! in each group's stream, the revision that group's newest event in the append will take together
+//! with that event's id, then appends the events expecting exactly the revision it linked against.
+//! A link answers only when its revision holds the very event it reserved: a crash, or a writer
+//! that lost its revision to another, leaves a link whose revision holds nothing or another write -
+//! even an older member of the same group - and the lookup skips it. Because every recording is
+//! linked before it is written, and a later recording reads the stream only after an earlier one
+//! landed, the newest link that holds its own event names the group's newest member. No link
+//! reaches a caller: every read and subscription skips a record whose type is a system (`$`) type.
+//!
 //! ## Boundary normalization
 //!
 //! The [`EventStore`] trait fixes the `from` boundary convention (see its doc):
@@ -38,7 +52,7 @@ use uuid::Uuid;
 
 use super::{
     from_nanos, to_nanos, Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter,
-    Position, Revision, Subscription, TypeSelection, NO_STREAM,
+    GroupHead, Position, Revision, Subscription, TypeSelection, META_GROUP, NO_STREAM,
 };
 
 /// The envelope carrying Rigger's metadata and valid-time in KurrentDB's custom
@@ -181,28 +195,67 @@ fn original(ev: &ResolvedEvent) -> Option<&RecordedEvent> {
     ev.event.as_ref().or(ev.link.as_ref())
 }
 
-/// Convert a recorded event, skipping system streams and applying the prefix filter.
-fn to_event(rec: &RecordedEvent, filter: &Filter) -> Option<Event> {
-    let stream = rec.stream_id();
-    if stream.starts_with('$') {
-        return None;
-    }
-    if let Some(p) = &filter.stream_prefix {
-        if !stream.starts_with(p.as_str()) {
-            return None;
+/// The fields of a recorded event [`to_event`] decodes, as plain values: the one view of a server
+/// record, so the decode and its delivery rules hold without a server.
+struct Record<'a> {
+    stream: &'a str,
+    id: Uuid,
+    event_type: &'a str,
+    data: &'a [u8],
+    custom_metadata: &'a [u8],
+    created: SystemTime,
+    commit: u64,
+    revision: u64,
+}
+
+impl<'a> From<&'a RecordedEvent> for Record<'a> {
+    fn from(rec: &'a RecordedEvent) -> Self {
+        Record {
+            stream: rec.stream_id(),
+            id: rec.id,
+            event_type: &rec.event_type,
+            data: &rec.data,
+            custom_metadata: &rec.custom_metadata,
+            created: SystemTime::from(rec.created),
+            commit: rec.position.commit,
+            revision: rec.revision,
         }
     }
-    let env: Envelope = serde_json::from_slice(&rec.custom_metadata).unwrap_or_default();
-    Some(Event {
-        id: rec.id.to_string(),
-        stream: stream.to_string(),
-        type_: rec.event_type.clone(),
-        data: rec.data.to_vec(),
-        meta: env.meta,
-        valid_from: from_nanos(env.valid_from_nanos),
-        recorded_at: SystemTime::from(rec.created),
-        position: rec.position.commit as Position,
-        revision: rec.revision as Revision,
+}
+
+/// The envelope a record's custom metadata carries; an unreadable one carries nothing.
+fn envelope(custom_metadata: &[u8]) -> Envelope {
+    serde_json::from_slice(custom_metadata).unwrap_or_default()
+}
+
+/// Whether a record of `stream` of type `event_type` reaches a caller under `filter`: never a
+/// system stream's record nor a system (`$`) record - a group stream's links among them - and only
+/// a record of a stream the filter's prefix admits.
+fn delivered(stream: &str, event_type: &str, filter: &Filter) -> bool {
+    !stream.starts_with('$')
+        && !event_type.starts_with('$')
+        && filter
+            .stream_prefix
+            .as_ref()
+            .is_none_or(|p| stream.starts_with(p.as_str()))
+}
+
+/// Convert a recorded event, skipping every record [`delivered`] refuses.
+fn to_event<'a>(rec: impl Into<Record<'a>>, filter: &Filter) -> Option<Event> {
+    let rec = rec.into();
+    delivered(rec.stream, rec.event_type, filter).then(|| {
+        let env = envelope(rec.custom_metadata);
+        Event {
+            id: rec.id.to_string(),
+            stream: rec.stream.to_string(),
+            type_: rec.event_type.to_string(),
+            data: rec.data.to_vec(),
+            meta: env.meta,
+            valid_from: from_nanos(env.valid_from_nanos),
+            recorded_at: rec.created,
+            position: rec.commit as Position,
+            revision: rec.revision as Revision,
+        }
     })
 }
 
@@ -262,7 +315,181 @@ fn records_of<R>(
     Ok(out)
 }
 
+/// The group stream holding `group`'s links for `stream` (spec 101).
+fn group_stream(stream: &str, group: &str) -> String {
+    format!("rigger-group/{stream}/{group}")
+}
+
+/// The metadata key under which a group link carries the id of the event it reserves.
+const META_LINKED_ID: &str = "linked-id";
+
+/// The link event naming the event at `revision` of `stream`: the server's own `$>` link, whose
+/// data is `<revision>@<stream>`, carrying the `id` of the event it reserves that revision for.
+fn link_event(stream: &str, revision: Revision, id: &str) -> Event {
+    Event::new("$>", format!("{revision}@{stream}").into_bytes()).with_meta(META_LINKED_ID, id)
+}
+
+/// The id a group link reserved, read from the link record's custom metadata.
+fn linked_id(custom_metadata: &[u8]) -> Option<String> {
+    envelope(custom_metadata).meta.remove(META_LINKED_ID)
+}
+
+/// The uuid an event with id `id` is written under: its own when `id` is one, a fresh one
+/// otherwise.
+fn event_id(id: &str) -> Uuid {
+    Uuid::parse_str(id).unwrap_or_else(|_| Uuid::new_v4())
+}
+
+/// `events`, each carrying the id it will be written under ([`event_id`]), so a group link can
+/// name the exact event it reserves before the write.
+fn with_ids(events: &[Event]) -> Vec<Event> {
+    events
+        .iter()
+        .map(|event| {
+            let mut event = event.clone();
+            event.id = event_id(&event.id).to_string();
+            event
+        })
+        .collect()
+}
+
+/// The links an append of `events` after revision `last` takes: for every distinct group among
+/// the events, in first-appearance order, the revision and id of that group's NEWEST event in the
+/// append - the member the lookup must answer.
+fn group_links(last: Revision, events: &[Event]) -> Vec<(&str, Revision, &str)> {
+    let mut links: Vec<(&str, Revision, &str)> = Vec::new();
+    for (revision, event) in (last + 1..).zip(events) {
+        if let Some(group) = event.meta.get(META_GROUP) {
+            let link = (group.as_str(), revision, event.id.as_str());
+            match links.iter_mut().find(|(linked, _, _)| linked == group) {
+                Some(slot) => *slot = link,
+                None => links.push(link),
+            }
+        }
+    }
+    links
+}
+
+/// The expectation an append pinned to `last` writes under: the stream must still end at `last`
+/// (or still not exist).
+fn pinned(last: Revision) -> ExpectedRevision {
+    if last == NO_STREAM {
+        ExpectedRevision::NoStream
+    } else {
+        ExpectedRevision::Exact(last)
+    }
+}
+
+/// THE GROUP-LINK PROTOCOL of an append whose events carry a group (spec 101), over the three
+/// server calls it makes: read the stream's `last_revision`, `link` each group's newest revision
+/// and event id in its group stream, then `write` the events pinned to that revision. An expectation the stream
+/// does not meet is refused before anything is linked; a pinned write that conflicts is retried
+/// from a fresh read when the caller expected `Any`, and is the caller's conflict otherwise.
+fn append_linked(
+    stream: &str,
+    expected: ExpectedRevision,
+    events: &[Event],
+    mut last_revision: impl FnMut() -> Result<Revision, Error>,
+    mut link: impl FnMut(&str, Revision, &str) -> Result<(), Error>,
+    mut write: impl FnMut(ExpectedRevision) -> Result<Appended, Error>,
+) -> Result<Appended, Error> {
+    loop {
+        let last = last_revision()?;
+        if !expected.admits(last) {
+            return Err(Error::Conflict {
+                stream: stream.to_string(),
+                expected,
+                actual: last,
+            });
+        }
+        for (group, revision, id) in group_links(last, events) {
+            link(group, revision, id)?;
+        }
+        match write(pinned(last)) {
+            Err(Error::Conflict { .. }) if expected == ExpectedRevision::Any => continue,
+            written => return written,
+        }
+    }
+}
+
+/// THE FIRST-MATCH SCAN over a newest-first read: the first record `pick` accepts, pulling
+/// nothing past it. A stream the server does not know - at the open or mid-read - has no match;
+/// any other server failure is an error naming `step`.
+fn first_match<X, T>(
+    records: impl IntoIterator<Item = Result<X, kurrentdb::Error>>,
+    step: &str,
+    mut pick: impl FnMut(X) -> Option<T>,
+) -> Result<Option<T>, Error> {
+    for record in records {
+        match record.map(&mut pick) {
+            Ok(Some(found)) => return Ok(Some(found)),
+            Ok(None) => {}
+            Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
+            Err(e) => return Err(Error::Backend(format!("kurrentdb: {step}: {e}"))),
+        }
+    }
+    Ok(None)
+}
+
+/// The group lookup's scan over a group stream's newest-first links, each as the id it reserved
+/// and the event its revision holds: the first link whose revision holds exactly the event it
+/// reserved. A link holding nothing or another write is skipped; a group stream the server does
+/// not know has no member.
+fn newest_in_group(
+    links: impl IntoIterator<Item = Result<(Option<String>, Option<Event>), kurrentdb::Error>>,
+) -> Result<Option<GroupHead>, Error> {
+    first_match(links, "latest in group", |(linked, event)| {
+        event
+            .filter(|event| linked.as_deref() == Some(event.id.as_str()))
+            .map(|event| GroupHead {
+                position: event.position,
+                type_: event.type_,
+                meta: event.meta,
+            })
+    })
+}
+
+/// The revision of a newest-first read's first record (each its revision, `None` for a record
+/// carrying none), or [`NO_STREAM`] for a stream with none.
+fn newest_revision(
+    records: impl IntoIterator<Item = Result<Option<u64>, kurrentdb::Error>>,
+) -> Result<Revision, Error> {
+    Ok(first_match(records, "last revision", |revision| revision)?
+        .map_or(NO_STREAM, |revision| revision as Revision))
+}
+
 impl Store {
+    /// THE NEWEST-FIRST READ: `stream` read backward from its end with links resolved (a stream
+    /// holding none reads as it is), each record pulled from the server only when the consumer
+    /// asks for it, so a scan that stops at its first match reads nothing past it. A failure to
+    /// open the read is its one item.
+    fn newest_first(
+        &self,
+        stream: &str,
+    ) -> impl Iterator<Item = Result<ResolvedEvent, kurrentdb::Error>> + '_ {
+        let opts = ReadStreamOptions::default()
+            .position(StreamPosition::End)
+            .backwards()
+            .resolve_link_tos();
+        let mut read = self
+            .rt
+            .block_on(self.client.read_stream(stream, &opts))
+            .map_err(Some);
+        std::iter::from_fn(move || match &mut read {
+            Ok(rs) => self.rt.block_on(rs.next()).transpose(),
+            Err(opened) => opened.take().map(Err),
+        })
+    }
+
+    /// The revision of `stream`'s last event ([`newest_revision`] over the newest-first read), or
+    /// [`NO_STREAM`] for a stream that does not exist.
+    fn last_revision(&self, stream: &str) -> Result<Revision, Error> {
+        newest_revision(
+            self.newest_first(stream)
+                .map(|pulled| pulled.map(|ev| original(&ev).map(|rec| rec.revision))),
+        )
+    }
+
     /// Read a stream forward from `from` (inclusive revision), stopping once `limit`
     /// events have been collected. This is the ONE stream read this adapter drives: the
     /// port's `read_stream` passes `usize::MAX` (no bound), and the append's position
@@ -407,8 +634,10 @@ fn placement_of_ack(
     Ok(AckPlacement::ReadBackFrom(first))
 }
 
-impl EventStore for Store {
-    fn append(
+impl Store {
+    /// Write `events` to `stream` under `expected` exactly as handed, reporting the positions the
+    /// server issued: the one write every append - and every group link - goes through.
+    fn append_raw(
         &self,
         stream: &str,
         expected: ExpectedRevision,
@@ -420,7 +649,7 @@ impl EventStore for Store {
         let data: Vec<EventData> = events
             .iter()
             .map(|e| {
-                let id = Uuid::parse_str(&e.id).unwrap_or_else(|_| Uuid::new_v4());
+                let id = event_id(&e.id);
                 let env = Envelope {
                     meta: e.meta.clone(),
                     valid_from_nanos: to_nanos(e.valid_from),
@@ -487,6 +716,38 @@ impl EventStore for Store {
                 actual: current_revision_to_actual(current),
             }),
             Err(e) => Err(Error::Backend(format!("kurrentdb: append: {e}"))),
+        }
+    }
+}
+
+impl EventStore for Store {
+    /// An append holding a grouped event gives every event its id ([`with_ids`]) and runs the
+    /// group-link protocol ([`append_linked`]) around the write; any other is written as is.
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        if events.iter().any(|e| e.meta.contains_key(META_GROUP)) {
+            let events = with_ids(events);
+            append_linked(
+                stream,
+                expected,
+                &events,
+                || self.last_revision(stream),
+                |group, revision, id| {
+                    self.append_raw(
+                        &group_stream(stream, group),
+                        ExpectedRevision::Any,
+                        &[link_event(stream, revision, id)],
+                    )
+                    .map(|_| ())
+                },
+                |pinned| self.append_raw(stream, pinned, &events),
+            )
+        } else {
+            self.append_raw(stream, expected, events)
         }
     }
 
@@ -603,26 +864,16 @@ impl EventStore for Store {
         Ok(Subscription::new(rx, err, stop, handle))
     }
 
-    /// A backward read from the stream's end that stops at the first event of `event_type`:
-    /// the server has no index over event types, so the bound is that first match, and only
-    /// the events after it are ever read. Each record is pulled from the server only when
-    /// [`newest_of_type`] asks for it, so the read ends where the scan does.
+    /// The newest-first read ([`Store::newest_first`]) scanned for the first event of
+    /// `event_type` ([`newest_of_type`]): the server has no index over event types, so the bound
+    /// is that first match, and only the events after it are ever read.
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
-        let opts = ReadStreamOptions::default()
-            .position(StreamPosition::End)
-            .backwards();
-        match self.rt.block_on(self.client.read_stream(stream, &opts)) {
-            Err(e) => newest_of_type([Err(e)], event_type),
-            Ok(mut rs) => {
-                let records = std::iter::from_fn(|| self.rt.block_on(rs.next()).transpose())
-                    .filter_map(|pulled| {
-                        pulled
-                            .map(|ev| original(&ev).map(|r| (r.event_type.clone(), r.revision)))
-                            .transpose()
-                    });
-                newest_of_type(records, event_type)
-            }
-        }
+        let records = self.newest_first(stream).filter_map(|pulled| {
+            pulled
+                .map(|ev| original(&ev).map(|rec| (rec.event_type.clone(), rec.revision)))
+                .transpose()
+        });
+        newest_of_type(records, event_type)
     }
 
     /// A `$all` read the SERVER filters on event type ([`typed_read_filter`]), so a type the
@@ -691,6 +942,26 @@ impl EventStore for Store {
         .filter_map(Result::transpose);
         super::positions_in_batches(positions, batch, sink)
     }
+    /// The newest-first read ([`Store::newest_first`]) of the identity's group stream, each link
+    /// paired with the event its revision holds, ending at the newest link that holds the event
+    /// it reserved ([`newest_in_group`]); the project stream itself is never read.
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        newest_in_group(
+            self.newest_first(&group_stream(stream, group))
+                .map(|pulled| {
+                    pulled.map(|ev| {
+                        (
+                            ev.link
+                                .as_ref()
+                                .and_then(|link| linked_id(&link.custom_metadata)),
+                            ev.event
+                                .as_ref()
+                                .and_then(|rec| to_event(rec, &Filter::default())),
+                        )
+                    })
+                }),
+        )
+    }
 }
 
 /// The boundary scan over a newest-first read's `(event type, revision)` records: the revision
@@ -700,15 +971,9 @@ fn newest_of_type<I>(records: I, event_type: &str) -> Result<Option<Revision>, E
 where
     I: IntoIterator<Item = Result<(String, u64), kurrentdb::Error>>,
 {
-    for record in records {
-        match record {
-            Ok((t, revision)) if t == event_type => return Ok(Some(revision as Revision)),
-            Ok(_) => {}
-            Err(kurrentdb::Error::ResourceNotFound) => return Ok(None),
-            Err(e) => return Err(Error::Backend(format!("kurrentdb: last position: {e}"))),
-        }
-    }
-    Ok(None)
+    first_match(records, "last position", |(t, revision)| {
+        (t == event_type).then_some(revision as Revision)
+    })
 }
 
 fn current_thread_rt(err: &Arc<Mutex<Option<String>>>) -> Option<tokio::runtime::Runtime> {
@@ -963,6 +1228,7 @@ mod tests {
             wait_ready(&store);
             crate::eventstore::contract::assert_contract(&store);
             the_server_hands_a_typed_read_only_the_selected_types(&store);
+            a_link_whose_revision_holds_another_event_is_skipped(&store);
         }));
         let _ = rt.block_on(container.rm());
         if let Err(e) = result {
@@ -1117,10 +1383,8 @@ mod tests {
         }
     }
 
-    /// The adapter's lookup reaches the server and reports its failure: over a server that never
-    /// answers it is an error naming the lookup, never a fabricated `None` or revision.
-    #[test]
-    fn the_boundary_lookup_reports_an_unreachable_server_as_an_error() {
+    /// A store over a server that never answers.
+    fn unreachable_store() -> Store {
         // One thread, not a worker per core: the test runner caps the address space.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1134,14 +1398,85 @@ mod tests {
             let _guard = rt.enter();
             Client::new(settings).unwrap()
         };
-        let store = Store { client, rt };
-        match store.last_position("run", "RunStarted") {
+        Store { client, rt }
+    }
+
+    /// `result` is the backend error an unreachable server surfaces, naming `step`.
+    fn assert_names_step<T: std::fmt::Debug>(what: &str, result: Result<T, Error>, step: &str) {
+        match result {
             Err(Error::Backend(msg)) => assert!(
-                msg.starts_with("kurrentdb: last position: "),
-                "the error names the lookup: {msg}"
+                msg.starts_with(step),
+                "{what}: the error names its step {step:?}: {msg}"
             ),
-            other => panic!("an unreachable server must be a backend error, got {other:?}"),
+            other => panic!("{what}: an unreachable server must be a backend error, got {other:?}"),
         }
+    }
+
+    /// The adapter's lookup reaches the server and reports its failure: over a server that never
+    /// answers it is an error naming the lookup, never a fabricated `None` or revision.
+    #[test]
+    fn the_boundary_lookup_reports_an_unreachable_server_as_an_error() {
+        assert_names_step(
+            "the boundary lookup",
+            unreachable_store().last_position("run", "RunStarted"),
+            "kurrentdb: last position: ",
+        );
+    }
+
+    /// Spec 101: every group-lookup shell reaches the server through its own step. An append with
+    /// no grouped event is the plain write; one holding a grouped event - wherever in the batch -
+    /// first reads the stream's last revision; the group lookup reads the group stream. Each reports
+    /// the unreachable server as an error naming that step, never a fabricated answer.
+    #[test]
+    fn each_group_shell_reports_an_unreachable_server_as_an_error_naming_its_step() {
+        let store = unreachable_store();
+        let plain = Event::new("X", Vec::new());
+        let grouped = plain.clone().with_meta(META_GROUP, "gc/a.rs");
+        assert_names_step(
+            "an ungrouped append",
+            store.append("s", ExpectedRevision::Any, &[plain.clone(), plain.clone()]),
+            "kurrentdb: append: ",
+        );
+        assert_names_step(
+            "a grouped append",
+            store.append("s", ExpectedRevision::Any, &[plain, grouped]),
+            "kurrentdb: last revision: ",
+        );
+        assert_names_step(
+            "the group lookup",
+            store.latest_in_group("s", "gc/a.rs"),
+            "kurrentdb: latest in group: ",
+        );
+    }
+
+    /// Spec 101, on the server: a group link whose revision holds an event other than the one it
+    /// reserved - here the group's OLDER member - is skipped, so the lookup answers the newest
+    /// member; the link record itself carries the reserved id through the server's resolution.
+    fn a_link_whose_revision_holds_another_event_is_skipped(store: &Store) {
+        let stream = "stale-link-probe";
+        let member = |generation: &str| {
+            Event::new("X", Vec::new())
+                .with_meta(META_GROUP, "gc/a.rs")
+                .with_meta("gen", generation)
+        };
+        store
+            .append(stream, ExpectedRevision::Any, &[member("h3"), member("h4")])
+            .unwrap();
+        let newest = store.latest_in_group(stream, "gc/a.rs").unwrap().unwrap();
+        assert_eq!(newest.meta.get("gen").map(String::as_str), Some("h4"));
+        // A stalled writer's link: it reserved revision 0 for an event that was never written.
+        store
+            .append_raw(
+                &group_stream(stream, "gc/a.rs"),
+                ExpectedRevision::Any,
+                &[link_event(stream, 0, &Uuid::new_v4().to_string())],
+            )
+            .unwrap();
+        assert_eq!(
+            store.latest_in_group(stream, "gc/a.rs").unwrap(),
+            Some(newest),
+            "the stale link resolves to the older h3 and is skipped"
+        );
     }
 
     /// Spec 48 - NO TOPOLOGY OPINIONS. The connection string is the adapter's ENTIRE topology
@@ -1193,6 +1528,556 @@ mod tests {
         assert!(
             settings.is_secure_mode_enabled(),
             "a TLS-silent conn stays secure - the adapter injects no insecure downgrade"
+        );
+    }
+}
+
+/// The group-link protocol and the group lookup's scan are pinned WITHOUT a server (spec 101):
+/// which revision each group links, the order the three server calls run in, when a conflict is
+/// retried and when it is the caller's, and which resolved link answers the lookup.
+#[cfg(test)]
+mod group_links {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn member(group: Option<&str>) -> Event {
+        let event = Event::new("X", Vec::new());
+        match group {
+            Some(group) => event.with_meta(META_GROUP, group),
+            None => event,
+        }
+    }
+
+    /// `member` carrying the fixed id `id`.
+    fn member_id(group: Option<&str>, id: &str) -> Event {
+        let mut event = member(group);
+        event.id = id.to_string();
+        event
+    }
+
+    const A1: &str = "00000000-0000-0000-0000-0000000000a1";
+    const A2: &str = "00000000-0000-0000-0000-0000000000a2";
+    const B1: &str = "00000000-0000-0000-0000-0000000000b1";
+
+    #[test]
+    fn each_group_links_the_revision_and_id_of_its_newest_event_in_first_appearance_order() {
+        let events = [
+            member_id(Some("gc/b.rs"), B1),
+            member_id(None, A1),
+            member_id(Some("gc/a.rs"), A1),
+            member_id(Some("gc/b.rs"), A2),
+        ];
+        assert_eq!(
+            group_links(4, &events),
+            [("gc/b.rs", 8, A2), ("gc/a.rs", 7, A1)],
+            "revisions count on from the stream's last one; a group's later member moves its link \
+             and the id it names"
+        );
+        assert_eq!(
+            group_links(NO_STREAM, &events[..1]),
+            [("gc/b.rs", 0, B1)],
+            "a stream that does not exist starts at revision 0"
+        );
+        assert!(group_links(4, &[member(None)]).is_empty());
+    }
+
+    #[test]
+    fn a_pinned_write_expects_exactly_the_revision_it_linked_against() {
+        assert_eq!(pinned(NO_STREAM), ExpectedRevision::NoStream);
+        assert_eq!(pinned(0), ExpectedRevision::Exact(0));
+        assert_eq!(pinned(7), ExpectedRevision::Exact(7));
+    }
+
+    #[test]
+    fn the_group_stream_and_the_link_name_the_event_they_resolve_to() {
+        assert_eq!(
+            group_stream("proj-x-rigger", "gc/a.rs"),
+            "rigger-group/proj-x-rigger/gc/a.rs"
+        );
+        let link = link_event("proj-x-rigger", 12, A1);
+        assert_eq!(link.type_, "$>");
+        assert_eq!(link.data, b"12@proj-x-rigger".to_vec());
+        assert_eq!(
+            link.meta,
+            BTreeMap::from([(META_LINKED_ID.to_string(), A1.to_string())]),
+            "the link names the id of the event it reserves, and nothing else"
+        );
+        assert!(
+            !delivered("rigger-group/s/gc/a.rs", &link.type_, &Filter::default()),
+            "a link never reaches a caller, whatever stream holds it"
+        );
+    }
+
+    #[test]
+    fn a_link_records_its_reserved_id_in_the_envelope_the_lookup_reads_back() {
+        let written = serde_json::to_vec(&Envelope {
+            meta: link_event("s", 3, A1).meta,
+            valid_from_nanos: 0,
+        })
+        .unwrap();
+        assert_eq!(linked_id(&written), Some(A1.to_string()));
+        assert_eq!(
+            linked_id(b""),
+            None,
+            "a record with no envelope reserves nothing"
+        );
+        let unlinked = serde_json::to_vec(&Envelope::default()).unwrap();
+        assert_eq!(linked_id(&unlinked), None, "an envelope naming no id");
+    }
+
+    #[test]
+    fn every_event_of_a_grouped_append_carries_the_uuid_it_is_written_under() {
+        assert_eq!(event_id(A1).to_string(), A1, "an event's own uuid is kept");
+        assert_eq!(
+            event_id("00000000-0000-0000-0000-0000000000A1").to_string(),
+            A1,
+            "and written in the one spelling the read decodes"
+        );
+        let (fresh, other) = (event_id(""), event_id("not-a-uuid"));
+        assert_ne!(fresh, Uuid::nil(), "an event without one gets a fresh uuid");
+        assert_ne!(fresh, other, "each fresh uuid is distinct");
+
+        let handed = [member_id(Some("gc/a.rs"), A1), member(None)];
+        let ided = with_ids(&handed);
+        assert_eq!(ided.len(), 2);
+        assert_eq!(ided[0].id, A1);
+        assert_eq!(ided[0].meta, handed[0].meta);
+        assert_eq!(
+            Uuid::parse_str(&ided[1].id).map(|u| u.to_string()).ok(),
+            Some(ided[1].id.clone())
+        );
+        assert_ne!(ided[1].id, Uuid::nil().to_string());
+    }
+
+    #[test]
+    fn only_a_non_system_record_of_an_admitted_stream_is_delivered() {
+        let all = Filter::default();
+        let scoped = Filter {
+            stream_prefix: Some("proj-a-".into()),
+        };
+        assert!(delivered("rigger", "X", &all));
+        assert!(!delivered("$stats", "X", &all), "a system stream");
+        assert!(!delivered("rigger", "$>", &all), "a system record");
+        assert!(delivered("proj-a-rigger", "X", &scoped));
+        assert!(
+            !delivered("proj-b-rigger", "X", &scoped),
+            "a stream outside the prefix"
+        );
+        assert!(!delivered("proj-a-rigger", "$metadata", &scoped));
+    }
+
+    /// A recorded event as the server hands it, in the plain view [`to_event`] decodes.
+    fn record<'a>(stream: &'a str, event_type: &'a str, custom_metadata: &'a [u8]) -> Record<'a> {
+        Record {
+            stream,
+            id: Uuid::parse_str(A1).unwrap(),
+            event_type,
+            data: b"{\"k\":1}",
+            custom_metadata,
+            created: SystemTime::UNIX_EPOCH + Duration::from_secs(5),
+            commit: 42,
+            revision: 3,
+        }
+    }
+
+    #[test]
+    fn a_delivered_record_decodes_to_the_event_it_carries_and_any_other_to_nothing() {
+        let envelope = serde_json::to_vec(&Envelope {
+            meta: BTreeMap::from([(META_GROUP.to_string(), "gc/a.rs".to_string())]),
+            valid_from_nanos: 7_000,
+        })
+        .unwrap();
+        let event = to_event(
+            record("proj-a-rigger", "Work", &envelope),
+            &Filter::default(),
+        )
+        .expect("an ordinary record is delivered");
+        assert_eq!(
+            (
+                event.id.as_str(),
+                event.stream.as_str(),
+                event.type_.as_str(),
+                event.data.as_slice(),
+                event.position,
+                event.revision
+            ),
+            (A1, "proj-a-rigger", "Work", b"{\"k\":1}".as_slice(), 42, 3)
+        );
+        assert_eq!(
+            event.meta,
+            BTreeMap::from([(META_GROUP.to_string(), "gc/a.rs".to_string())])
+        );
+        assert_eq!(event.valid_from, from_nanos(7_000));
+        assert_eq!(
+            event.recorded_at,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(5)
+        );
+        assert!(
+            to_event(
+                record("proj-a-rigger", "Work", b"not json"),
+                &Filter::default()
+            )
+            .is_some_and(|e| e.meta.is_empty()),
+            "an unreadable envelope decodes to no metadata, never to a dropped event"
+        );
+        let scoped = Filter {
+            stream_prefix: Some("proj-a-".into()),
+        };
+        assert!(to_event(record("proj-a-rigger", "Work", b""), &scoped).is_some());
+        for (stream, type_, filter) in [
+            ("rigger-group/s/gc/a.rs", "$>", &Filter::default()),
+            ("$stats", "Work", &Filter::default()),
+            ("proj-b-rigger", "Work", &scoped),
+        ] {
+            assert!(
+                to_event(record(stream, type_, b""), filter).is_none(),
+                "{type_} on {stream} never reaches a caller"
+            );
+        }
+    }
+
+    /// The protocol's calls, in order, over a scripted server: `lasts` answers each read of the
+    /// stream's last revision, `writes` each pinned write.
+    fn drive(
+        expected: ExpectedRevision,
+        lasts: Vec<Revision>,
+        writes: Vec<Result<Appended, Error>>,
+    ) -> (Result<Appended, Error>, Vec<String>) {
+        let calls = RefCell::new(Vec::new());
+        let lasts = RefCell::new(lasts.into_iter());
+        let writes = RefCell::new(writes.into_iter());
+        let events = [
+            member_id(Some("gc/a.rs"), B1),
+            member_id(Some("gc/a.rs"), A1),
+        ];
+        let result = append_linked(
+            "s",
+            expected,
+            &events,
+            || {
+                calls.borrow_mut().push("last".to_string());
+                Ok(lasts.borrow_mut().next().expect("a scripted last revision"))
+            },
+            |group, revision, id| {
+                assert_eq!(id, A1, "the link names the group's newest event");
+                calls.borrow_mut().push(format!("link {group} {revision}"));
+                Ok(())
+            },
+            |pinned| {
+                calls.borrow_mut().push(format!("write {pinned:?}"));
+                writes.borrow_mut().next().expect("a scripted write")
+            },
+        );
+        (result, calls.into_inner())
+    }
+
+    fn conflict() -> Result<Appended, Error> {
+        Err(Error::Conflict {
+            stream: "s".into(),
+            expected: ExpectedRevision::Exact(3),
+            actual: 4,
+        })
+    }
+
+    #[test]
+    fn the_link_is_written_before_the_events_it_names() {
+        let (result, calls) = drive(
+            ExpectedRevision::Any,
+            vec![3],
+            vec![Ok(Appended::all(vec![9, 10]))],
+        );
+        assert_eq!(result.unwrap().last(), Some(10));
+        assert_eq!(calls, ["last", "link gc/a.rs 5", "write Exact(3)"]);
+    }
+
+    #[test]
+    fn an_any_append_that_loses_its_pinned_revision_re_reads_and_re_links() {
+        let (result, calls) = drive(
+            ExpectedRevision::Any,
+            vec![3, 4],
+            vec![conflict(), Ok(Appended::all(vec![11, 12]))],
+        );
+        assert_eq!(result.unwrap().last(), Some(12));
+        assert_eq!(
+            calls,
+            [
+                "last",
+                "link gc/a.rs 5",
+                "write Exact(3)",
+                "last",
+                "link gc/a.rs 6",
+                "write Exact(4)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pinned_callers_conflict_is_the_callers_and_is_not_retried() {
+        let (result, calls) = drive(ExpectedRevision::Exact(3), vec![3], vec![conflict()]);
+        assert!(matches!(result, Err(Error::Conflict { actual: 4, .. })));
+        assert_eq!(calls, ["last", "link gc/a.rs 5", "write Exact(3)"]);
+    }
+
+    #[test]
+    fn an_expectation_the_stream_does_not_meet_is_refused_before_anything_is_linked() {
+        for (expected, last) in [
+            (ExpectedRevision::Exact(2), 3),
+            (ExpectedRevision::NoStream, 0),
+        ] {
+            let (result, calls) = drive(expected, vec![last], Vec::new());
+            match result {
+                Err(Error::Conflict {
+                    stream,
+                    expected: named,
+                    actual,
+                }) => {
+                    assert_eq!((stream.as_str(), named, actual), ("s", expected, last));
+                }
+                other => panic!("{expected:?} over {last} must conflict: {other:?}"),
+            }
+            assert_eq!(calls, ["last"], "nothing is linked or written");
+        }
+        let (result, calls) = drive(
+            ExpectedRevision::NoStream,
+            vec![NO_STREAM],
+            vec![Ok(Appended::all(vec![1, 2]))],
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, ["last", "link gc/a.rs 1", "write NoStream"]);
+    }
+
+    #[test]
+    fn a_failed_revision_read_or_link_ends_the_append_before_the_write() {
+        let failed = append_linked(
+            "s",
+            ExpectedRevision::Any,
+            &[member(Some("gc/a.rs"))],
+            || Err(Error::Backend("down".into())),
+            |_, _, _| panic!("nothing is linked"),
+            |_| panic!("nothing is written"),
+        );
+        assert!(matches!(failed, Err(Error::Backend(m)) if m == "down"));
+        let failed = append_linked(
+            "s",
+            ExpectedRevision::Any,
+            &[member(Some("gc/a.rs"))],
+            || Ok(0),
+            |_, _, _| Err(Error::Backend("link down".into())),
+            |_| panic!("an unlinked recording is never written"),
+        );
+        assert!(matches!(failed, Err(Error::Backend(m)) if m == "link down"));
+    }
+
+    /// A group link as the lookup reads it: the id it reserves and the event its revision holds.
+    fn link(
+        linked: Option<&str>,
+        holds: Option<(&str, u64)>,
+    ) -> Result<(Option<String>, Option<Event>), kurrentdb::Error> {
+        Ok((
+            linked.map(str::to_string),
+            holds.map(|(id, position)| {
+                let mut event = member_id(Some("gc/a.rs"), id);
+                event.position = position;
+                event
+            }),
+        ))
+    }
+
+    #[test]
+    fn the_lookup_answers_the_newest_link_whose_revision_holds_the_event_it_reserved() {
+        let links = vec![
+            link(Some(A1), None),           // a dangling link: its revision holds nothing
+            link(Some(A1), Some((B1, 90))), // a stale link: its revision holds another write
+            link(None, Some((A2, 80))),     // a record reserving no id
+            link(Some(A2), Some((A2, 60))), // the answer
+            Err(kurrentdb::Error::ResourceNotFound), // never pulled
+        ];
+        let head = newest_in_group(links).unwrap().unwrap();
+        assert_eq!((head.position, head.type_.as_str()), (60, "X"));
+        assert_eq!(
+            head.meta.get(META_GROUP).map(String::as_str),
+            Some("gc/a.rs")
+        );
+    }
+
+    #[test]
+    fn a_group_with_no_resolving_link_or_no_group_stream_has_no_member() {
+        assert_eq!(newest_in_group(vec![link(Some(A1), None)]).unwrap(), None);
+        assert_eq!(
+            newest_in_group(vec![Err(kurrentdb::Error::ResourceNotFound)]).unwrap(),
+            None
+        );
+        match newest_in_group(vec![
+            link(Some(A1), None),
+            Err(kurrentdb::Error::AccessDenied),
+        ]) {
+            Err(Error::Backend(msg)) => {
+                assert_eq!(msg, "kurrentdb: latest in group: Access denied error")
+            }
+            other => panic!("a server failure must be a backend error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_last_revision_is_the_newest_records_and_a_missing_stream_has_none() {
+        let read = [Ok(None), Ok(Some(7)), Ok(Some(6))]
+            .into_iter()
+            .chain(std::iter::from_fn(
+                || -> Option<Result<Option<u64>, kurrentdb::Error>> {
+                    panic!("the scan pulled a record past the newest one")
+                },
+            ));
+        assert_eq!(newest_revision(read).unwrap(), 7);
+        assert_eq!(newest_revision([Ok(Some(0))]).unwrap(), 0);
+        assert_eq!(newest_revision(std::iter::empty()).unwrap(), NO_STREAM);
+        assert_eq!(
+            newest_revision([Err(kurrentdb::Error::ResourceNotFound)]).unwrap(),
+            NO_STREAM
+        );
+        match newest_revision([Err(kurrentdb::Error::AccessDenied)]) {
+            Err(Error::Backend(msg)) => {
+                assert_eq!(msg, "kurrentdb: last revision: Access denied error")
+            }
+            other => panic!("a server failure must be a backend error, got {other:?}"),
+        }
+    }
+
+    /// An in-memory server running the group-link protocol: one project stream, and its group
+    /// links as `(group, revision, reserved id)` in the order they were written.
+    #[derive(Default)]
+    struct Server {
+        stream: RefCell<Vec<Event>>,
+        links: RefCell<Vec<(String, Revision, String)>>,
+    }
+
+    impl Server {
+        fn last(&self) -> Revision {
+            self.stream.borrow().len() as Revision - 1
+        }
+
+        /// `events` appended under `expected` through [`append_linked`], `stall` running after
+        /// each read of the stream's last revision - where a slow writer loses the race.
+        fn append(
+            &self,
+            expected: ExpectedRevision,
+            events: &[Event],
+            mut stall: impl FnMut(),
+        ) -> Result<Appended, Error> {
+            let events = with_ids(events);
+            append_linked(
+                "s",
+                expected,
+                &events,
+                || {
+                    let last = self.last();
+                    stall();
+                    Ok(last)
+                },
+                |group, revision, id| {
+                    self.links
+                        .borrow_mut()
+                        .push((group.to_string(), revision, id.to_string()));
+                    Ok(())
+                },
+                |pinned| {
+                    let last = self.last();
+                    if !pinned.admits(last) {
+                        return Err(Error::Conflict {
+                            stream: "s".into(),
+                            expected: pinned,
+                            actual: last,
+                        });
+                    }
+                    let mut stream = self.stream.borrow_mut();
+                    let mut positions = Vec::new();
+                    for event in &events {
+                        let mut event = event.clone();
+                        event.revision = stream.len() as Revision;
+                        event.position = 100 + stream.len() as Position;
+                        positions.push(event.position);
+                        stream.push(event);
+                    }
+                    Ok(Appended::all(positions))
+                },
+            )
+        }
+
+        /// What the lookup answers for `group`: its links newest first, each resolved to the
+        /// event its revision holds.
+        fn latest(&self, group: &str) -> Option<GroupHead> {
+            let stream = self.stream.borrow();
+            let links = self.links.borrow();
+            newest_in_group(
+                links
+                    .iter()
+                    .rev()
+                    .filter(|(linked, _, _)| linked == group)
+                    .map(|(_, revision, id)| {
+                        Ok((Some(id.clone()), stream.get(*revision as usize).cloned()))
+                    }),
+            )
+            .unwrap()
+        }
+    }
+
+    fn generation(generation: &str) -> Event {
+        member(Some("gc/a.rs")).with_meta("gen", generation)
+    }
+
+    /// THE STALE LINKER (spec 101): P reads the stream's end and stalls; Q records `gc/a.rs` at
+    /// h3 and R at h4; P then links the revision it read - which now holds Q's older member of the
+    /// SAME group - and its pinned write conflicts, so P's link is the group's newest and dangles
+    /// onto Q's event. The lookup must still answer R's h4: a link answers only when its revision
+    /// holds the very event it reserved.
+    #[test]
+    fn a_stale_linker_whose_write_conflicts_never_answers_an_older_member_of_its_group() {
+        let server = Server::default();
+        server
+            .append(ExpectedRevision::Any, &vec![member(None); 5], || {})
+            .unwrap();
+        let mut raced = false;
+        let stalled = server.append(ExpectedRevision::Exact(4), &[generation("h2")], || {
+            if !std::mem::replace(&mut raced, true) {
+                for gen in ["h3", "h4"] {
+                    server
+                        .append(
+                            ExpectedRevision::Any,
+                            &[generation(gen), generation(gen)],
+                            || {},
+                        )
+                        .unwrap();
+                }
+            }
+        });
+        assert!(
+            matches!(stalled, Err(Error::Conflict { actual: 8, .. })),
+            "the stalled writer's pinned write conflicts: {stalled:?}"
+        );
+        assert_eq!(
+            server
+                .links
+                .borrow()
+                .iter()
+                .map(|(_, revision, _)| *revision)
+                .collect::<Vec<_>>(),
+            [6, 8, 5],
+            "the stalled writer's link is the newest, and names Q's first event"
+        );
+        let head = server.latest("gc/a.rs").expect("the group has a member");
+        assert_eq!(
+            (head.position, head.meta.get("gen").map(String::as_str)),
+            (108, Some("h4")),
+            "the newest member is R's last event"
+        );
+
+        // The same writer expecting `Any` re-reads, re-links and lands; the lookup then answers it.
+        server
+            .append(ExpectedRevision::Any, &[generation("h2")], || {})
+            .unwrap();
+        let head = server.latest("gc/a.rs").unwrap();
+        assert_eq!(
+            (head.position, head.meta.get("gen").map(String::as_str)),
+            (109, Some("h2"))
         );
     }
 }

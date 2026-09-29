@@ -16,6 +16,8 @@ mod blast_radius_eval;
 pub mod canary_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod conductor;
+#[cfg(any(feature = "store", not(feature = "core")))]
+mod replay_keys;
 
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -96,6 +98,10 @@ mod fold_fixtures;
 mod git_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/ingest.rs"]
+mod ingest_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
 // The config fixtures the conductor fixtures name through `super::`.
@@ -109,5 +115,6 @@ mod test_support {
     pub use crate::event_fixtures::*;
     pub use crate::fold_fixtures::*;
     pub use crate::git_fixtures::*;
+    pub use crate::ingest_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }
