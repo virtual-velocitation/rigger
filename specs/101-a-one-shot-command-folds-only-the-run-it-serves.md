@@ -133,10 +133,12 @@ that step-wide assertion. Neither unit builds the other's half.
   nearly the whole stream. The KurrentDB half runs only where the contract suite's container is
   reachable, which the gates do not guarantee: the adjudicator demands that run's evidence.
 - *The seeding.* Both sinks ask the lookup the first time they meet an identity in a process,
-  through one `ingest` helper, before the conductor takes its dedup locks. When the answer
-  equals the batch's generation, the sink installs that generation with the batch's keys (a key
-  is a pure function of the batch's bytes, so they are the recorded keys) and the batch appends
-  nothing; otherwise it seeds nothing and the batch appends. From then on the in-process
+  through one `ingest` helper, and the conductor asks it while holding its `replayed_generations`
+  lock, so the unseen check, the lookup and the generation install are one atomic step and a
+  racing stage waits and then sees the installed slot; appends run outside both locks. When the
+  answer equals the batch's generation, the sink installs that generation with the batch's keys
+  (a key is a pure function of the batch's bytes, so they are the recorded keys) and the batch
+  appends nothing; otherwise it seeds nothing and the batch appends. From then on the in-process
   `replayed_generations` governs that identity exactly as spec 86 decided, and
   `ingest_project_into_graph`'s once-per-process guard stays. The upfront whole-stream seed in
   `conductor::run` and the whole-stream read at `src/cli/graph.rs:535` are removed.
