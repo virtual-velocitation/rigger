@@ -1308,6 +1308,28 @@ impl EventStore for Store {
             .map_err(be)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(be)
     }
+
+    /// The stream's positions straight off the events table's `(stream, position)` rows, never a
+    /// payload column, streamed row by row in position order.
+    fn read_stream_positions(
+        &self,
+        stream: &str,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT position FROM events WHERE stream = ?1 ORDER BY position")
+            .map_err(be)?;
+        let positions = stmt
+            .query_map(params![stream], |r| r.get::<_, i64>(0))
+            .map_err(be)?;
+        super::positions_in_batches(
+            positions.map(|p| p.map(|p| p as Position).map_err(be)),
+            batch,
+            sink,
+        )
+    }
 }
 
 /// The watermark a subscription's polling thread advances as it delivers events.

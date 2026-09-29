@@ -23,7 +23,7 @@ use super::{
     TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
-use crate::eventstore::{to_nanos, Event, Position};
+use crate::eventstore::{to_nanos, Event, EventStore, Position, Revision};
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
 use crate::sqlite::open_connection;
 
@@ -133,7 +133,7 @@ pub type RebuildSource<'s> = dyn FnMut(Position, &mut RebuildSink) -> Result<(),
 
 /// Hand `sink` the events of `log` - in position order - past position `after`, in batches of at
 /// most `batch`, each with the log's last position: the [`RebuildSource`] body for a log already
-/// read into memory, which is how a store with no live selection (a server-backed log) is read.
+/// read into memory.
 pub fn stream_past(
     log: &[Event],
     after: Position,
@@ -154,12 +154,41 @@ pub type PositionSink<'s> = dyn FnMut(&[Position]) -> Result<(), Error> + 's;
 /// production.
 pub type PositionSource<'s> = dyn FnMut(&mut PositionSink) -> Result<(), Error> + 's;
 
-/// Hand `sink` the positions of `log`, in order, in batches of at most `batch`: the
-/// [`PositionSource`] body for a log already read into memory, which is how a store with no live
-/// selection (a server-backed log) is read.
-pub fn positions_in(log: &[Event], batch: usize, sink: &mut PositionSink) -> Result<(), Error> {
-    log.chunks(batch)
-        .try_for_each(|b| sink(&b.iter().map(|e| e.position).collect::<Vec<_>>()))
+/// The [`PositionSource`] over `stream` of `store`, for a store with no live selection (a
+/// server-backed log, whose live selection is its stream as it stands): the positions the store
+/// port reads in one ordered pass, positions alone ([`EventStore::read_stream_positions`]), in
+/// batches of at most `batch`.
+pub fn stream_positions<'s>(
+    store: &'s dyn EventStore,
+    stream: &'s str,
+    batch: usize,
+) -> impl FnMut(&mut PositionSink) -> Result<(), Error> + 's {
+    move |sink| {
+        store
+            .read_stream_positions(stream, batch, &mut |positions| {
+                sink(positions).map_err(|e| crate::eventstore::Error::Backend(e.0))
+            })
+            .map_err(be)
+    }
+}
+
+/// The [`RebuildSource`] over `stream` of `store`, for a store with no live selection: each call
+/// reads only what the stream gained since the call before it - the first from its start - and
+/// hands the events past `after` in batches of at most `batch`, so a rebuild's fold and its tail
+/// read each event of the stream once between them.
+pub fn stream_source<'s>(
+    store: &'s dyn EventStore,
+    stream: &'s str,
+    batch: usize,
+) -> impl FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's {
+    let mut next: Revision = 0;
+    move |after, sink| {
+        let gained = store
+            .read_stream(stream, next, crate::eventstore::Direction::Forward)
+            .map_err(be)?;
+        next = gained.last().map_or(next, |e| e.revision + 1);
+        stream_past(&gained, after, batch, sink)
+    }
 }
 
 /// How far a [`Projector::rebuild`] has folded: `folded` events so far, the last through position
@@ -4103,6 +4132,12 @@ mod tests {
             "the next rebuild resumes past the committed batch and folds the event the error lost \
              (the governing edges listed by decision id: d-boom, d1, d3)"
         );
+    }
+
+    /// Hand `sink` the positions of `log`, in order, in batches of at most `batch`.
+    fn positions_in(log: &[Event], batch: usize, sink: &mut PositionSink) -> Result<(), Error> {
+        log.chunks(batch)
+            .try_for_each(|b| sink(&b.iter().map(|e| e.position).collect::<Vec<_>>()))
     }
 
     /// Why the file behind `p` owes its rebuild once its ledger is read against `log`, streamed

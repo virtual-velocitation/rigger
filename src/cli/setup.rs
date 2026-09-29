@@ -876,23 +876,16 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             )
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
-        // its live selection is its run stream as it stands.
+        // its live selection is its run stream as it stands: its positions are read through the
+        // store port alone, and a rebuild reads each of its events once.
         selection => {
             let backend = resolve_store(&selection, &db_path("events.db"))?;
             let store = Namespaced::new(backend.as_ref(), &project);
-            let log = || {
-                store
-                    .read_stream(conductor::STREAM, 0, Direction::Forward)
-                    .map_err(graph_error)
-            };
-            pay_owed_rebuild(
-                &graph_db,
-                &project,
-                &mut |sink| contextgraph::sqlite::positions_in(&log()?, REBUILD_BATCH, sink),
-                &mut |after, sink| {
-                    contextgraph::sqlite::stream_past(&log()?, after, REBUILD_BATCH, sink)
-                },
-            )
+            let mut positions =
+                contextgraph::sqlite::stream_positions(&store, conductor::STREAM, REBUILD_BATCH);
+            let mut source =
+                contextgraph::sqlite::stream_source(&store, conductor::STREAM, REBUILD_BATCH);
+            pay_owed_rebuild(&graph_db, &project, &mut positions, &mut source)
         }
     }
 }

@@ -245,6 +245,14 @@ impl EventStore for PortDouble {
         }
         Err(unreadable())
     }
+    fn read_stream_positions(
+        &self,
+        _stream: &str,
+        _batch: usize,
+        _sink: &mut dyn FnMut(&[Position]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        Err(unreadable())
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -145,6 +145,16 @@ impl EventStore for Namespaced<'_> {
             .read_stream_typed(&self.scoped(stream), from, selection)?;
         Ok(self.strip(events))
     }
+
+    fn read_stream_positions(
+        &self,
+        stream: &str,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.inner
+            .read_stream_positions(&self.scoped(stream), batch, sink)
+    }
 }
 
 /// Wrap a subscription so each delivered event has the namespace prefix stripped

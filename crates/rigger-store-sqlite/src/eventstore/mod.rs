@@ -27,6 +27,30 @@ pub mod contract;
 
 pub use rigger_domain::eventstore::*;
 
+/// Hand `sink` the positions `positions` yields, in order, in batches of at most `batch`: the one
+/// batching of an adapter's [`EventStore::read_stream_positions`]. The first error - the backend's
+/// or the sink's - ends the read with that error.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn positions_in_batches(
+    positions: impl Iterator<Item = Result<Position, Error>>,
+    batch: usize,
+    sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut held = Vec::with_capacity(batch);
+    for position in positions {
+        held.push(position?);
+        if held.len() == batch {
+            sink(&held)?;
+            held.clear();
+        }
+    }
+    if held.is_empty() {
+        Ok(())
+    } else {
+        sink(&held)
+    }
+}
+
 /// The marker that replaces a redacted credential, so a scrubbed connection string reads as
 /// deliberately redacted (a human sees the credentials were removed) rather than silently
 /// mangled or merely absent.

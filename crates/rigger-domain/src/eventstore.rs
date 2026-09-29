@@ -720,6 +720,18 @@ pub trait EventStore: Send + Sync {
         from: Revision,
         selection: TypeSelection,
     ) -> Result<Vec<Event>, Error>;
+
+    /// Hand `sink` the global [`Position`] of every event on one stream, in position order, in
+    /// batches of at most `batch` (spec 101): positions alone, read in one ordered pass, never an
+    /// event's payload or metadata handed to the caller - what a context graph's applied ledger is
+    /// read against. A stream the store does not hold hands nothing; a sink's error ends the read
+    /// with that error.
+    fn read_stream_positions(
+        &self,
+        stream: &str,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error>;
 }
 
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.

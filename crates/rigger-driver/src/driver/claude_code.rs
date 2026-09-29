@@ -1421,6 +1421,16 @@ mod tests {
         ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
             Err(FailingReadStore::read_failure())
         }
+        fn read_stream_positions(
+            &self,
+            _stream: &str,
+            _batch: usize,
+            _sink: &mut dyn FnMut(
+                &[crate::eventstore::Position],
+            ) -> Result<(), crate::eventstore::Error>,
+        ) -> Result<(), crate::eventstore::Error> {
+            Err(FailingReadStore::read_failure())
+        }
     }
 
     #[test]

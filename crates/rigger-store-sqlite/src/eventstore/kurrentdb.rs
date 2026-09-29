@@ -662,6 +662,35 @@ impl EventStore for Store {
             original(ev).and_then(|rec| to_event(rec, &Filter::default()))
         })
     }
+
+    /// One forward read of the stream, each record pulled from the server only as the batch needs
+    /// it and reduced to the position the server issued for it: no event is built and no payload
+    /// or metadata is decoded or handed on. The server's read protocol has no positions-only form,
+    /// so each record's bytes still cross the wire; they are dropped as the record is read, never
+    /// held past it. A stream the server does not know hands nothing.
+    fn read_stream_positions(
+        &self,
+        stream: &str,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let opts = ReadStreamOptions::default()
+            .position(StreamPosition::Start)
+            .forwards();
+        let failed = |e| Error::Backend(format!("kurrentdb: read positions: {e}"));
+        let mut rs = match self.rt.block_on(self.client.read_stream(stream, &opts)) {
+            Ok(rs) => rs,
+            Err(kurrentdb::Error::ResourceNotFound) => return Ok(()),
+            Err(e) => return Err(failed(e)),
+        };
+        let positions = std::iter::from_fn(|| match self.rt.block_on(rs.next()) {
+            Ok(Some(ev)) => Some(Ok(original(&ev).map(|rec| rec.position.commit as Position))),
+            Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => None,
+            Err(e) => Some(Err(failed(e))),
+        })
+        .filter_map(Result::transpose);
+        super::positions_in_batches(positions, batch, sink)
+    }
 }
 
 /// The boundary scan over a newest-first read's `(event type, revision)` records: the revision

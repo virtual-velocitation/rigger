@@ -31659,6 +31659,17 @@ mod tests {
                 self.charge()?;
                 self.inner.read_stream_typed(stream, from, selection)
             }
+            fn read_stream_positions(
+                &self,
+                stream: &str,
+                batch: usize,
+                sink: &mut dyn FnMut(
+                    &[crate::eventstore::Position],
+                ) -> Result<(), crate::eventstore::Error>,
+            ) -> Result<(), crate::eventstore::Error> {
+                self.charge()?;
+                self.inner.read_stream_positions(stream, batch, sink)
+            }
         }
         const READ_CAP: u32 = 200;
 

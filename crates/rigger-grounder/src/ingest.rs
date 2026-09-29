@@ -184,6 +184,15 @@ where
     ) -> Result<Vec<Event>, Error> {
         self.store.read_stream_typed(stream, from, selection)
     }
+
+    fn read_stream_positions(
+        &self,
+        stream: &str,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.store.read_stream_positions(stream, batch, sink)
+    }
 }
 
 /// What [`append_and_fold_batch`] did: the store's own report of what it wrote, and what became

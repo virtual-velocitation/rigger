@@ -83,6 +83,16 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
             self.inner.read_stream_typed(stream, from, selection)
         }
+        fn read_stream_positions(
+            &self,
+            stream: &str,
+            batch: usize,
+            sink: &mut dyn FnMut(
+                &[rigger::eventstore::Position],
+            ) -> Result<(), rigger::eventstore::Error>,
+        ) -> Result<(), rigger::eventstore::Error> {
+            self.inner.read_stream_positions(stream, batch, sink)
+        }
     };
 }
 
@@ -146,6 +156,14 @@ impl EventStore for SilentStore {
     ) -> Result<Vec<Event>, Error> {
         Ok(Vec::new())
     }
+    fn read_stream_positions(
+        &self,
+        _stream: &str,
+        _batch: usize,
+        _sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 /// One call a [`ReadCountingStore`] forwarded, with how many events it handed back - the unit a
@@ -178,6 +196,12 @@ pub enum CountedRead {
         stream: String,
         event_type: String,
     },
+    /// A positions read: `handed` is how many positions it handed the caller - never an event,
+    /// so it materializes nothing.
+    StreamPositions {
+        stream: String,
+        handed: usize,
+    },
     /// A typed read: `only` is whether the selection named the types it hands back (`Only`)
     /// or the ones it refuses (`Except`), and `types` are those names in the order given.
     Typed {
@@ -198,7 +222,7 @@ impl CountedRead {
             | CountedRead::Typed { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
-            CountedRead::LastPosition { .. } => 0,
+            CountedRead::LastPosition { .. } | CountedRead::StreamPositions { .. } => 0,
         }
     }
 
@@ -212,11 +236,13 @@ impl CountedRead {
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
             CountedRead::LastPosition { .. } => {}
+            CountedRead::StreamPositions { handed, .. } => *handed = 0,
         }
         read
     }
 
-    /// Add `n` handed-back events to this call's count; a lookup hands back none.
+    /// Add `n` handed-back events - or positions, for a positions read - to this call's count; a
+    /// lookup hands back none.
     fn add(&mut self, n: usize) {
         match self {
             CountedRead::Stream { materialized, .. }
@@ -224,6 +250,7 @@ impl CountedRead {
             | CountedRead::Typed { materialized, .. } => *materialized += n,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
+            CountedRead::StreamPositions { handed, .. } => *handed += n,
             CountedRead::LastPosition { .. } => {}
         }
     }
@@ -387,6 +414,24 @@ impl EventStore for ReadCountingStore<'_> {
         });
         let events = self.inner.read_stream_typed(stream, from, selection)?;
         Ok(self.handed_back(at, events))
+    }
+    fn read_stream_positions(
+        &self,
+        stream: &str,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let at = self.record(CountedRead::StreamPositions {
+            stream: stream.to_string(),
+            handed: 0,
+        });
+        self.inner
+            .read_stream_positions(stream, batch, &mut |positions| {
+                self.reads.lock().unwrap()[at].add(positions.len());
+                sink(positions)
+            })?;
+        self.land_interleaved(at);
+        Ok(())
     }
 }
 
