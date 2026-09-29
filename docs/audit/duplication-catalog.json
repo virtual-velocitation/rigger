@@ -259,21 +259,21 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-75a85e1ce37a",
+    "id": "dup-cb25e49f6e22",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "append_and_fold_batch",
-        "content_hash": "3d998b5eebd50ef6"
+        "name": "append_and_fold",
+        "content_hash": "68c49e7c1d2d78e8"
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "name": "append_and_fold_batch",
-        "content_hash": "cbf859dff1ba5761"
+        "name": "append_and_fold",
+        "content_hash": "9d264695af1e838b"
       }
     ],
-    "proposed_home": "one shared `append_and_fold_batch` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "proposed_home": "one shared `append_and_fold` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
@@ -345,7 +345,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-36f8e7fc34e4",
+    "id": "dup-893b821ebc5e",
     "classification": "semantic",
     "sites": [
       {
@@ -371,7 +371,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it",
-        "content_hash": "018a3b1da8851e79"
+        "content_hash": "6c93305ceb8e1e15"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -395,8 +395,8 @@
       },
       {
         "file": "tests/batched_fold_cadence.rs",
-        "name": "append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch",
-        "content_hash": "a99ecbff6eb9add5"
+        "name": "append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch",
+        "content_hash": "5fb726832c6fe0ec"
       },
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
@@ -5613,6 +5613,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-932054f9660d",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/mod.rs",
+        "name": "check_fold_payload",
+        "content_hash": "cac97d0936299c13"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/mod.rs",
+        "name": "shape",
+        "content_hash": "021aabdcbfa005e5"
+      }
+    ],
+    "proposed_home": "mod::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-b71b82f84693",
     "classification": "semantic",
     "sites": [
@@ -7787,13 +7806,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7e20ee10aa64",
+    "id": "dup-f0e40001391f",
     "classification": "semantic",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
         "name": "seed_coupling",
-        "content_hash": "526d49b07ef364d0"
+        "content_hash": "670aa51125e4623b"
       },
       {
         "file": "tests/community_fold_periphery.rs",

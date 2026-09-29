@@ -935,16 +935,6 @@
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error, the not-folded report line, the owed-rebuild refusal); they share only the `format!` shape."
   },
   {
-    "id": "dup-7e20ee10aa64",
-    "disposition": "not-a-duplicate",
-    "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through `append_and_fold_batch`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
-  },
-  {
-    "id": "dup-75a85e1ce37a",
-    "disposition": "not-a-duplicate",
-    "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and appends through the run's one folding store (`Deps::folding`, an `ingest::FoldingStore`), whose fold is the one `ingest::append_and_fold_batch` folds with and which reports a lost fold through the run's injected log, rather than re-implementing either."
-  },
-  {
     "id": "dup-0b2669324614",
     "disposition": "not-a-duplicate",
     "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
@@ -1003,5 +993,20 @@
     "id": "dup-2423568cdaba",
     "disposition": "not-a-duplicate",
     "reason": "Three port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the group-lookup-only double panics on any other read, the append-only port double refuses every read; the port method's signature is what makes them look alike."
+  },
+  {
+    "id": "dup-cb25e49f6e22",
+    "disposition": "not-a-duplicate",
+    "reason": "`RunCtx::append_and_fold` is the run's one-event case: it stamps the run id and appends through the run's folding store (`Deps::folding`), whose append delegates to `ingest::FoldingStore::append_and_fold`, the one append-then-fold body, rather than re-implementing it."
+  },
+  {
+    "id": "dup-932054f9660d",
+    "disposition": "not-a-duplicate",
+    "reason": "`shape` is the helper nested inside `check_fold_payload` that its match arms call; the scanner counts the nested body inside the outer function too, which is the only overlap."
+  },
+  {
+    "id": "dup-f0e40001391f",
+    "disposition": "not-a-duplicate",
+    "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through the folding store's `append_and_fold`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
   }
 ]

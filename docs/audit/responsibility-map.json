@@ -293,7 +293,7 @@
     "is_test": false,
     "proposed_module": "conductor::deps",
     "reason": "method inside `impl <'a> Deps<'a>`; grouped with its other `Deps` methods.",
-    "content_hash": "8ce21fd6cf4647a1"
+    "content_hash": "763d7d08b4d6aca3"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1245,7 +1245,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "e1457f47d8469ce8"
+    "content_hash": "b672c05ab9913eeb"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2997,7 +2997,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "60fe4fdb657477ce"
+    "content_hash": "2b8f5e5861e16cae"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5129,6 +5129,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "read_stream_batched",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "32a856762144185e"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "latest_in_group",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -5141,7 +5149,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "fe014ba394a0f47f"
+    "content_hash": "20e1689958a27f22"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
