@@ -946,32 +946,27 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
             .expect("json! built an object")
             .insert("meta".to_string(), serde_json::Value::Object(meta));
     }
-    // The event goes on the log FIRST, before `graph.db` is opened (spec 101): an emit never
-    // waits on, or fails over, the context graph. It is then folded only into a graph that owes
-    // no rebuild; one that does re-derives it from the log when `rigger setup` rebuilds it.
-    let event = mcpserver::append_emit(&store, conductor::STREAM, &tool_args)?;
-    let pos = event.position;
-    // The event is already durably on the log, so a fold that cannot happen never fails the
-    // emit; it is reported as not folded, with the reason, instead of claimed.
-    match fold_emitted(&loc, &event) {
-        Ok(()) => println!("emitted {typ} (position {pos}) and folded it into the context graph"),
-        Err(why) => {
+    // The event goes on the log FIRST; `graph.db` is opened only after (spec 101), and a fold
+    // that cannot happen is reported as not folded, with the reason, instead of claimed.
+    let emitted = mcpserver::emit_event(
+        &store,
+        conductor::STREAM,
+        || {
+            Projector::open(&loc.file("graph.db"), &loc.identity())
+                .map(|g| Box::new(g) as Box<dyn contextgraph::Projection>)
+        },
+        &tool_args,
+    )?;
+    let pos = emitted.position;
+    match emitted.fold {
+        contextgraph::Fold::Folded => {
+            println!("emitted {typ} (position {pos}) and folded it into the context graph")
+        }
+        contextgraph::Fold::NotFolded(why) => {
             println!("emitted {typ} (position {pos}); not folded into the context graph: {why}")
         }
     }
     Ok(())
-}
-
-/// Fold one just-appended emit into this store's `graph.db`, or say why it was not folded: a
-/// graph that owes its rebuild ([`contextgraph::REBUILD_OWED`]) or a graph that could not be
-/// opened or written (a writer holding it past the busy timeout).
-fn fold_emitted(loc: &StoreLocation, event: &Event) -> Result<(), String> {
-    let graph =
-        Projector::open(&loc.file("graph.db"), &loc.identity()).map_err(|e| e.to_string())?;
-    if graph.rebuild_owed().map_err(|e| e.to_string())? {
-        return Err(contextgraph::REBUILD_OWED.to_string());
-    }
-    graph.apply(event).map_err(|e| e.to_string())
 }
 
 /// The grounder for `rigger reindex`. After turbovec's retirement it resolves IDENTICALLY to

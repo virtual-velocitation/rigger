@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::contextgraph::{Located, Projection};
+use crate::contextgraph::{Fold, Located, Projection};
 use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
@@ -419,9 +419,21 @@ impl<'a> Server<'a> {
         // THAT spawn EXACTLY (the per-spawn correlation the verdict-channel-mismatch backstop
         // keys on). Authoritative: the server sets META_SPAWN, never the agent's args.
         let args = self.stamp_current_spawn(args);
-        emit_event(self.store, &self.stream, self.graph, &args)
-            .map(|_| json!({}))
-            .map_err(ToolError::from)
+        self.emit(&args)
+    }
+
+    /// Emit `args` through the one emit core into this server's store and graph, answering the
+    /// position the store issued and whether the event folded, with the reason it did not - an
+    /// event whose fold failed on a current graph is re-derived by no rebuild, so the agent must
+    /// be told.
+    fn emit(&self, args: &Value) -> Result<Value, ToolError> {
+        let emitted = emit_event(self.store, &self.stream, || wired(self.graph), args)?;
+        Ok(match emitted.fold {
+            Fold::Folded => json!({"position": emitted.position, "folded": true}),
+            Fold::NotFolded(reason) => {
+                json!({"position": emitted.position, "folded": false, "reason": reason})
+            }
+        })
     }
 
     /// Return `args` with its `meta.spawn` set to the id of the spawn currently being served
@@ -478,9 +490,7 @@ impl<'a> Server<'a> {
             .as_object_mut()
             .ok_or("rigger_emit: arguments must be a JSON object")?;
         Self::stamp_spawn_meta(obj, bound);
-        emit_event(self.store, &self.stream, self.graph, &stamped)
-            .map(|_| json!({}))
-            .map_err(ToolError::from)
+        self.emit(&stamped)
     }
 
     /// Insert `meta.spawn = spawn` into an args object's `meta` field - the ONE stamping site
@@ -787,36 +797,50 @@ const EMITTABLE_TYPES: [&str; 4] = [
     crate::conductor::TYPE_UNIT_PROPOSED,
 ];
 
-/// Returns the [`Position`] the store issued for the appended event, so a caller can
-/// report it - or the failure a store that wrote nothing has earned
-/// ([`crate::eventstore::Appended::one`]). The fold below is downstream of that position
-/// and unreachable without it: the graph's applied ledger is keyed BY position, so folding
-/// at a position the store never issued would mark that location applied forever and
-/// swallow the genuine event recorded there.
-pub fn emit_event(
-    store: &dyn EventStore,
-    stream: &str,
-    graph: Option<&dyn Projection>,
-    args: &Value,
-) -> Result<crate::eventstore::Position, String> {
-    let event = append_emit(store, stream, args)?;
-    let pos = event.position;
-    // Fold the appended event into the live graph (when wired), so a ReviewFinding
-    // or DecisionMade an agent emits becomes retrievable through `graph_context` by
-    // the agents that ground afterwards - the graph is the cross-agent memory the
-    // review tiers communicate through. Best-effort: a fold failure must not fail
-    // the emit, which already landed durably in the log - and a graph that owes its
-    // rebuild refuses the fold, which that rebuild re-derives from the log.
-    if let Some(g) = graph {
-        let _ = g.apply(&event);
-    }
-    Ok(pos)
+/// One emit, appended: the [`Position`](crate::eventstore::Position) the store issued and what
+/// became of folding it into the context graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Emitted {
+    pub position: crate::eventstore::Position,
+    pub fold: Fold,
 }
 
-/// The append half of [`emit_event`], for a caller that decides for itself whether to fold
-/// (`rigger emit` opens `graph.db` only after its event is on the log): refuse what the emit
-/// surface refuses, append the event, and return it carrying the position the store issued.
-pub fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Event, String> {
+/// The one emit core both surfaces (`rigger emit`, the `rigger_emit` MCP tool) call: refuse what
+/// the emit surface refuses, append the event, then fold it into the graph `graph` yields and
+/// report the outcome. The log is written FIRST and `graph` is called only after (spec 101): an
+/// emit never waits on, or fails over, the context graph, so a fold that cannot happen is
+/// reported as [`Fold::NotFolded`], never as a failed emit - the event is durably on the log. A
+/// graph that owes its rebuild refuses the fold; that rebuild re-derives the event from the log.
+///
+/// The fold is unreachable without the store's position ([`crate::eventstore::Appended::one`]):
+/// the graph's applied ledger is keyed BY position, so folding at a position the store never
+/// issued would mark that location applied forever and swallow the genuine event recorded there.
+pub fn emit_event<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+    store: &dyn EventStore,
+    stream: &str,
+    graph: impl FnOnce() -> Result<G, crate::contextgraph::Error>,
+    args: &Value,
+) -> Result<Emitted, String> {
+    let event = append_emit(store, stream, args)?;
+    Ok(Emitted {
+        position: event.position,
+        fold: Fold::of(graph(), &event),
+    })
+}
+
+/// The graph a surface was wired with, as [`emit_event`] takes it: a surface wired with none
+/// folds nothing and says so.
+pub fn wired(
+    graph: Option<&dyn Projection>,
+) -> Result<&dyn Projection, crate::contextgraph::Error> {
+    graph.ok_or_else(|| {
+        crate::contextgraph::Error("no context graph is wired to this surface".to_string())
+    })
+}
+
+/// The append half of [`emit_event`]: refuse what the emit surface refuses, append the event, and
+/// return it carrying the position the store issued.
+fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Event, String> {
     let typ = args
         .get("type")
         .and_then(Value::as_str)
@@ -1481,7 +1505,13 @@ mod tests {
 
         // The CLI path: call the shared core directly.
         let cli_store = Store::open(":memory:").unwrap();
-        emit_event(&cli_store, "run", None, &args).expect("the core must append");
+        let emitted =
+            emit_event(&cli_store, "run", || wired(None), &args).expect("the core must append");
+        assert_eq!(
+            emitted.fold,
+            Fold::NotFolded("graph: no context graph is wired to this surface".to_string()),
+            "a surface wired with no graph folds nothing and says so"
+        );
 
         // The MCP path: drive the same args through the server's rigger_emit tool.
         let mcp_store = Store::open(":memory:").unwrap();
@@ -1522,7 +1552,7 @@ mod tests {
             let store = Store::open(":memory:").unwrap();
             let args = json!({ "type": typ, "data": {"id": "x"} });
 
-            let err = emit_event(&store, "run", None, &args)
+            let err = emit_event(&store, "run", || wired(None), &args)
                 .expect_err("a conductor-owned type must be refused, never appended");
 
             // The error names the offending type and points at the right tool.
@@ -1563,7 +1593,7 @@ mod tests {
         ] {
             let store = Store::open(":memory:").unwrap();
             let args = json!({ "type": "LessonLearned", "data": data });
-            let err = emit_event(&store, "run", None, &args)
+            let err = emit_event(&store, "run", || wired(None), &args)
                 .expect_err("a payload the fold cannot apply must be refused");
             assert!(
                 err.contains(&format!("`{field}`")) && err.contains(shape),
@@ -1614,11 +1644,20 @@ mod tests {
             "type": "LessonLearned",
             "data": {"id": "l1", "summary": "s", "about": ["src/main.rs"]},
         });
-        emit_event(&store, "run", Some(&graph), &args).expect("a well-shaped lesson is appended");
+        let emitted = emit_event(&store, "run", || wired(Some(&graph)), &args)
+            .expect("a well-shaped lesson is appended");
         let events = store
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
         assert_eq!(events.len(), 1, "the lesson was appended once");
+        assert_eq!(
+            emitted,
+            Emitted {
+                position: events[0].position,
+                fold: Fold::Folded
+            },
+            "the emit reports the store's position and the fold it made"
+        );
         let g = graph.subgraph(&["src/main.rs".to_string()], 2).unwrap();
         assert!(
             g.nodes.iter().any(|n| n.id == "l1"),
@@ -1918,8 +1957,13 @@ mod tests {
             "type": crate::contextgraph::TYPE_DECISION_MADE,
             "data": {"id": "d1", "summary": "a decision"},
         });
-        let message = emit_event(&crate::eventstore::SilentStore, "run", None, &args)
-            .expect_err("a decision nobody can find was not emitted");
+        let message = emit_event(
+            &crate::eventstore::SilentStore,
+            "run",
+            || wired(None),
+            &args,
+        )
+        .expect_err("a decision nobody can find was not emitted");
         assert!(
             message.contains("nothing"),
             "the failure says the store wrote nothing: {message}"
@@ -2207,10 +2251,18 @@ mod tests {
             "rigger_emit",
             r#"{"type":"DecisionMade","data":{"id":"d","summary":"s","governs":[],"supersedes":""}}"#,
         );
-        assert_eq!(emitted["result"]["structuredContent"], json!({}));
         let log = store
             .read_stream("run", 0, crate::eventstore::Direction::Forward)
             .unwrap();
+        assert_eq!(
+            emitted["result"]["structuredContent"],
+            json!({
+                "position": log[0].position,
+                "folded": false,
+                "reason": format!("graph: {REBUILD_OWED}"),
+            }),
+            "the emit answers that the owed graph did not fold it, naming the rebuild"
+        );
         assert_eq!(
             log.iter().map(|e| e.type_.as_str()).collect::<Vec<_>>(),
             vec!["DecisionMade"],

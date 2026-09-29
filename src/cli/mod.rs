@@ -1068,7 +1068,7 @@ fn migrate_project_identity(
             mcpserver::emit_event(
                 &store,
                 conductor::STREAM,
-                graph.map(|g| g as &dyn Projection),
+                || mcpserver::wired(graph.map(|g| g as &dyn Projection)),
                 &args,
             )
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;

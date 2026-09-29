@@ -527,6 +527,31 @@ pub struct ConceptRealized {
 #[error("graph: {0}")]
 pub struct Error(pub String);
 
+/// What became of folding one event, already durably on the log, into the context graph: the one
+/// outcome every emit surface reports, so none can claim a fold that did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fold {
+    /// The event is in the graph.
+    Folded,
+    /// The event is not in the graph, for this reason: the graph could not be had (unopenable,
+    /// not wired), owes its rebuild ([`REBUILD_OWED`]), or refused the write (held past its
+    /// busy timeout).
+    NotFolded(String),
+}
+
+impl Fold {
+    /// Fold `event` into `graph`, or say why it was not folded.
+    pub fn of<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+        graph: Result<G, Error>,
+        event: &Event,
+    ) -> Self {
+        match graph.and_then(|g| g.apply(event)) {
+            Ok(()) => Fold::Folded,
+            Err(e) => Fold::NotFolded(e.to_string()),
+        }
+    }
+}
+
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
 /// fold, and what every command that depends on the fold says when it refuses: the one spelling of
 /// the refusal, naming the one command that pays the rebuild.
