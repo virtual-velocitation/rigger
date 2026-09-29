@@ -251,6 +251,106 @@ mod ingest_sinks {
         );
     }
 
+    /// GIVEN a project whose store holds a recording of `src/broken.rs`'s batch that the group
+    /// lookup cannot read back (its newest member's type is not text),
+    /// WHEN `rigger graph build` walks the tree,
+    /// THEN the build FAILS rather than reporting success: an unanswered lookup is never read as
+    /// "already recorded", so the build names the store's error, prints no ingested-count line, and
+    /// appends nothing for that batch - while every other batch of the walk, whose lookup did answer,
+    /// is appended whole, grouped, in walk order.
+    #[test]
+    fn a_graph_build_whose_recorded_generation_is_unreadable_fails_and_appends_nothing_for_that_batch(
+    ) {
+        const BROKEN: &str = "src/broken.rs";
+        let dir = ingestable_project();
+        let root = dir.path();
+        tree(
+            root,
+            &[
+                (UNCHANGED, "pub fn kept() {}\n"),
+                (BROKEN, "pub fn broken() {}\n"),
+            ],
+        );
+        let now = walk(root);
+        let broken = format!("gc/{BROKEN}");
+        with_run_store(root, |store| {
+            store
+                .append(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[keyed_derived_event(
+                        Event::new(
+                            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                            b"{}".to_vec(),
+                        ),
+                        &format!("{broken}@stale#0"),
+                    )],
+                )
+                .unwrap();
+        });
+        let before = read_run_events(root).len();
+        let set_type = |type_sql: &str| {
+            rusqlite::Connection::open(common::cli::rigger_file(root, "events.db"))
+                .unwrap()
+                .execute(
+                    &format!(
+                        "UPDATE events SET type = {type_sql} WHERE json_extract(meta, '$.group') = ?1"
+                    ),
+                    [&broken],
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            set_type("X'FF'"),
+            1,
+            "sanity: exactly the one recording is made unreadable"
+        );
+
+        let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+        assert!(
+            !ok,
+            "a build whose lookup cannot be answered must fail; stdout: {out}; stderr: {err}"
+        );
+        assert!(
+            !out.contains("graph build: ingested"),
+            "a failed build reports no ingested count; stdout: {out}"
+        );
+        assert!(
+            err.contains("Invalid column type Blob"),
+            "the build names the store's error; stderr: {err}"
+        );
+
+        // Restore the recording's type so the log reads back; the build has already run.
+        assert_eq!(
+            set_type(&format!(
+                "'{}'",
+                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED
+            )),
+            1
+        );
+        let others: Vec<String> = now
+            .iter()
+            .filter(|(identity, _, _)| *identity != broken)
+            .flat_map(|(_, _, keys)| keys.clone())
+            .collect();
+        assert_eq!(
+            others.len() + keys_of(&now, &[&broken]).len(),
+            now.iter().map(|(_, _, keys)| keys.len()).sum::<usize>(),
+            "sanity: the walk emits the broken file's batch alongside the others"
+        );
+        assert!(
+            !keys_of(&now, &[&broken]).is_empty() && !others.is_empty(),
+            "sanity: both halves of the walk are non-empty"
+        );
+        let appended = derived_since(root, before);
+        assert_eq!(
+            meta_of(&appended, META_REPLAY_KEY),
+            others,
+            "every batch whose lookup answered is appended whole, and the unreadable one is not"
+        );
+        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&others));
+    }
+
     /// GIVEN a log whose derived events were recorded BEFORE the group stamp - each keyed, none
     /// grouped - for exactly the tree the project holds,
     /// WHEN `rigger graph build` runs over it,
