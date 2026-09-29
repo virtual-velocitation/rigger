@@ -810,58 +810,115 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     Ok(())
 }
 
-/// Rebuild this project's `graph.db` cold from the event log when it was folded under an older fold
+/// How many events a graph rebuild folds per committed batch: an interrupted rebuild resumes from
+/// its last committed batch, and a batch is what it holds in memory at once.
+const REBUILD_BATCH: usize = 10_000;
+
+/// Rebuild this project's `graph.db` from the event log when it was folded under an older fold
 /// rule (spec 101), saying so and reporting how far along it is, and report whether it did. A
-/// project with no `graph.db`, or one that owes nothing, is left untouched. The rebuild is one
-/// transaction ([`Projector::rebuild`]): an emit racing it appends and is folded after it, a
-/// command that depends on the fold refuses until it commits, and a read sees the old file or the
-/// rebuilt one, never half of either.
+/// project with no `graph.db`, or one that owes nothing, is left untouched. The rebuild folds the
+/// log's live selection - the rows `rigger reset --derived` keeps - into a shadow file that
+/// replaces `graph.db` in one step ([`Projector::rebuild`]), streaming the log once and resuming
+/// an interrupted rebuild from its last committed batch.
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     if !Path::new(&graph_db).exists() {
-        return Ok(false);
-    }
-    let graph = Projector::open(&graph_db, &project_identity())?;
-    if !graph.rebuild_owed()? {
         return Ok(false);
     }
     // The scaffold may just have minted the durable identity: the log moves to it first (the
     // migration every run driver performs on open), so the rebuild reads the history the legacy
     // namespace still holds.
     migrate_local_identity()?;
-    let backend = resolve_store(&store_selection(None, None)?, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    println!(
-        "rebuilding graph.db from the event log: it was folded under an older fold rule, so the \
-         whole log is refolded once"
-    );
-    let log = || {
-        store
-            .read_stream(conductor::STREAM, 0, Direction::Forward)
-            .map_err(|e| contextgraph::Error(e.to_string()))
-    };
-    let rebuilt = graph.rebuild(&log, &mut |folded, total| {
-        if let Some(line) = rebuild_progress_line(folded, total) {
+    let project = project_identity();
+    if Projector::open(&graph_db, &project)?.rebuild_owed()? {
+        println!(
+            "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
+             the log's live selection is refolded once"
+        );
+    }
+    let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
+    let mut printed = 0;
+    let mut progress = |at: contextgraph::sqlite::RebuildProgress| {
+        if let Some(line) = rebuild_progress_line(at, &mut printed) {
             println!("{line}");
         }
-    })?;
+    };
+    let rebuilt = match store_selection(None, None)? {
+        StoreSelection::Sqlite => {
+            let store = open_sqlite_store(&db_path("events.db"))?;
+            let prefix = Namespaced::prefix_for(&project);
+            let identity = rigger::ingest::derived_index_identity();
+            Projector::rebuild(
+                &graph_db,
+                &project,
+                &mut |after, sink| {
+                    store
+                        .read_live_selection(
+                            &prefix,
+                            conductor::STREAM,
+                            &identity,
+                            after,
+                            REBUILD_BATCH,
+                            &mut |events, head| {
+                                sink(events, head)
+                                    .map_err(|e| rigger::eventstore::Error::Backend(e.0))
+                            },
+                        )
+                        .map_err(graph_error)
+                },
+                &mut progress,
+            )?
+        }
+        // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
+        // its live selection is its run stream as it stands.
+        selection => {
+            let backend = resolve_store(&selection, &db_path("events.db"))?;
+            let store = Namespaced::new(backend.as_ref(), &project);
+            Projector::rebuild(
+                &graph_db,
+                &project,
+                &mut |after, sink| {
+                    let log = store
+                        .read_stream(conductor::STREAM, 0, Direction::Forward)
+                        .map_err(graph_error)?;
+                    let head = log.last().map_or(after, |e| e.position);
+                    let gained: Vec<Event> =
+                        log.into_iter().filter(|e| e.position > after).collect();
+                    gained
+                        .chunks(REBUILD_BATCH)
+                        .try_for_each(|batch| sink(batch, head))
+                },
+                &mut progress,
+            )?
+        }
+    };
     if rebuilt {
         println!("rebuilt graph.db from the event log");
     }
     Ok(rebuilt)
 }
 
-/// The progress line a graph rebuild prints after folding `folded` of `total` events: one each
-/// time the count crosses a tenth of the log, the last on the final event, so a long rebuild
-/// reports how far along it is in ten steps however long the log is.
-fn rebuild_progress_line(folded: usize, total: usize) -> Option<String> {
-    let tenth = |n: usize| n * 10 / total;
-    (tenth(folded) > tenth(folded - 1)).then(|| {
-        format!(
-            "rebuilt {folded} of {total} events ({}%)",
-            folded * 100 / total
-        )
-    })
+/// The progress line a graph rebuild prints at `at`, if any: one each time a batch carries it into
+/// a tenth of the log beyond `printed` (the last tenth it printed, which this advances), so a long
+/// rebuild reports how far along it is in at most ten lines however long the log is. How far is
+/// measured in log positions from where this rebuild started, because the rows it folds are a
+/// selection of them; a log holding nothing past that start is wholly folded.
+fn rebuild_progress_line(
+    at: contextgraph::sqlite::RebuildProgress,
+    printed: &mut u64,
+) -> Option<String> {
+    let percent = (at.through.saturating_sub(at.start) * 100)
+        .checked_div(at.head.saturating_sub(at.start))
+        .unwrap_or(100);
+    let tenth = percent / 10;
+    if tenth <= *printed {
+        return None;
+    }
+    *printed = tenth;
+    Some(format!(
+        "rebuilt {} events, through position {} of {} ({percent}%)",
+        at.folded, at.through, at.head
+    ))
 }
 
 /// Install the graph-first lookup hook (spec 92, criterion 4): merges the PreToolUse
@@ -1471,35 +1528,50 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::tool_available;
 
-    /// Spec 101: a graph rebuild reports its progress in tenths of the log - a line each time the
-    /// folded count crosses one, the last on the final event - with the exact count and percent.
+    /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
+    /// a line each time a batch carries it into a new tenth, never twice for one tenth - with the
+    /// events folded so far, the position reached and the percent, measured from where it started.
     #[test]
-    fn a_rebuild_reports_each_tenth_of_the_log_it_folds() {
-        let lines = |total: usize| -> Vec<String> {
-            (1..=total)
-                .filter_map(|folded| rebuild_progress_line(folded, total))
+    fn a_rebuild_reports_each_tenth_of_the_log_it_reaches_once() {
+        use contextgraph::sqlite::RebuildProgress;
+        let lines = |start, batches: &[(u64, usize)], head| -> Vec<String> {
+            let mut printed = 0;
+            batches
+                .iter()
+                .filter_map(|&(through, folded)| {
+                    let at = RebuildProgress {
+                        start,
+                        through,
+                        head,
+                        folded,
+                    };
+                    rebuild_progress_line(at, &mut printed)
+                })
                 .collect()
         };
         assert_eq!(
-            lines(20),
-            (1..=10)
-                .map(|tenth| format!("rebuilt {} of 20 events ({}%)", tenth * 2, tenth * 10))
-                .collect::<Vec<_>>(),
-            "every second event of twenty crosses a tenth"
-        );
-        assert_eq!(
-            lines(3),
+            lines(0, &[(1, 1), (5, 3), (6, 4), (7, 5), (11, 8), (20, 15)], 20),
             vec![
-                "rebuilt 1 of 3 events (33%)",
-                "rebuilt 2 of 3 events (66%)",
-                "rebuilt 3 of 3 events (100%)",
+                "rebuilt 3 events, through position 5 of 20 (25%)",
+                "rebuilt 4 events, through position 6 of 20 (30%)",
+                "rebuilt 8 events, through position 11 of 20 (55%)",
+                "rebuilt 15 events, through position 20 of 20 (100%)",
             ],
-            "on a log shorter than ten events every event crosses one"
+            "below a tenth nothing prints, and a batch inside the tenth already printed prints \
+             nothing"
         );
         assert_eq!(
-            [rebuild_progress_line(15, 40), rebuild_progress_line(16, 40)],
-            [None, Some("rebuilt 16 of 40 events (40%)".to_string())],
-            "a count inside a tenth prints nothing, the one completing it prints"
+            lines(10, &[(20, 2), (30, 9)], 30),
+            vec![
+                "rebuilt 2 events, through position 20 of 30 (50%)",
+                "rebuilt 9 events, through position 30 of 30 (100%)",
+            ],
+            "a resumed rebuild measures from where it started"
+        );
+        assert_eq!(
+            lines(7, &[(7, 0)], 7),
+            vec!["rebuilt 0 events, through position 7 of 7 (100%)"],
+            "a log holding nothing past the start is wholly folded"
         );
     }
 

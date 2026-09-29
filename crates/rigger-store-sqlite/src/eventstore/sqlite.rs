@@ -69,6 +69,10 @@ fn typed_read_sql(selection: TypeSelection) -> String {
     )
 }
 
+/// Where [`Store::read_live_selection`] hands each batch of the selection, with the stream's last
+/// position.
+pub type SelectionSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 's;
+
 /// Store is the SQLite-backed EventStore. The connection is shared (Arc) so a
 /// subscription's polling thread reads the same database the writers append to.
 pub struct Store {
@@ -257,31 +261,9 @@ impl Store {
         identity: &ContentIdentity,
         compact: impl FnOnce(&Connection) -> Result<Compaction, Error>,
     ) -> Result<PrunedDerived, Error> {
-        // THE PARTITION IS CHECKED BEFORE ANY ROW IS READ (property 2). Both failures here are
-        // silent when they are wrong - a re-dated fact leaves every row looking perfectly intact -
-        // so they are refused rather than defaulted, and refused up front so a policy that cannot
-        // be acted on never takes the write lock at all.
-        let Some(declared) = identity.reasserting() else {
-            return Err(Error::Backend(format!(
-                "prune_derived_index: the content-identity policy for {:?} has not declared which \
-                 of its types re-assert a fact in place (ContentIdentity::with_reasserting_types). \
-                 Without it a compaction cannot know whether a key's EARLIEST recorded valid-time \
-                 is the one the projection holds, and either default silently re-dates facts. \
-                 Refusing rather than guessing.",
-                identity.types()
-            )));
-        };
-        if let Some(stray) = declared.iter().find(|t| !identity.covers(t)) {
-            return Err(Error::Backend(format!(
-                "prune_derived_index: the content-identity policy declares {stray:?} as \
-                 re-asserting, but does not cover that type ({:?}). A declaration naming a type \
-                 this policy will never prune describes some other policy, so it cannot be the \
-                 partition for this one. Refusing rather than pruning against a declaration that \
-                 does not fit.",
-                identity.types()
-            )));
-        }
-
+        // THE PARTITION IS CHECKED BEFORE ANY ROW IS READ (property 2), so a policy that cannot be
+        // acted on never takes the write lock at all.
+        let reasserting = reasserting_types(identity)?;
         let mut guard = self.conn.lock().unwrap();
         // THE OPERATOR'S BEFORE, taken before a single row is deleted. What the reclamation is
         // reported as is the space the LOG LOST ON DISK across the whole command, so it is
@@ -322,13 +304,6 @@ impl Store {
                 .map_err(be)?;
             // The selection is read INSIDE the write transaction, so what it decided is exactly
             // what the deletes below act on: no append can land between the two.
-            // `Some(_)` throughout: the undeclared case returned above, so every covered type
-            // has an answer and none is defaulted.
-            let reasserting: Vec<String> = types
-                .iter()
-                .filter(|t| identity.reasserts(t) == Some(true))
-                .cloned()
-                .collect();
             let plan = plan_derived_prune(&tx, stream_prefix, identity, &reasserting)?;
             {
                 // Property 2: a surviving re-asserting row takes its fact's EARLIEST valid-time,
@@ -440,6 +415,71 @@ impl Store {
             kept: plan.rows - plan.deletes.len(),
         })
     }
+
+    /// Stream the LIVE SELECTION of `stream_prefix` + `stream` after position `after` (spec 101):
+    /// exactly the rows [`Store::prune_derived_index`] keeps - every non-derived event, and of the
+    /// derived index each identity's latest generation at the latest recording of each key, its
+    /// valid-time carried back exactly as the prune carries it - so a graph folded from it is the
+    /// one folded from the compacted log, by construction: both act on the one selection,
+    /// [`plan_derived_prune`], over the same `stream_prefix`.
+    ///
+    /// The stream is read ONCE, in position order, and handed to `sink` in batches of at most
+    /// `batch` events, never materialized whole; each batch goes with the stream's last position,
+    /// so a caller can say how far along it is. The selection and the stream are read inside one
+    /// read transaction, so they describe one state of the log, and nothing is written.
+    pub fn read_live_selection(
+        &self,
+        stream_prefix: &str,
+        stream: &str,
+        identity: &ContentIdentity,
+        after: Position,
+        batch: usize,
+        sink: &mut SelectionSink,
+    ) -> Result<(), Error> {
+        let reasserting = reasserting_types(identity)?;
+        let mut guard = self.conn.lock().unwrap();
+        let tx = guard.transaction().map_err(be)?;
+        let plan = plan_derived_prune(&tx, stream_prefix, identity, &reasserting)?;
+        let shed: std::collections::HashSet<i64> =
+            plan.deletes.iter().map(|(_, position)| *position).collect();
+        let carried: std::collections::HashMap<i64, i64> = plan.carries.into_iter().collect();
+        let stream = format!("{stream_prefix}{stream}");
+        let head: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(position), 0) FROM events WHERE stream = ?1",
+                params![stream],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        let mut stmt = tx
+            .prepare(&format!(
+                "SELECT {COLS} FROM events WHERE stream = ?1 AND position > ?2 ORDER BY position"
+            ))
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![stream, after as i64], row_to_event)
+            .map_err(be)?;
+        let mut events = Vec::with_capacity(batch);
+        for row in rows {
+            let mut e = row.map_err(be)?;
+            let position = e.position as i64;
+            if shed.contains(&position) {
+                continue;
+            }
+            if let Some(earliest) = carried.get(&position) {
+                e.valid_from = from_nanos(*earliest);
+            }
+            events.push(e);
+            if events.len() == batch {
+                sink(&events, head as Position)?;
+                events.clear();
+            }
+        }
+        if !events.is_empty() {
+            sink(&events, head as Position)?;
+        }
+        Ok(())
+    }
 }
 
 /// What [`Store::count_derived_duplicates`] previews a `rigger reset --derived` would remove,
@@ -517,6 +557,39 @@ fn alias_histories(
         }
     }
     Ok(histories)
+}
+
+/// The types `identity` declares as re-asserting a fact in place - the valid-time partition every
+/// act on [`plan_derived_prune`]'s carries needs - refused rather than defaulted when it is
+/// undeclared or names a type the policy does not cover. Both failures are silent when they are
+/// wrong - a re-dated fact leaves every row looking perfectly intact.
+fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
+    let Some(declared) = identity.reasserting() else {
+        return Err(Error::Backend(format!(
+            "prune_derived_index: the content-identity policy for {:?} has not declared which \
+             of its types re-assert a fact in place (ContentIdentity::with_reasserting_types). \
+             Without it a compaction cannot know whether a key's EARLIEST recorded valid-time \
+             is the one the projection holds, and either default silently re-dates facts. \
+             Refusing rather than guessing.",
+            identity.types()
+        )));
+    };
+    if let Some(stray) = declared.iter().find(|t| !identity.covers(t)) {
+        return Err(Error::Backend(format!(
+            "prune_derived_index: the content-identity policy declares {stray:?} as \
+             re-asserting, but does not cover that type ({:?}). A declaration naming a type \
+             this policy will never prune describes some other policy, so it cannot be the \
+             partition for this one. Refusing rather than pruning against a declaration that \
+             does not fit.",
+            identity.types()
+        )));
+    }
+    Ok(identity
+        .types()
+        .iter()
+        .filter(|t| identity.reasserts(t) == Some(true))
+        .cloned()
+        .collect())
 }
 
 /// The ONE selection of a derived-index compaction, shared by the prune, its read-only preview

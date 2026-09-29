@@ -28,7 +28,8 @@ serde_path_to_error = "0.1"
 
 # Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
+# `backup`: a graph rebuild copies its finished shadow file into the live one in one transaction.
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 
 [dev-dependencies]
 tempfile = "3"

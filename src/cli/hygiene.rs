@@ -393,30 +393,18 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// constructor (§48), exactly as the local identity migration does when it needs the concrete
 /// store for a maintenance operation the port does not carry.
 fn reset_derived(loc: &StoreLocation) -> Res {
-    refuse_derived_reset_before_graph_rebuild(&loc.file("graph.db"), &loc.identity())?;
+    // A `graph.db` that owes its rebuild is refused here as every command that depends on the
+    // fold refuses it (spec 101): the compaction runs once `rigger setup` has paid the rebuild.
+    let graph_db = loc.file("graph.db");
+    if Path::new(&graph_db).exists() {
+        open_graph(&graph_db, &loc.identity(), "reset --derived")?;
+    }
     let store = open_sqlite_store(&loc.file("events.db"))?;
     let pruned = store.prune_derived_index(
         &Namespaced::prefix_for(&loc.identity()),
         &rigger::ingest::derived_index_identity(),
     )?;
     println!("{}", derived_prune_report(&pruned));
-    Ok(())
-}
-
-/// `rigger reset --derived` refuses to compact while this project's `graph.db` was folded under an
-/// older fold rule and has not been rebuilt from the log yet (spec 101): only the whole log can
-/// rebuild such a file, and a compacted log no longer holds what its old folds asserted. A project
-/// with no `graph.db` has nothing to rebuild.
-fn refuse_derived_reset_before_graph_rebuild(graph_db: &str, project: &str) -> Res {
-    if Path::new(graph_db).exists() && Projector::open(graph_db, project)?.rebuild_owed()? {
-        return Err(format!(
-            "reset --derived: {graph_db} was folded under an older fold rule and must be rebuilt \
-             from the whole event log once before the log is compacted - run `rigger setup` \
-             (it rebuilds graph.db from the log), then re-run `rigger reset --derived`. Refusing \
-             rather than compacting away the history that rebuild needs."
-        )
-        .into());
-    }
     Ok(())
 }
 

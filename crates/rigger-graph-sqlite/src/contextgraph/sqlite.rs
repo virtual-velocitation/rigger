@@ -3,6 +3,7 @@
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -114,20 +115,31 @@ DROP TABLE IF EXISTS pending_proof;
 DROP TABLE IF EXISTS proofs;
 ";
 
-/// The fold-state tables a cold [`Projector::rebuild`] empties before it refolds the log.
-const FOLD_TABLES: [&str; 11] = [
-    "nodes",
-    "edges",
-    "aliases",
-    "applied",
-    "proofs",
-    "generations",
-    "node_assertions",
-    "edge_assertions",
-    "retired_nodes",
-    "detached_attachments",
-    "relabel_owed",
-];
+/// Where a rebuild ([`Projector::rebuild`]) records the last position it folded, in the shadow
+/// file it folds and, from the swap until the tail it owes is folded, in the live one.
+const REBUILD_CURSOR: &str = "
+CREATE TABLE IF NOT EXISTS rebuild_cursor (position INTEGER NOT NULL);
+INSERT INTO rebuild_cursor (position) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM rebuild_cursor);
+";
+
+/// Where a [`RebuildSource`] hands each batch it streams, with the log's last position.
+pub type RebuildSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 's;
+
+/// Streams the log's live selection after a position into a [`RebuildSink`], in batches, each
+/// handed with the log's last position so a caller can say how far along it is (spec 101): what a
+/// [`Projector::rebuild`] folds. The sqlite event store's `read_live_selection` is the one in
+/// production.
+pub type RebuildSource<'s> = dyn FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's;
+
+/// How far a [`Projector::rebuild`] has folded: `folded` events so far, the last through position
+/// `through`, of the log from `start` (exclusive) to `head`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebuildProgress {
+    pub start: Position,
+    pub through: Position,
+    pub head: Position,
+    pub folded: usize,
+}
 
 /// Projector is the SQLite-backed Projection.
 ///
@@ -182,49 +194,65 @@ impl Projector {
         })
     }
 
-    /// Pay an owed rebuild: refold the log COLD in ONE write transaction taken immediately, and
-    /// report whether it ran. Under that lock the file's version is read again - a rebuild another
-    /// process committed first leaves nothing owed, so this returns `false` without reading the
-    /// log - and only then is `log` read. The old ledgers are dropped and recreated in their
-    /// current shape, every fold-state table is emptied, every event is folded exactly as
-    /// [`Projection::apply`] folds it - one at a time, so an event whose fold fails (a malformed
-    /// payload) is skipped exactly as the live fold skips it - reporting `(folded, total)` to
-    /// `progress` after each, and the current [`PROJECTION_VERSION`] is stamped, all before the
-    /// one commit. A concurrent open therefore sees either the old file, which it neither changes
-    /// nor folds into, or the rebuilt one.
+    /// Pay the rebuild the `graph.db` at `path` owes (spec 101), and report whether there was one
+    /// to pay. The rebuild folds `source` - the log's live selection, whose cost is bounded by the
+    /// live projection rather than the log's age - into a fresh SHADOW file beside `path`, in the
+    /// batches `source` hands it, each committed with the last position it folded
+    /// ([`REBUILD_CURSOR`]) and reported to `progress`; the live file is only ever read meanwhile.
+    /// Once `source` is exhausted the shadow is stamped with the current [`PROJECTION_VERSION`]
+    /// and put in place of the live file's content in ONE step - one write transaction that
+    /// copies it page for page, so a racing open sees the old file, which still owes the rebuild,
+    /// or the rebuilt one, never half of either - and then removed. The copy is SQLite's online
+    /// backup rather than a rename of the file: a process holding the live file open (an agent's
+    /// MCP session, the dashboard) keeps a valid connection and reads the rebuilt file from its
+    /// next query, where a file renamed over one it holds would leave it reading the old file
+    /// through a write-ahead log the new one shares.
     ///
-    /// An emit that finds the file still owing appends without folding. One that appended after
-    /// `log` was read yet saw the old version did so before the commit, so `log` is read once more
-    /// after it and folded in a second transaction the same way: the fold's per-position guard
-    /// passes over every event the rebuild already folded and folds what the log gained, and an
-    /// emit that sees the new version folds its own event, the same guard making the two meet
-    /// exactly once.
+    /// The shadow is held under an exclusive lock for the whole fold, so a second rebuild racing
+    /// this one is refused as busy rather than interleaved. An interrupted rebuild leaves the live
+    /// file untouched, and the next one resumes from the shadow's last committed batch without
+    /// refolding it.
+    ///
+    /// An emit that found the old file owing appended without folding, and did so before the
+    /// copy: so after it `source` is read once more from the cursor alone, into the live file,
+    /// and only then is the cursor dropped - the per-position guard makes that tail meet an emit
+    /// that folded its own event exactly once. A rebuild interrupted in that tail finishes it on
+    /// the next call.
     pub fn rebuild(
-        &self,
-        log: &dyn Fn() -> Result<Vec<Event>, Error>,
-        progress: &mut dyn FnMut(usize, usize),
+        path: &str,
+        project: &str,
+        source: &mut RebuildSource,
+        progress: &mut dyn FnMut(RebuildProgress),
     ) -> Result<bool, Error> {
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(be)?;
-        if !rebuild_owed(&tx)? {
+        let mut live = open_connection(path).map_err(be)?;
+        let shadow_path = format!("{path}.rebuild");
+        if rebuild_owed(&live)? {
+            let mut shadow = Connection::open(&shadow_path).map_err(be)?;
+            shadow
+                .execute_batch("PRAGMA locking_mode = EXCLUSIVE;")
+                .map_err(be)?;
+            schema(&shadow, project)?;
+            shadow.execute_batch(REBUILD_CURSOR).map_err(be)?;
+            fold_source(&mut shadow, project, source, progress)?;
+            shadow
+                .pragma_update(None, "user_version", PROJECTION_VERSION)
+                .map_err(be)?;
+            // Every page in one step: one write transaction on the live file.
+            rusqlite::backup::Backup::new(&shadow, &mut live)
+                .map_err(be)?
+                .run_to_completion(i32::MAX, std::time::Duration::from_millis(50), None)
+                .map_err(be)?;
+        } else if !rebuild_tail_owed(&live)? {
             return Ok(false);
         }
-        let events = log()?;
-        tx.execute_batch(DROP_LEDGERS).map_err(be)?;
-        schema(&tx, &self.project)?;
-        for table in FOLD_TABLES {
-            tx.execute(&format!("DELETE FROM {table}"), [])
-                .map_err(be)?;
+        // Closed above, so its journal is gone with it; after a crash past the copy it is the
+        // leftover the tail's rerun clears.
+        if Path::new(&shadow_path).exists() {
+            std::fs::remove_file(&shadow_path).map_err(be)?;
         }
-        fold_each(&tx, &events, &self.project, progress)?;
-        tx.pragma_update(None, "user_version", PROJECTION_VERSION)
+        fold_source(&mut live, project, source, &mut |_| {})?;
+        live.execute_batch("DROP TABLE rebuild_cursor;")
             .map_err(be)?;
-        tx.commit().map_err(be)?;
-        let tx = guard.transaction().map_err(be)?;
-        fold_each(&tx, &log()?, &self.project, &mut |_, _| {})?;
-        tx.commit().map_err(be)?;
         Ok(true)
     }
 
@@ -834,26 +862,56 @@ fn layered_call_walk(
     Ok((nodes, call_edges))
 }
 
-/// Fold `events` in order inside `tx`, each exactly as [`Projection::apply`] folds it and one at a
-/// time, so an event whose fold fails (a malformed payload the log holds) is skipped exactly as the
-/// live fold skips it and the rest still fold; `progress` hears `(folded, total)` after each. An
-/// event the file already folded is passed over by the fold's per-position guard.
-fn fold_each(
-    tx: &Transaction,
-    events: &[Event],
+/// Fold what `source` hands after `conn`'s [`REBUILD_CURSOR`], one committed transaction per
+/// batch that also records the batch's last position as the cursor, reporting each to
+/// `progress`. Each event folds exactly as [`Projection::apply`] folds it and one at a time, so an
+/// event whose fold fails (a malformed payload the log holds) is skipped exactly as the live fold
+/// skips it and the rest still fold; one the file already folded is passed over by the fold's
+/// per-position guard.
+fn fold_source(
+    conn: &mut Connection,
     project: &str,
-    progress: &mut dyn FnMut(usize, usize),
+    source: &mut RebuildSource,
+    progress: &mut dyn FnMut(RebuildProgress),
 ) -> Result<(), Error> {
-    for (folded, e) in events.iter().enumerate() {
-        tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-        let settle = match fold_new(tx, std::slice::from_ref(e), project) {
-            Ok(()) => "RELEASE fold_event",
-            Err(_) => "ROLLBACK TO fold_event; RELEASE fold_event",
-        };
-        tx.execute_batch(settle).map_err(be)?;
-        progress(folded + 1, events.len());
-    }
-    Ok(())
+    let start: i64 = conn
+        .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
+        .map_err(be)?;
+    let mut folded = 0;
+    source(start as Position, &mut |events, head| {
+        let tx = conn.transaction().map_err(be)?;
+        for e in events {
+            tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
+            let settle = match fold_new(&tx, std::slice::from_ref(e), project) {
+                Ok(()) => "RELEASE fold_event",
+                Err(_) => "ROLLBACK TO fold_event; RELEASE fold_event",
+            };
+            tx.execute_batch(settle).map_err(be)?;
+        }
+        let through = events.last().map_or(start as Position, |e| e.position);
+        tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
+            .map_err(be)?;
+        tx.commit().map_err(be)?;
+        folded += events.len();
+        progress(RebuildProgress {
+            start: start as Position,
+            through,
+            head,
+            folded,
+        });
+        Ok(())
+    })
+}
+
+/// Whether the file behind `conn` was swapped in by a [`Projector::rebuild`] that has not yet
+/// folded the tail the log gained while it ran: it still holds the rebuild's cursor.
+fn rebuild_tail_owed(conn: &Connection) -> Result<bool, Error> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rebuild_cursor')",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(be)
 }
 
 /// Whether `conn`'s file records a fold rule older than [`PROJECTION_VERSION`].
