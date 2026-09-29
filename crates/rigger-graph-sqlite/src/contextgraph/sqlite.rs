@@ -23,7 +23,7 @@ use super::{
     TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
-use crate::eventstore::{to_nanos, Event, EventStore, Position, Revision};
+use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revision};
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
 use crate::sqlite::open_connection;
 
@@ -120,6 +120,19 @@ DROP TABLE IF EXISTS proofs;
 const REBUILD_CURSOR: &str = "
 CREATE TABLE IF NOT EXISTS rebuild_cursor (position INTEGER NOT NULL);
 INSERT INTO rebuild_cursor (position) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM rebuild_cursor);
+";
+
+/// The run attribution a rebuild gathers in its shadow as it folds (spec 101): every folded event
+/// of the [`rigger_domain::run::RUN_CLOSURE_TYPES`], committed with the batch that folded it, so an
+/// interrupted rebuild resumes with what it had gathered, and the run-closure prune is re-derived
+/// from it before the swap ([`prune_run_closure`]). Dropped once the prune is applied.
+const REBUILD_RUN_CLOSURE: &str = "
+CREATE TABLE IF NOT EXISTS rebuild_run_closure (
+    position INTEGER PRIMARY KEY,
+    type TEXT NOT NULL,
+    data BLOB NOT NULL,
+    valid_from INTEGER NOT NULL
+);
 ";
 
 /// Where a [`RebuildSource`] hands each batch it streams, with the log's last position.
@@ -340,7 +353,11 @@ impl Projector {
                 .map_err(be)?;
             schema(&shadow, project)?;
             shadow.execute_batch(REBUILD_CURSOR).map_err(be)?;
-            passed_over += fold_source(&mut shadow, project, source, progress)?;
+            shadow.execute_batch(REBUILD_RUN_CLOSURE).map_err(be)?;
+            passed_over += fold_source(&mut shadow, project, source, progress, true)?;
+            // The graph the live one would hold, never a larger one: the prune `rigger reset
+            // --runs` applies, re-derived from what the fold gathered, before anything is swapped.
+            prune_run_closure(&mut shadow, project)?;
             shadow
                 .pragma_update(None, "user_version", PROJECTION_VERSION)
                 .map_err(be)?;
@@ -362,7 +379,7 @@ impl Projector {
         if Path::new(&shadow_path).exists() {
             std::fs::remove_file(&shadow_path).map_err(be)?;
         }
-        passed_over += fold_source(&mut live, project, source, &mut |_| {})?;
+        passed_over += fold_source(&mut live, project, source, &mut |_| {}, false)?;
         live.execute_batch("DROP TABLE rebuild_cursor;")
             .map_err(be)?;
         Ok(Some(passed_over))
@@ -511,58 +528,11 @@ impl Projector {
         node_ids: &[String],
         superseded_before: Option<i64>,
     ) -> Result<PruneStats, Error> {
-        let ids_json = serde_json::to_string(node_ids).map_err(be)?;
         let mut guard = self.conn.lock().unwrap();
         let tx = guard.transaction().map_err(be)?;
-        // Delete every edge referencing a pruned node from EITHER end - a superseded
-        // decision's DECIDED/GOVERNS/SUPERSEDES edges and a finding's ABOUT/RAISED edges,
-        // whether currently valid or already invalidated - so no edge dangles to a gone node.
-        // Scoped to THIS project (spec 28 criterion 3): on a shared backend another project may
-        // hold an edge that shares a from_id/to_id with a pruned id, and `reset --runs` must
-        // never touch it - the SAME injected project the fold stamps is the ONE scope. An empty
-        // `node_ids` yields `[]`, so `json_each` matches nothing and this is a 0-row no-op - the
-        // superseded-edge reclamation below still runs.
-        tx.execute(
-            "DELETE FROM edges
-             WHERE (from_id IN (SELECT value FROM json_each(?1))
-                 OR to_id IN (SELECT value FROM json_each(?1)))
-               AND project = ?2",
-            params![ids_json, self.project],
-        )
-        .map_err(be)?;
-        // Scoped identically: the composite (id, project) key lets the SAME id live under many
-        // projects, so pruning project P's dead-run node leaves project Q's same-id node intact.
-        let nodes = tx
-            .execute(
-                "DELETE FROM nodes
-                 WHERE id IN (SELECT value FROM json_each(?1)) AND project = ?2",
-                params![ids_json, self.project],
-            )
-            .map_err(be)?;
-        // Spec 41: reclaim superseded structural edges retired before the retention boundary.
-        // `valid_to IS NOT NULL` makes this LIVE-safe by construction - a live edge is never
-        // matched, so grounding, blast-radius, and the two-view safe superset are untouched. STRICT
-        // `<`: an edge whose `valid_to` equals the boundary was retired at the instant the active
-        // run began, so it is recent history the window keeps, not cumulative cruft. Project-scoped
-        // like the node deletes and in this same transaction, so the whole prune is atomic. `None`
-        // reclaims nothing (a legacy store with no run boundary, or a node-only prune).
-        let superseded_edges = match superseded_before {
-            Some(before) => tx
-                .execute(
-                    "DELETE FROM edges
-                     WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
-                       AND id NOT IN (SELECT edge_id FROM edge_assertions)
-                       AND id NOT IN (SELECT edge_id FROM detached_attachments)",
-                    params![before, self.project],
-                )
-                .map_err(be)?,
-            None => 0,
-        };
+        let stats = prune_in(&tx, &self.project, node_ids, superseded_before)?;
         tx.commit().map_err(be)?;
-        Ok(PruneStats {
-            nodes,
-            superseded_edges,
-        })
+        Ok(stats)
     }
 
     /// A read-only PREVIEW of what [`prune`] would remove (spec 68, "the reset surface"): the
@@ -1043,6 +1013,100 @@ fn layered_call_walk(
     Ok((nodes, call_edges))
 }
 
+/// The run-closure prune [`Projector::prune`] applies, inside the caller's transaction `tx` on the
+/// graph of `project`: the one body `rigger reset --runs` and a cold rebuild's shadow both prune
+/// through.
+fn prune_in(
+    tx: &Transaction,
+    project: &str,
+    node_ids: &[String],
+    superseded_before: Option<i64>,
+) -> Result<PruneStats, Error> {
+    let ids_json = serde_json::to_string(node_ids).map_err(be)?;
+    // Delete every edge referencing a pruned node from EITHER end - a superseded
+    // decision's DECIDED/GOVERNS/SUPERSEDES edges and a finding's ABOUT/RAISED edges,
+    // whether currently valid or already invalidated - so no edge dangles to a gone node.
+    // Scoped to THIS project (spec 28 criterion 3): on a shared backend another project may
+    // hold an edge that shares a from_id/to_id with a pruned id, and `reset --runs` must
+    // never touch it - the SAME injected project the fold stamps is the ONE scope. An empty
+    // `node_ids` yields `[]`, so `json_each` matches nothing and this is a 0-row no-op - the
+    // superseded-edge reclamation below still runs.
+    tx.execute(
+        "DELETE FROM edges
+         WHERE (from_id IN (SELECT value FROM json_each(?1))
+             OR to_id IN (SELECT value FROM json_each(?1)))
+           AND project = ?2",
+        params![ids_json, project],
+    )
+    .map_err(be)?;
+    // Scoped identically: the composite (id, project) key lets the SAME id live under many
+    // projects, so pruning project P's dead-run node leaves project Q's same-id node intact.
+    let nodes = tx
+        .execute(
+            "DELETE FROM nodes
+             WHERE id IN (SELECT value FROM json_each(?1)) AND project = ?2",
+            params![ids_json, project],
+        )
+        .map_err(be)?;
+    // Spec 41: reclaim superseded structural edges retired before the retention boundary.
+    // `valid_to IS NOT NULL` makes this LIVE-safe by construction - a live edge is never
+    // matched, so grounding, blast-radius, and the two-view safe superset are untouched. STRICT
+    // `<`: an edge whose `valid_to` equals the boundary was retired at the instant the active
+    // run began, so it is recent history the window keeps, not cumulative cruft. Project-scoped
+    // like the node deletes and in this same transaction, so the whole prune is atomic. `None`
+    // reclaims nothing (a legacy store with no run boundary, or a node-only prune).
+    let superseded_edges = match superseded_before {
+        Some(before) => tx
+            .execute(
+                "DELETE FROM edges
+                 WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
+                   AND id NOT IN (SELECT edge_id FROM edge_assertions)
+                   AND id NOT IN (SELECT edge_id FROM detached_attachments)",
+                params![before, project],
+            )
+            .map_err(be)?,
+        None => 0,
+    };
+    Ok(PruneStats {
+        nodes,
+        superseded_edges,
+    })
+}
+
+/// Apply to the rebuilt shadow behind `conn` the run-closure prune `rigger reset --runs` applies
+/// (spec 21, spec 101): the drop set and the superseded-edge boundary re-derived, through the one
+/// rule ([`rigger_domain::run::superseded_graph_nodes`], [`rigger_domain::run::superseded_edge_boundary`]),
+/// from the run attribution the shadow fold gathered ([`REBUILD_RUN_CLOSURE`]), pruned through the
+/// one prune body ([`prune_in`]) - so the rebuilt graph never resurrects a node a prune dropped.
+/// The gathered rows are dropped in the same transaction, so a rebuild resumed past it prunes
+/// nothing twice.
+fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> {
+    let tx = conn.transaction().map_err(be)?;
+    let gathered = tx
+        .prepare(
+            "SELECT position, type, data, valid_from FROM rebuild_run_closure ORDER BY position",
+        )
+        .map_err(be)?
+        .query_map([], |r| {
+            let mut e = Event::new(&r.get::<_, String>(1)?, r.get(2)?);
+            e.position = r.get::<_, i64>(0)? as Position;
+            e.valid_from = from_nanos(r.get(3)?);
+            Ok(e)
+        })
+        .map_err(be)?
+        .collect::<Result<Vec<Event>, _>>()
+        .map_err(be)?;
+    prune_in(
+        &tx,
+        project,
+        &rigger_domain::run::superseded_graph_nodes(&gathered),
+        rigger_domain::run::superseded_edge_boundary(&gathered),
+    )?;
+    tx.execute_batch("DROP TABLE rebuild_run_closure")
+        .map_err(be)?;
+    tx.commit().map_err(be)
+}
+
 /// Fold what `source` hands after `conn`'s [`REBUILD_CURSOR`], one committed transaction per
 /// batch that also records the batch's last position as the cursor, reporting each to
 /// `progress`, and answer how many events it passed over. Each event folds exactly as
@@ -1054,11 +1118,16 @@ fn layered_call_walk(
 /// again. Any other failure is the store's, not the payload's: it propagates with the batch rolled
 /// back, so nothing records the event folded and the next rebuild resumes from the cursor and
 /// folds it. One the file already folded is passed over by the fold's per-position guard.
+///
+/// A shadow fold (`gather_run_closure`) also keeps, in the same transaction, every event of the
+/// [`rigger_domain::run::RUN_CLOSURE_TYPES`] it passes ([`REBUILD_RUN_CLOSURE`]), whatever became
+/// of its fold, so the run-closure prune is re-derived from the same ordered pass.
 fn fold_source(
     conn: &mut Connection,
     project: &str,
     source: &mut RebuildSource,
     progress: &mut dyn FnMut(RebuildProgress),
+    gather_run_closure: bool,
 ) -> Result<usize, Error> {
     let start: i64 = conn
         .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
@@ -1078,6 +1147,16 @@ fn fold_source(
                 passed_over += 1;
             }
             tx.execute_batch("RELEASE fold_event").map_err(be)?;
+            if gather_run_closure
+                && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
+            {
+                tx.execute(
+                    "INSERT OR IGNORE INTO rebuild_run_closure (position, type, data, valid_from)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![e.position as i64, e.type_, e.data, to_nanos(e.valid_from)],
+                )
+                .map_err(be)?;
+            }
         }
         let through = events.last().map_or(start as Position, |e| e.position);
         tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])

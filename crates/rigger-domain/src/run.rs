@@ -347,6 +347,102 @@ impl RunStart {
     }
 }
 
+/// THE TYPES THE RUN-CLOSURE RULE READS (spec 21, spec 101): [`superseded_graph_nodes`] and
+/// [`superseded_edge_boundary`] answer the same over a log and over that log's events of these types
+/// alone, in order - so a cold rebuild that keeps only these while it folds re-derives the prune
+/// `rigger reset --runs` derives from the whole log, in the same ordered pass. A lesson is exempt
+/// from the rule, so it is not among them.
+pub const RUN_CLOSURE_TYPES: [&str; 3] =
+    [TYPE_RUN_STARTED, TYPE_DECISION_MADE, TYPE_REVIEW_FINDING];
+
+/// The retention cutoff `rigger reset --runs` reclaims superseded structural edges beneath
+/// (spec 41): the nanosecond `valid_from` of the ACTIVE run's `RunStarted` - the SAME run boundary
+/// [`superseded_graph_nodes`] keeps the active run's decision/finding nodes by. A superseded edge
+/// (`valid_to IS NOT NULL`) retired BEFORE this cutoff belongs to a prior run and is dead cruft the
+/// log can re-derive; one retired at or after it is recent history kept inside the window. `None`
+/// when no run has started (a legacy store) - then nothing is reclaimed, so LIVE and recent history
+/// are both untouched.
+///
+/// Pure over the whole forward stream, reusing the SINGLE run-boundary authority
+/// ([`current_run`]) - never a second inline boundary scan. The cutoff is the graph's own
+/// `to_nanos` time base (nanoseconds since the Unix epoch), so it compares directly to an edge's
+/// stored `valid_to`.
+pub fn superseded_edge_boundary(events: &[Event]) -> Option<i64> {
+    current_run(events)
+        .first()
+        .filter(|e| e.type_ == TYPE_RUN_STARTED)
+        .map(|e| {
+            e.valid_from
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0)
+        })
+}
+
+/// The decision and finding graph-node ids `rigger reset --runs` drops (spec 21, unit 2):
+/// every provenance node that is NEITHER the active run's NOR a lesson - a superseded run's
+/// decision/finding, or a pre-boundary one recorded before the first `RunStarted`. Pure over
+/// the whole run stream, reusing the SINGLE run-attribution authority
+/// (`run::run_attribution` + `run::current_run_id`) - never a second inline boundary scan.
+///
+/// `events` MUST be the whole [`STREAM`] in forward order - or its events of the
+/// [`RUN_CLOSURE_TYPES`], the only ones this reads - exactly as
+/// `run_attribution` and `current_run_id` require: the attribution keys by an event's INDEX
+/// in this slice, so each node id is read back from `events[i]`'s own body (the `id` field
+/// the projector folds the node under) - one whole-stream read feeds both the attribution and
+/// the id lookup, never two different slices.
+///
+/// The keep invariant is enforced by SUBTRACTION, not by skipping live indices: a decision or
+/// finding id can be recorded in BOTH a dead run AND the active run (id reuse across runs), so
+/// the same graph node has one index attributed dead and another attributed live. We collect
+/// the active run's node ids into a keep set and return `drop_candidates` MINUS that keep set,
+/// so a reused id is PRESERVED (closes the active-node-pruned-on-cross-run-id-reuse hazard) -
+/// dropping a candidate index alone would delete the shared node the active run still needs.
+/// Returns a sorted, de-duplicated list (determinism is a spec-21 constraint), leaving every
+/// `LessonLearned` (exempt) and every active-run node out of the drop set.
+pub fn superseded_graph_nodes(events: &[Event]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let attribution = run_attribution(events);
+    let active = current_run_id(events);
+    let mut drop_candidates: BTreeSet<String> = BTreeSet::new();
+    let mut keep: BTreeSet<String> = BTreeSet::new();
+    for (&i, run_of) in &attribution {
+        // A lesson is exempt (kept by its own rule, never "live" and never dropped).
+        if matches!(run_of, RunOf::Lesson) {
+            continue;
+        }
+        // Skip a malformed / empty-id body exactly as the projector's own fold skips it, so a
+        // corrupt event never contributes a bogus id to either set.
+        let Some(id) = graph_node_id(&events[i]) else {
+            continue;
+        };
+        // The active run's node ids are live and must be KEPT; everything else - a superseded
+        // run's node, or a pre-boundary one - is a drop CANDIDATE. A single id can land in both
+        // sets when it is reused across a dead run and the active run.
+        if run_of.is_live(active.as_deref()) {
+            keep.insert(id);
+        } else {
+            drop_candidates.insert(id);
+        }
+    }
+    // Subtract the active run's kept ids: a node id present in BOTH a dead run and the active
+    // run must be PRESERVED (dropping its dead-run index alone would delete the shared node the
+    // active run still needs). The difference of two `BTreeSet`s iterates sorted, so the result
+    // is deterministic (a spec-21 constraint).
+    drop_candidates.difference(&keep).cloned().collect()
+}
+
+/// The graph-node id the projector folds a `DecisionMade` / `ReviewFinding` event under: the
+/// `id` field of its JSON body (the exact key `contextgraph`'s fold reads, verbatim - the
+/// decision/finding id is never alias-resolved). `None` for a malformed body or a
+/// missing/empty id, so a corrupt event is skipped exactly as the projector's own fold skips
+/// it, never dropping an unrelated node.
+fn graph_node_id(e: &Event) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_slice(&e.data).ok()?;
+    let id = body.get("id")?.as_str()?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     /// The run-closure rule reads only the types [`super::RUN_CLOSURE_TYPES`] names: over a log

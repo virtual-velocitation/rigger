@@ -5178,7 +5178,6 @@ fn a_failed_fold_into_an_in_memory_graph_marks_nothing_owed_and_the_next_batch_f
 
 /// The decision, finding and lesson node ids the `graph.db` of `root` holds, sorted.
 fn provenance_nodes(root: &Path) -> Vec<String> {
-    use rigger::contextgraph::Projection;
     let graph = rigger::contextgraph::sqlite::Projector::open(
         rigger_file(root, "graph.db").to_str().unwrap(),
         &run_stream_identity(root),
