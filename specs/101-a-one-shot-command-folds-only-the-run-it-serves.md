@@ -115,17 +115,19 @@ that step-wide assertion. Neither unit builds the other's half.
   stamp lives in the event row, so it is atomic with the append.
 - *The server-backed KurrentDB store* answers from one group stream per identity
   (`rigger-group/<stream>/<group>`) holding KurrentDB link events (`$>`, the server's own link
-  type, not a rigger event type). Before an append whose events carry a group, the adapter reads
-  the stream's last revision (a backward read of one event), appends to each group's stream a
-  link naming the revision that group's first event will take, then appends the events expecting
-  that revision; when the caller's expectation is `Any`, a conflict re-reads and re-links, and any
-  other expectation's conflict is the caller's as today. The lookup reads the group stream
-  backward and answers from the newest link whose resolved event carries that group; a link whose
-  revision holds another group's event, or nothing, is skipped. Because the link is written before
-  its events, every recorded batch has a link at its exact revision: a crash can leave a dangling
-  link, never an unlinked recording, so the newest resolving link names the latest recording and
-  a revert can never be suppressed against a stale answer. The adapter's `$all` reads and
-  subscriptions skip records whose type begins with `$`, so no link reaches a caller. This is
+  type, not a rigger event type). Before an append whose events carry a group, the adapter assigns
+  every event its id, reads the stream's last revision (a backward read of one event), appends to
+  each group's stream a link naming the revision that group's last event in the append will take
+  and carrying that event's id in its meta, then appends the events expecting that revision; when
+  the caller's expectation is `Any`, a conflict re-reads and re-links, and any other expectation's
+  conflict is the caller's as today. The lookup reads the group stream backward and answers from
+  the newest link whose resolved event is exactly the event the link names (the same id); a link
+  whose revision holds another event - another writer's, or an older member of the same group - or
+  nothing, is skipped. Because the link is written before its events, every recorded batch has a
+  link at its exact revision: a crash can leave a dangling link, never an unlinked recording, so
+  the newest link whose named event is present names the latest recording and a revert can never
+  be suppressed against a stale answer. The adapter's `$all` reads and subscriptions skip records
+  whose type begins with `$`, so no link reaches a caller. This is
   chosen over a backward read of the project stream per identity, which is unbounded: proving a
   never-recorded identity absent walks to position 0, and a file last ingested long ago walks
   nearly the whole stream. The KurrentDB half runs only where the contract suite's container is
