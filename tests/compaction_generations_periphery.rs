@@ -4564,6 +4564,33 @@ fn every_event_rigger_s_own_verbs_append_is_folded_so_setup_owes_no_rebuild() {
     );
 }
 
+/// Given an escalated unit and a `graph.db` whose bytes are not a database, when the operator runs
+/// `rigger resume-unit`, then the resume succeeds with its `UnitResumed` on the log and says the fold
+/// it could not make, with the reason: a verb whose job is to append never opens `graph.db` before
+/// its append, so an unopenable graph never costs the operator's recovery verb its record.
+#[test]
+fn resume_unit_into_a_graph_it_cannot_open_is_on_the_log_and_reported_not_folded() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    escalate_solo_unit(root);
+    let garbage = b"this file is not a sqlite database, only text standing in for one".repeat(64);
+    std::fs::write(rigger_file(root, "graph.db"), &garbage).unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["resume-unit", "solo", "--attempts", "1"]);
+    let log = run_log(root);
+    assert_eq!(
+        (ok, log.last().map(|(_, t)| t.as_str())),
+        (true, Some("UnitResumed")),
+        "the resume succeeds and is on the log; stdout: {out} stderr: {err}"
+    );
+    assert_eq!(
+        err,
+        "rigger: recorded 1 run event(s); not folded into the context graph: graph: file is not \
+         a database\n",
+        "the fold it could not make is said, with the reason"
+    );
+}
+
 /// A git project scaffolded with the escalating one-unit workflow, its grounder one the binary
 /// rejects: a `--fresh` step or run mints its boundary, re-pins the definition and then fails at
 /// the grounder, before it drives anything or serves stdin.
