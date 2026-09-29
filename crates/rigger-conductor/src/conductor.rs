@@ -9043,10 +9043,32 @@ impl RunCtx<'_> {
             }
         }
         // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
-        // NOW - once the tree the run branch carries is the verified one - record the artifact
-        // graph edges, reindex, and propagate staleness. A blocked integration emits none of
+        // NOW - once the tree the run branch carries is the verified one - reindex, record the
+        // artifact graph edges, and propagate staleness. A blocked integration does none of
         // these, so a rolled-back merge leaves no phantom FILE_TOUCHED / staleness for a unit
         // whose work never landed.
+        //
+        // The reindex runs FIRST (spec 101): it can fail after the landing (a batch's group
+        // lookup goes unanswered), and the step that resumes the landed unit re-runs this whole
+        // tail. The reindex's own emits are keyed, so re-running it appends nothing twice, but the
+        // FILE_TOUCHED / GATED_BY emits below are not - so they come only after every fallible
+        // reindex step has succeeded, and a failed reindex leaves none of them for the resume to
+        // append a second time.
+        if !commit.is_empty() {
+            if let Some(g) = self.deps.grounder {
+                g.reindex(&self.deps.repo, &files);
+            }
+            // FRESH ON EVERY INTEGRATION (spec 92, criterion 1): the CONTEXT GRAPH (`graph.db`,
+            // what `graph --show`/`graph --around` read) used to populate only ONCE per process
+            // (`ingest_project_into_graph`'s once-per-process guard) - so a unit that integrated
+            // earlier in a long-lived driver process never made the graph learn of it, and a
+            // moved function kept resolving at its stale recorded line (docs/audit/2026-09-
+            // graph-vs-grep.md findings 4/9/11/12). This reindexes exactly the files THIS
+            // integration touched - bounded by the merge's own file list, never a whole-project
+            // walk - right alongside the grounder's own (already-existing) reindex above, so the
+            // two stay in lockstep from every integration on.
+            self.ingest_files_into_graph(&files)?;
+        }
         for f in &files {
             self.emit(
                 contextgraph::TYPE_FILE_TOUCHED,
@@ -9064,21 +9086,6 @@ impl RunCtx<'_> {
                     json!({"gate": gid, "pass": true, "artifact": f}),
                 )?;
             }
-        }
-        if !commit.is_empty() {
-            if let Some(g) = self.deps.grounder {
-                g.reindex(&self.deps.repo, &files);
-            }
-            // FRESH ON EVERY INTEGRATION (spec 92, criterion 1): the CONTEXT GRAPH (`graph.db`,
-            // what `graph --show`/`graph --around` read) used to populate only ONCE per process
-            // (`ingest_project_into_graph`'s once-per-process guard) - so a unit that integrated
-            // earlier in a long-lived driver process never made the graph learn of it, and a
-            // moved function kept resolving at its stale recorded line (docs/audit/2026-09-
-            // graph-vs-grep.md findings 4/9/11/12). This reindexes exactly the files THIS
-            // integration touched - bounded by the merge's own file list, never a whole-project
-            // walk - right alongside the grounder's own (already-existing) reindex above, so the
-            // two stay in lockstep from every integration on.
-            self.ingest_files_into_graph(&files)?;
         }
         // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
         // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects
