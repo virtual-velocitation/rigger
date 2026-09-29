@@ -239,7 +239,16 @@ a fact, not only when it adds or moves one.
   live selection - every non-derived event plus each identity's latest generation, exactly the rows
   the compaction plan keeps, so the rebuild and `rigger reset --derived` agree by construction - and
   never a superseded generation, which criterion 4's identity licenses; its cost is bounded by the
-  live projection, not the log's age. It streams the log once, in order, and never materializes the
+  live projection, not the log's age. The rebuild yields the graph the live one would hold, never
+  a larger one: after folding the live selection into the shadow and before the swap, it applies
+  the same run-closure prune `rigger reset --runs` applies, the keep/drop set spec 21 defines (every
+  decision and finding node that is neither the active run's nor a lesson is dropped, an id the
+  active run reuses is kept), derived from the log's own run attribution exactly as the prune
+  derives it and gathered in the same ordered pass. The prune set is never recorded and never
+  guessed, it is re-derived, so the rebuilt and the live graph agree by construction the way the
+  rebuild and `rigger reset --derived` already do. A rebuild that skips the prune and leaves it to a
+  later `rigger reset --runs` is not an implementation of this, because every command between the
+  two reads the resurrected nodes. It streams the log once, in order, and never materializes the
   run stream in memory or reads it twice. It folds into a fresh shadow graph file beside the live
   one in committed batches, recording the last folded position in the shadow, then stamps the
   projection version and renames the shadow into place in one step: a racing open of either kind
@@ -259,7 +268,9 @@ a fact, not only when it adds or moves one.
   says so. Tests: a cold rebuild through `rigger setup` stamps the version; an emit at the old
   version appends and skips the fold, leaving `graph.db` unchanged; a fold-dependent command at the
   old version refuses naming `rigger setup` without writing; a read-only open racing the rebuild
-  leaves the rebuilt file intact and a folding open during it refuses rather than failing locked.
+  leaves the rebuilt file intact and a folding open during it refuses rather than failing locked;
+  a cold rebuild of a log whose closed runs were pruned yields a graph with the same decision and
+  finding nodes as the live one, never the pruned ones.
   The criterion 4 unit's evidence MUST include the rebuild completing through `rigger setup` on a
   snapshot of a real log with wall time and peak memory recorded, and an interrupt-then-rerun on
   that snapshot completing without refolding the batches already committed. Without this, every
