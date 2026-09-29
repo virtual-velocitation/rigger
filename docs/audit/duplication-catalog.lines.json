@@ -2874,8 +2874,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4025,
-        "end_line": 4025
+        "start_line": 4062,
+        "end_line": 4062
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -5334,8 +5334,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4114,
-        "end_line": 4114
+        "start_line": 4124,
+        "end_line": 4124
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",

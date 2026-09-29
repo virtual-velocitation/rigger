@@ -2943,7 +2943,7 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "name": "\"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \\\n             {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \\\n             decision (position {}) and folded it into the context graph\\n\"",
+        "name": "\"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \\\n         {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \\\n         decision (position {position}){fold}\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {

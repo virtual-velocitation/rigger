@@ -2622,9 +2622,9 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/workflow_probe.rs:16-16` `"create .rigger"`
 - `tests/compaction_generations_periphery.rs:2923-2923` `".rigger"`
 - `tests/compaction_generations_periphery.rs:3057-3057` `".rigger"`
-- `tests/compaction_generations_periphery.rs:4025-4025` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
-             {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
-             decision (position {}) and folded it into the context graph\n"`
+- `tests/compaction_generations_periphery.rs:4062-4062` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
+         {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
+         decision (position {position}){fold}\n"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:138-138` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:139-139` `"write the .rigger/{rel} fixture: {e}"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:149-149` `".rigger"`
@@ -3722,7 +3722,7 @@ mandatory sweep: sqlite Connection::open call sites - 54 site(s), collected mech
 - `tests/compaction_generations_periphery.rs:3732-3732` `Connection::open`
 - `tests/compaction_generations_periphery.rs:3856-3856` `Connection::open`
 - `tests/compaction_generations_periphery.rs:3916-3916` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4114-4114` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4124-4124` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:69-69` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:165-165` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:189-189` `Connection::open`
@@ -4796,7 +4796,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7245 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7247 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13798-13820` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17911-17964` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
