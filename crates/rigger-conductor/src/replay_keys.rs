@@ -319,6 +319,38 @@ mod tests {
     }
 
     #[test]
+    fn forgetting_leaves_an_empty_slot_a_newer_generation_has_taken() {
+        let ev = Event::new("T", vec![]);
+        let (h2, h3) = (batch("h2", 2, &ev), batch("h3", 2, &ev));
+        let set = ReplayKeys::seeded(HashSet::new());
+        let kept = install(&set, &h2, false);
+        let none = set
+            .install(&h3, || Ok::<_, ()>(false), |_, _| None)
+            .unwrap();
+        assert_eq!(none.len(), 0);
+        set.forget(&h2, &kept);
+        assert_eq!(set.tracked(IDENTITY), Some(("h3".into(), vec![])));
+    }
+
+    #[test]
+    fn forgetting_an_install_whose_generation_moved_and_came_back_leaves_the_reinstall() {
+        let ev = Event::new("T", vec![]);
+        let (h2, h1) = (batch("h2", 2, &ev), batch("h1", 1, &ev));
+        let set = ReplayKeys::seeded(HashSet::new());
+        let kept_a = install(&set, &h2, false);
+        install(&set, &h1, false);
+        let kept_d = install(&set, &h2, false);
+        assert_eq!(
+            kept_d, kept_a,
+            "the reinstall keeps the very same key strings"
+        );
+        set.forget(&h2, &kept_a);
+        assert_eq!(set.tracked(IDENTITY), Some(("h2".into(), keys_of(&h2))));
+        assert!(set.contains(&h2[0].0) && set.contains(&h2[1].0));
+        assert_eq!(install(&set, &h2, false), Vec::<String>::new());
+    }
+
+    #[test]
     fn a_batch_naming_no_identity_is_the_plain_dedup_and_forgets_its_keys() {
         let ev = Event::new("T", vec![]);
         let unshaped = [("unshaped#0".to_string(), &ev)];
