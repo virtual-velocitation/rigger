@@ -503,3 +503,146 @@ fn light_lane_ingest_project_batched_hands_no_batches() {
         "the light lane compiles no extraction pass, so ingest_project_batched hands no batches"
     );
 }
+
+/// Given a store wrapped to fold what is appended through it, when a caller appends a batch under
+/// an expectation the stream meets, then the batch lands, is folded in one `apply_batch` at the
+/// positions the store issued, and the log sink hears nothing; when the expectation fails, the
+/// conflict is the caller's answer and nothing is appended or folded.
+#[test]
+fn a_folding_store_folds_what_it_appends_at_the_issued_positions_under_the_callers_expectation() {
+    let store = Store::open(":memory:").unwrap();
+    store
+        .append(
+            "other",
+            ExpectedRevision::Any,
+            &[Event::new("Prior", b"p".to_vec())],
+        )
+        .unwrap();
+    let cap = CapturingProjection::default();
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let folding = rigger::ingest::FoldingStore::new(&store, Some(&cap as &dyn Projection), &log);
+    let batch = [
+        Event::new("A", b"a".to_vec()),
+        Event::new("B", b"b".to_vec()),
+    ];
+    let appended = folding
+        .append("run", ExpectedRevision::NoStream, &batch)
+        .unwrap();
+    assert_eq!(
+        (
+            appended.placed().collect::<Vec<_>>(),
+            cap.batch_positions.lock().unwrap().clone(),
+            cap.per_event_applies.load(Ordering::SeqCst),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            vec![(0, 2), (1, 3)],
+            vec![vec![2, 3]],
+            0,
+            Vec::<String>::new()
+        ),
+        "the batch lands at 2 and 3, folds once at exactly those positions, and says nothing"
+    );
+    let refused = folding.append(
+        "run",
+        ExpectedRevision::NoStream,
+        &[Event::new("C", b"c".to_vec())],
+    );
+    assert_eq!(
+        (
+            matches!(
+                refused,
+                Err(rigger::eventstore::Error::Conflict { actual: 1, .. })
+            ),
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            cap.batch_positions.lock().unwrap().len(),
+            lines.lock().unwrap().clone(),
+        ),
+        (true, 2, 1, Vec::<String>::new()),
+        "a failed expectation appends and folds nothing"
+    );
+}
+
+/// Given a store wrapped to fold into a graph that refuses the fold, when a caller appends, then
+/// the events are on the log and the lost fold is said through the injected sink - how many events
+/// were recorded and why they were not folded; wrapped with no graph at all, it appends and folds
+/// nothing and has nothing to say.
+#[test]
+fn a_folding_store_says_a_lost_fold_through_its_sink_and_a_graphless_one_stays_silent() {
+    let store = Store::open(":memory:").unwrap();
+    let cap = CapturingProjection {
+        fail: true,
+        ..Default::default()
+    };
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let batch = [
+        Event::new("A", b"a".to_vec()),
+        Event::new("B", b"b".to_vec()),
+    ];
+    rigger::ingest::FoldingStore::new(&store, Some(&cap as &dyn Projection), &log)
+        .append("run", ExpectedRevision::Any, &batch)
+        .unwrap();
+    rigger::ingest::FoldingStore::new(&store, None, &log)
+        .append("run", ExpectedRevision::Any, &batch[..1])
+        .unwrap();
+    assert_eq!(
+        (
+            store.read_stream("run", 0, Direction::Forward).unwrap().len(),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            3,
+            vec![
+                "rigger: recorded 2 run event(s); not folded into the context graph: graph: fold failed"
+                    .to_string()
+            ]
+        ),
+        "every append lands; only the refused fold into a wired graph is said"
+    );
+}
+
+/// Given a store wrapped to fold, when a caller reads through it, then every read answers exactly
+/// what the wrapped store answers.
+#[test]
+fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
+    let store = Store::open(":memory:").unwrap();
+    let events: Vec<Event> = ["A", "B", "A"]
+        .iter()
+        .map(|t| Event::new(*t, t.as_bytes().to_vec()))
+        .collect();
+    store.append("run", ExpectedRevision::Any, &events).unwrap();
+    let log = |_: &str| {};
+    let folding = rigger::ingest::FoldingStore::new(&store, None, &log);
+    let ids = |es: Vec<Event>| es.into_iter().map(|e| e.position).collect::<Vec<_>>();
+    let filter = rigger::eventstore::Filter::default();
+    let first = |s: rigger::eventstore::Subscription| {
+        s.recv_timeout(std::time::Duration::from_secs(5))
+            .map(|e| e.position)
+    };
+    assert_eq!(
+        (
+            ids(folding.read_stream("run", 1, Direction::Forward).unwrap()),
+            ids(folding.read_all(1, Direction::Forward, &filter).unwrap()),
+            ids(folding
+                .read_stream_typed("run", 0, rigger::eventstore::TypeSelection::Only(&["A"]))
+                .unwrap()),
+            folding.last_position("run", "A").unwrap(),
+            first(folding.subscribe_all(2, &filter).unwrap()),
+            first(folding.subscribe_stream("run", 1).unwrap()),
+        ),
+        (
+            vec![2, 3],
+            vec![2, 3],
+            vec![1, 3],
+            Some(2),
+            Some(3),
+            Some(2)
+        ),
+        "each read passes through to the wrapped store"
+    );
+}
