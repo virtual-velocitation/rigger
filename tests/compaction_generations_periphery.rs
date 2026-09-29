@@ -3463,3 +3463,410 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
         "the rebuild folded the first emit and the session folded the second live"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// 7. The shadow rebuild's seams: its sources, its tail, and an emit that meets it
+// ---------------------------------------------------------------------------------------
+
+/// The positions of each batch `stream_past` hands for `log` past `after`, in batches of `batch`,
+/// with the head handed beside each.
+fn streamed_past(log: &[Event], after: u64, batch: usize) -> Vec<(Vec<u64>, u64)> {
+    let mut handed = Vec::new();
+    rigger::contextgraph::sqlite::stream_past(log, after, batch, &mut |events, head| {
+        handed.push((events.iter().map(|e| e.position).collect(), head));
+        Ok(())
+    })
+    .unwrap();
+    handed
+}
+
+/// `stream_past` hands exactly the events past `after` - an event AT `after` is already folded -
+/// in batches of at most `batch`, each with the log's last position, and hands nothing (never an
+/// empty batch) when nothing lies past `after` or the log is empty.
+#[test]
+fn stream_past_hands_only_what_lies_past_the_position_in_batches_with_the_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let log = run_events(&backend, PROJECT);
+    let p: Vec<u64> = log.iter().map(|e| e.position).collect();
+    assert_eq!(
+        streamed_past(&log, 0, 2),
+        vec![
+            (vec![p[0], p[1]], p[4]),
+            (vec![p[2], p[3]], p[4]),
+            (vec![p[4]], p[4])
+        ],
+        "the whole log, in batches of two, each with the head"
+    );
+    assert_eq!(
+        streamed_past(&log, p[1], 3),
+        vec![(vec![p[2], p[3], p[4]], p[4])],
+        "an event at the position is passed over; a batch that fits exactly is handed once"
+    );
+    assert_eq!(
+        streamed_past(&log, p[4], 2),
+        Vec::<(Vec<u64>, u64)>::new(),
+        "nothing past the head hands nothing"
+    );
+    assert_eq!(
+        streamed_past(&[], 7, 2),
+        Vec::<(Vec<u64>, u64)>::new(),
+        "an empty log hands nothing"
+    );
+    let failed = rigger::contextgraph::sqlite::stream_past(&log, 0, 2, &mut |_, _| {
+        Err(rigger::contextgraph::Error("sink refused".to_string()))
+    });
+    assert_eq!(
+        failed.unwrap_err().0,
+        "sink refused",
+        "a sink's failure stops the stream and is the stream's"
+    );
+}
+
+/// The batches `backend`'s live selection of `project` hands past `after` in batches of `batch`,
+/// as positions, with the head handed beside each.
+fn selected_past(backend: &Store, project: &str, after: u64, batch: usize) -> Vec<(Vec<u64>, u64)> {
+    let mut handed = Vec::new();
+    backend
+        .read_live_selection(
+            &Namespaced::prefix_for(project),
+            rigger::conductor::STREAM,
+            &rigger::ingest::derived_index_identity(),
+            after,
+            batch,
+            &mut |events, head| {
+                handed.push((events.iter().map(|e| e.position).collect(), head));
+                Ok(())
+            },
+        )
+        .unwrap();
+    handed
+}
+
+/// The live selection is one project's run stream alone: another project's events interleaved in
+/// the same file are never handed, the head is this stream's last position rather than the file's,
+/// a selection that fills its last batch exactly is never followed by an empty one, and a project
+/// with no run stream hands nothing.
+#[test]
+fn the_live_selection_is_one_projects_stream_with_that_streams_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(dir.path(), &[]);
+    let other = "proj-other";
+    let generation = |key: &str, line| {
+        vec![keyed(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            head("alpha", line, false),
+            key,
+            10,
+        )]
+    };
+    for (project, key, line) in [
+        (PROJECT, "gc/src/f.rs@h1#0", 1),
+        (other, "gc/src/f.rs@h1#0", 1),
+        (PROJECT, "gc/src/f.rs@h2#0", 2),
+        (other, "gc/src/f.rs@h2#0", 2),
+        (PROJECT, "gc/src/g.rs@h1#0", 3),
+        (other, "gc/src/g.rs@h1#0", 3),
+    ] {
+        Namespaced::new(&backend, project)
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &generation(key, line),
+            )
+            .unwrap();
+    }
+    let mine = run_events(&backend, PROJECT);
+    let theirs = run_events(&backend, other);
+    let (m, t) = (
+        mine.iter().map(|e| e.position).collect::<Vec<_>>(),
+        theirs.iter().map(|e| e.position).collect::<Vec<_>>(),
+    );
+    assert!(
+        t[2] > m[2],
+        "the other project's last event lies past this one's"
+    );
+    assert_eq!(
+        selected_past(&backend, PROJECT, 0, 2),
+        vec![(vec![m[1], m[2]], m[2])],
+        "h1 is shed, the two latest generations fill one batch exactly, and the head is this \
+         stream's"
+    );
+    assert_eq!(
+        selected_past(&backend, other, 0, 1),
+        vec![(vec![t[1]], t[2]), (vec![t[2]], t[2])],
+        "the other project's selection is its own"
+    );
+    assert_eq!(
+        selected_past(&backend, "proj-absent", 0, 2),
+        Vec::<(Vec<u64>, u64)>::new(),
+        "a project with no run stream hands nothing"
+    );
+}
+
+/// The live selection is refused, before a single event is handed, under a policy that has not
+/// declared which of its types re-assert a fact: a selection that cannot say which valid-time a
+/// kept row carries would silently re-date facts in the graph it rebuilds.
+#[test]
+fn the_live_selection_refuses_a_policy_without_a_reasserting_partition_and_hands_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let shipped = rigger::ingest::derived_index_identity();
+    let undeclared = ContentIdentity::new(shipped.meta_key().to_string(), shipped.types().to_vec());
+    let mut handed = 0;
+    let refused = backend.read_live_selection(
+        &Namespaced::prefix_for(PROJECT),
+        rigger::conductor::STREAM,
+        &undeclared,
+        0,
+        2,
+        &mut |events, _| {
+            handed += events.len();
+            Ok(())
+        },
+    );
+    let message = refused.unwrap_err().to_string();
+    assert!(
+        message.contains(&format!(
+            "the content-identity policy for {:?} has not declared which of its types re-assert \
+             a fact in place",
+            shipped.types()
+        )),
+        "the refusal names the undeclared partition; got: {message}"
+    );
+    assert_eq!(handed, 0, "nothing is handed before the refusal");
+}
+
+/// A rebuild interrupted part way, then resumed after the log gained a NEW generation of a file
+/// whose superseded generation the shadow had already folded, reaches exactly the whole log's
+/// graph: the resumed selection is the log's live selection NOW, and the generation fold retires
+/// what the newer generation drops, as it does live.
+fn a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(gained: Vec<Event>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let log = run_events(&backend, PROJECT);
+    let (db, fresh) = (dir.path().join("graph.db"), dir.path().join("fresh.db"));
+    a_pre_rule_graph_db(&db, &log[..1], "");
+    let mut first = live_selection_of(&backend, PROJECT, 1);
+    let mut batches = 0;
+    let interrupted = rebuild(&db, &mut |after, sink| {
+        first(after, &mut |events, head| {
+            batches += 1;
+            if batches == 2 {
+                return Err(rigger::contextgraph::Error("interrupted".to_string()));
+            }
+            sink(events, head)
+        })
+    });
+    assert!(interrupted.is_err(), "the rebuild is interrupted");
+    assert!(
+        dir.path().join("graph.db.rebuild").exists(),
+        "its first batch - h2's `alpha` - is committed in the shadow"
+    );
+
+    Namespaced::new(&backend, PROJECT)
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &gained)
+        .unwrap();
+    assert!(rebuild(&db, &mut live_selection_of(&backend, PROJECT, 2)).unwrap());
+    assert!(
+        !dir.path().join("graph.db.rebuild").exists(),
+        "the shadow is removed once copied in"
+    );
+    fold_in_batches(
+        &fresh,
+        PROJECT,
+        std::slice::from_ref(&run_events(&backend, PROJECT)),
+    );
+    assert_eq!(
+        identity_of(&db),
+        identity_of(&fresh),
+        "the resumed rebuild is the whole log's graph"
+    );
+}
+
+rigger::test_cases! {
+    /// `src/f.rs` moves on to a third content that adds `delta`.
+    a_resumed_rebuild_folds_a_generation_the_log_gained_as_the_whole_log_does:
+        a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 3, false), "gc/src/f.rs@h3#0", 30),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("delta", 5), "gc/src/f.rs@h3#1", 30),
+        ]);
+    /// `src/f.rs` returns to h1, bringing `gone` back.
+    a_resumed_rebuild_folds_a_revert_the_log_gained_as_the_whole_log_does:
+        a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 30),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("gone", 9), "gc/src/f.rs@h1#1", 30),
+        ]);
+}
+
+/// Whether `db` still holds the cursor of a rebuild whose tail is not yet folded.
+fn holds_rebuild_cursor(db: &Path) -> bool {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'rebuild_cursor')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// Whether `db`'s applied ledger records `position`.
+fn applied(db: &Path, position: u64) -> bool {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)",
+            [position],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// Given `rigger setup`'s rebuild has swapped its shadow in and is about to fold the tail the log
+/// gained, when an agent runs `rigger emit`, then the emit neither waits on the rebuild nor skips
+/// the fold: the file is current, so its event is folded at once; the tail then meets it exactly
+/// once, drops its cursor, and the graph is exactly the whole log's.
+#[test]
+fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_once() {
+    use rigger::contextgraph::sqlite::Projector;
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+    let store = ReleaseEraStore::new();
+    let head_before = store.log().last().unwrap().position;
+    let (paused_tx, paused) = channel();
+    let (resume, resume_rx) = channel::<()>();
+    let rebuilder = {
+        let (events_db, graph_db) = (store.events_db.clone(), store.graph_db.clone());
+        let project = store.project();
+        std::thread::spawn(move || {
+            let backend = Store::open(events_db.to_str().unwrap()).unwrap();
+            let mut source = live_selection_of(&backend, &project, 1);
+            let mut reads = 0;
+            Projector::rebuild(
+                graph_db.to_str().unwrap(),
+                &project,
+                &mut |after, sink| {
+                    reads += 1;
+                    if reads == 2 {
+                        paused_tx.send(after).unwrap();
+                        resume_rx.recv().unwrap();
+                    }
+                    source(after, sink)
+                },
+                &mut |_| {},
+            )
+            .unwrap()
+        })
+    };
+    let tail_after = paused.recv().unwrap();
+    assert_eq!(
+        tail_after, head_before,
+        "the tail reads past the last position the shadow folded"
+    );
+    assert_eq!(
+        (
+            user_version(&store.graph_db),
+            holds_rebuild_cursor(&store.graph_db)
+        ),
+        (1, true),
+        "the rebuilt file is swapped in and still owes its tail"
+    );
+
+    let started = Instant::now();
+    let (out, err, ok) = run_rigger(
+        store.root(),
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d-tail","summary":"s","governs":["src/f.rs::alpha"],"supersedes":""}"#,
+        ],
+    );
+    let emitted = store.log().last().unwrap().position;
+    assert_eq!(
+        (ok, out.as_str()),
+        (
+            true,
+            format!(
+                "emitted DecisionMade (position {emitted}) and folded it into the context graph\n"
+            )
+            .as_str()
+        ),
+        "an emit during the tail folds its event; stderr: {err}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the emit did not wait on the rebuild (the busy timeout is 5s)"
+    );
+    assert!(
+        applied(&store.graph_db, emitted),
+        "the emitted event is folded before the tail runs"
+    );
+
+    resume.send(()).unwrap();
+    assert!(rebuilder.join().unwrap(), "the rebuild ran");
+    assert!(
+        !holds_rebuild_cursor(&store.graph_db),
+        "the tail is folded and its cursor dropped"
+    );
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(
+        graph, fresh,
+        "the tail met the emitted event exactly once: the graph is the whole log's"
+    );
+}
+
+/// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent
+/// runs `rigger emit`, then the event is on the log and the emit reports its position, but it does
+/// not claim to have folded an event its fold failed to write: the graph is current, so no
+/// rebuild will ever re-derive it, and a claimed fold would hide a permanent divergence.
+#[test]
+fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let decision = |id: &str| {
+        format!(r#"{{"id":"{id}","summary":"s","governs":["src/f.rs"],"supersedes":""}}"#)
+    };
+    let (out, err, ok) = run_rigger(root, &["emit", "DecisionMade", &decision("d-first")]);
+    assert!(
+        ok && out.ends_with("and folded it into the context graph\n"),
+        "an emit into an unlocked graph folds; stdout: {out} stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    let holder = rusqlite::Connection::open(&graph_db).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["emit", "DecisionMade", &decision("d-locked")]);
+    holder.execute_batch("ROLLBACK").unwrap();
+    let project = run_stream_identity(root);
+    let log = run_events(
+        &Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap(),
+        &project,
+    );
+    let last = log.last().unwrap();
+    assert_eq!(
+        (log.len(), last.type_.as_str()),
+        (2, "DecisionMade"),
+        "the event is on the log"
+    );
+    assert!(
+        !applied(&graph_db, last.position),
+        "the locked fold wrote nothing"
+    );
+    assert!(
+        ok && out.starts_with(&format!(
+            "emitted DecisionMade (position {})",
+            last.position
+        )) && !out.contains("and folded it into the context graph"),
+        "the emit reports the position and does not claim the fold; stdout: {out} stderr: {err}"
+    );
+}
