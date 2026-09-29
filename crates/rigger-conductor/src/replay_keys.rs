@@ -18,7 +18,7 @@ use std::sync::Mutex;
 #[cfg(feature = "symbols")]
 use crate::eventstore::Event;
 #[cfg(feature = "symbols")]
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 
 /// The replay-key set and the per-identity generations it holds derived keys for.
 pub(crate) struct ReplayKeys {
@@ -36,9 +36,9 @@ struct Generations {
 }
 
 /// One identity's tracked generation, the keys that generation contributed to the set, and the
-/// EPOCH of the install that set this generation: minted afresh each time the slot is created or
-/// switches generation, so an install that tracked a generation which has since moved away and
-/// come back is told apart from the install that brought it back.
+/// EPOCH of the install that created it. A switch of generation drops the old slot and creates a
+/// new one, so every slot's epoch is minted afresh: an install that tracked a generation which has
+/// since moved away and come back is told apart from the install that brought it back.
 #[cfg(feature = "symbols")]
 struct Slot {
     generation: String,
@@ -100,8 +100,8 @@ impl ReplayKeys {
     /// meeting the same identity waits, then finds the slot. An unanswered lookup is this call's
     /// error and installs nothing. A recorded batch installs its keys, so none of it survives.
     ///
-    /// A batch naming a generation other than the one its identity's slot tracks retires that
-    /// generation's keys first (spec 86 criterion 3), so the fresh generation is never shadowed by
+    /// A batch naming a generation other than the one its identity's slot tracks retires that slot
+    /// and its keys first (spec 86 criterion 3), so the fresh generation is never shadowed by
     /// a stale key that happens to hash identically. Then each event `rebuild` answers survives
     /// unless the set already holds its key; `rebuild` answering `None` skips the event without
     /// recording its key. A batch naming no identity asks nothing and tracks no generation: it is
@@ -121,18 +121,18 @@ impl ReplayKeys {
         };
         let mut keys = self.keys.lock().unwrap();
         let mut slot = named.map(|(identity, generation)| {
+            if let Entry::Occupied(held) = slots.entry(identity.to_string()) {
+                if held.get().generation != generation {
+                    for stale in held.remove().keys {
+                        keys.remove(&stale);
+                    }
+                }
+            }
             let slot = slots.entry(identity.to_string()).or_insert_with(|| Slot {
                 generation: generation.to_string(),
                 keys: HashSet::new(),
                 epoch: mint(minted),
             });
-            if slot.generation != generation {
-                for stale in slot.keys.drain() {
-                    keys.remove(&stale);
-                }
-                slot.generation = generation.to_string();
-                slot.epoch = mint(minted);
-            }
             if recorded {
                 for (key, _) in keyed {
                     keys.insert(key.clone());
