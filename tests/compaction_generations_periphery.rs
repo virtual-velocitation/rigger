@@ -5214,13 +5214,15 @@ fn provenance_nodes(root: &Path) -> Vec<String> {
     ids
 }
 
-/// Given a log holding a closed run's decision and finding, a lesson, and an active run that
-/// reuses one of the closed run's ids, whose closed-run nodes `rigger reset --runs` pruned from
-/// the live graph, when the operator's `graph.db` is replaced by an empty one and `rigger setup`
-/// cold-rebuilds it from the log, then the rebuilt graph holds exactly the decision, finding and lesson nodes the
-/// live graph held - never the pruned ones.
+/// Given a log holding a closed run's decision and finding, a lesson, a closed-run decision that
+/// supersedes one whose id the active run reuses (retiring its governing edge before the active
+/// run began), and that active run, whose closed-run nodes and superseded edges `rigger reset
+/// --runs` pruned from the live graph, when the operator's `graph.db` is replaced by an empty one
+/// and `rigger setup` cold-rebuilds it from the log, then the rebuilt graph holds exactly the
+/// decision, finding and lesson nodes the live graph held - never the pruned ones - and is the
+/// live graph, every node and edge.
 #[test]
-fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graphs_nodes() {
+fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graph() {
     let dir = temp_store_project();
     let root = dir.path();
     let decision = |id: &str| {
@@ -5244,29 +5246,34 @@ fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graphs_
         ok,
         "the first emit creates the store and graph; stdout: {out} stderr: {err}"
     );
-    common::cli::seed_run_events(
+    fold_run_events(
         root,
         &[
             ("RunStarted", r#"{"run":"r1","spec":"s.md"}"#),
             ("DecisionMade", &d_dead),
             ("ReviewFinding", r#"{"id":"f-dead","about":["src/f.rs"]}"#),
             ("DecisionMade", &shared),
+            (
+                "DecisionMade",
+                r#"{"id":"d-sup","summary":"s","governs":["src/f.rs"],"supersedes":"shared"}"#,
+            ),
             ("RunStarted", r#"{"run":"r2","spec":"s.md"}"#),
             ("DecisionMade", &d_live),
-            ("DecisionMade", &shared),
+            (
+                "DecisionMade",
+                r#"{"id":"shared","summary":"s","governs":["src/g.rs"],"supersedes":""}"#,
+            ),
         ],
     );
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(
-        ok,
-        "the first setup folds the seeded log; stdout: {out} stderr: {err}"
-    );
+    let before = menus_runs_prune(root);
     let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
     assert!(
         ok,
         "reset --runs prunes the closed run; stdout: {out} stderr: {err}"
     );
     let live = provenance_nodes(root);
+    let live_whole = whole_graph(root);
+    let pruned = menus_runs_prune(root);
 
     let graph_db = rigger_file(root, "graph.db");
     std::fs::remove_file(&graph_db).unwrap();
@@ -5291,4 +5298,70 @@ fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graphs_
         "the rebuilt graph holds the live graph's decision, finding and lesson nodes, never the \
          pruned ones; stdout: {out}"
     );
+    assert_eq!(
+        (before, pruned, menus_runs_prune(root)),
+        (
+            runs_prunable(3, 1),
+            runs_prunable(0, 0),
+            runs_prunable(0, 0)
+        ),
+        "the closed run left nodes and a superseded edge to prune; once pruned, and once rebuilt, \
+         nothing is left - the rebuild dropped the superseded edge reset --runs dropped"
+    );
+    assert_eq!(
+        whole_graph(root),
+        live_whole,
+        "the rebuilt graph is the live pruned graph, every node and edge"
+    );
+}
+
+/// Append each of `events` to the run stream of `root` and fold it into its `graph.db` as it lands,
+/// as the conductor records a run: the live graph, never one a rebuild produced.
+fn fold_run_events(root: &Path, events: &[(&str, &str)]) {
+    let graph = rigger::contextgraph::sqlite::Projector::open(
+        rigger_file(root, "graph.db").to_str().unwrap(),
+        &run_stream_identity(root),
+    )
+    .unwrap();
+    common::cli::with_run_store(root, |store| {
+        let folding = rigger::ingest::folding_into(store, Some(&graph), &|_| {});
+        for &(ty, body) in events {
+            let done = folding
+                .append_and_fold(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[Event::new(ty, body.as_bytes().to_vec())],
+                )
+                .unwrap();
+            assert_eq!(done.fold, Fold::Folded, "the {ty} folds as it lands");
+        }
+    });
+}
+
+/// The reset menu's `--runs` line counting `nodes` dead-run nodes and `edges` superseded edges.
+fn runs_prunable(nodes: usize, edges: usize) -> String {
+    format!(
+        "--runs: {nodes} dead-run node(s) and {edges} superseded edge(s) prunable from the context \
+         graph; rerun `rigger reset --runs` to reclaim them"
+    )
+}
+
+/// The `--runs` line of the `rigger reset` menu of `root`: what the context graph holds to prune.
+fn menus_runs_prune(root: &Path) -> String {
+    let (out, err, ok) = run_rigger(root, &["reset"]);
+    assert!(ok, "the reset menu answers; stdout: {out} stderr: {err}");
+    out.lines()
+        .find(|l| l.starts_with("--runs:"))
+        .unwrap_or_else(|| panic!("the menu names --runs; stdout: {out}"))
+        .to_string()
+}
+
+/// The whole graph the `graph.db` of `root` holds - every node and edge - as JSON.
+fn whole_graph(root: &Path) -> String {
+    let graph = rigger::contextgraph::sqlite::Projector::open(
+        rigger_file(root, "graph.db").to_str().unwrap(),
+        &run_stream_identity(root),
+    )
+    .unwrap();
+    serde_json::to_string(&graph.whole().unwrap()).unwrap()
 }

@@ -770,3 +770,150 @@ fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
         "each read passes through to the wrapped store"
     );
 }
+
+/// Given a store wrapped to fold, when a caller reads it in batches, by positions alone, or by a
+/// group's newest member, then each read hands exactly what the wrapped store hands: the same
+/// events from the same revision in the same bounded batches with the same head, the same
+/// positions in the same batches, the same group head - and a sink's error ends the read with it.
+#[test]
+fn a_folding_store_hands_the_batched_positions_and_group_reads_of_the_store_it_wraps() {
+    use rigger::eventstore::{Error, GroupHead, META_GROUP};
+    let store = Store::open(":memory:").unwrap();
+    let at = |t: &str| Event::new(t, t.as_bytes().to_vec());
+    store
+        .append("other", ExpectedRevision::Any, &[at("X")])
+        .unwrap();
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[
+                at("A"),
+                at("B").with_meta(META_GROUP, "g"),
+                at("C"),
+                at("D").with_meta(META_GROUP, "g"),
+                at("E"),
+            ],
+        )
+        .unwrap();
+    let log = |_: &str| {};
+    let folding = rigger::ingest::FoldingStore::new(&store, NO_GRAPH, &log);
+    type Batches = Vec<(Vec<(u64, String)>, u64)>;
+    let batched = |s: &dyn EventStore, from| -> Batches {
+        let mut out = Vec::new();
+        s.read_stream_batched("run", from, 2, &mut |events, head| {
+            out.push((
+                events
+                    .iter()
+                    .map(|e| (e.position, e.type_.clone()))
+                    .collect(),
+                head,
+            ));
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+    let positions = |s: &dyn EventStore| -> Vec<Vec<u64>> {
+        let mut out = Vec::new();
+        s.read_stream_positions("run", 3, &mut |ps| {
+            out.push(ps.to_vec());
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+    let head = |t: &str, position| GroupHead {
+        position,
+        type_: t.to_string(),
+        meta: [(META_GROUP.to_string(), "g".to_string())].into(),
+    };
+    let s = |p: u64, t: &str| (p, t.to_string());
+    assert_eq!(
+        (
+            batched(&folding, 1),
+            positions(&folding),
+            folding.latest_in_group("run", "g").unwrap(),
+            folding.latest_in_group("run", "absent").unwrap(),
+        ),
+        (
+            vec![
+                (vec![s(3, "B"), s(4, "C")], 6),
+                (vec![s(5, "D"), s(6, "E")], 6)
+            ],
+            vec![vec![2, 3, 4], vec![5, 6]],
+            Some(head("D", 5)),
+            None,
+        ),
+        "the batched read from revision 1, the positions read and the group lookup pass through"
+    );
+    assert_eq!(
+        (batched(&folding, 0), positions(&folding)),
+        (batched(&store, 0), positions(&store)),
+        "every read answers exactly what the wrapped store answers"
+    );
+    let mut calls = 0;
+    let refused = folding.read_stream_batched("run", 0, 2, &mut |_, _| {
+        calls += 1;
+        Err(Error::Backend("the sink refused".to_string()))
+    });
+    assert_eq!(
+        (refused.map_err(|e| e.to_string()), calls),
+        (Err("event store: the sink refused".to_string()), 1),
+        "a sink's error ends the read through the wrapper with that error"
+    );
+}
+
+/// Given a graph the caller already holds open, when a writer appends through `folding_into` over
+/// it, then the batch lands and folds into that graph in one batch at the positions the store
+/// issued, and nothing is said; over no graph, the batch lands, nothing folds and nothing is said.
+#[test]
+fn folding_into_a_held_graph_folds_there_and_over_none_folds_nothing() {
+    let store = Store::open(":memory:").unwrap();
+    store
+        .append(
+            "other",
+            ExpectedRevision::Any,
+            &[Event::new("Prior", b"p".to_vec())],
+        )
+        .unwrap();
+    let cap = CapturingProjection::default();
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let batch = [
+        Event::new("A", b"a".to_vec()),
+        Event::new("B", b"b".to_vec()),
+    ];
+    let held = rigger::ingest::folding_into(&store, Some(&cap as &dyn Projection), &log)
+        .append_and_fold("run", ExpectedRevision::NoStream, &batch)
+        .unwrap();
+    let none = rigger::ingest::folding_into(&store, None, &log)
+        .append_and_fold("run", ExpectedRevision::Exact(1), &batch[..1])
+        .unwrap();
+    assert_eq!(
+        (
+            held.appended.placed().collect::<Vec<_>>(),
+            held.fold == rigger::contextgraph::Fold::Folded,
+            none.appended.placed().collect::<Vec<_>>(),
+            none.fold,
+            cap.batch_positions.lock().unwrap().clone(),
+            cap.per_event_applies.load(Ordering::SeqCst),
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            vec![(0, 2), (1, 3)],
+            true,
+            vec![(0, 4)],
+            rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+            vec![vec![2, 3]],
+            0,
+            3,
+            Vec::<String>::new()
+        ),
+        "the held graph folds its batch once at 2 and 3; over none the event lands at 4 unfolded"
+    );
+}
