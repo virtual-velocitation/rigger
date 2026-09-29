@@ -939,3 +939,62 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
 fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     select_grounder(name)
 }
+
+#[cfg(all(test, feature = "symbols"))]
+mod tests {
+    use super::*;
+    use crate::test_support::MinimalProjection;
+    use rigger::eventstore::{
+        Appended, Error, GroupHead, Revision, Subscription, TypeSelection,
+    };
+
+    /// A store whose group lookup cannot be read. Nothing else is reachable: a build that weighed
+    /// a batch any other way, or appended one whose recorded generation it could not read, panics.
+    struct UnreadableGroups;
+
+    impl EventStore for UnreadableGroups {
+        fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
+            panic!("a batch whose recorded generation is unreadable is never appended")
+        }
+        fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
+            unreachable!("a build never reads the stream")
+        }
+        fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
+            unreachable!("a build never reads the log")
+        }
+        fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
+            unreachable!("a build never subscribes")
+        }
+        fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
+            unreachable!("a build never subscribes")
+        }
+        fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
+            unreachable!("a build never looks up a boundary")
+        }
+        fn read_stream_typed(
+            &self,
+            _: &str,
+            _: Revision,
+            _: TypeSelection,
+        ) -> Result<Vec<Event>, Error> {
+            unreachable!("a build never reads by type")
+        }
+        fn latest_in_group(&self, _: &str, _: &str) -> Result<Option<GroupHead>, Error> {
+            Err(Error::Backend("group index unreadable".into()))
+        }
+    }
+
+    /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS with
+    /// that error rather than skipping the batch and reporting success - an unanswered lookup is
+    /// never read as "already recorded", the fail-unsafe direction.
+    #[test]
+    fn a_build_whose_recorded_generation_is_unreadable_fails_with_that_error() {
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tree.path().join("src")).unwrap();
+        std::fs::write(tree.path().join("src/lib.rs"), "pub fn answer() -> u32 { 42 }\n").unwrap();
+        match ingest_tree(&UnreadableGroups, &MinimalProjection, tree.path().to_str().unwrap()) {
+            Err(Error::Backend(msg)) => assert_eq!(msg, "group index unreadable"),
+            other => panic!("the lookup's failure is the build's, got {other:?}"),
+        }
+    }
+}
