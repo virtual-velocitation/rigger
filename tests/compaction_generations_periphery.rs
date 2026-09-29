@@ -4209,3 +4209,164 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
         "setup's rebuild folds the migration's decision from the log"
     );
 }
+
+/// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
+/// the binary waits on, and hand back what `run` returned once the lock is released.
+fn with_graph_locked<T>(graph_db: &Path, run: impl FnOnce() -> T) -> T {
+    let holder = rusqlite::Connection::open(graph_db).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let out = run();
+    holder.execute_batch("ROLLBACK").unwrap();
+    out
+}
+
+/// Given a current `graph.db` whose fold of an emit was lost to another writer's lock, when the
+/// agent emits again, then the graph owes its rebuild: the next emit appends and says it was not
+/// folded because the rebuild is owed, a read-only inspection says the rebuild is owed, and once
+/// `rigger setup` has paid it every event of the log is folded - the lost one included - and an
+/// emit folds again.
+#[test]
+fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(ok, "the first emit creates the store and graph; stderr: {err}");
+    let graph_db = rigger_file(root, "graph.db");
+    let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
+    assert!(
+        out.ends_with("; not folded into the context graph: graph: database is locked\n"),
+        "the locked emit's fold is lost; stdout: {out} stderr: {err}"
+    );
+    let lost = read_run_events(root).last().unwrap().position;
+
+    let (out, err, ok) = emit_decision(root, "d-after");
+    let after = read_run_events(root).last().unwrap().position;
+    assert_eq!(
+        (ok, out),
+        (
+            true,
+            format!(
+                "emitted DecisionMade (position {after}); not folded into the context graph: \
+                 graph: {}\n",
+                rigger::contextgraph::REBUILD_OWED
+            )
+        ),
+        "the graph now owes its rebuild, so the next emit says so; stderr: {err}"
+    );
+    let (_, err, ok) = run_rigger(root, &["graph", "--around", "src/f.rs"]);
+    assert!(
+        ok && err.contains(&rebuild_owed_note()),
+        "a read-only inspection says the rebuild is owed; stderr: {err}"
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        (applied(&graph_db, lost), applied(&graph_db, after)),
+        (true, true),
+        "setup's rebuild folds the lost event and the one emitted while owed"
+    );
+    let (out, err, ok) = emit_decision(root, "d-rebuilt");
+    assert!(
+        ok && out.ends_with(" and folded it into the context graph\n"),
+        "once rebuilt, an emit folds again; stdout: {out} stderr: {err}"
+    );
+}
+
+/// Given a `graph.db` still at the old fold rule, when the operator runs `rigger reset --runs`,
+/// then it refuses at once naming `rigger setup` - it neither prunes nor compacts a graph that
+/// owes its rebuild, nor folds into it - and leaves both the file and the log exactly as they were.
+#[test]
+fn reset_runs_on_a_graph_that_owes_its_rebuild_refuses_naming_setup_and_writes_nothing() {
+    let store = ReleaseEraStore::new();
+    let (graph, log) = (store.graph_bytes(), store.log().len());
+    let (out, err, ok) = run_rigger(store.root(), &["reset", "--runs"]);
+    assert!(!ok, "reset --runs must refuse; stdout: {out}");
+    assert!(
+        err.contains(&format!(
+            "reset --runs: {}",
+            rigger::contextgraph::REBUILD_OWED
+        )),
+        "the refusal names `rigger setup`; stderr: {err}"
+    );
+    assert_eq!(
+        (store.graph_bytes() == graph, store.log().len()),
+        (true, log),
+        "the refusal writes nothing to graph.db or the log"
+    );
+}
+
+/// Given a current `graph.db` another writer holds locked, when the operator runs `rigger graph
+/// build` over a project with a source file, then the build appends the file's batch and says it
+/// was not folded, with the reason, rather than claiming it; the graph now owes its rebuild, so
+/// the next build refuses naming `rigger setup`.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(ok, "the first emit creates the store and graph; stderr: {err}");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src").join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+    let graph_db = rigger_file(root, "graph.db");
+    let before = read_run_events(root).len();
+
+    let (out, err, ok) = with_graph_locked(&graph_db, || run_rigger(root, &["graph", "build"]));
+    let ingested = read_run_events(root).len() - before;
+    assert_eq!(
+        (ok, out),
+        (
+            true,
+            format!(
+                "graph build: ingested {ingested} code-ingest event(s) into .rigger/graph.db; \
+                 not folded into the context graph: graph: database is locked\n"
+            )
+        ),
+        "the build reports the fold it could not make; stderr: {err}"
+    );
+    assert!(ingested > 0, "the source file's batch is on the log");
+
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(
+        !ok && err.contains(&format!(
+            "graph build: {}",
+            rigger::contextgraph::REBUILD_OWED
+        )),
+        "the next build refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+    );
+}
+
+/// Given a run whose `graph.db` another writer holds locked while `rigger step` records the run's
+/// events, when the step runs, then it still advances the run and says on stderr that the events
+/// it recorded were not folded, with the reason; the graph now owes its rebuild, so the next step
+/// refuses naming `rigger setup` instead of advancing the run over a graph that lost them.
+#[test]
+fn a_step_whose_fold_is_lost_to_a_lock_says_so_and_the_next_step_refuses() {
+    let dir = common::cli::temp_repoless_project();
+    let root = dir.path();
+    common::cli::seed_store(root);
+    common::cli::write_workflow(root, "");
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step parks the stage's spawn; stdout: {out} stderr: {err}");
+    let (_, err, ok) = run_rigger(root, &["result", "a/implementer#0", "done"]);
+    assert!(ok, "the spawn's result is recorded; stderr: {err}");
+
+    let graph_db = rigger_file(root, "graph.db");
+    let (out, err, ok) = with_graph_locked(&graph_db, || run_rigger(root, &["step"]));
+    assert_eq!(
+        (ok, out.as_str()),
+        (true, "{\"wave\":[],\"done\":true}\n"),
+        "the step replays the result and finishes the run; stderr: {err}"
+    );
+    assert!(
+        err.contains("; not folded into the context graph: graph: database is locked\n"),
+        "the step says the events it recorded were not folded; stderr: {err}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        !ok && err.contains(&format!("step: {}", rigger::contextgraph::REBUILD_OWED)),
+        "the next step refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+    );
+}
