@@ -1753,6 +1753,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "rebuild_owed",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "928db0eae7d0d832"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "agent_failure_as_str_round_trips_through_from_category_for_every_category",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -6261,7 +6269,23 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "4adb05c26eafe217"
+    "content_hash": "43907dfa2caa2e86"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "graph_rebuild_owed_note",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "c30a268f1f101afd"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "open_graph_to_read",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "b96cf82ff66e30d5"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7190,6 +7214,14 @@
     "proposed_module": "main::provenance",
     "reason": "name contains \"git_\" (git/version provenance); grouped under `main::provenance`.",
     "content_hash": "eab80c5b4ea506fa"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "the_rebuild_owed_note_speaks_only_for_a_graph_db_that_owes_it_and_creates_none",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "61bc4c66d20a8138"
   },
   {
     "file": "src/cli/mod.rs",

@@ -959,7 +959,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ce83655c125c",
+    "id": "dup-95f15f86677a",
     "classification": "semantic",
     "sites": [
       {
@@ -2903,6 +2903,11 @@
         "content_hash": "647e8aea340be175"
       },
       {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "175029481360777f"
+      },
+      {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "98eec4bb59ff365c"
@@ -3714,7 +3719,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 550 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 551 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4707,6 +4712,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-5f6fcac3a66f",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/config.rs",
+        "name": "depth",
+        "content_hash": "8057297ca19fb2ad"
+      },
+      {
+        "file": "crates/rigger-domain/src/eventstore.rs",
+        "name": "facts",
+        "content_hash": "8057297ca19fb2ad"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/config.rs, crates/rigger-domain/src/eventstore.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-619325cc4dc0",
     "classification": "near",
     "sites": [
@@ -4832,6 +4856,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-cfb679088c89",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/eventstore.rs",
+        "name": "with_facts",
+        "content_hash": "04f032acde47c500"
+      },
+      {
+        "file": "crates/rigger-domain/src/eventstore.rs",
+        "name": "with_key_parts",
+        "content_hash": "04f032acde47c500"
+      }
+    ],
+    "proposed_home": "eventstore::content_identity",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5559,7 +5602,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-fe9d49df6029",
+    "id": "dup-70a43d97023f",
     "classification": "semantic",
     "sites": [
       {
@@ -5591,6 +5634,11 @@
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "51b969072f57b125"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "Connection::open",
+        "content_hash": "c9acaf03cef6d3a0"
       },
       {
         "file": "src/cli/mod.rs",
@@ -5675,7 +5723,7 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "f927f941b4db84e3"
+        "content_hash": "84d2f61c8ad3452b"
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -5789,7 +5837,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 45 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 46 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
