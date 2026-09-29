@@ -19086,13 +19086,24 @@ mod tests {
     #[cfg(feature = "symbols")]
     const LOOKUP_REFUSED: &str = "the group lookup is unanswered";
 
+    /// The message [`FirstLookup`] refuses an armed append with.
+    #[cfg(feature = "symbols")]
+    const APPEND_REFUSED: &str = "the append is refused";
+
+    /// How long a test waits on a signal from another thread before it gives up: long enough for
+    /// any scheduler, and bounded, so a regression that never sends the signal fails the test
+    /// instead of hanging it.
+    #[cfg(feature = "symbols")]
+    const SIGNAL_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
     /// What [`FirstLookup`] does with the FIRST group lookup it is asked.
     #[cfg(feature = "symbols")]
     enum FirstLookupPlay {
         /// Answer it with a backend error carrying [`LOOKUP_REFUSED`].
         Refuse,
         /// Read the store's answer, signal `entered`, then hold that answer from the caller until
-        /// the test sends on `release`.
+        /// the test sends on `release` - or [`SIGNAL_WAIT`] passes, so a held caller never blocks
+        /// forever.
         Hold {
             entered: std::sync::mpsc::Sender<()>,
             release: std::sync::mpsc::Receiver<()>,
@@ -19100,13 +19111,16 @@ mod tests {
     }
 
     /// A store double for the run sink's first-sight lookup (spec 101): every method forwards to
-    /// `inner`, except that the FIRST `latest_in_group` call plays `first` before it forwards (or,
-    /// refused, instead of forwarding). It counts every group lookup it is asked in `asked`.
+    /// `inner`, except that the FIRST `latest_in_group` call - of `group` when one is named, of any
+    /// group otherwise - plays `first` before it forwards (or, refused, instead of forwarding), and
+    /// an append armed by [`FirstLookup::refuse_next_append`] is refused. It counts nothing: a test
+    /// counts the lookups by wrapping it in the shared `ReadCountingStore`.
     #[cfg(feature = "symbols")]
     struct FirstLookup<'a> {
         inner: &'a dyn EventStore,
+        group: Option<&'static str>,
         first: Mutex<Option<FirstLookupPlay>>,
-        asked: AtomicU32,
+        refuse_append: std::sync::atomic::AtomicBool,
     }
 
     #[cfg(feature = "symbols")]
@@ -19114,9 +19128,23 @@ mod tests {
         fn new(inner: &'a dyn EventStore, first: FirstLookupPlay) -> Self {
             FirstLookup {
                 inner,
+                group: None,
                 first: Mutex::new(Some(first)),
-                asked: AtomicU32::new(0),
+                refuse_append: std::sync::atomic::AtomicBool::new(false),
             }
+        }
+
+        /// This double playing its first lookup on `group` only: every other group forwards.
+        fn of_group(self, group: &'static str) -> Self {
+            FirstLookup {
+                group: Some(group),
+                ..self
+            }
+        }
+
+        /// Refuse the next append with [`APPEND_REFUSED`], once.
+        fn refuse_next_append(&self) {
+            self.refuse_append.store(true, Ordering::SeqCst);
         }
     }
 
@@ -19128,6 +19156,9 @@ mod tests {
             expected: ExpectedRevision,
             events: &[Event],
         ) -> Result<Appended, crate::eventstore::Error> {
+            if self.refuse_append.swap(false, Ordering::SeqCst) {
+                return Err(crate::eventstore::Error::Backend(APPEND_REFUSED.into()));
+            }
             self.inner.append(stream, expected, events)
         }
         crate::delegate_event_store_reads!(stream);
@@ -19136,15 +19167,17 @@ mod tests {
             stream: &str,
             group: &str,
         ) -> Result<Option<crate::eventstore::GroupHead>, crate::eventstore::Error> {
-            self.asked.fetch_add(1, Ordering::SeqCst);
-            let play = self.first.lock().unwrap().take();
+            let play = match self.group {
+                Some(named) if named != group => None,
+                _ => self.first.lock().unwrap().take(),
+            };
             if let Some(FirstLookupPlay::Refuse) = play {
                 return Err(crate::eventstore::Error::Backend(LOOKUP_REFUSED.into()));
             }
             let answer = self.inner.latest_in_group(stream, group);
             if let Some(FirstLookupPlay::Hold { entered, release }) = play {
-                entered.send(()).unwrap();
-                release.recv().unwrap();
+                let _ = entered.send(());
+                let _ = release.recv_timeout(SIGNAL_WAIT);
             }
             answer
         }
@@ -19298,13 +19331,14 @@ mod tests {
             .unwrap();
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let store = FirstLookup::new(
+        let held = FirstLookup::new(
             &inner,
             FirstLookupPlay::Hold {
                 entered: entered_tx,
                 release: release_rx,
             },
         );
+        let store = crate::test_support::ReadCountingStore::new(&held);
         let driver = Stub::new();
         let deps = Deps {
             store: &store,
@@ -19317,10 +19351,14 @@ mod tests {
         };
         let cfg = Config::default();
         let ctx = &RunCtx::for_test(&cfg, &deps);
+        // Building the context reads the run's log; everything after it is the emits' own cost.
+        let built = store.reads().len();
 
         std::thread::scope(|s| {
             let whole_tree = s.spawn(|| ctx.emit_keyed_batch(&h1));
-            entered_rx.recv().unwrap();
+            entered_rx.recv_timeout(SIGNAL_WAIT).unwrap_or_else(|_| {
+                panic!("the whole-tree stage never made its first-sight group lookup of {IDENTITY}")
+            });
             let (done_tx, done_rx) = std::sync::mpsc::channel();
             let newer = &h2;
             let post_merge = s.spawn(move || {
@@ -19359,10 +19397,13 @@ mod tests {
             "an in-process revert to h1 appends, and h2 after it appends again"
         );
         assert_eq!(
-            store.asked.load(Ordering::SeqCst),
-            1,
+            store.reads()[built..],
+            [crate::test_support::CountedRead::LatestInGroup {
+                stream: STREAM.to_string(),
+                group: IDENTITY.to_string(),
+            }],
             "the identity is looked up once, at first sight, however many stages and generations \
-             meet it after"
+             meet it after - and nothing else is read"
         );
     }
 
@@ -37043,41 +37084,6 @@ mod tests {
         );
     }
 
-    /// An `EventStore` decorator, the META-matching counterpart to `FailingStore` above
-    /// (which matches an event's JSON `data`): forwards every call to `inner` unchanged
-    /// except `append`, which refuses (a real `Backend` error, indistinguishable from a
-    /// genuine backend fault) if any event in the batch carries a metadata VALUE
-    /// containing `needle`. Needed because a `GateVerdict`'s pre-merge-vs-post-merge
-    /// identity lives in its `META_REPLAY_KEY` metadata (`gate:` vs `postmerge-gate:`),
-    /// never in its `data` (which carries only `gate`/`pass`/`flaky`/`evidence`,
-    /// identical either way) - so a caller that needs to fail specifically the
-    /// post-merge re-gate's own verdict write, and nothing else, cannot use
-    /// `FailingStore`'s data match at all.
-    struct FailAppendMetaContaining<'a> {
-        inner: &'a dyn EventStore,
-        needle: &'static str,
-    }
-    impl EventStore for FailAppendMetaContaining<'_> {
-        fn append(
-            &self,
-            stream: &str,
-            expected: ExpectedRevision,
-            events: &[Event],
-        ) -> Result<Appended, crate::eventstore::Error> {
-            if events
-                .iter()
-                .any(|e| e.meta.values().any(|v| v.contains(self.needle)))
-            {
-                return Err(crate::eventstore::Error::Backend(format!(
-                    "simulated store failure appending an event whose metadata contains {:?}",
-                    self.needle
-                )));
-            }
-            self.inner.append(stream, expected, events)
-        }
-        crate::delegate_event_store_reads!();
-    }
-
     /// Run the one merging unit `unit-a` (its worker writes `f.txt`, gated by `g`) in `repo`
     /// over `store`, after `prepare` saw its post-merge re-gate's throwaway worktree dir; the
     /// post-merge re-gate is forced to error, and that genuine infra Err must propagate out of
@@ -37141,7 +37147,7 @@ mod tests {
         // merely "the run failed somewhere").
         let repo = temp_git_project_with_commit();
         let real_store = Store::open(":memory:").unwrap();
-        let store = FailAppendMetaContaining {
+        let store = crate::test_support::FailAppendMetaContaining {
             inner: &real_store,
             needle: "postmerge-gate:",
         };

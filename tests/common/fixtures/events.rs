@@ -223,6 +223,38 @@ impl EventStore for GroupLookupOnly {
     }
 }
 
+/// An `EventStore` decorator that forwards every call to `inner` unchanged except `append`, which
+/// refuses (a real `Backend` error, indistinguishable from a genuine backend fault) any batch
+/// holding an event that carries a metadata VALUE containing `needle`. It matches metadata, never
+/// the payload, because what tells one write from another often lives only there: a
+/// `GateVerdict`'s pre-merge-vs-post-merge identity is its replay key (`gate:` vs
+/// `postmerge-gate:`), and a derived index batch's file is its group and replay key.
+pub struct FailAppendMetaContaining<'a> {
+    pub inner: &'a dyn EventStore,
+    pub needle: &'static str,
+}
+
+impl EventStore for FailAppendMetaContaining<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        if events
+            .iter()
+            .any(|e| e.meta.values().any(|v| v.contains(self.needle)))
+        {
+            return Err(Error::Backend(format!(
+                "simulated store failure appending an event whose metadata contains {:?}",
+                self.needle
+            )));
+        }
+        self.inner.append(stream, expected, events)
+    }
+    crate::delegate_event_store_reads!();
+}
+
 /// One call a [`ReadCountingStore`] forwarded, with how many events it handed back - the unit a
 /// one-shot command's read cost is asserted in (spec 101). A call is recorded before it is
 /// forwarded, so one that fails stays recorded, having handed back nothing; a subscription counts
