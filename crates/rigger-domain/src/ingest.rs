@@ -149,13 +149,20 @@ pub fn batch_is_latest_recorded(
     Ok(latest_generation(store, stream, identity)?.as_deref() == Some(generation))
 }
 
+/// WHERE A WALK HANDS ITS BATCHES (spec 101): a sink taking one file's WHOLE keyed batch at a
+/// time. Every walk entry takes one, and [`sink_walked_batches`] hands one to the walk it drives,
+/// so the shape is spelled once. Any closure over a batch is one.
+pub trait BatchSink: FnMut(&[(String, &Event)]) {}
+
+impl<F: FnMut(&[(String, &Event)]) + ?Sized> BatchSink for F {}
+
 /// A WALK INTO A FALLIBLE SINK (spec 101): drive `walk`, handing each batch it produces to `sink`,
 /// and answer the FIRST error the sink returned. A failed batch never stops the walk - every batch
 /// after it still reaches the sink - and its error is never swallowed. The one policy both ingest
 /// sinks walk under, the run's keyed emit and a cold `rigger graph build`, so a batch whose lookup
 /// or append failed is answered the same way by both: the walk fails.
 pub fn sink_walked_batches<E>(
-    walk: impl FnOnce(&mut dyn FnMut(&[(String, &Event)])),
+    walk: impl FnOnce(&mut dyn BatchSink),
     mut sink: impl FnMut(&[(String, &Event)]) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut first = None;
@@ -413,7 +420,7 @@ mod dedup_tests {
 mod group_lookup_tests {
     use super::{
         batch_is_latest_recorded, keyed_derived_event, latest_generation, sink_walked_batches,
-        META_REPLAY_KEY,
+        BatchSink, META_REPLAY_KEY,
     };
     use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_REVIEW_FINDING};
     use crate::eventstore::{Event, GroupHead, META_GROUP};
@@ -559,7 +566,7 @@ mod group_lookup_tests {
             .iter()
             .map(|file| vec![(format!("gc/{file}.rs@h#0"), &ev)])
             .collect();
-        let walk = |sink: &mut dyn FnMut(&[(String, &Event)])| {
+        let walk = |sink: &mut dyn BatchSink| {
             for batch in &batches {
                 sink(batch);
             }

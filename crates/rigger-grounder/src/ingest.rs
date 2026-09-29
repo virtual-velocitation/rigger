@@ -127,10 +127,7 @@ pub struct IngestStats {
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
 /// invisible. The returned [`IngestStats`] is informational.
 #[cfg(feature = "symbols")]
-pub fn ingest_project_batched(
-    root: &str,
-    on_batch: impl FnMut(&[(String, &Event)]),
-) -> IngestStats {
+pub fn ingest_project_batched(root: &str, on_batch: impl BatchSink) -> IngestStats {
     ingest_project_batched_paced(root, crate::parallel::default_workers(), on_batch)
 }
 
@@ -146,7 +143,7 @@ pub fn ingest_project_batched(
 pub fn ingest_project_batched_paced(
     root: &str,
     workers: usize,
-    on_batch: impl FnMut(&[(String, &Event)]),
+    on_batch: impl BatchSink,
 ) -> IngestStats {
     walk_batches(root, workers, on_batch)
 }
@@ -155,11 +152,7 @@ pub fn ingest_project_batched_paced(
 /// each file's WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first,
 /// then the design half, then the workflow-definition half), each batch in `#i` order.
 #[cfg(feature = "symbols")]
-fn walk_batches(
-    root: &str,
-    workers: usize,
-    mut on_batch: impl FnMut(&[(String, &Event)]),
-) -> IngestStats {
+fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> IngestStats {
     let mut batches_emitted = 0usize;
     // The code half (spec 29a): parallel parse feeds this ordered emit. Reuses the `symbols`
     // grounder's persisted index when present (no re-parse), so in a live run this is a cheap read of
@@ -212,7 +205,7 @@ fn walk_batches(
 pub fn ingest_files_batched(
     root: &str,
     files: &[String],
-    mut on_batch: impl FnMut(&[(String, &Event)]),
+    mut on_batch: impl BatchSink,
 ) -> IngestStats {
     let batches = crate::grounder::symbols::events::file_batches(root, files);
     let mut batches_emitted = 0usize;
@@ -229,12 +222,7 @@ pub fn ingest_files_batched(
 /// Light lane: no extraction pass is compiled, so there is nothing to walk - a no-op that hands the
 /// sink no batches, mirroring [`ingest_project_batched`]'s own light-lane stub.
 #[cfg(not(feature = "symbols"))]
-pub fn ingest_files_batched(
-    _root: &str,
-    _files: &[String],
-    _on_batch: impl FnMut(&[(String, &crate::eventstore::Event)]),
-) {
-}
+pub fn ingest_files_batched(_root: &str, _files: &[String], _on_batch: impl BatchSink) {}
 
 /// Sampled files whose CURRENT code extraction disagrees with what `graph.db` has recorded as their
 /// latest `gc/` generation (spec 92, FRESH ON EVERY INTEGRATION) - `rigger validate`'s graph INDEX
@@ -346,12 +334,7 @@ pub fn graph_index_lag_sample(_root: &str, _prior: &[Event]) -> Vec<String> {
 /// the change-detection key is one content-identity authority), so every event of a file shares one
 /// `<hash>`. The batch bytes are JSON the emit pass just serialized, so they are valid UTF-8.
 #[cfg(feature = "symbols")]
-fn key_batch(
-    prefix: &str,
-    file: &str,
-    batch: &[Event],
-    on_batch: &mut impl FnMut(&[(String, &Event)]),
-) {
+fn key_batch(prefix: &str, file: &str, batch: &[Event], on_batch: &mut impl BatchSink) {
     let concat: String = batch
         .iter()
         .filter_map(|e| std::str::from_utf8(&e.data).ok())
@@ -369,11 +352,7 @@ fn key_batch(
 /// sink no batches. `graph build` still opens (creating) the store and degrades to an empty graph,
 /// never an error, in either lane (the batched append-and-fold kernel above stays compiled in both).
 #[cfg(not(feature = "symbols"))]
-pub fn ingest_project_batched(
-    _root: &str,
-    _on_batch: impl FnMut(&[(String, &crate::eventstore::Event)]),
-) {
-}
+pub fn ingest_project_batched(_root: &str, _on_batch: impl BatchSink) {}
 
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
