@@ -388,7 +388,8 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     if !run_id.is_empty() {
         ev = ev.with_meta(runscope::META_RUN_ID, &run_id);
     }
-    store.append(
+    let graph = loc.graph()?;
+    rigger::ingest::FoldingStore::new(&store, Some(graph.as_ref()), &stderr_line).append(
         conductor::STREAM,
         ExpectedRevision::Any,
         std::slice::from_ref(&ev),
@@ -527,6 +528,13 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
+    // Every event this step appends outside the conductor - a `--fresh` or first-step mint, a
+    // definition re-pin, a recorded liveness fault, a parked spawn - goes through `folding`, so
+    // the graph's applied ledger holds every position the step wrote (the conductor folds its own
+    // through the same store). Opened before any append, so a graph that owes its rebuild refuses
+    // the step before it writes anything the graph would miss.
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), "step")?;
+    let folding = rigger::ingest::FoldingStore::new(&store, Some(&graph), &stderr_line);
 
     // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
     // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
@@ -545,7 +553,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         // this step anchored the run branch on, so `rigger status`/dash name the same base
         // and derive the per-run-unique PR head name in the ready-to-release handoff.
         let run = runscope_store::start_fresh(
-            &store,
+            &folding,
             &criteria,
             &definition,
             &args.base,
@@ -631,7 +639,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
     // change replay semantics; `--rebase-definition` records the supersession and continues.
     if let Err(e) = enforce_definition_pin(
-        &store,
+        &folding,
         &criteria,
         &definition,
         args.rebase_definition,
@@ -663,7 +671,6 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         return Err(e);
     }
 
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "step")?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     // The store state BEFORE this step's own liveness sweep runs (spec 69, criterion 5):
     // used below to scope the sweep's marker reads to THIS run (a slug-colliding re-run
@@ -702,7 +709,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         match cfg.workflow.failure_taxonomy() {
             Ok(taxonomy) => {
                 match rigger::liveness::sweep(
-                    &store,
+                    &folding,
                     &pre,
                     root,
                     &run_id,
@@ -778,7 +785,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // are in flight.
     ensure_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
-    let driver = ReplayDriver::new(&store);
+    let driver = ReplayDriver::new(&folding);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -1452,13 +1459,19 @@ fn run_cli(parsed: &RunArgs) -> Res {
     let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
     // unchanged spec. `false`: this is the standalone CLI path, so stdout is the normal
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
-    fresh_run_if_requested(parsed, &store, &criteria, false, &base_tip)?;
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
+    fresh_run_if_requested(
+        parsed,
+        &rigger::ingest::FoldingStore::new(&store, Some(&graph), &stderr_line),
+        &criteria,
+        false,
+        &base_tip,
+    )?;
     // NOT YET the agent host (spec 104 criterion 2 decision d-u104-stream-defer-composition-
     // swap): `driver::claude_code::Driver` now conforms to `AgentDriver` (this criterion),
     // but flipping THIS composition root breaks the argv/stdio CONTRACT `tests/cli.rs`'s own
@@ -1682,8 +1695,14 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // adopts this boundary rather than the latest (possibly wedged) run. `true`: this is the
     // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
     // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
-    fresh_run_if_requested(parsed, &store, &criteria, true, &base_tip)?;
     let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
+    fresh_run_if_requested(
+        parsed,
+        &rigger::ingest::FoldingStore::new(&store, Some(&graph), &stderr_line),
+        &criteria,
+        true,
+        &base_tip,
+    )?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
 

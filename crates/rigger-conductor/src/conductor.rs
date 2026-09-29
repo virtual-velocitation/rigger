@@ -1563,8 +1563,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // in flight for these criteria - BEFORE reading any prior state, so the boundary is
     // in the log and every fold below scopes to it. A fresh campaign mints a new
     // `RunStarted`; a resume/idle/replay over the same criteria adopts the existing run
-    // and appends nothing. The run id then rides every event this process emits.
-    let run_id = crate::run_store::ensure_started(deps.store, &deps.criteria)?;
+    // and appends nothing. The run id then rides every event this process emits. A minted
+    // boundary is folded like every other event the run appends.
+    let run_id = crate::run_store::ensure_started(
+        &crate::ingest::FoldingStore::new(deps.store, deps.graph, deps.log),
+        &deps.criteria,
+    )?;
 
     // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
     // crashed or re-run conductor skips work that already landed instead of
@@ -2837,8 +2841,8 @@ impl RunCtx<'_> {
     /// (spec 49's batched-fold cadence - one transaction per file's batch, not per event, since the
     /// measured cold-build throughput was transaction-cadence bound). Run-id stamping stays the one
     /// chokepoint here (spec 06, unit 1), and the batched append-and-fold + position assignment is
-    /// the shared [`crate::ingest::append_and_fold_batch`] authority a cold `rigger graph build`
-    /// also uses, so the run and a cold build can never fold a file's batch differently.
+    /// the shared [`crate::ingest::FoldingStore`]'s, whose fold is the one a cold `rigger graph
+    /// build` also uses, so the run and a cold build can never fold a file's batch differently.
     /// [`append_and_fold`](RunCtx::append_and_fold) is the one-event case; returns the store's own
     /// report - one slot per event handed in, `None` where nothing was written (an empty batch, or
     /// a store that recognised every event as already recorded) - never a fabricated `0`.
@@ -2858,25 +2862,14 @@ impl RunCtx<'_> {
                 .map(|e| e.clone().with_meta(crate::run::META_RUN_ID, &self.run_id))
                 .collect()
         };
-        let done = crate::ingest::append_and_fold_batch(
-            self.deps.store,
-            self.deps.graph,
-            STREAM,
-            &stamped,
-        )?;
         // The events are on the log whatever became of the fold; a fold into a wired graph that
-        // it could not make is said through the injected log, never swallowed (a failed fold into a current graph also
-        // marks it owed, so the next step refuses rather than advancing over a graph that lost
-        // them). A run wired to no graph - an offline replay's isolated re-drive - folds nothing
-        // by design and has nothing to say.
-        if let (Some(_), contextgraph::Fold::NotFolded(_)) = (self.deps.graph, &done.fold) {
-            (self.deps.log)(&format!(
-                "rigger: recorded {} run event(s){}",
-                stamped.len(),
-                contextgraph::fold_loss_clause(&done.fold)
-            ));
-        }
-        Ok(done.appended)
+        // it could not make is said through the injected log, never swallowed. A run wired to no
+        // graph - an offline replay's isolated re-drive - folds nothing by design and has nothing
+        // to say. Both are the one folding store's, which every other writer of a verb uses too.
+        Ok(
+            crate::ingest::FoldingStore::new(self.deps.store, self.deps.graph, self.deps.log)
+                .append(STREAM, crate::eventstore::ExpectedRevision::Any, &stamped)?,
+        )
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the

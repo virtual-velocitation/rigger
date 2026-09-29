@@ -15,8 +15,11 @@
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
 //! no-op there.
 
-use crate::contextgraph::{Fold, Projection};
-use crate::eventstore::{Appended, Event, EventStore, ExpectedRevision};
+use crate::contextgraph::{fold_loss_clause, Fold, Projection};
+use crate::eventstore::{
+    Appended, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision, Subscription,
+    TypeSelection,
+};
 
 pub use rigger_domain::ingest::*;
 
@@ -58,6 +61,17 @@ pub fn append_and_fold_batch(
         });
     }
     let appended = store.append(stream, ExpectedRevision::Any, events)?;
+    fold_appended(graph, stream, events, appended)
+}
+
+/// Fold into `graph` exactly the events `appended` reports the store placed, each stamped with the
+/// position the store issued for it (see [`append_and_fold_batch`]), beside that report.
+fn fold_appended(
+    graph: Option<&dyn Projection>,
+    stream: &str,
+    events: &[Event],
+    appended: Appended,
+) -> Result<AppendedAndFolded, crate::eventstore::Error> {
     // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
     // the report against the batch - so a report of a different length is not a smaller
     // fold, it is a MISALIGNED one: every slot after the discrepancy names a different
@@ -86,6 +100,89 @@ pub fn append_and_fold_batch(
         appended,
         fold: Fold::of_batch(graph, &positioned),
     })
+}
+
+/// An [`EventStore`] that folds every event appended through it into the context graph, so a writer
+/// that knows only the store port - a run's mint, a parked spawn, a recorded liveness fault, an
+/// operator's resume - still leaves no event the graph's applied ledger misses. The append keeps
+/// the caller's own expectation; the fold is [`append_and_fold_batch`]'s, at the positions the
+/// store issued. A fold into a wired graph that it could not make is said through `log`, never
+/// swallowed: the events are on the log whatever became of the fold. Wrapped with no graph (an
+/// offline replay's isolated re-drive) it folds nothing by design and has nothing to say. Every
+/// read passes through untouched.
+pub struct FoldingStore<'a> {
+    store: &'a dyn EventStore,
+    graph: Option<&'a dyn Projection>,
+    log: &'a (dyn Fn(&str) + Sync),
+}
+
+impl<'a> FoldingStore<'a> {
+    pub fn new(
+        store: &'a dyn EventStore,
+        graph: Option<&'a dyn Projection>,
+        log: &'a (dyn Fn(&str) + Sync),
+    ) -> Self {
+        Self { store, graph, log }
+    }
+}
+
+impl EventStore for FoldingStore<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        let appended = self.store.append(stream, expected, events)?;
+        let done = fold_appended(self.graph, stream, events, appended)?;
+        if let (Some(_), Fold::NotFolded(_)) = (self.graph, &done.fold) {
+            (self.log)(&format!(
+                "rigger: recorded {} run event(s){}",
+                events.len(),
+                fold_loss_clause(&done.fold)
+            ));
+        }
+        Ok(done.appended)
+    }
+
+    fn read_stream(
+        &self,
+        stream: &str,
+        from: Revision,
+        dir: crate::eventstore::Direction,
+    ) -> Result<Vec<Event>, Error> {
+        self.store.read_stream(stream, from, dir)
+    }
+
+    fn read_all(
+        &self,
+        from: Position,
+        dir: crate::eventstore::Direction,
+        filter: &Filter,
+    ) -> Result<Vec<Event>, Error> {
+        self.store.read_all(from, dir, filter)
+    }
+
+    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
+        self.store.subscribe_all(from, filter)
+    }
+
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error> {
+        self.store.subscribe_stream(stream, from)
+    }
+
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        self.store.last_position(stream, event_type)
+    }
+
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        self.store.read_stream_typed(stream, from, selection)
+    }
 }
 
 /// What [`append_and_fold_batch`] did: the store's own report of what it wrote, and what became
