@@ -2941,7 +2941,9 @@ impl RunCtx<'_> {
     ///
     /// The two locks are held only around the two sets and the first-sight group lookup (released
     /// before the append), so concurrent units in a wave still append their own keyed events in
-    /// parallel.
+    /// parallel. A failed append takes them again, in the same order, to forget what this call
+    /// installed (spec 101): the survivors' keys and the identity's slot, so the next sight asks
+    /// the store afresh instead of reading the unrecorded batch as appended.
     ///
     /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
     #[cfg(feature = "symbols")]
@@ -2949,7 +2951,7 @@ impl RunCtx<'_> {
         let identity_generation = keyed
             .first()
             .and_then(|(k, _)| crate::ingest::derived_key_parts(k));
-        let survivors: Vec<Event> = {
+        let (kept, survivors): (Vec<String>, Vec<Event>) = {
             let mut gens = self.replayed_generations.lock().unwrap();
             // FIRST SIGHT (spec 101): the first time this process meets the batch's identity it
             // asks the store whether the batch is that identity's latest recorded generation - one
@@ -3000,14 +3002,34 @@ impl RunCtx<'_> {
                         }
                     }
                     let data = serde_json::to_vec(&payload).ok()?;
-                    Some(crate::ingest::keyed_derived_event(
-                        Event::new(&ev.type_, data),
-                        key,
+                    Some((
+                        key.clone(),
+                        crate::ingest::keyed_derived_event(Event::new(&ev.type_, data), key),
                     ))
                 })
-                .collect()
+                .unzip()
         };
-        self.append_and_fold_batch(&survivors).map(|_| ())
+        let appended = self.append_and_fold_batch(&survivors);
+        if appended.is_err() {
+            // A FAILED APPEND RECORDED NOTHING (spec 101), so nothing this call installed may read
+            // as appended: its kept keys leave the dedup set, and the identity's slot leaves the
+            // generations with every key it tracks, so the next sight of the identity asks the
+            // store afresh and follows what the store holds - the batch appends again when the
+            // store still lacks it, and a revert to the recorded generation appends nothing.
+            let mut gens = self.replayed_generations.lock().unwrap();
+            let mut keys = self.replayed_keys.lock().unwrap();
+            for key in &kept {
+                keys.remove(key);
+            }
+            if let Some((identity, _)) = identity_generation {
+                if let Some((_, tracked)) = gens.remove(identity) {
+                    for key in &tracked {
+                        keys.remove(key);
+                    }
+                }
+            }
+        }
+        appended.map(|_| ())
     }
 
     /// The requested model ALIAS an agent is spawned with for `attempt` - the cascade rung
