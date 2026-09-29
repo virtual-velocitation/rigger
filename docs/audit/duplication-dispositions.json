@@ -265,11 +265,6 @@
     "reason": "Two different fold arms with different fixtures and assertions: the five design-intent link relations vs workflow stage/gate/agent nodes and their needs/runs/reviews edges."
   },
   {
-    "id": "dup-3e472366e265",
-    "disposition": "not-a-duplicate",
-    "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
-  },
-  {
     "id": "dup-d36198b3982d",
     "disposition": "not-a-duplicate",
     "reason": "Both build through the shared `grounder_over`; they pin two different ranking rules (definition over reference, exact over contains tier)."
@@ -370,11 +365,6 @@
     "reason": "Three durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips; the landed sha and pre-merge tip)."
   },
   {
-    "id": "dup-7a935e08967c",
-    "disposition": "not-a-duplicate",
-    "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and then delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, rather than re-implementing it."
-  },
-  {
     "id": "dup-28bd24c1f93d",
     "disposition": "not-a-duplicate",
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
@@ -445,11 +435,6 @@
     "reason": "The cli fixture writes a worker agent plus a one-stage workflow with an appended block, while the probe fixture writes a caller-given body verbatim into a bare `.rigger` dir for the lightweight readers."
   },
   {
-    "id": "dup-b02e5a0dd9cd",
-    "disposition": "not-a-duplicate",
-    "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through `append_and_fold_batch`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
-  },
-  {
     "id": "dup-df1f9764f4e9",
     "disposition": "not-a-duplicate",
     "reason": "Two different fixture graphs for two different contracts: a hub over the render budget plus a small community for the drill and overview client contract, versus a two-file plus decision graph for the files-lens route dispatch."
@@ -488,11 +473,6 @@
     "id": "dup-59ab8e8cdb6e",
     "disposition": "not-a-duplicate",
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
-  },
-  {
-    "id": "dup-99f63bd5c9a7",
-    "disposition": "not-a-duplicate",
-    "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error, the not-folded report line); they share only the `format!` shape."
   },
   {
     "id": "dup-2a5626cb9627",
@@ -953,5 +933,25 @@
     "id": "dup-cfb679088c89",
     "disposition": "not-a-duplicate",
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
+  },
+  {
+    "id": "dup-dc2bf41c05a3",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error, the not-folded report line, the owed-rebuild refusal); they share only the `format!` shape."
+  },
+  {
+    "id": "dup-877fbe028361",
+    "disposition": "not-a-duplicate",
+    "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event, delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, and reports the fold that authority returns, rather than re-implementing it."
+  },
+  {
+    "id": "dup-8a6290a04f28",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
+  },
+  {
+    "id": "dup-7e20ee10aa64",
+    "disposition": "not-a-duplicate",
+    "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through `append_and_fold_batch`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
   }
 ]

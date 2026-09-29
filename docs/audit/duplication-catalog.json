@@ -145,7 +145,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-99f63bd5c9a7",
+    "id": "dup-dc2bf41c05a3",
     "classification": "near",
     "sites": [
       {
@@ -161,6 +161,16 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "review_protocol",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "name": "not_folded",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "name": "rebuild_owed_refusal",
         "content_hash": "b0b4170272f04fb7"
       },
       {
@@ -205,11 +215,6 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "name": "not_folded",
-        "content_hash": "6fd90a8c2eed6379"
-      },
-      {
-        "file": "src/cli/mod.rs",
         "name": "skill_source_rel",
         "content_hash": "6fd90a8c2eed6379"
       },
@@ -239,23 +244,23 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 11 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/mod.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 12 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/mod.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/regate_landed_on_resume_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7a935e08967c",
+    "id": "dup-877fbe028361",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "append_and_fold_batch",
-        "content_hash": "0421a01afe7f3842"
+        "content_hash": "22444381bb88a6ba"
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
         "name": "append_and_fold_batch",
-        "content_hash": "b1bd881f82349052"
+        "content_hash": "fe5199f2d9919154"
       }
     ],
     "proposed_home": "one shared `append_and_fold_batch` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
@@ -306,7 +311,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7ecd39c6f4c7",
+    "id": "dup-53779688b166",
     "classification": "semantic",
     "sites": [
       {
@@ -347,7 +352,7 @@
       {
         "file": "tests/batched_fold_cadence.rs",
         "name": "append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch",
-        "content_hash": "2253e80c6bfdb1aa"
+        "content_hash": "a99ecbff6eb9add5"
       },
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
@@ -988,7 +993,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-850b7531aede",
+    "id": "dup-b4b6ac6f53d1",
     "classification": "semantic",
     "sites": [
       {
@@ -2947,6 +2952,11 @@
         "content_hash": "25597419b8dbb616"
       },
       {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "\"graph build: ingested {ingested} code-ingest event(s) into .rigger/graph.db; \\\n                 not folded into the context graph: graph: database is locked\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "98eec4bb59ff365c"
@@ -3753,7 +3763,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 552 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 553 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5516,7 +5526,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-acf3477b1019",
+    "id": "dup-486c21ad5dfd",
     "classification": "semantic",
     "sites": [
       {
@@ -5675,6 +5685,11 @@
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
         "file": "tests/graph_additive_indexes_persist.rs",
         "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
@@ -5791,7 +5806,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 54 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 55 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5920,18 +5935,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3e472366e265",
+    "id": "dup-8a6290a04f28",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "decision_fold_projects_no_agent_node_or_decided_edge",
-        "content_hash": "321b3edf0b7fb797"
+        "content_hash": "662dfdf08c6442bf"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "review_finding_projects_no_raised_edge_even_with_an_event_actor",
-        "content_hash": "3c6453b821df8e1c"
+        "content_hash": "9d69e7d391677114"
       }
     ],
     "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
@@ -7541,13 +7556,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b02e5a0dd9cd",
+    "id": "dup-7e20ee10aa64",
     "classification": "semantic",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
         "name": "seed_coupling",
-        "content_hash": "efc5b2a6d8557b07"
+        "content_hash": "526d49b07ef364d0"
       },
       {
         "file": "tests/community_fold_periphery.rs",
