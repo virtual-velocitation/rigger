@@ -87,7 +87,7 @@ pub const ROLE_SDET_AUTHOR: &str = "sdet-author";
 /// the same unit+attempt get distinct spawn ids because their role tokens differ.
 ///
 /// ```
-/// # use rigger::spawn::lens_role;
+/// # use rigger_domain::spawn::lens_role;
 /// assert_eq!(lens_role("sdet"), "lens:sdet");
 /// ```
 pub fn lens_role(agent_id: &str) -> String {
@@ -111,7 +111,7 @@ pub fn lens_role(agent_id: &str) -> String {
 /// contains the `/` or `#` separators, so the rendering is unambiguous.
 ///
 /// ```
-/// # use rigger::spawn::{spawn_id, lens_role, ROLE_IMPLEMENTER};
+/// # use rigger_domain::spawn::{spawn_id, lens_role, ROLE_IMPLEMENTER};
 /// assert_eq!(spawn_id("spawn-req", ROLE_IMPLEMENTER, 0), "spawn-req/implementer#0");
 /// assert_eq!(spawn_id("spawn-req", &lens_role("sdet"), 2), "spawn-req/lens:sdet#2");
 /// ```
@@ -138,7 +138,7 @@ pub fn spawn_id(unit: &str, role: &str, attempt: u32) -> String {
 /// deterministically from unit + role + attempt + retry ordinal).
 ///
 /// ```
-/// # use rigger::spawn::{spawn_retry_id, spawn_id, ROLE_ADJUDICATOR};
+/// # use rigger_domain::spawn::{spawn_retry_id, spawn_id, ROLE_ADJUDICATOR};
 /// assert_eq!(
 ///     spawn_retry_id("u", ROLE_ADJUDICATOR, 1, 0),
 ///     spawn_id("u", ROLE_ADJUDICATOR, 1),
@@ -165,7 +165,7 @@ pub fn spawn_retry_id(unit: &str, role: &str, attempt: u32, retry: u32) -> Strin
 /// same replay-determinism [`spawn_id`] guarantees.
 ///
 /// ```
-/// # use rigger::spawn::speculation_group_id;
+/// # use rigger_domain::spawn::speculation_group_id;
 /// assert_eq!(speculation_group_id("u"), "u/spec-group");
 /// ```
 pub fn speculation_group_id(unit: &str) -> String {
@@ -178,7 +178,7 @@ pub fn speculation_group_id(unit: &str) -> String {
 /// the review-tier and disposition folds share for recovering a spawn's role.
 ///
 /// ```
-/// # use rigger::spawn::{spawn_role, ROLE_ADJUDICATOR};
+/// # use rigger_domain::spawn::{spawn_role, ROLE_ADJUDICATOR};
 /// assert_eq!(spawn_role("u1/adjudicator#0"), ROLE_ADJUDICATOR);
 /// assert_eq!(spawn_role("u1/adjudicator#0~retry2"), ROLE_ADJUDICATOR);
 /// assert_eq!(spawn_role("u1/lens:sdet#1"), "lens:sdet");
@@ -196,7 +196,7 @@ pub fn spawn_role(id: &str) -> &str {
 /// needs the emitting unit of a spawn-stamped event never re-parses the `/` in a view adapter.
 ///
 /// ```
-/// # use rigger::spawn::unit_of;
+/// # use rigger_domain::spawn::unit_of;
 /// assert_eq!(unit_of("u1/implementer#0"), Some("u1"));
 /// assert_eq!(unit_of("u43-c1-machinery-gone/lens:sdet#1"), Some("u43-c1-machinery-gone"));
 /// assert_eq!(unit_of("u1/adjudicator#1~retry2"), Some("u1"));
@@ -213,7 +213,7 @@ pub fn unit_of(id: &str) -> Option<&str> {
 /// silently diverge if the separators ever moved with the struct.
 ///
 /// ```
-/// # use rigger::spawn::attempt_of;
+/// # use rigger_domain::spawn::attempt_of;
 /// assert_eq!(attempt_of("u1/implementer#0"), 0);
 /// assert_eq!(attempt_of("u1/implementer#2"), 2);
 /// assert_eq!(attempt_of("u1/adjudicator#1~retry3"), 1);
@@ -234,7 +234,7 @@ pub fn attempt_of(id: &str) -> u32 {
 /// suffix [`spawn_retry_id`] mints, owned here alongside the rest of the id grammar.
 ///
 /// ```
-/// # use rigger::spawn::retry_of;
+/// # use rigger_domain::spawn::retry_of;
 /// assert_eq!(retry_of("u1/adjudicator#1"), 0);
 /// assert_eq!(retry_of("u1/adjudicator#1~retry2"), 2);
 /// ```

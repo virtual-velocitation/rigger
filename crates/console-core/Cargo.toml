@@ -13,13 +13,25 @@ description = "The Mission Control console's WebAssembly ABI: a small, dependenc
 name = "console_core"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# The pure subset (THE FEATURE SPLIT, spec 93 criterion 1) is this crate's DEFAULT lane, carried
+# as a feature exactly like every other member's `default = ["store"]`, never a hardwired
+# dependency feature: Cargo unifies features across every member a build selects, so a
+# non-disableable `core` request on the domain would strip its store surface out from under the
+# adapters in a `--workspace --no-default-features` build. The nested wasm build (`-p
+# console-core`, default features) and this crate's own `cargo test` both get the pure subset;
+# `--no-default-features` hands the choice back to the rest of the workspace, and this crate
+# compiles unchanged against the domain's full surface, a superset of the pure one.
+default = ["core"]
+core = ["rigger-console/core", "rigger-domain/core"]
+
 [dependencies]
-# The pure subset ONLY (THE FEATURE SPLIT, spec 93 criterion 1): default-features = false
-# drops `store`, so this crate - and therefore the wasm32 build - never pulls
-# rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb. Both are workspace members, not new external
-# crates: the console fold and code map, and the domain model they fold over.
-rigger-console = { path = "../rigger-console", default-features = false, features = ["core"] }
-rigger-domain = { path = "../rigger-domain", default-features = false, features = ["core"] }
+# default-features = false drops `store`, so the default (`core`) lane of this crate - and
+# therefore the wasm32 build - never pulls rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb. Both
+# are workspace members, not new external crates: the console fold and code map, and the domain
+# model they fold over.
+rigger-console = { path = "../rigger-console", default-features = false }
+rigger-domain = { path = "../rigger-domain", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # `raw_value` (BUDGETS, spec 93 criterion 2): `fold_reset`/`fold_push` need an event's `data`
 # sub-object handed straight to `Event::new` as raw bytes, never round-tripped through a

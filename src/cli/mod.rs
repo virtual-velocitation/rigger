@@ -4880,10 +4880,12 @@ fn git_repo_at(root: &Path) -> String {
 }
 
 /// The graph-first lookup hook's stated bounce message (spec 92, criterion 4's Design
-/// text, quoted verbatim so the installed hook and this decision never drift apart).
+/// text), naming the escape hatch in the one spelling that survives a sibling PreToolUse
+/// hook's rewrite: `--literal` inside a trailing shell comment, which the shell discards
+/// before grep runs (lesson-u101c2r3-grep-guard-literal-not-stripped).
 const GREP_GUARD_MESSAGE: &str =
-    "use rigger_ground / rigger_graph for code lookups; grep is for literal text - add \
-     `--literal` to proceed";
+    "use rigger_ground / rigger_graph for code lookups; grep is for literal text - end the \
+     command with a `# --literal` comment to proceed";
 
 #[cfg(test)]
 mod tests {

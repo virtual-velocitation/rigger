@@ -1,38 +1,55 @@
 use super::*;
 
-/// A `rigger grep-guard` decision: pass the tool call through untouched, pass it through
-/// with its `tool_input` rewritten first, or block it with the reason shown to the agent
-/// (spec 92, criterion 4: the graph-first lookup hook's stated message).
+/// A `rigger grep-guard` decision: pass the tool call through untouched, or block it with the
+/// reason shown to the agent (spec 92, criterion 4: the graph-first lookup hook's stated
+/// message). There is deliberately no "allow with a rewritten input" decision: Claude Code
+/// runs every matching PreToolUse hook in parallel on the ORIGINAL tool input and keeps
+/// whichever hook's `updatedInput` arrives last, so a rewrite of ours can be silently
+/// overwritten by a sibling rewriting hook (the `rtk` rewriter turns `grep x` into
+/// `rtk grep x` from the same original text) - lesson-u101c2r3-grep-guard-literal-not-stripped.
 #[derive(Debug, PartialEq, Eq)]
 enum GuardDecision {
     Allow,
-    /// Allow, but only after the real shell runs the REWRITTEN `tool_input` carried here in
-    /// place of the one the agent sent - spec 92's HOOK SCOPE amendment: the `--literal`
-    /// escape-hatch marker has no meaning to a real `grep` invocation (it is not one of
-    /// grep's own flags), so the hook strips it before the command reaches a real shell,
-    /// rather than passing it through to fail there instead.
-    AllowWithUpdatedInput(serde_json::Value),
     Deny(String),
 }
+
+impl GuardDecision {
+    /// The PreToolUse hook stdout for this decision: `{}` for an allow (no opinion, no
+    /// rewrite), a `hookSpecificOutput` deny verdict carrying the reason otherwise.
+    fn hook_output(&self) -> serde_json::Value {
+        match self {
+            Self::Allow => serde_json::json!({}),
+            Self::Deny(reason) => serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }),
+        }
+    }
+}
+
+/// The escape-hatch marker: a word inside a trailing shell comment (`grep x src # --literal`).
+/// The shell discards the comment before any command runs, so the marker never reaches grep
+/// no matter which hook's rewrite of the command wins - the hatch needs no rewrite at all.
+const LITERAL_MARKER: &str = "--literal";
 
 /// The pure decision core of `rigger grep-guard` (spec 92, criterion 4, HOOK SCOPE
 /// amendment d-spec92-hook-no-target-axis): given the PreToolUse tool name and its raw
 /// `tool_input`, decide whether this call should bounce toward `rigger_ground`/
-/// `rigger_graph`, pass through untouched, or pass through with its `tool_input` rewritten
-/// first. The hook has NO target axis - a shell command's real search target is
-/// undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a redirection, a symlink all
-/// defeat a path-based guess) - so every `Grep` tool call and every `grep`-invoking `Bash`
-/// command is denied inside a rigger project, with no path/target ever inspected; the
-/// FORMER guarded-tree apparatus (a `GREP_GUARDED_TREES` allowlist of trees, and the path-
-/// containment machinery built on it) is retired outright, not kept beside this rule. Pure
-/// (no I/O), so the decision is unit-testable against synthesized hook payloads without
-/// spawning a real hook process or touching a real filesystem. `--literal` on a `Bash`
-/// `grep` command is the sole, deliberate escape hatch (Design's CONSTRAINTS WALK: "a
-/// literal-text lookup - `--literal` passes the hook"; the HOOK SCOPE amendment: the hook
-/// STRIPS the marker from the command it allows, via `updatedInput`, because grep itself
-/// has no such flag); the built-in `Grep` tool carries no such flag slot, so a genuinely
-/// literal search through it is `grep --literal` via `Bash` instead - "grep is for literal
-/// text - add `--literal` to proceed" names exactly that path.
+/// `rigger_graph` or pass through untouched. The hook has NO target axis - a shell command's
+/// real search target is undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a
+/// redirection, a symlink all defeat a path-based guess) - so every `Grep` tool call and
+/// every `grep`-invoking `Bash` command is denied inside a rigger project, with no
+/// path/target ever inspected. Pure (no I/O), so the decision is unit-testable against
+/// synthesized hook payloads without spawning a real hook process. A [`LITERAL_MARKER`] in a
+/// shell comment of a `Bash` `grep` command is the sole, deliberate escape hatch (Design's
+/// CONSTRAINTS WALK: "a literal-text lookup - `--literal` passes the hook"); a bare
+/// `--literal` argv word is denied like any other grep, because it would reach grep itself
+/// (`unrecognized option '--literal'`) whenever a sibling hook's rewrite wins. The built-in
+/// `Grep` tool has no comment slot, so a genuinely literal search through it runs as a `Bash`
+/// grep instead - the stated message names exactly that path.
 fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> GuardDecision {
     match tool_name {
         "Grep" => GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
@@ -41,75 +58,56 @@ fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> Guard
                 .get("command")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
-            if !command_invokes_grep(command) {
-                return GuardDecision::Allow;
+            let words = shell_words(command);
+            let invokes_grep = words.argv.iter().any(|w| word_basename(w) == "grep");
+            if invokes_grep && !words.comments.iter().any(|w| w == LITERAL_MARKER) {
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
+            } else {
+                GuardDecision::Allow
             }
-            if shell_command_words(command).any(|w| w == "--literal") {
-                let mut updated_input = tool_input.clone();
-                if let Some(obj) = updated_input.as_object_mut() {
-                    obj.insert(
-                        "command".to_string(),
-                        serde_json::Value::String(strip_literal_marker(command)),
-                    );
-                }
-                return GuardDecision::AllowWithUpdatedInput(updated_input);
-            }
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
         }
         _ => GuardDecision::Allow,
     }
 }
 
-/// Splits a Bash command line into real shell WORDS, PAIRED with each word's `[start, end)`
-/// BYTE range in the raw `command` text - the one scan [`shell_command_words`] (word values
-/// only) and [`strip_literal_marker`] (excising a specific occurrence of the `--literal`
-/// marker from the real command text) both build on, so the two can never drift on what a
-/// "word" is (one mutation authority, not a value-only walk here and a second span-tracking
-/// walk maintained in parallel elsewhere). Word VALUES are already resolved to what a real
-/// shell would pass as argv: ONE coherent walk over the raw command string, not two disjoint
-/// passes (reject-fix round 5: sdet-u92c4r4-backslash-newline-continuation-still-bypasses-
-/// the-guard). A prior version split the raw text on delimiters FIRST and only then resolved
-/// quoting/escaping per token, so a delimiter a real shell would not treat as a separator - a
-/// backslash-newline line continuation - permanently split one command name into two dead
-/// fragments before the escape logic ever ran. This walk instead tracks quote state and finds
-/// word boundaries in the SAME scan: outside any quote, whitespace and the metacharacters
-/// that can fuse two commands (or a command and a redirected path) together with no
-/// whitespace between them - a pipe `|`, a semicolon `;`, `&` (backgrounding/`&&`), `(` `)`
-/// (subshells and `$( )` command substitution), `<` `>` (input/output redirection - reject-
-/// fix round 5: sdet-u92c4r5-redirect-metachar-fuses-guarded-path-first-segment, spec 92's
-/// HOOK SCOPE amendment names `; | & ( ) < >` verbatim), a backtick (the older command-
-/// substitution form), and `$` itself - end the current word (reject-fix adj-u92c4r2-verdict-
-/// reject-shell-metachar-bypass: plain `str::split_whitespace` hid `grep` fused to a
-/// neighbor by one of these with no separating whitespace); single quotes bracket a LITERAL
-/// run (no escape has meaning inside them); double quotes bracket a run where only `\\`,
-/// `\"`, `` \` ``, `\$` and a line continuation are escapes (any other backslash stays
-/// literal); and outside any quote a backslash escapes the very next character LITERALLY -
-/// including a delimiter, which is why an escaped delimiter can no longer split a word -
-/// except a backslash immediately followed by a newline, which vanishes with NO separator
-/// and no output, exactly the join point a real shell removes before word splitting ever
-/// sees it. Quoting can open and close more than once within one word - `g''rep` is `g` + an
-/// EMPTY single-quoted run + `rep` = `grep`, the same word `"grep"`, `'grep'`, and `gr\ep`
-/// each also resolve to; its SPAN still covers the whole raw run (`g''rep`, six raw bytes),
-/// even though the resolved word value is the four-byte `grep`, so excising it by span
-/// removes exactly what was written, quoting included. Quote state resets at each new word
-/// (coarse by the same design this guard already accepts: a quoted metacharacter still ends
-/// the word, the rare false positive `--literal` exists to pass through) - the point is that
-/// a real invocation, however it wraps a line or spells its command name, can now never hide
-/// from the scan.
-fn shell_command_word_spans(command: &str) -> Vec<(String, std::ops::Range<usize>)> {
-    let mut spans: Vec<(String, std::ops::Range<usize>)> = Vec::new();
+/// A Bash command line split the way a real shell splits it: `argv` holds every word a
+/// command could receive, `comments` every whitespace-separated word inside a `#` comment
+/// (text the shell discards before anything runs).
+struct ShellWords {
+    argv: Vec<String>,
+    comments: Vec<String>,
+}
+
+/// Splits a Bash command line into real shell WORDS, each resolved to what a real shell would
+/// pass as argv, in ONE coherent walk that tracks quote state and finds word boundaries in the
+/// same scan (reject-fix round 5: sdet-u92c4r4-backslash-newline-continuation-still-bypasses-
+/// the-guard - splitting on delimiters first let a line continuation split one command name
+/// into two dead fragments). Outside any quote, whitespace and the metacharacters that can
+/// fuse two commands (or a command and a redirected path) with no whitespace between them -
+/// `|`, `;`, `&`, `(`, `)`, `<`, `>`, a backtick and `$` - end the current word (reject-fixes
+/// adj-u92c4r2-verdict-reject-shell-metachar-bypass and sdet-u92c4r5-redirect-metachar-fuses-
+/// guarded-path-first-segment; spec 92's HOOK SCOPE amendment names `; | & ( ) < >`
+/// verbatim). Single quotes bracket a LITERAL run; double quotes bracket a run where only
+/// `\\`, `\"`, `` \` ``, `\$` and a line continuation are escapes; outside any quote a
+/// backslash escapes the very next character literally, except a backslash-newline, which
+/// vanishes with no separator exactly as a real shell removes it. Quoting can open and close
+/// more than once within one word - `g''rep`, `"grep"`, `'grep'` and `gr\ep` all resolve to
+/// `grep`. An unquoted `#` opens a comment only where it begins a word right after whitespace,
+/// one of `|;&()<>`, or the start of the line - never after `$` (`$#` is a parameter) or
+/// inside a word (`a#b`) - so a `#` can never hide a real invocation; the comment runs to the
+/// next newline and its words land in `comments`, never `argv`. Quote state is coarse by the
+/// same design this guard already accepts: a quoted metacharacter still ends the word, the
+/// rare false positive the comment marker exists to pass through.
+fn shell_words(command: &str) -> ShellWords {
+    let mut words = ShellWords {
+        argv: Vec::new(),
+        comments: Vec::new(),
+    };
     let mut current = String::new();
-    let mut start = 0usize;
     let mut quote: Option<char> = None;
-    let mut chars = command.char_indices().peekable();
-    while let Some((idx, c)) = chars.next() {
-        if current.is_empty() && quote.is_none() {
-            // Track where the word IN PROGRESS began in the raw text - reset on every char
-            // seen while there is no word yet (a delimiter between words, or the true first
-            // char of the next one); the last assignment before `current` stops being empty
-            // is exactly that word's start.
-            start = idx;
-        }
+    let mut prev: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
         match quote {
             Some('\'') => {
                 if c == '\'' {
@@ -119,15 +117,11 @@ fn shell_command_word_spans(command: &str) -> Vec<(String, std::ops::Range<usize
                 }
             }
             Some(_) => {
-                // Inside double quotes: backslash escapes only \\, \", \$, a backtick, or (like
-                // outside any quote) a line continuation - a backslash immediately followed by a
-                // newline vanishes with no separator.
                 if c == '"' {
                     quote = None;
-                } else if c == '\\' && matches!(chars.peek(), Some((_, '\\' | '"' | '$' | '`'))) {
-                    let (_, next) = chars.next().expect("peeked Some above");
-                    current.push(next);
-                } else if c == '\\' && matches!(chars.peek(), Some((_, '\n'))) {
+                } else if c == '\\' && matches!(chars.peek(), Some('\\' | '"' | '$' | '`')) {
+                    current.extend(chars.next());
+                } else if c == '\\' && chars.peek() == Some(&'\n') {
                     chars.next();
                 } else {
                     current.push(c);
@@ -135,85 +129,43 @@ fn shell_command_word_spans(command: &str) -> Vec<(String, std::ops::Range<usize
             }
             None => match c {
                 '\'' | '"' => quote = Some(c),
-                '\\' if matches!(chars.peek(), Some((_, '\n'))) => {
-                    // Line continuation (reject-fix round 5): removed with zero separator,
-                    // so it can never again split one word into two dead fragments.
+                '\\' if chars.peek() == Some(&'\n') => {
                     chars.next();
                 }
-                '\\' => {
-                    if let Some((_, next)) = chars.next() {
-                        current.push(next);
-                    }
+                '\\' => current.extend(chars.next()),
+                '#' if current.is_empty()
+                    && prev.is_none_or(|p| p.is_whitespace() || "|;&()<>".contains(p)) =>
+                {
+                    let comment: String = chars.by_ref().take_while(|&n| n != '\n').collect();
+                    words
+                        .comments
+                        .extend(comment.split_whitespace().map(str::to_string));
+                    prev = Some('\n');
+                    continue;
                 }
                 _ if c.is_whitespace() || "|;&()`$<>".contains(c) => {
                     if !current.is_empty() {
-                        spans.push((std::mem::take(&mut current), start..idx));
+                        words.argv.push(std::mem::take(&mut current));
                     }
                 }
                 _ => current.push(c),
             },
         }
+        prev = Some(c);
     }
     if !current.is_empty() {
-        spans.push((current, start..command.len()));
+        words.argv.push(current);
     }
-    spans
+    words
 }
 
-/// Word VALUES only - see [`shell_command_word_spans`], the one scan both this and
-/// [`strip_literal_marker`] build on.
-fn shell_command_words(command: &str) -> std::vec::IntoIter<String> {
-    shell_command_word_spans(command)
-        .into_iter()
-        .map(|(word, _)| word)
-        .collect::<Vec<_>>()
-        .into_iter()
-}
-
-/// Removes every raw occurrence of the `--literal` escape-hatch marker from `command` (spec
-/// 92's HOOK SCOPE amendment: "the hook removes that marker from the command it allows...
-/// because grep itself has no such flag" - GNU grep really does reject it: `unrecognized
-/// option '--literal'`, exit 2), using the EXACT span [`shell_command_word_spans`] resolved
-/// each occurrence to, not a naive substring replace - so a quoted or backslash-spliced
-/// spelling of the marker (`'--literal'`, `--liter''al`) is excised by its real extent in
-/// the raw text, never a marker that merely happens to appear inside a later argument like
-/// the search pattern. Removes exactly one adjacent whitespace byte together with each
-/// marker (the one immediately before it, when there is one, else the one immediately after)
-/// so the surrounding words are neither glued together nor left double-spaced -
-/// `grep --literal pattern` becomes `grep pattern`, never `grep  pattern`. Everything else in
-/// the command - pipes, redirections, quoting, the pattern itself - is untouched. Multiple
-/// occurrences are removed in reverse text order so an earlier removal never invalidates a
-/// later span's byte offsets.
-fn strip_literal_marker(command: &str) -> String {
-    let mut result = command.to_string();
-    for (word, range) in shell_command_word_spans(command).into_iter().rev() {
-        if word != "--literal" {
-            continue;
-        }
-        let mut start = range.start;
-        let mut end = range.end;
-        if start > 0
-            && result
-                .as_bytes()
-                .get(start - 1)
-                .is_some_and(u8::is_ascii_whitespace)
-        {
-            start -= 1;
-        } else if result
-            .as_bytes()
-            .get(end)
-            .is_some_and(u8::is_ascii_whitespace)
-        {
-            end += 1;
-        }
-        result.replace_range(start..end, "");
-    }
-    result
-}
-
-/// The PATH BASENAME of one [`shell_command_words`] word - the substring after its last `/`,
-/// or the whole word when it has none - the same notion a shell uses to resolve a command
-/// name regardless of how it was invoked.
+/// The PATH BASENAME of one [`shell_words`] word - the substring after its last `/`, or the
+/// whole word when it has none - the same notion a shell uses to resolve a command name
+/// regardless of how it was invoked (reject-fix round 5,
+/// adv-u92c4-r4-path-qualified-grep-bypasses-command-check: `/usr/bin/grep`, `./grep` and
+/// `bin/grep` all name the binary a bare `grep` does). Comparing the basename for equality,
+/// never a substring, keeps `zgrep` or `--grep-something` out: the literal command name the
+/// Design text names ("a Grep or a `grep`"), never `rg`/`egrep`/`fgrep`.
 fn word_basename(word: &str) -> &str {
     match word.rsplit_once('/') {
         Some((_, base)) => base,
@@ -221,25 +173,11 @@ fn word_basename(word: &str) -> &str {
     }
 }
 
-/// True when a Bash command line contains `grep` as a whole [`shell_command_words`] word's
-/// PATH BASENAME (reject-fix round 5, adv-u92c4-r4-path-qualified-grep-bypasses-command-check:
-/// `/usr/bin/grep`, `./grep`, and a relative `bin/grep` all name the same binary a bare
-/// `grep` does, so a directory prefix must not defeat the match), not a substring of a longer
-/// word like `zgrep` or `--grep-something`, and not hidden by fusion to an adjacent command
-/// via `|`/`;`/`&`/`$( )`/a backtick with no surrounding whitespace (adj-u92c4r2-verdict-
-/// reject-shell-metachar-bypass) - the literal command name the Design text names ("a Grep or
-/// a `grep`"), never `rg`/`egrep`/`fgrep` or any other tool this criterion's stated scope
-/// does not cover.
-fn command_invokes_grep(command: &str) -> bool {
-    shell_command_words(command).any(|w| word_basename(&w) == "grep")
-}
-
 /// `rigger grep-guard`: the command the installed PreToolUse hook runs (see
 /// [`install_lookup_hook`]). Reads ONE Claude Code PreToolUse payload as JSON on stdin
 /// (`{"tool_name", "tool_input"}`), writes a `hookSpecificOutput.permissionDecision`
-/// verdict to stdout (an `updatedInput` alongside an "allow" verdict when the decision
-/// rewrote the command - see [`GuardDecision::AllowWithUpdatedInput`]), and always exits 0 -
-/// a hook's own exit code is a SEPARATE failure channel from its JSON decision, so this
+/// verdict to stdout only to deny (an allow is the empty object `{}` - no opinion, no
+/// rewrite: see [`GuardDecision`]), and always exits 0 - a hook's own exit code is a SEPARATE failure channel from its JSON decision, so this
 /// command reports "deny" through the JSON body alone, never a nonzero exit (a transport
 /// hiccup stays tellable apart from a deliberate block). Inert outside a rigger project (no
 /// [`RIGGER_DIR`] in the current tree) - malformed or unreadable stdin degrades to an allow
@@ -265,24 +203,7 @@ pub(crate) fn cmd_grep_guard(_args: &[String]) -> Res {
             .unwrap_or_else(|| serde_json::json!({}));
         grep_guard_decision(tool_name, &tool_input)
     };
-    let out = match decision {
-        GuardDecision::Allow => serde_json::json!({}),
-        GuardDecision::AllowWithUpdatedInput(updated_input) => serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "updatedInput": updated_input,
-            }
-        }),
-        GuardDecision::Deny(reason) => serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        }),
-    };
-    println!("{out}");
+    println!("{}", decision.hook_output());
     Ok(())
 }
 
@@ -494,9 +415,7 @@ fn guard_write_deny_outside_first_root(roots: &[String]) -> GuardDecision {
 /// malformed payload for a tool this guard covers is not evidence of safety, it is
 /// evidence the guard cannot see what the call would do; `WriteTarget::NotCovered` (a tool
 /// this guard does not cover) is always allowed. Reuses [`GuardDecision`] - the SAME
-/// verdict type `rigger grep-guard` reports through, never a second parallel one - though
-/// this guard never rewrites a tool call, so its `AllowWithUpdatedInput` arm never arises
-/// here.
+/// verdict type `rigger grep-guard` reports through, never a second parallel one.
 fn guard_write_decision(roots: &[String], cwd: &str, target: WriteTarget) -> GuardDecision {
     let raw = match target {
         WriteTarget::NotCovered => return GuardDecision::Allow,
@@ -566,20 +485,7 @@ pub(crate) fn cmd_guard_write(args: &[String]) -> Res {
     };
     let decision = guard_write_decision(&roots, &cwd, target);
 
-    let out = match decision {
-        GuardDecision::Allow => serde_json::json!({}),
-        GuardDecision::Deny(reason) => serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        }),
-        GuardDecision::AllowWithUpdatedInput(_) => {
-            unreachable!("guard-write never rewrites a tool call's input")
-        }
-    };
-    println!("{out}");
+    println!("{}", decision.hook_output());
     Ok(())
 }
 
@@ -684,49 +590,14 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
 mod tests {
     use super::*;
 
-    /// Asserts `decision` is [`GuardDecision::AllowWithUpdatedInput`] carrying a `command`
-    /// with the `--literal` marker genuinely gone (not merely a bare `Allow`, which round 5
-    /// wrongly accepted: the marker then reached a real shell unchanged, and real GNU grep
-    /// rejects it outright - `unrecognized option '--literal'`, exit 2), then returns that
-    /// stripped command string so a caller can pin further properties of it (redirections,
-    /// the pattern, an exact expected value).
-    fn assert_allows_with_literal_stripped(
-        decision: GuardDecision,
-        original_command: &str,
-    ) -> String {
-        match decision {
-            GuardDecision::AllowWithUpdatedInput(updated) => {
-                let stripped = updated["command"]
-                    .as_str()
-                    .unwrap_or_else(|| {
-                        panic!("updatedInput must carry a string `command`; got {updated}")
-                    })
-                    .to_string();
-                assert!(
-                    !shell_command_words(&stripped).any(|w| w == "--literal"),
-                    "the stripped command must carry no --literal marker for {original_command:?}; \
-                     got {stripped:?}"
-                );
-                stripped
-            }
-            other => panic!(
-                "expected AllowWithUpdatedInput stripping --literal from {original_command:?}, \
-                 got {other:?}"
-            ),
-        }
-    }
-
     /// The pure decision core, d-spec92-hook-no-target-axis (spec 92's Design amended after
     /// round 5 to retire the guarded-tree apparatus): a `Bash` `grep` invocation is denied
     /// with the stated message NO MATTER WHAT it targets - a guarded tree from the old rule
     /// (`src/`), a tree that rule never covered (`docs/`), a single unrelated file
     /// (`README.md`), the whole-project convention (`.`), an ancestor (`..`), or an absolute
     /// path nowhere near this project - because the hook inspects only whether the command
-    /// INVOKES grep, never what it points at. The SAME command with `--literal` passes for
-    /// every one of those targets too, with the marker genuinely REMOVED from the command
-    /// carried onward (spec 92's HOOK SCOPE amendment - reject-fix
-    /// arch-u92c4r5-literal-escape-hatch-never-strips-marker: a bare `Allow` left the marker
-    /// in place for a real shell to choke on, since GNU grep has no such flag).
+    /// INVOKES grep, never what it points at. The SAME command ending in the `# --literal`
+    /// comment passes for every one of those targets too, untouched.
     #[test]
     fn grep_guard_decision_denies_every_bash_grep_target_and_passes_literal() {
         for target in [
@@ -744,16 +615,7 @@ mod tests {
                 other => panic!("grep targeting {target:?} must be denied, got {other:?}"),
             }
 
-            let literal_command = format!("grep --literal -rn foo {target}");
-            let decision =
-                grep_guard_decision("Bash", &serde_json::json!({"command": literal_command}));
-            let stripped = assert_allows_with_literal_stripped(decision, &literal_command);
-            assert_eq!(
-                stripped,
-                format!("grep -rn foo {target}"),
-                "the marker and exactly one adjacent space must be removed, nothing else \
-                 rewritten, for target {target:?}"
-            );
+            assert_literal_grep_passes(&format!("grep -rn foo {target} # --literal"));
         }
     }
 
@@ -792,9 +654,9 @@ mod tests {
         /// The built-in `Grep` tool call is denied for EVERY `path` (d-spec92-hook-no-target-axis:
         /// no target axis survives - a guarded tree from the old rule, a tree it never covered,
         /// an omitted path defaulting to the cwd, an absolute path nowhere near this project),
-        /// and carries no `--literal` escape hatch of its own - the built-in tool has no flag
-        /// slot for it, so a genuinely literal search runs through `Bash` `grep --literal`
-        /// instead.
+        /// and carries no `--literal` escape hatch of its own - the built-in tool has no comment
+        /// slot for it, so a genuinely literal search runs as a `Bash` grep ending in the
+        /// `# --literal` comment instead.
         grep_guard_decision_denies_every_grep_tool_path: assert_grep_guard_denies(
             "Grep",
             "path",
@@ -811,7 +673,7 @@ mod tests {
         /// adv-u92c4r2-command-invokes-grep-tokenizes-on-whitespace-only): a `grep` invocation
         /// fused to an adjacent command with NO surrounding whitespace - via a pipe `|`, a
         /// semicolon `;`, an `&`, a `$( )` command substitution, or a backtick - must be denied
-        /// exactly like the spaced form already is. Before that fix `command_invokes_grep` split
+        /// exactly like the spaced form already is. Before that fix the invocation check split
         /// on whitespace only, so a fused metacharacter hid the literal word `grep` from the scan
         /// entirely; this proof survives d-spec92-hook-no-target-axis unchanged, since detecting
         /// the invocation (not its target) is still exactly what the tokenizer must get right.
@@ -834,7 +696,7 @@ mod tests {
         /// d-spec92-hook-no-target-axis: a redirection fused directly to the command name with no
         /// whitespace (`grep<file.txt`, a real shell equivalent of `grep <file.txt`) would
         /// otherwise merge into one word neither equal to nor ending in the bare basename `grep`,
-        /// hiding the invocation from `command_invokes_grep` entirely - independent of what the
+        /// hiding the invocation from the invocation check entirely - independent of what the
         /// command targets.
         grep_guard_decision_denies_a_redirect_metacharacter_fused_grep: assert_grep_guard_denies(
             "Bash",
@@ -886,54 +748,34 @@ mod tests {
         );
     }
 
-    /// `command` - a grep carrying the `--literal` escape hatch - passes the guard with the
-    /// marker stripped.
+    /// `command` - a grep carrying the `# --literal` comment escape hatch - passes the guard
+    /// untouched.
     fn assert_literal_grep_passes(command: &str) {
-        let decision = grep_guard_decision("Bash", &serde_json::json!({ "command": command }));
-        assert_allows_with_literal_stripped(decision, command);
+        assert_eq!(
+            grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+            GuardDecision::Allow,
+            "a grep ending in the # --literal comment must pass: {command:?}"
+        );
     }
 
     rigger::test_cases! {
-        /// The SAME fused shapes with `--literal` added must still pass through (with the marker
-        /// stripped), proving the escape hatch survives the tokenizer rather than becoming
-        /// unreachable once fusion is detected.
+        /// The SAME fused shapes with the `# --literal` comment added must still pass through,
+        /// proving the escape hatch survives the tokenizer rather than becoming unreachable once
+        /// fusion is detected.
         grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep: assert_literal_grep_passes(
-            "true;grep --literal pattern src/main.rs",
+            "true;grep pattern src/main.rs # --literal",
         );
     }
 
-    /// The same redirect-fused shape with `--literal` added must still pass through, with the
-    /// redirection itself surviving the marker's removal untouched.
-    #[test]
-    fn grep_guard_decision_literal_survives_a_redirect_metacharacter_fused_grep() {
-        let decision = grep_guard_decision(
-            "Bash",
-            &serde_json::json!({"command": "grep --literal pattern <src/main.rs"}),
+    rigger::test_cases! {
+        /// The same redirect-fused shape with the `# --literal` comment added must still pass.
+        grep_guard_decision_literal_survives_a_redirect_metacharacter_fused_grep: assert_literal_grep_passes(
+            "grep pattern <src/main.rs # --literal",
         );
-        let stripped =
-            assert_allows_with_literal_stripped(decision, "grep --literal pattern <src/main.rs");
-        assert_eq!(
-            stripped, "grep pattern <src/main.rs",
-            "only the marker and its one adjacent space must be removed"
-        );
-    }
-
-    /// The same quoted/escaped shapes with a quoted `--literal` must still pass through, the
-    /// entire quoted marker excised by its real span - proving the escape hatch itself
-    /// survives quote/escape normalization AND marker stripping together.
-    #[test]
-    fn grep_guard_decision_literal_survives_a_quoted_literal_on_a_quoted_grep() {
-        let decision = grep_guard_decision(
-            "Bash",
-            &serde_json::json!({"command": r#""grep" "--literal" pattern src/main.rs"#}),
-        );
-        let stripped = assert_allows_with_literal_stripped(
-            decision,
-            r#""grep" "--literal" pattern src/main.rs"#,
-        );
-        assert_eq!(
-            stripped, r#""grep" pattern src/main.rs"#,
-            "the whole quoted marker token must be excised, not merely its interior"
+        /// A quoted grep with the `# --literal` comment must still pass - the escape hatch
+        /// survives quote/escape normalization.
+        grep_guard_decision_literal_survives_a_quoted_grep: assert_literal_grep_passes(
+            r#""grep" pattern src/main.rs # --literal"#,
         );
     }
 
@@ -954,22 +796,89 @@ mod tests {
     }
 
     rigger::test_cases! {
-        /// The same line-continuation shape with `--literal` added must still pass through.
+        /// The same line-continuation shape with the `# --literal` comment added must still pass.
         grep_guard_decision_literal_survives_a_line_continuation_split_grep: assert_literal_grep_passes(
-            "gr\\\nep --literal pattern src/main.rs",
+            "gr\\\nep pattern src/main.rs # --literal",
         );
     }
 
-    /// The same path-qualified shapes with `--literal` added must still pass through.
+    /// The same path-qualified shapes with the `# --literal` comment added must still pass.
     #[test]
     fn grep_guard_decision_literal_survives_a_path_qualified_grep() {
         for command in [
-            "/usr/bin/grep --literal pattern src/main.rs",
-            "./grep --literal pattern src/main.rs",
-            "bin/grep --literal pattern src/main.rs",
+            "/usr/bin/grep pattern src/main.rs # --literal",
+            "./grep pattern src/main.rs # --literal",
+            "bin/grep pattern src/main.rs # --literal",
         ] {
-            let decision = grep_guard_decision("Bash", &serde_json::json!({"command": command}));
-            assert_allows_with_literal_stripped(decision, command);
+            assert_literal_grep_passes(command);
+        }
+    }
+
+    /// Lesson lesson-u101c2r3-grep-guard-literal-not-stripped: Claude Code runs every matching
+    /// PreToolUse hook in parallel on the ORIGINAL tool input and keeps whichever hook's
+    /// `updatedInput` arrives last, so a sibling rewriting hook (the `rtk` rewriter turns
+    /// `grep --literal x` into `rtk grep --literal x`) can overwrite a stripped command and the
+    /// marker reaches the real grep (`unrecognized option '--literal'`). The escape hatch must
+    /// therefore never depend on a rewrite winning that race: the marker lives in a trailing
+    /// shell comment the shell itself discards, the guard passes that command through with no
+    /// rewrite at all, and a bare `--literal` argv word - which would reach grep whenever a
+    /// sibling hook's rewrite wins - is denied with the hint that names the working spelling.
+    #[test]
+    fn grep_guard_decision_passes_a_literal_comment_without_depending_on_a_rewrite() {
+        for command in [
+            "grep -n foo src/cli/guard.rs  # --literal",
+            "grep -rn foo src | head -5 # --literal",
+            "true;grep pattern src/main.rs # --literal",
+            "rtk grep -n foo src # --literal",
+            "grep -n foo src #   --literal",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                GuardDecision::Allow,
+                "a grep carrying the marker in a trailing comment passes untouched: {command:?}"
+            );
+        }
+        for command in [
+            "grep --literal -n foo src/cli/guard.rs",
+            "grep -rn --literal foo src | head -5",
+            "grep -n foo src/cli/guard.rs --literal",
+            r#""grep" "--literal" pattern src/main.rs"#,
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a bare --literal argv word would reach grep when a sibling hook's rewrite \
+                 wins, so it is denied with the hint: {command:?}"
+            );
+        }
+        assert!(
+            GREP_GUARD_MESSAGE.contains("# --literal"),
+            "the hint must name the comment spelling that survives any sibling rewrite"
+        );
+    }
+
+    /// A shell comment is inert: `grep` inside one is not an invocation, and a `#` that does
+    /// not begin a word (`$#`, `a#b`) opens no comment, so it can never hide a real grep.
+    #[test]
+    fn grep_guard_decision_reads_shell_comments_as_inert_and_only_at_a_word_start() {
+        assert_eq!(
+            grep_guard_decision("Bash", &serde_json::json!({"command": "ls src # grep later"})),
+            GuardDecision::Allow,
+            "a grep named only inside a comment is not an invocation"
+        );
+        for command in [
+            "echo $# ; grep foo src",
+            "echo a#b; grep foo src",
+            "echo '# --literal'; grep foo src",
+            "echo \\# --literal; grep foo src",
+            "echo hi # note\ngrep foo src",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a # that opens no comment, or a comment ended by its newline, must not hide \
+                 the grep: {command:?}"
+            );
         }
     }
 
