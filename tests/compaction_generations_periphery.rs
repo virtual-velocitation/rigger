@@ -4503,6 +4503,22 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
     );
 }
 
+/// Append a `DecisionMade` whose payload is `data` to `root`'s run stream straight through the
+/// store, behind every fold - the shape of an event whose process died before its fold, or one
+/// that never met the emit surface's shape check - and answer its log position.
+fn append_unfolded_decision(root: &Path, data: &[u8]) -> u64 {
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    Namespaced::new(&backend, &run_stream_identity(root))
+        .append(
+            rigger::conductor::STREAM,
+            ExpectedRevision::Any,
+            &[Event::new("DecisionMade", data.to_vec())],
+        )
+        .unwrap()
+        .one("the unfolded decision")
+        .unwrap()
+}
+
 /// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
 /// it misses an event the log holds.
 const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an event \
@@ -4613,18 +4629,10 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
         ok,
         "the first emit creates the store and graph; stderr: {err}"
     );
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let decision = br#"{"id":"d-crashed","summary":"s","governs":["src/f.rs"],"supersedes":""}"#;
-    let lost = Namespaced::new(&backend, &run_stream_identity(root))
-        .append(
-            rigger::conductor::STREAM,
-            ExpectedRevision::Any,
-            &[Event::new("DecisionMade", decision.to_vec())],
-        )
-        .unwrap()
-        .one("the crashed emit's event")
-        .unwrap();
-    drop(backend);
+    let lost = append_unfolded_decision(
+        root,
+        br#"{"id":"d-crashed","summary":"s","governs":["src/f.rs"],"supersedes":""}"#,
+    );
     assert!(
         !applied(&rigger_file(root, "graph.db"), lost),
         "the event is on the log and not in the graph"
@@ -4645,17 +4653,7 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
         ok,
         "the first emit creates the store and graph; stderr: {err}"
     );
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let rejected = Namespaced::new(&backend, &run_stream_identity(root))
-        .append(
-            rigger::conductor::STREAM,
-            ExpectedRevision::Any,
-            &[Event::new("DecisionMade", b"{ not valid json".to_vec())],
-        )
-        .unwrap()
-        .one("the malformed decision")
-        .unwrap();
-    drop(backend);
+    let rejected = append_unfolded_decision(root, b"{ not valid json");
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
@@ -4683,6 +4681,73 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
         ok && !out.contains("graph.db"),
         "the passed-over event is not owed again; stdout: {out} stderr: {err}"
     );
+}
+
+/// Given a `graph.db` that misses a well-formed event the log holds, when the operator runs
+/// `rigger setup` and its rebuild meets a storage error folding that event - the store's failure,
+/// not a payload the fold rejects - then setup fails naming the error, passes nothing over, and
+/// leaves `graph.db` untouched with the event still missing from its ledger; once the storage
+/// recovers, the next `rigger setup` resumes the rebuild and folds the event.
+#[test]
+fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+    let first = read_run_events(root).last().unwrap().position;
+    let lost = append_unfolded_decision(
+        root,
+        br#"{"id":"d-boom","summary":"s","governs":["src/f.rs"],"supersedes":""}"#,
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    let shadow = rigger_file(root, "graph.db.rebuild");
+    drop(
+        rigger::contextgraph::sqlite::Projector::open(
+            shadow.to_str().unwrap(),
+            &run_stream_identity(root),
+        )
+        .unwrap(),
+    );
+    // Opened per statement and closed at once: an open connection to the shadow would hold it
+    // against the rebuild's exclusive lock.
+    let on_shadow = |sql: &str| {
+        rusqlite::Connection::open(&shadow)
+            .unwrap()
+            .execute_batch(sql)
+            .unwrap()
+    };
+    on_shadow(
+        "CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = 'd-boom'
+         BEGIN SELECT RAISE(ABORT, 'disk gave out'); END;",
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            ok,
+            err.lines().last(),
+            out.lines()
+                .filter(|l| l.starts_with("rebuilt graph.db") || l.starts_with("passed over "))
+                .collect::<Vec<_>>(),
+            applied(&graph_db, first),
+            applied(&graph_db, lost),
+        ),
+        (
+            false,
+            Some("rigger: graph: event store: disk gave out"),
+            Vec::<&str>::new(),
+            true,
+            false
+        ),
+        "setup fails naming the storage error, passes nothing over, and leaves graph.db as it \
+         was, the event still missing; stdout: {out} stderr: {err}"
+    );
+
+    on_shadow("DROP TRIGGER boom;");
+    the_next_setup_pays_the_missing_event(root, lost);
 }
 
 /// Given a project whose run stream grew only through rigger's own verbs - `rigger step` minting
