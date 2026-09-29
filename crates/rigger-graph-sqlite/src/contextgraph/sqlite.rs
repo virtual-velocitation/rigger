@@ -168,15 +168,17 @@ pub struct Projector {
     project: String,
     /// Where a failed fold marks this file as owing its rebuild ([`owed_mark`]).
     owed_mark: Option<PathBuf>,
-    /// Set when a fold failed and its [`owed_mark`] could not be written: the one record of that
-    /// debt is then this projector's own, so it answers as owed until the process ends.
+    /// Set when a fold failed and neither record of the debt could be written
+    /// ([`Projector::record_lost_fold`]): the one record of it is then this projector's own, until
+    /// a check finds a place to write it.
     unmarked_loss: AtomicBool,
 }
 
 /// The file beside the graph file at `path` whose presence marks it as owing its rebuild because a
 /// fold into it failed - a write lost to another writer's lock past the busy timeout leaves the
 /// file current but missing an event no later fold re-derives, and that same lock forbids
-/// recording the debt inside the file. `None` for an in-memory graph, which no rebuild outlives.
+/// recording the debt inside the file. Where the mark cannot be written the file records the debt
+/// itself, in its [`LOST_FOLD`] table. `None` for an in-memory graph, which no rebuild outlives.
 fn owed_mark(path: &str) -> Option<PathBuf> {
     (path != ":memory:").then(|| PathBuf::from(format!("{path}.owed")))
 }
@@ -184,6 +186,15 @@ fn owed_mark(path: &str) -> Option<PathBuf> {
 /// Whether `mark` is present: a fold into its graph file failed and the rebuild is owed.
 fn marked(mark: &Option<PathBuf>) -> bool {
     mark.as_ref().is_some_and(|m| m.exists())
+}
+
+/// The table whose presence in a graph file records that a fold into it failed where its
+/// [`owed_mark`] could not be written. A rebuild's swapped-in file never holds it.
+const LOST_FOLD: &str = "lost_fold";
+
+/// Whether the file behind `conn` records a fold lost into it ([`LOST_FOLD`]).
+fn lost_fold_recorded(conn: &Connection) -> Result<bool, Error> {
+    has_table(conn, LOST_FOLD)
 }
 
 /// What one [`Projector::prune`] reclaimed, both in the same transaction: the dead-run
@@ -263,7 +274,7 @@ impl Projector {
         let mut live = open_connection(path).map_err(be)?;
         let shadow_path = format!("{path}.rebuild");
         let mark = owed_mark(path);
-        if marked(&mark) || rebuild_owed(&live)? {
+        if marked(&mark) || rebuild_owed(&live)? || lost_fold_recorded(&live)? {
             let mut shadow = Connection::open(&shadow_path).map_err(be)?;
             shadow
                 .execute_batch("PRAGMA locking_mode = EXCLUSIVE;")
@@ -300,18 +311,49 @@ impl Projector {
 
     /// Why this file owes its rebuild (spec 101), each cause it carries in order - it records an
     /// older fold rule ([`OWED_OLDER_RULE`]), a fold into it failed ([`OWED_LOST_FOLD`]: its
-    /// [`owed_mark`] is present, or this projector could not write it) - and none when it owes
-    /// nothing. Read from the file on every call, so another process's [`Projector::rebuild`] or
-    /// failed fold is seen at once.
+    /// [`owed_mark`] is present, the file records it in [`LOST_FOLD`], or this projector could
+    /// write neither) - and none when it owes nothing. Read from the file on every call, so
+    /// another process's [`Projector::rebuild`] or failed fold is seen at once. A debt only this
+    /// projector holds is first recorded where it now can be, so it outlives the process and
+    /// `rigger setup` pays it.
     pub fn owed_because(&self) -> Result<Vec<&'static str>, Error> {
+        if self.unmarked_loss.load(Ordering::SeqCst) {
+            self.unmarked_loss
+                .store(self.record_lost_fold().is_err(), Ordering::SeqCst);
+        }
+        let conn = self.conn.lock().unwrap();
         let mut causes = Vec::new();
-        if rebuild_owed(&self.conn.lock().unwrap())? {
+        if rebuild_owed(&conn)? {
             causes.push(OWED_OLDER_RULE);
         }
-        if self.unmarked_loss.load(Ordering::SeqCst) || marked(&self.owed_mark) {
+        if self.unmarked_loss.load(Ordering::SeqCst)
+            || marked(&self.owed_mark)
+            || lost_fold_recorded(&conn)?
+        {
             causes.push(OWED_LOST_FOLD);
         }
         Ok(causes)
+    }
+
+    /// Record that a fold into this file failed, so every projector on it owes the rebuild: its
+    /// [`owed_mark`], which the lock that lost the fold does not forbid, or else the file's own
+    /// [`LOST_FOLD`] table, which a directory that refuses the mark does not forbid. An in-memory
+    /// graph, which no rebuild outlives, records nothing. Both failures are the error.
+    fn record_lost_fold(&self) -> Result<(), String> {
+        let Some(mark) = &self.owed_mark else {
+            return Ok(());
+        };
+        let unmarked = match std::fs::write(mark, b"") {
+            Ok(()) => return Ok(()),
+            Err(unmarked) => unmarked,
+        };
+        self.conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS {LOST_FOLD} (lost INTEGER);"
+            ))
+            .map_err(|unrecorded| format!("{}: {unmarked}; graph.db: {unrecorded}", mark.display()))
     }
 
     /// Drop the [`owed_mark`] of the graph file at `path` once that file is gone: the mark records
@@ -983,9 +1025,14 @@ fn fold_source(
 /// Whether the file behind `conn` was swapped in by a [`Projector::rebuild`] that has not yet
 /// folded the tail the log gained while it ran: it still holds the rebuild's cursor.
 fn rebuild_tail_owed(conn: &Connection) -> Result<bool, Error> {
+    has_table(conn, "rebuild_cursor")
+}
+
+/// Whether the file behind `conn` holds a table named `name`.
+fn has_table(conn: &Connection, name: &str) -> Result<bool, Error> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rebuild_cursor')",
-        [],
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [name],
         |r| r.get(0),
     )
     .map_err(be)
@@ -1006,14 +1053,7 @@ fn rebuild_owed(conn: &Connection) -> Result<bool, Error> {
     if !stale(conn)? {
         return Ok(false);
     }
-    let folded: bool = conn
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'applied')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(be)?;
-    if !folded {
+    if !has_table(conn, "applied")? {
         return Ok(false);
     }
     conn.query_row("SELECT EXISTS (SELECT 1 FROM applied)", [], |r| r.get(0))
@@ -1185,24 +1225,24 @@ impl Projection for Projector {
     /// A batch that fails to fold into a file that owed nothing leaves that file behind the log
     /// for good - nothing folds a position twice - so the failure marks it as owing its rebuild
     /// ([`owed_mark`]): from then on it refuses every fold and every answer that depends on the
-    /// fold with [`REBUILD_OWED`] until `rigger setup` pays it. A mark that cannot be written is
-    /// never silent either: the fold's error comes back with the mark's failure beside it, and this
-    /// projector owes the rebuild from then on on its own record.
+    /// fold with [`REBUILD_OWED`] until `rigger setup` pays it; where the mark cannot be written
+    /// the file records the debt itself ([`Projector::record_lost_fold`]). A debt neither can
+    /// record is never silent: the fold's error comes back with both failures beside it, and this
+    /// projector owes the rebuild on its own record until a check finds a place to write it.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
         if self.rebuild_owed()? {
             return Err(Error(REBUILD_OWED.to_string()));
         }
-        let (lost, mark) = match (self.fold_batch(events), &self.owed_mark) {
-            (Err(lost), Some(mark)) => (lost, mark),
-            (folded, _) => return folded,
+        let lost = match self.fold_batch(events) {
+            Err(lost) => lost,
+            folded => return folded,
         };
-        std::fs::write(mark, b"").map_err(|unwritten| {
+        self.record_lost_fold().map_err(|unrecorded| {
             self.unmarked_loss.store(true, Ordering::SeqCst);
             Error(format!(
-                "{}; the mark that graph.db owes its rebuild was not written ({}: {unwritten}), \
-                 so only this process knows it",
-                lost.0,
-                mark.display()
+                "{}; the record that graph.db owes its rebuild was not written ({unrecorded}), \
+                 so only this process knows it until it can write it",
+                lost.0
             ))
         })?;
         Err(lost)
