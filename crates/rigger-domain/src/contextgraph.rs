@@ -1194,10 +1194,8 @@ mod fold_outcome {
                 String::new()
             ]
         );
-        assert_eq!(
-            [fold_clause(&lost), fold_loss_clause(&lost)],
-            ["; not folded into the context graph: graph: locked".to_string(); 2]
-        );
+        let said = "; not folded into the context graph: graph: locked";
+        assert_eq!([fold_clause(&lost), fold_loss_clause(&lost)], [said, said]);
     }
 
     #[test]
