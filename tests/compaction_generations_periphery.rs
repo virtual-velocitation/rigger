@@ -26,6 +26,7 @@
 
 mod common;
 
+use common::cli::escalate_solo_unit;
 use common::cli::keyed;
 use common::cli::nanos;
 use common::cli::read_run_events;
@@ -36,6 +37,7 @@ use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
 use common::cli::with_graph_locked;
 use common::fixtures::meta_replay_key;
+use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::RebuildSink;
 use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
@@ -4522,6 +4524,42 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
         "the event is on the log and not in the graph"
     );
     the_next_setup_pays_the_missing_event(root, lost);
+}
+
+/// Given a project whose run stream grew only through rigger's own verbs - `rigger step` minting
+/// the run and driving its unit to an escalation, and `rigger resume-unit` granting it another
+/// attempt - when the operator runs `rigger setup`, then setup rebuilds nothing: every event a verb
+/// appended is folded, so the graph's ledger holds every position the log does, and nothing was
+/// lost for setup to find missing.
+#[test]
+fn every_event_rigger_s_own_verbs_append_is_folded_so_setup_owes_no_rebuild() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    escalate_solo_unit(root);
+    let (_, err, ok) = run_rigger(root, &["resume-unit", "solo", "--attempts", "1"]);
+    assert!(
+        ok,
+        "resume-unit on the escalated unit must succeed; stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        read_run_events(root)
+            .into_iter()
+            .filter(|e| !applied(&graph_db, e.position))
+            .map(|e| (e.position, e.type_))
+            .collect::<Vec<_>>(),
+        Vec::<(u64, String)>::new(),
+        "every event the verbs appended is in the graph's ledger"
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("rebuilding graph.db") || l.starts_with("rebuilt "))
+            .collect::<Vec<_>>(),
+        Vec::<&str>::new(),
+        "setup owes no rebuild for a log its verbs folded; stdout: {out}"
+    );
 }
 
 /// Given a `graph.db` still at the old fold rule, when the operator runs `rigger reset --runs`,
