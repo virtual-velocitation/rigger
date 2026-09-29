@@ -2258,9 +2258,7 @@ fn source_over<'a>(
 ) -> impl FnMut(u64, &mut RebuildSink) -> Result<(), rigger::contextgraph::Error> + 'a {
     move |after, sink| {
         afters.borrow_mut().push(after);
-        let head = log.last().map_or(0, |e| e.position);
-        let gained: Vec<Event> = log.iter().filter(|e| e.position > after).cloned().collect();
-        gained.chunks(batch).try_for_each(|b| sink(b, head))
+        rigger::contextgraph::sqlite::stream_past(log, after, batch, sink)
     }
 }
 
@@ -3215,7 +3213,8 @@ fn a_fold_dependent_command_refuses_at_the_old_rule_and_an_inspection_answers_as
 
 /// While `rigger setup`'s rebuild folds its shadow, a read-only open answers from the old file
 /// without waiting and changes nothing, a command that depends on the fold refuses at once naming
-/// `rigger setup` rather than failing on a lock, and an emit appends without folding; when the
+/// `rigger setup` rather than failing on a lock, an emit appends without folding, and a second
+/// rebuild is refused rather than folding into the same shadow; when the
 /// rebuild has swapped the shadow in, its ledgers are intact and it has folded the emitted event
 /// too - the graph is exactly the whole log's.
 #[test]
@@ -3284,6 +3283,17 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     assert!(
         started.elapsed() < Duration::from_secs(4),
         "none of them waited on the rebuild's lock (the busy timeout is 5s)"
+    );
+    let second = Projector::rebuild(
+        store.graph_db.to_str().unwrap(),
+        &store.project(),
+        &mut |_, _| panic!("a rebuild refused as busy reads nothing"),
+        &mut |_| {},
+    );
+    assert_eq!(
+        second.unwrap_err().0,
+        "database is locked",
+        "a second rebuild racing this one is refused, never interleaved in its shadow"
     );
 
     resume.send(()).unwrap();
