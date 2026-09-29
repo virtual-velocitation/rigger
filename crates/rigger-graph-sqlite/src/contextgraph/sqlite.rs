@@ -4075,6 +4075,45 @@ mod tests {
         );
     }
 
+    /// What a rebuild says it passed over is the sum of what its fold of the shadow and its tail
+    /// into the live file each passed over: two rejected payloads the log held when it started and
+    /// one it gained meanwhile are three.
+    #[test]
+    fn a_rebuild_counts_what_its_fold_and_its_tail_each_passed_over() {
+        let before = [
+            event_at(TYPE_DECISION_MADE, b"{ not valid json", 1),
+            decision_at("d2", "a.rs", 2),
+            event_at(TYPE_LESSON_LEARNED, b"[]", 3),
+        ];
+        let gained = [event_at(TYPE_REVIEW_FINDING, b"7", 4)];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let mut reads = 0;
+        let rebuilt = Projector::rebuild(
+            path,
+            "test",
+            true,
+            &mut |after, sink| {
+                reads += 1;
+                let log: &[Event] = if reads == 1 { &before } else { &gained };
+                stream_past(log, after, 10, sink)
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (
+                rebuilt,
+                (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>()
+            ),
+            (Some(3), vec![true; 4]),
+            "two passed over by the fold and one by the tail, each recorded as folded"
+        );
+    }
+
     /// A rebuild that meets a storage error folding an event whose payload the fold reads is not a
     /// rejection: the error propagates, nothing marks the event folded, the live file is untouched,
     /// and the next rebuild resumes from the last committed batch and folds it.
