@@ -17,6 +17,7 @@ pub mod cli;
 pub mod fixtures;
 pub mod git;
 pub mod lens;
+pub mod mcp;
 pub mod repo;
 pub mod served;
 pub mod workflow_probe;

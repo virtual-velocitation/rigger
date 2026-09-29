@@ -1451,11 +1451,11 @@ fn a_policy_without_a_fact_identity_carries_only_between_byte_identical_payloads
     );
 }
 
-/// An `AliasDefined` recording naming `alias` as `src/a.rs`, at `secs`.
-fn alias_of_a(alias: &str, secs: u64) -> Event {
+/// An `AliasDefined` recording naming `alias` as `canonical`, at `secs`.
+fn alias_defined(alias: &str, canonical: &str, secs: u64) -> Event {
     Event::new(
         rigger::contextgraph::TYPE_ALIAS_DEFINED,
-        serde_json::to_vec(&serde_json::json!({"alias": alias, "canonical": "src/a.rs"})).unwrap(),
+        serde_json::to_vec(&serde_json::json!({"alias": alias, "canonical": canonical})).unwrap(),
     )
     .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
 }
@@ -1487,7 +1487,7 @@ fn an_alias_spelled_link_is_the_fact_the_fold_resolves_it_to(defined_first: bool
                 20,
             ),
         ];
-        events.insert(alias_at, alias_of_a("a-alias", 5));
+        events.insert(alias_at, alias_defined("a-alias", "src/a.rs", 5));
         events
     };
     let dir = tempfile::tempdir().unwrap();
@@ -1527,6 +1527,128 @@ rigger::test_cases! {
     /// The alias is defined only between the generations.
     an_alias_defined_between_generations_starts_a_new_link:
         an_alias_spelled_link_is_the_fact_the_fold_resolves_it_to(false);
+}
+
+/// An alias REDEFINED between the generations resolves each recording through the definition that
+/// preceded it: `h1` links `a-alias` while it names `src/a.rs`, `h2` links the same spelling after
+/// it was redefined as `src/b.rs`. They are two links, never one fact: the survivor keeps `h2`'s own
+/// date, the whole log retires `h1`'s link, and the compacted log rebuilds the whole log's graph.
+#[test]
+fn an_alias_redefined_between_generations_names_a_new_link() {
+    let events = || {
+        vec![
+            alias_defined("a-alias", "src/a.rs", 5),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("a-alias"),
+                "gd/docs/f.md@h1#0",
+                10,
+            ),
+            alias_defined("a-alias", "src/b.rs", 15),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("a-alias"),
+                "gd/docs/f.md@h2#0",
+                20,
+            ),
+        ]
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, db) = store_with(dir.path(), &[(rigger::conductor::STREAM, events())]);
+    backend
+        .prune_derived_index(
+            &Namespaced::prefix_for(PROJECT),
+            &rigger::ingest::derived_index_identity(),
+        )
+        .unwrap();
+    let kept: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
+    assert_eq!(
+        kept,
+        vec![("gd/docs/f.md@h2#0".to_string(), nanos(20))],
+        "the survivor links what the alias named when it was recorded, from its own date"
+    );
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        events(),
+        &[("docs/f.md", "artifact"), ("src/b.rs", "artifact")],
+    );
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .map(|e| (e.to.as_str(), e.valid_from))
+            .collect::<Vec<_>>(),
+        vec![("src/b.rs", nanos(20))],
+        "the whole log holds only the redefined link, from its own date"
+    );
+}
+
+/// Where an alias is defined that the recording's own stream never folds - another stream of this
+/// project, or another project's run stream - it names nothing for this stream's recordings, as it
+/// names nothing for the fold that rebuilds this project's graph from its run stream alone: `h2`
+/// linking `a-alias` is a new link, never `h1`'s link to `src/a.rs`, and keeps its own date.
+fn an_alias_defined_outside_the_recordings_stream_joins_no_facts(project: &str, stream: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    Namespaced::new(&backend, project)
+        .append(
+            stream,
+            ExpectedRevision::Any,
+            &[alias_defined("a-alias", "src/a.rs", 5)],
+        )
+        .unwrap();
+    Namespaced::new(&backend, PROJECT)
+        .append(
+            rigger::conductor::STREAM,
+            ExpectedRevision::Any,
+            &[
+                keyed(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    link("src/a.rs"),
+                    "gd/docs/f.md@h1#0",
+                    10,
+                ),
+                keyed(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    link("a-alias"),
+                    "gd/docs/f.md@h2#0",
+                    20,
+                ),
+            ],
+        )
+        .unwrap();
+    let pruned = backend
+        .prune_derived_index(
+            &Namespaced::prefix_for(PROJECT),
+            &rigger::ingest::derived_index_identity(),
+        )
+        .unwrap();
+    assert_eq!(
+        (pruned.removed, pruned.superseded_generations),
+        (per_type(0, 0, 0, 1), 1),
+        "h1 is shed as a superseded generation"
+    );
+    let kept: Vec<(String, i64)> = keyed_rows(db.to_str().unwrap())
+        .into_iter()
+        .map(|r| (r.3, r.4))
+        .collect();
+    assert_eq!(
+        kept,
+        vec![("gd/docs/f.md@h2#0".to_string(), nanos(20))],
+        "an alias another stream defines never carries h1's date onto h2"
+    );
+}
+
+rigger::test_cases! {
+    /// The alias is defined on another stream of this project.
+    an_alias_on_another_stream_of_the_project_joins_no_facts:
+        an_alias_defined_outside_the_recordings_stream_joins_no_facts(PROJECT, "side-stream");
+    /// The alias is defined on another project's run stream in the same store.
+    an_alias_another_project_defines_joins_no_facts:
+        an_alias_defined_outside_the_recordings_stream_joins_no_facts(
+            "proj-other",
+            rigger::conductor::STREAM,
+        );
 }
 
 /// A test file's proof reference to `name` at `line`: test-origin evidence heading its file's batch.
@@ -2900,5 +3022,159 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     assert_eq!(
         graph, fresh,
         "the rebuilt ledgers are intact and the raced emit is folded"
+    );
+}
+
+/// The one note every read-only surface prints while `graph.db` owes its rebuild.
+fn rebuild_owed_note() -> String {
+    format!(
+        "note: {} - until then the context graph answers as it stands",
+        rigger::contextgraph::REBUILD_OWED
+    )
+}
+
+/// Given a `graph.db` still at the old fold rule, every read-only surface - `rigger graph --show`,
+/// `rigger validate` and `rigger dash --export` - says once that the rebuild is owed, naming
+/// `rigger setup`, and writes nothing to the file; once `rigger setup` has paid it, none of them
+/// says it again.
+#[test]
+fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_setup_pays_it() {
+    let store = ReleaseEraStore::new();
+    let (_, err, ok) = run_rigger(store.root(), &["init"]);
+    assert!(
+        ok,
+        "init scaffolds the config validate reads; stderr: {err}"
+    );
+    let surfaces: [&[&str]; 3] = [
+        &["graph", "--show", "src/f.rs::gone"],
+        &["validate"],
+        &["dash", "--export", "snapshot.html"],
+    ];
+    let note = rebuild_owed_note();
+    let before = store.graph_bytes();
+    for args in surfaces {
+        let (out, err, ok) = run_rigger(store.root(), args);
+        assert!(
+            ok,
+            "rigger {} answers as it stands; stdout: {out} stderr: {err}",
+            args.join(" ")
+        );
+        assert_eq!(
+            err.matches(note.as_str()).count(),
+            1,
+            "rigger {} says once that the rebuild is owed; stdout: {out} stderr: {err}",
+            args.join(" ")
+        );
+        assert!(
+            store.graph_bytes() == before,
+            "rigger {} writes nothing to a graph.db owing its rebuild",
+            args.join(" ")
+        );
+    }
+    let (out, err, ok) = run_rigger(store.root(), surfaces[0]);
+    assert!(
+        ok && out.contains("src/f.rs::gone"),
+        "graph --show answers from the graph as it stands; stdout: {out} stderr: {err}"
+    );
+
+    let (_, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stderr: {err}");
+    for args in surfaces {
+        let (_, err, _) = run_rigger(store.root(), args);
+        assert!(
+            !err.contains(rigger::contextgraph::REBUILD_OWED),
+            "rigger {} says nothing once the rebuild is paid; stderr: {err}",
+            args.join(" ")
+        );
+    }
+}
+
+/// One `tools/call` of `name` with `arguments` over `mcp`.
+fn tool_call(
+    mcp: &mut common::mcp::McpSession,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    mcp.call(
+        "tools/call",
+        serde_json::json!({"name": name, "arguments": arguments}),
+    )
+}
+
+/// Given a `graph.db` still at the old fold rule, an agent's `rigger mcp` session starts and
+/// serves it as it stands: `rigger_graph` (both selectors) and `rigger_ground` refuse at once
+/// naming `rigger setup`, while `rigger_emit` appends and writes nothing to `graph.db`. When
+/// `rigger setup` pays the rebuild while that session runs, its next `rigger_graph` answers from
+/// the rebuilt graph - the superseded link gone - and its next emit folds live, so the graph stays
+/// exactly the whole log's.
+#[test]
+fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_it_serves() {
+    let store = ReleaseEraStore::new();
+    let before = store.graph_bytes();
+    let mut mcp =
+        common::mcp::McpSession::start_with(store.root(), &["mcp", "--spawn", "u/implementer#0"]);
+    for (tool, arguments) in [
+        ("rigger_graph", serde_json::json!({"around": "docs/f.md"})),
+        ("rigger_graph", serde_json::json!({"show": "alpha"})),
+        ("rigger_ground", serde_json::json!({"query": "alpha"})),
+    ] {
+        let answer = tool_call(&mut mcp, tool, arguments.clone());
+        assert_eq!(
+            answer["error"]["message"],
+            format!("{tool}: {}", rigger::contextgraph::REBUILD_OWED),
+            "{tool} {arguments} refuses naming the rebuild; got: {answer}"
+        );
+    }
+    let decision = |id: &str| {
+        serde_json::json!({
+            "type": "DecisionMade",
+            "data": {"id": id, "summary": "s", "governs": ["src/f.rs::alpha"], "supersedes": ""},
+        })
+    };
+    let emitted = tool_call(&mut mcp, "rigger_emit", decision("d-owed"));
+    assert!(
+        emitted.get("error").is_none(),
+        "the emit succeeds; got: {emitted}"
+    );
+    let log = store.log();
+    assert_eq!(
+        (log.len(), log.last().unwrap().type_.as_str()),
+        (7, "DecisionMade"),
+        "the emit appended to the log"
+    );
+    assert!(
+        store.graph_bytes() == before,
+        "neither the session nor its emit wrote to a graph.db owing its rebuild"
+    );
+
+    let (_, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stderr: {err}");
+    let around = tool_call(
+        &mut mcp,
+        "rigger_graph",
+        serde_json::json!({"around": "docs/f.md"}),
+    );
+    let answer = around["result"].to_string();
+    assert!(
+        around.get("error").is_none()
+            && answer.contains("src/a.rs")
+            && !answer.contains("src/old.rs"),
+        "the same session answers from the rebuilt graph; got: {around}"
+    );
+    let emitted = tool_call(&mut mcp, "rigger_emit", decision("d-paid"));
+    assert!(
+        emitted.get("error").is_none(),
+        "the emit succeeds; got: {emitted}"
+    );
+    let finished = mcp.finish();
+    assert!(
+        finished.status.success(),
+        "the session exits cleanly on EOF; stderr: {}",
+        String::from_utf8_lossy(&finished.stderr)
+    );
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(
+        graph, fresh,
+        "the rebuild folded the first emit and the session folded the second live"
     );
 }
