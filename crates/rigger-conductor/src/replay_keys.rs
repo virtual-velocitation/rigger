@@ -357,18 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_leaves_a_slot_a_newer_generation_has_taken() {
-        let ev = Event::new("T", vec![]);
-        let (h2, h3) = (batch("h2", 2, &ev), batch("h3", 2, &ev));
-        let set = ReplayKeys::seeded(HashSet::new());
-        let (kept, ticket) = install(&set, &h2, false);
-        install(&set, &h3, false);
-        set.forget(&ticket, &kept);
-        assert_eq!(set.tracked(IDENTITY), Some(("h3".into(), keys_of(&h3))));
-        assert!(set.contains(&h3[0].0) && set.contains(&h3[1].0));
-    }
-
-    #[test]
     fn forgetting_leaves_an_empty_slot_a_newer_generation_has_taken() {
         let ev = Event::new("T", vec![]);
         let (h2, h3) = (batch("h2", 2, &ev), batch("h3", 2, &ev));
@@ -382,22 +370,32 @@ mod tests {
         assert_eq!(set.tracked(IDENTITY), Some(("h3".into(), vec![])));
     }
 
+    /// A refused append's forget leaves exactly what a later install holds, whether the later
+    /// install moved the identity to a newer generation (h2 then h3) or moved it away and back to
+    /// the forgotten install's very generation, keeping the same key strings (h2, h1, then h2).
     #[test]
-    fn forgetting_an_install_whose_generation_moved_and_came_back_leaves_the_reinstall() {
+    fn forgetting_an_install_a_later_install_superseded_leaves_the_later_slot() {
         let ev = Event::new("T", vec![]);
-        let (h2, h1) = (batch("h2", 2, &ev), batch("h1", 1, &ev));
-        let set = ReplayKeys::seeded(HashSet::new());
-        let (kept_a, ticket_a) = install(&set, &h2, false);
-        install(&set, &h1, false);
-        let (kept_d, _) = install(&set, &h2, false);
-        assert_eq!(
-            kept_d, kept_a,
-            "the reinstall keeps the very same key strings"
+        let (h1, h2, h3) = (
+            batch("h1", 1, &ev),
+            batch("h2", 2, &ev),
+            batch("h3", 2, &ev),
         );
-        set.forget(&ticket_a, &kept_a);
-        assert_eq!(set.tracked(IDENTITY), Some(("h2".into(), keys_of(&h2))));
-        assert!(set.contains(&h2[0].0) && set.contains(&h2[1].0));
-        assert_eq!(install(&set, &h2, false).0, Vec::<String>::new());
+        for (installs, generation) in [(vec![&h2, &h3], "h3"), (vec![&h2, &h1, &h2], "h2")] {
+            let set = ReplayKeys::seeded(HashSet::new());
+            let (kept, ticket) = install(&set, installs[0], false);
+            for later in &installs[1..] {
+                install(&set, later, false);
+            }
+            set.forget(&ticket, &kept);
+            let last = installs.last().unwrap();
+            assert_eq!(
+                set.tracked(IDENTITY),
+                Some((generation.into(), keys_of(last)))
+            );
+            assert!(set.contains(&last[0].0) && set.contains(&last[1].0));
+            assert_eq!(install(&set, last, false).0, Vec::<String>::new());
+        }
     }
 
     #[test]
