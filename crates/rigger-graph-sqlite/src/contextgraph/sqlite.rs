@@ -4041,7 +4041,12 @@ mod tests {
             decision_at("d1", "a.rs", 1),
             event_at(TYPE_DECISION_MADE, b"{ not valid json", 2),
             event_at(TYPE_UNIT_INTEGRATED, br#"{"unit": 5}"#, 3),
-            decision_at("d4", "b.rs", 4),
+            event_at(
+                TYPE_DECISION_MADE,
+                br#"{"id":"d-trailing","governs":["t.rs"]} x"#,
+                4,
+            ),
+            decision_at("d5", "b.rs", 5),
         ];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
@@ -4053,23 +4058,23 @@ mod tests {
         assert_eq!(
             (
                 rebuilt,
-                (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                (1..=5).map(|at| applied(&p, at)).collect::<Vec<_>>(),
                 live_governs(&p)
                     .into_iter()
                     .map(|g| g.1)
                     .collect::<Vec<_>>(),
             ),
             (
-                Some(2),
-                vec![true; 4],
+                Some(3),
+                vec![true; 5],
                 vec!["a.rs".to_string(), "b.rs".to_string()]
             ),
-            "the two rejected payloads are passed over and counted, recorded as folded, and the \
-             rest fold"
+            "the three rejected payloads (malformed, mistyped, trailing bytes) are passed over and \
+             counted, recorded as folded, and the rest fold"
         );
         drop(p);
         assert_eq!(
-            rebuild_in_batches(path, &[decision_at("d5", "c.rs", 5)], 10, &mut Vec::new()).unwrap(),
+            rebuild_in_batches(path, &[decision_at("d6", "c.rs", 6)], 10, &mut Vec::new()).unwrap(),
             Some(0),
             "a rebuild that rejects nothing passed over nothing"
         );

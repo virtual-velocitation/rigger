@@ -4653,7 +4653,13 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
         ok,
         "the first emit creates the store and graph; stderr: {err}"
     );
-    let rejected = append_unfolded_decision(root, b"{ not valid json");
+    let rejected = [
+        append_unfolded_decision(root, b"{ not valid json"),
+        append_unfolded_decision(
+            root,
+            br#"{"id":"d-trailing","summary":"s","governs":["src/t.rs"],"supersedes":""} x"#,
+        ),
+    ];
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
@@ -4664,17 +4670,18 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
                     || l.starts_with("rebuilt graph.db")
                     || l.starts_with("passed over "))
                 .collect::<Vec<_>>(),
-            applied(&rigger_file(root, "graph.db"), rejected),
+            rejected.map(|at| applied(&rigger_file(root, "graph.db"), at)),
         ),
         (
             vec![
                 LOST_FOLD_REBUILD_LINE,
                 "rebuilt graph.db from the event log",
-                "passed over 1 event(s) whose payload the fold rejects, recorded as folded",
+                "passed over 2 event(s) whose payload the fold rejects, recorded as folded",
             ],
-            true
+            [true, true]
         ),
-        "setup rebuilds, and says the one event it passed over; stdout: {out}"
+        "setup rebuilds, and says the two events it passed over - a malformed payload and one \
+         with trailing bytes; stdout: {out}"
     );
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(

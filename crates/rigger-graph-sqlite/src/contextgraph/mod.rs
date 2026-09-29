@@ -138,6 +138,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             "each is refused, naming its type"
         );
+        // One object carrying every field any judged type requires, so each type accepts it -
+        // and the same object followed by trailing bytes, which the fold's own parse
+        // (`serde_json::from_slice`) rejects, so the judge must too.
+        let every_field = br#"{"id":"i","mention":"m","file":"f","name":"n","kind":"k","line":1,"from":"a","to":"b","rel":"r","alias":"a","canonical":"c","node":"n","community":"c","concept":"c"}"#;
+        let trailing = [&every_field[..], b" x"].concat();
+        assert_eq!(
+            judged
+                .iter()
+                .map(|t| (
+                    check_fold_payload(t, every_field),
+                    check_fold_payload(t, &trailing)
+                ))
+                .collect::<Vec<_>>(),
+            judged
+                .iter()
+                .map(|t| (
+                    Ok(()),
+                    Err(format!(
+                        "{t} payload: trailing characters at line 1 column {}",
+                        every_field.len() + 2
+                    ))
+                ))
+                .collect::<Vec<_>>(),
+            "a payload the fold's parse rejects for its trailing bytes is refused, naming its type"
+        );
         assert_eq!(
             [TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, "Unheard"].map(|t| check_fold_payload(t, b"x")),
             [Ok(()), Ok(()), Ok(())],
