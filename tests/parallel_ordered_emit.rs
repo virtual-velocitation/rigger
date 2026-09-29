@@ -84,9 +84,7 @@ fn drive_paced(
 /// order, alongside the stats it returns.
 #[cfg(feature = "symbols")]
 fn record_emitted(
-    ingest: impl FnOnce(
-        &mut dyn FnMut(&[(String, &rigger::eventstore::Event)]),
-    ) -> rigger::ingest::IngestStats,
+    ingest: impl FnOnce(&mut dyn rigger::ingest::BatchSink) -> rigger::ingest::IngestStats,
 ) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
     let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
     let stats = ingest(&mut |batch| {

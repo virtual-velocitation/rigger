@@ -40,7 +40,7 @@
 //!  - the fold SQL itself (`ensure_node`'s merge, `supersede_file_edges`, the `r.name.is_empty()`
 //!    guard's own correctness given a hand-built event sequence) - the implementer's own
 //!    `sqlite.rs::migration_c3` tests own that array of cases directly;
-//!  - the in-process double-exclusion replay-key collision fix (`RunCtx::replayed_generations` /
+//!  - the in-process double-exclusion replay-key collision fix (`ReplayKeys::install` /
 //!    `RunCtx::emit_keyed_batch`'s stale-generation retirement): `RunCtx` is a private, non-`pub`
 //!    struct with no public constructor anywhere in the crate's public surface, and
 //!    `conductor::run`'s only production call to `ingest_project_batches` (src/conductor.rs:7985)
