@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::contextgraph::{Fold, Located, Projection};
+use crate::contextgraph::{wired, Fold, Located, Projection};
 use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
@@ -829,16 +829,6 @@ pub fn emit_event<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
     })
 }
 
-/// The graph a surface was wired with, as [`emit_event`] takes it: a surface wired with none
-/// folds nothing and says so.
-pub fn wired(
-    graph: Option<&dyn Projection>,
-) -> Result<&dyn Projection, crate::contextgraph::Error> {
-    graph.ok_or_else(|| {
-        crate::contextgraph::Error("no context graph is wired to this surface".to_string())
-    })
-}
-
 /// The append half of [`emit_event`]: refuse what the emit surface refuses, append the event, and
 /// return it carrying the position the store issued.
 fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Event, String> {
@@ -1510,7 +1500,7 @@ mod tests {
             emit_event(&cli_store, "run", || wired(None), &args).expect("the core must append");
         assert_eq!(
             emitted.fold,
-            Fold::NotFolded("graph: no context graph is wired to this surface".to_string()),
+            Fold::NotFolded("graph: no context graph is wired".to_string()),
             "a surface wired with no graph folds nothing and says so"
         );
 

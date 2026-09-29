@@ -256,7 +256,7 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     let appended2 = rigger::ingest::append_and_fold_batch(&store2, None, "main", &batch2).unwrap();
     assert_eq!(
         appended2.fold,
-        rigger::contextgraph::Fold::NotFolded("no context graph is wired".to_string()),
+        rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
         "graph=None folds nothing and says so"
     );
     let appended2 = appended2.appended;
@@ -380,7 +380,7 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     };
     assert_eq!(
         rigger::contextgraph::Fold::of_batch(Some(&failing), &batch),
-        rigger::contextgraph::Fold::NotFolded("graph: boom".to_string()),
+        rigger::contextgraph::Fold::NotFolded("graph: apply failed at position 2".to_string()),
         "an apply error must surface from the default apply_batch"
     );
     assert_eq!(

@@ -592,6 +592,38 @@ fn the_public_link_pipeline_folds_edges_that_emanate_from_their_typed_design_int
     );
 }
 
+/// The design-intent edges (from, rel, to, tier) the public link pipeline folds from `order`'s
+/// sources, walked in that order, sorted.
+#[cfg(feature = "symbols")]
+fn fold_edge_set(order: &[(&str, &str)]) -> Vec<(String, String, String, String)> {
+    use rigger::grounder::design::events::link_events;
+    use rigger::grounder::design::extract::extract_links;
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+    for &(path, contents) in order {
+        for mut e in link_events(&extract_links(path, contents)) {
+            pos += 1;
+            e.position = pos;
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                rigger::contextgraph::Fold::Folded
+            );
+        }
+    }
+    // Seed at every possible from-node (each source doc, and the rationale comment site) so the
+    // depth-1 subgraph captures every folded design-intent edge.
+    let mut seeds: Vec<String> = order.iter().map(|&(path, _)| path.to_string()).collect();
+    seeds.push("src/e.rs#L2".to_string());
+    let g = p.subgraph(&seeds, 1).unwrap();
+    let mut tuples: Vec<(String, String, String, String)> = g
+        .edges
+        .iter()
+        .map(|e| (e.from.clone(), e.rel.clone(), e.to.clone(), e.tier.clone()))
+        .collect();
+    tuples.sort();
+    tuples
+}
+
 #[cfg(feature = "symbols")]
 #[test]
 fn the_public_link_pipeline_is_an_order_independent_reproducible_edge_rebuild() {
@@ -602,35 +634,6 @@ fn the_public_link_pipeline_is_an_order_independent_reproducible_edge_rebuild() 
     // the doc tree in whatever order the filesystem yields. Fold the same multi-file source SET twice,
     // once forward and once with the file order reversed, and prove the folded edge set (from, rel,
     // to, tier) is identical, so the design-intent edge layer is independent of the walk order.
-    fn fold_edge_set(order: &[(&str, &str)]) -> Vec<(String, String, String, String)> {
-        use rigger::grounder::design::events::link_events;
-        use rigger::grounder::design::extract::extract_links;
-        let p = Projector::open(":memory:", "test").unwrap();
-        let mut pos = 0u64;
-        for &(path, contents) in order {
-            for mut e in link_events(&extract_links(path, contents)) {
-                pos += 1;
-                e.position = pos;
-                assert_eq!(
-                    rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-                    rigger::contextgraph::Fold::Folded
-                );
-            }
-        }
-        // Seed at every possible from-node (each source doc, and the rationale comment site) so the
-        // depth-1 subgraph captures every folded design-intent edge.
-        let mut seeds: Vec<String> = order.iter().map(|&(path, _)| path.to_string()).collect();
-        seeds.push("src/e.rs#L2".to_string());
-        let g = p.subgraph(&seeds, 1).unwrap();
-        let mut tuples: Vec<(String, String, String, String)> = g
-            .edges
-            .iter()
-            .map(|e| (e.from.clone(), e.rel.clone(), e.to.clone(), e.tier.clone()))
-            .collect();
-        tuples.sort();
-        tuples
-    }
-
     let sources: [(&str, &str); 3] = [
         (
             "docs/architecture.md",

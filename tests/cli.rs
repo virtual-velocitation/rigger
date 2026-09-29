@@ -16538,10 +16538,20 @@ fn emit_event_accepts_every_agent_context_event_and_appends_it() {
         let data = json!({ "id": typ, "summary": format!("payload for {typ}") });
         let args = json!({ "type": typ, "data": data });
 
-        rigger::mcpserver::emit_event(&store, "run", || rigger::mcpserver::wired(None), &args)
-            .unwrap_or_else(|e| {
-                panic!("emit_event must ACCEPT the agent context type {typ:?}; refused with: {e}")
-            });
+        let emitted = rigger::mcpserver::emit_event(
+            &store,
+            "run",
+            || rigger::contextgraph::wired(None),
+            &args,
+        )
+        .unwrap_or_else(|e| {
+            panic!("emit_event must ACCEPT the agent context type {typ:?}; refused with: {e}")
+        });
+        assert_eq!(
+            emitted.fold,
+            rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+            "with no graph wired the accepted emit folds nothing and says so"
+        );
 
         // Exactly one event landed on the `run` stream, carrying the emitted type and the
         // byte-identical payload the caller passed - proof the accept path really appended.

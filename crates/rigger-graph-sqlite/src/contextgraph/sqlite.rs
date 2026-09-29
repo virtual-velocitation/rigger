@@ -3799,11 +3799,7 @@ mod tests {
         };
         let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
         poison.position = 2;
-        let log = [
-            decision("d1", "a.rs", 1),
-            poison,
-            decision("d3", "b.rs", 3),
-        ];
+        let log = [decision("d1", "a.rs", 1), poison, decision("d3", "b.rs", 3)];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
@@ -3831,7 +3827,10 @@ mod tests {
             "a marked file refuses every later fold"
         );
         assert!(
-            Projector::open(path, "test").unwrap().rebuild_owed().unwrap(),
+            Projector::open(path, "test")
+                .unwrap()
+                .rebuild_owed()
+                .unwrap(),
             "a fresh open sees the mark"
         );
         drop(p);

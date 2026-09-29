@@ -1068,7 +1068,7 @@ fn migrate_project_identity(
             let emitted = mcpserver::emit_event(
                 &store,
                 conductor::STREAM,
-                || mcpserver::wired(graph.map(|g| g as &dyn Projection)),
+                || contextgraph::wired(graph.map(|g| g as &dyn Projection)),
                 &args,
             )
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -8630,9 +8630,7 @@ mod tests {
             moved.map(|(n, decision)| (n, decision.fold)),
             Some((
                 1,
-                contextgraph::Fold::NotFolded(
-                    "graph: no context graph is wired to this surface".to_string()
-                )
+                contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string())
             )),
             "one legacy stream renamed; with no graph wired its decision says it was not folded"
         );

@@ -562,11 +562,7 @@ impl Fold {
         if events.is_empty() {
             return Fold::Folded;
         }
-        Self::settle(
-            graph
-                .ok_or_else(|| Error(NO_GRAPH.to_string()))
-                .and_then(|g| g.apply_batch(events, FoldAccess(()))),
-        )
+        Self::settle(wired(graph).and_then(|g| g.apply_batch(events, FoldAccess(()))))
     }
 
     fn settle(folded: Result<(), Error>) -> Self {
@@ -577,8 +573,11 @@ impl Fold {
     }
 }
 
-/// Why events appended with no context graph wired were not folded.
-const NO_GRAPH: &str = "no context graph is wired";
+/// The graph a surface was wired with, as a fold takes it: a surface wired with none folds
+/// nothing and says so.
+pub fn wired(graph: Option<&dyn Projection>) -> Result<&dyn Projection, Error> {
+    graph.ok_or_else(|| Error("no context graph is wired".to_string()))
+}
 
 /// The one spelling of events on the log that the context graph does not hold, and why.
 pub fn not_folded(why: &str) -> String {
@@ -1149,7 +1148,7 @@ mod fold_outcome {
     fn a_batch_with_no_graph_wired_is_not_folded_and_says_so() {
         assert_eq!(
             Fold::of_batch(None, &[at(1)]),
-            Fold::NotFolded("no context graph is wired".to_string())
+            Fold::NotFolded("graph: no context graph is wired".to_string())
         );
     }
 
@@ -1183,24 +1182,21 @@ mod fold_outcome {
         );
     }
 
+    /// An emit's line claims the fold only when it happened; a line that already names the graph
+    /// adds nothing for a fold; both say why for a lost one.
     #[test]
-    fn an_emit_line_claims_the_fold_only_when_it_happened_and_otherwise_says_why() {
+    fn a_report_line_claims_a_fold_only_when_it_happened_and_otherwise_says_why() {
+        let lost = Fold::NotFolded("graph: locked".to_string());
         assert_eq!(
-            fold_clause(&Fold::Folded),
-            " and folded it into the context graph"
+            [fold_clause(&Fold::Folded), fold_loss_clause(&Fold::Folded)],
+            [
+                " and folded it into the context graph".to_string(),
+                String::new()
+            ]
         );
         assert_eq!(
-            fold_clause(&Fold::NotFolded("graph: locked".to_string())),
-            "; not folded into the context graph: graph: locked"
-        );
-    }
-
-    #[test]
-    fn a_line_that_names_the_graph_adds_nothing_for_a_fold_and_the_reason_for_a_lost_one() {
-        assert_eq!(fold_loss_clause(&Fold::Folded), "");
-        assert_eq!(
-            fold_loss_clause(&Fold::NotFolded("graph: locked".to_string())),
-            "; not folded into the context graph: graph: locked"
+            [fold_clause(&lost), fold_loss_clause(&lost)],
+            ["; not folded into the context graph: graph: locked".to_string(); 2]
         );
     }
 
