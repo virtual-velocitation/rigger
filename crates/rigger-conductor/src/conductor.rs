@@ -19129,17 +19129,26 @@ mod tests {
         },
     }
 
+    /// What [`FirstLookup`] does with one armed append: when `hold` is set, signal its sender on
+    /// entry and wait on its receiver (or [`SIGNAL_WAIT`]); then refuse with [`APPEND_REFUSED`]
+    /// when `refuse` is set, and forward otherwise.
+    #[cfg(feature = "symbols")]
+    struct AppendPlay {
+        hold: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+        refuse: bool,
+    }
+
     /// A store double for the run sink's first-sight lookup (spec 101): every method forwards to
     /// `inner`, except that the FIRST `latest_in_group` call - of `group` when one is named, of any
     /// group otherwise - plays `first` before it forwards (or, refused, instead of forwarding), and
-    /// an append armed by [`FirstLookup::refuse_next_append`] is refused. It counts nothing: a test
-    /// counts the lookups by wrapping it in the shared `ReadCountingStore`.
+    /// each append plays the next [`AppendPlay`] armed on it, in arming order. It counts nothing: a
+    /// test counts the lookups by wrapping it in the shared `ReadCountingStore`.
     #[cfg(feature = "symbols")]
     struct FirstLookup<'a> {
         inner: &'a dyn EventStore,
         group: Option<&'static str>,
         first: Mutex<Option<FirstLookupPlay>>,
-        refuse_append: std::sync::atomic::AtomicBool,
+        appends: Mutex<std::collections::VecDeque<AppendPlay>>,
     }
 
     #[cfg(feature = "symbols")]
@@ -19149,7 +19158,7 @@ mod tests {
                 inner,
                 group: None,
                 first: Mutex::new(Some(first)),
-                refuse_append: std::sync::atomic::AtomicBool::new(false),
+                appends: Mutex::default(),
             }
         }
 
@@ -19159,7 +19168,7 @@ mod tests {
                 inner,
                 group: None,
                 first: Mutex::new(None),
-                refuse_append: std::sync::atomic::AtomicBool::new(false),
+                appends: Mutex::default(),
             }
         }
 
@@ -19171,9 +19180,26 @@ mod tests {
             }
         }
 
-        /// Refuse the next append with [`APPEND_REFUSED`], once.
+        /// Refuse the next unplayed append with [`APPEND_REFUSED`], once.
         fn refuse_next_append(&self) {
-            self.refuse_append.store(true, Ordering::SeqCst);
+            self.appends.lock().unwrap().push_back(AppendPlay {
+                hold: None,
+                refuse: true,
+            });
+        }
+
+        /// Hold the next unplayed append: signal `entered` on entry, wait for `release`, then refuse
+        /// it when `refuse` is set and forward it otherwise.
+        fn hold_next_append(
+            &self,
+            entered: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+            refuse: bool,
+        ) {
+            self.appends.lock().unwrap().push_back(AppendPlay {
+                hold: Some((entered, release)),
+                refuse,
+            });
         }
     }
 
@@ -19185,8 +19211,15 @@ mod tests {
             expected: ExpectedRevision,
             events: &[Event],
         ) -> Result<Appended, crate::eventstore::Error> {
-            if self.refuse_append.swap(false, Ordering::SeqCst) {
-                return Err(crate::eventstore::Error::Backend(APPEND_REFUSED.into()));
+            let play = self.appends.lock().unwrap().pop_front();
+            if let Some(AppendPlay { hold, refuse }) = play {
+                if let Some((entered, release)) = hold {
+                    let _ = entered.send(());
+                    let _ = release.recv_timeout(SIGNAL_WAIT);
+                }
+                if refuse {
+                    return Err(crate::eventstore::Error::Backend(APPEND_REFUSED.into()));
+                }
             }
             self.inner.append(stream, expected, events)
         }
@@ -19572,6 +19605,137 @@ mod tests {
             store.reads()[built..],
             [lookup.clone(), lookup],
             "the identity is looked up at first sight and again after the refused append"
+        );
+    }
+
+    /// The generation the run sink tracks for `identity`, with that generation's keys in order -
+    /// `None` when the identity has no slot.
+    #[cfg(feature = "symbols")]
+    fn tracked(ctx: &RunCtx, identity: &str) -> Option<(String, Vec<String>)> {
+        ctx.replayed_generations
+            .lock()
+            .unwrap()
+            .get(identity)
+            .map(|(generation, keys)| {
+                let mut keys: Vec<String> = keys.iter().cloned().collect();
+                keys.sort();
+                (generation.clone(), keys)
+            })
+    }
+
+    /// Spec 101 (A REFUSED APPEND FORGETS ONLY ITS OWN): GIVEN stage A's append of a file's `h2`
+    /// batch in flight, WHEN stage C meets the file's newer `h3`, moves the process to it and is
+    /// still appending it as A's append is refused, THEN A forgets only what it installed: the
+    /// process still tracks `h3` with C's keys, a third sight of `h3` before C's append lands
+    /// appends nothing and asks the store nothing, and `h3` is appended exactly once.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_refused_append_leaves_a_concurrent_newer_generation_tracked_and_appended_once() {
+        let (h2, h3) = (first_sight_batch("h2"), first_sight_batch("h3"));
+        let (h2_keyed, h3_keyed) = (as_keyed(&h2), as_keyed(&h3));
+        let h3_keys = vec![h3[0].0.clone(), h3[1].0.clone()];
+        let inner = Store::open(":memory:").unwrap();
+        let held = FirstLookup::forwarding(&inner);
+        let store = crate::test_support::ReadCountingStore::new(&held);
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let cfg = Config::default();
+        let ctx = &RunCtx::for_test(&cfg, &deps);
+        let built = store.reads().len();
+        let (a_entered_tx, a_entered_rx) = std::sync::mpsc::channel();
+        let (a_release_tx, a_release_rx) = std::sync::mpsc::channel();
+        let (c_entered_tx, c_entered_rx) = std::sync::mpsc::channel();
+        let (c_release_tx, c_release_rx) = std::sync::mpsc::channel();
+        held.hold_next_append(a_entered_tx, a_release_rx, true);
+        held.hold_next_append(c_entered_tx, c_release_rx, false);
+
+        let (refused, after_refusal, third_sight) = std::thread::scope(|s| {
+            let stage_a = s.spawn(|| ctx.emit_keyed_batch(&h2_keyed));
+            a_entered_rx
+                .recv_timeout(SIGNAL_WAIT)
+                .expect("stage A never reached its append of h2");
+            let stage_c = s.spawn(|| ctx.emit_keyed_batch(&h3_keyed));
+            c_entered_rx
+                .recv_timeout(SIGNAL_WAIT)
+                .expect("stage C never reached its append of h3");
+            a_release_tx.send(()).unwrap();
+            let refused = format!("{:?}", stage_a.join().unwrap());
+            let after_refusal = tracked(ctx, FIRST_SIGHT_IDENTITY);
+            let third_sight = format!("{:?}", ctx.emit_keyed_batch(&h3_keyed));
+            c_release_tx.send(()).unwrap();
+            stage_c.join().unwrap().unwrap();
+            (refused, after_refusal, third_sight)
+        });
+
+        assert!(
+            refused.starts_with("Err(") && refused.contains(APPEND_REFUSED),
+            "stage A's refused append is its emit's error; got {refused}"
+        );
+        assert_eq!(
+            after_refusal,
+            Some(("h3".to_string(), h3_keys.clone())),
+            "A's refused append leaves C's slot and keys as C installed them"
+        );
+        assert_eq!(third_sight, "Ok(())");
+        assert_eq!(
+            derived_keys(&inner),
+            h3_keys,
+            "h2 is never recorded and h3 is appended exactly once"
+        );
+        assert_eq!(
+            store.reads()[built..],
+            [crate::test_support::CountedRead::LatestInGroup {
+                stream: STREAM.to_string(),
+                group: FIRST_SIGHT_IDENTITY.to_string(),
+            }],
+            "the identity is looked up once, at A's first sight"
+        );
+    }
+
+    /// Spec 101 (A REFUSED APPEND IS RETRIED): GIVEN a batch whose keys are not the per-file key
+    /// shape - it names no identity, so the process tracks no generation for it and asks the store
+    /// nothing - WHEN its append is refused, THEN the next emit of it appends it whole.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_batch_naming_no_identity_whose_append_is_refused_appends_whole_on_the_next_emit() {
+        let batch: Vec<(String, Event)> = (0..2)
+            .map(|i| {
+                (
+                    format!("unshaped#{i}"),
+                    Event::new(
+                        contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        serde_json::to_vec(&json!({"file": "src/a.rs", "i": i})).unwrap(),
+                    ),
+                )
+            })
+            .collect();
+        let inner = Store::open(":memory:").unwrap();
+        let held = FirstLookup::forwarding(&inner);
+        let store = crate::test_support::ReadCountingStore::new(&held);
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let built = store.reads().len();
+
+        held.refuse_next_append();
+        let refused = format!("{:?}", ctx.emit_keyed_batch(&as_keyed(&batch)));
+        assert!(
+            refused.starts_with("Err(") && refused.contains(APPEND_REFUSED),
+            "a refused append is the emit's error; got {refused}"
+        );
+        assert_eq!(derived_keys(&inner), Vec::<String>::new());
+
+        ctx.emit_keyed_batch(&as_keyed(&batch)).unwrap();
+        assert_eq!(
+            derived_keys(&inner),
+            ["unshaped#0", "unshaped#1"],
+            "the next emit appends the refused batch whole"
+        );
+        assert_eq!(
+            store.reads()[built..],
+            [],
+            "a batch naming no identity asks the store nothing"
         );
     }
 
