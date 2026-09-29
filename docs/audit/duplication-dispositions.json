@@ -485,9 +485,14 @@
     "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
   },
   {
-    "id": "dup-20d63cdc7260",
+    "id": "dup-3f117fd28c02",
     "disposition": "not-a-duplicate",
-    "reason": "`Heartbeat::start` spawns a heartbeat thread while `McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor."
+    "reason": "`McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor; six call sites open a plain `rigger mcp` session through it."
+  },
+  {
+    "id": "dup-e3a49d3d408e",
+    "disposition": "not-a-duplicate",
+    "reason": "Two unrelated one-line `format!` wrappers sharing only their token shape: the rebuild-owed note a read-only surface prints versus the platform's product binary file name."
   },
   {
     "id": "dup-781b5348543b",

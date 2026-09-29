@@ -7138,25 +7138,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-20d63cdc7260",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "tests/cli.rs",
-        "name": "start",
-        "content_hash": "fbfdf93be3cee8d1"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "start_with",
-        "content_hash": "e46681f6ad70efff"
-      }
-    ],
-    "proposed_home": "cli::mcp_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
-    "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-4fbc57c56116",
     "classification": "near",
     "sites": [
@@ -7367,6 +7348,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-3f117fd28c02",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "tests/common/mcp.rs",
+        "name": "start",
+        "content_hash": "d99774b4d1591d27"
+      },
+      {
+        "file": "tests/common/mcp.rs",
+        "name": "start_with",
+        "content_hash": "5c8623e27b20ac2a"
+      }
+    ],
+    "proposed_home": "mcp::mcp_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
+    "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-c99581d3e41e",
     "classification": "near",
     "sites": [
@@ -7458,6 +7458,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-e3a49d3d408e",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "rebuild_owed_note",
+        "content_hash": "b10d50f791eb338a"
+      },
+      {
+        "file": "tests/product_binary_authority_periphery.rs",
+        "name": "product_file_name",
+        "content_hash": "214fd7349ebe59dd"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/product_binary_authority_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
