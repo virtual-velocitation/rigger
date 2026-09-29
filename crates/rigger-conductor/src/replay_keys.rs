@@ -183,36 +183,24 @@ mod tests {
 
     const IDENTITY: &str = "gc/src/a.rs";
 
-    fn batch(generation: &str, n: usize) -> Vec<(String, Event)> {
+    /// The `n` keyed events of [`IDENTITY`]'s batch at `generation`, each carrying `ev`.
+    fn batch<'e>(generation: &str, n: usize, ev: &'e Event) -> Vec<(String, &'e Event)> {
         (0..n)
-            .map(|i| {
-                (
-                    format!("{IDENTITY}@{generation}#{i}"),
-                    Event::new("T", vec![]),
-                )
-            })
+            .map(|i| (format!("{IDENTITY}@{generation}#{i}"), ev))
             .collect()
-    }
-
-    fn keyed(batch: &[(String, Event)]) -> Vec<(String, &Event)> {
-        batch.iter().map(|(key, ev)| (key.clone(), ev)).collect()
     }
 
     /// Install `batch` answering `recorded` at first sight, every event rebuilt as itself; the
     /// survivors' keys.
-    fn install(set: &ReplayKeys, batch: &[(String, Event)], recorded: bool) -> Vec<String> {
-        set.install(
-            &keyed(batch),
-            || Ok::<_, ()>(recorded),
-            |_, ev| Some(ev.clone()),
-        )
-        .unwrap()
-        .into_iter()
-        .map(|(key, _)| key)
-        .collect()
+    fn install(set: &ReplayKeys, batch: &[(String, &Event)], recorded: bool) -> Vec<String> {
+        set.install(batch, || Ok::<_, ()>(recorded), |_, ev| Some(ev.clone()))
+            .unwrap()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect()
     }
 
-    fn keys_of(batch: &[(String, Event)]) -> Vec<String> {
+    fn keys_of(batch: &[(String, &Event)]) -> Vec<String> {
         batch.iter().map(|(key, _)| key.clone()).collect()
     }
 
@@ -229,7 +217,8 @@ mod tests {
 
     #[test]
     fn a_recorded_batch_survives_nothing_and_an_unrecorded_one_survives_whole() {
-        let (h1, h2) = (batch("h1", 2), batch("h2", 2));
+        let ev = Event::new("T", vec![]);
+        let (h1, h2) = (batch("h1", 2, &ev), batch("h2", 2, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
         assert_eq!(install(&set, &h1, true), Vec::<String>::new());
         assert_eq!(set.tracked(IDENTITY), Some(("h1".into(), keys_of(&h1))));
@@ -241,16 +230,17 @@ mod tests {
 
     #[test]
     fn an_unanswered_first_sight_installs_nothing_and_a_seen_identity_is_not_asked_again() {
-        let h1 = batch("h1", 1);
+        let ev = Event::new("T", vec![]);
+        let h1 = batch("h1", 1, &ev);
         let set = ReplayKeys::seeded(HashSet::new());
-        let unanswered = set.install(&keyed(&h1), || Err("down"), |_, ev| Some(ev.clone()));
+        let unanswered = set.install(&h1, || Err("down"), |_, ev| Some(ev.clone()));
         assert_eq!(unanswered.map(|s| s.len()), Err("down"));
         assert_eq!(set.tracked(IDENTITY), None);
         assert!(!set.contains(&h1[0].0));
 
         assert_eq!(install(&set, &h1, false), keys_of(&h1));
         let again = set.install(
-            &keyed(&h1),
+            &h1,
             || -> Result<bool, ()> { panic!("a seen identity is never looked up again") },
             |_, ev| Some(ev.clone()),
         );
@@ -259,7 +249,8 @@ mod tests {
 
     #[test]
     fn a_new_generation_retires_the_previous_ones_keys() {
-        let (h1, h2) = (batch("h1", 2), batch("h2", 1));
+        let ev = Event::new("T", vec![]);
+        let (h1, h2) = (batch("h1", 2, &ev), batch("h2", 1, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
         install(&set, &h1, true);
         assert_eq!(install(&set, &h2, false), keys_of(&h2));
@@ -270,11 +261,12 @@ mod tests {
 
     #[test]
     fn an_event_rebuild_skips_appends_nothing_and_records_no_key() {
-        let h1 = batch("h1", 2);
+        let ev = Event::new("T", vec![]);
+        let h1 = batch("h1", 2, &ev);
         let set = ReplayKeys::seeded(HashSet::new());
         let survivors = set
             .install(
-                &keyed(&h1),
+                &h1,
                 || Ok::<_, ()>(false),
                 |key, ev| (!key.ends_with("#0")).then(|| ev.clone()),
             )
@@ -292,33 +284,36 @@ mod tests {
 
     #[test]
     fn forgetting_the_only_install_of_a_generation_removes_its_slot_and_keys() {
-        let h1 = batch("h1", 2);
+        let ev = Event::new("T", vec![]);
+        let h1 = batch("h1", 2, &ev);
         let set = ReplayKeys::seeded(HashSet::new());
         let kept = install(&set, &h1, false);
-        set.forget(&keyed(&h1), &kept);
+        set.forget(&h1, &kept);
         assert_eq!(set.tracked(IDENTITY), None);
         assert!(!set.contains(&h1[0].0) && !set.contains(&h1[1].0));
     }
 
     #[test]
     fn forgetting_leaves_the_keys_an_earlier_install_of_the_same_generation_holds() {
-        let (first, whole) = (batch("h1", 1), batch("h1", 2));
+        let ev = Event::new("T", vec![]);
+        let (first, whole) = (batch("h1", 1, &ev), batch("h1", 2, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
         install(&set, &first, false);
         let kept = install(&set, &whole, false);
         assert_eq!(kept, [whole[1].0.clone()]);
-        set.forget(&keyed(&whole), &kept);
+        set.forget(&whole, &kept);
         assert_eq!(set.tracked(IDENTITY), Some(("h1".into(), keys_of(&first))));
         assert!(set.contains(&whole[0].0) && !set.contains(&whole[1].0));
     }
 
     #[test]
     fn forgetting_leaves_a_slot_a_newer_generation_has_taken() {
-        let (h2, h3) = (batch("h2", 2), batch("h3", 2));
+        let ev = Event::new("T", vec![]);
+        let (h2, h3) = (batch("h2", 2, &ev), batch("h3", 2, &ev));
         let set = ReplayKeys::seeded(HashSet::new());
         let kept = install(&set, &h2, false);
         install(&set, &h3, false);
-        set.forget(&keyed(&h2), &kept);
+        set.forget(&h2, &kept);
         assert_eq!(set.tracked(IDENTITY), Some(("h3".into(), keys_of(&h3))));
         assert!(set.contains(&h3[0].0) && set.contains(&h3[1].0));
     }
