@@ -19124,6 +19124,16 @@ mod tests {
             }
         }
 
+        /// This double with no play: every lookup forwards.
+        fn forwarding(inner: &'a dyn EventStore) -> Self {
+            FirstLookup {
+                inner,
+                group: None,
+                first: Mutex::new(None),
+                refuse_append: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+
         /// This double playing its first lookup on `group` only: every other group forwards.
         fn of_group(self, group: &'static str) -> Self {
             FirstLookup {
@@ -19394,6 +19404,145 @@ mod tests {
             }],
             "the identity is looked up once, at first sight, however many stages and generations \
              meet it after - and nothing else is read"
+        );
+    }
+
+    /// The one batch identity the refused-append tests drive the run sink with.
+    #[cfg(feature = "symbols")]
+    const FIRST_SIGHT_IDENTITY: &str = "gc/src/a.rs";
+
+    /// The two keyed events of [`FIRST_SIGHT_IDENTITY`]'s batch at `generation`.
+    #[cfg(feature = "symbols")]
+    fn first_sight_batch(generation: &str) -> Vec<(String, Event)> {
+        (0..2)
+            .map(|i| {
+                (
+                    format!("{FIRST_SIGHT_IDENTITY}@{generation}#{i}"),
+                    Event::new(
+                        contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        serde_json::to_vec(
+                            &json!({"file": "src/a.rs", "name": generation, "i": i}),
+                        )
+                        .unwrap(),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// `batch` as the run sink takes it.
+    #[cfg(feature = "symbols")]
+    fn as_keyed(batch: &[(String, Event)]) -> Vec<(String, &Event)> {
+        batch.iter().map(|(key, ev)| (key.clone(), ev)).collect()
+    }
+
+    /// Spec 101 (A REFUSED APPEND IS RETRIED): GIVEN a store that never recorded a file, WHEN the
+    /// run sink's append of that file's batch is refused, THEN the emit fails and records nothing,
+    /// and the next sight of the same batch asks the store afresh and appends it whole - the refused
+    /// batch left no key or generation behind that would read as already appended.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_batch_whose_append_is_refused_at_first_sight_appends_whole_on_the_next_sight() {
+        let h1 = first_sight_batch("h1");
+        let inner = Store::open(":memory:").unwrap();
+        let held = FirstLookup::forwarding(&inner);
+        let store = crate::test_support::ReadCountingStore::new(&held);
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let built = store.reads().len();
+
+        held.refuse_next_append();
+        let refused = format!("{:?}", ctx.emit_keyed_batch(&as_keyed(&h1)));
+        assert!(
+            refused.starts_with("Err(") && refused.contains(APPEND_REFUSED),
+            "a refused append is the emit's error; got {refused}"
+        );
+        assert_eq!(derived_keys(&inner), Vec::<String>::new());
+
+        ctx.emit_keyed_batch(&as_keyed(&h1)).unwrap();
+        assert_eq!(
+            derived_keys(&inner),
+            [h1[0].0.clone(), h1[1].0.clone()],
+            "the next sight appends the refused batch whole"
+        );
+        let lookup = crate::test_support::CountedRead::LatestInGroup {
+            stream: STREAM.to_string(),
+            group: FIRST_SIGHT_IDENTITY.to_string(),
+        };
+        assert_eq!(
+            store.reads()[built..],
+            [lookup.clone(), lookup],
+            "the refused batch left no slot behind, so its next sight asks the store afresh"
+        );
+    }
+
+    /// Spec 101 (A REFUSED APPEND IS RETRIED): GIVEN a store recording `h1` as a file's latest
+    /// generation, which the process has seen, WHEN the append of the file's changed `h2` batch is
+    /// refused, THEN the process falls back to what the store holds: a later `h1` (the tree reverted
+    /// before the retry) appends nothing, because `h1` is still the recorded generation, and a later
+    /// `h2` appends once.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_generation_whose_append_is_refused_leaves_the_process_on_the_recorded_generation() {
+        let (h1, h2) = (first_sight_batch("h1"), first_sight_batch("h2"));
+        let inner = Store::open(":memory:").unwrap();
+        let recorded: Vec<Event> = h1
+            .iter()
+            .map(|(key, ev)| crate::ingest::keyed_derived_event(ev.clone(), key))
+            .collect();
+        inner
+            .append(STREAM, ExpectedRevision::Any, &recorded)
+            .unwrap();
+        let held = FirstLookup::forwarding(&inner);
+        let store = crate::test_support::ReadCountingStore::new(&held);
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let built = store.reads().len();
+        let h1_keys = [h1[0].0.clone(), h1[1].0.clone()];
+
+        ctx.emit_keyed_batch(&as_keyed(&h1)).unwrap();
+        assert_eq!(
+            derived_keys(&inner),
+            h1_keys,
+            "the recorded h1 appends nothing"
+        );
+
+        held.refuse_next_append();
+        let refused = format!("{:?}", ctx.emit_keyed_batch(&as_keyed(&h2)));
+        assert!(
+            refused.starts_with("Err(") && refused.contains(APPEND_REFUSED),
+            "a refused append is the emit's error; got {refused}"
+        );
+
+        ctx.emit_keyed_batch(&as_keyed(&h1)).unwrap();
+        assert_eq!(
+            derived_keys(&inner),
+            h1_keys,
+            "h1 is still the recorded generation, so the reverted batch appends nothing"
+        );
+        ctx.emit_keyed_batch(&as_keyed(&h2)).unwrap();
+        assert_eq!(
+            derived_keys(&inner),
+            [
+                h1_keys[0].clone(),
+                h1_keys[1].clone(),
+                h2[0].0.clone(),
+                h2[1].0.clone()
+            ],
+            "the changed h2 appends once its append lands"
+        );
+        let lookup = crate::test_support::CountedRead::LatestInGroup {
+            stream: STREAM.to_string(),
+            group: FIRST_SIGHT_IDENTITY.to_string(),
+        };
+        assert_eq!(
+            store.reads()[built..],
+            [lookup.clone(), lookup],
+            "the identity is looked up at first sight and again after the refused append"
         );
     }
 
