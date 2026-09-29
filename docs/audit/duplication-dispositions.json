@@ -963,5 +963,10 @@
     "id": "dup-6ef712aab260",
     "disposition": "not-a-duplicate",
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
+  },
+  {
+    "id": "dup-e20edf1fe4a4",
+    "disposition": "not-a-duplicate",
+    "reason": "`refuse_next_append` arms a test store double's one-shot append refusal while the workflow driver's `finish` marks the conductor finished; they share only the one-line atomic flag store."
   }
 ]

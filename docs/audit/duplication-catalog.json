@@ -306,7 +306,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7ecd39c6f4c7",
+    "id": "dup-d26e0f16f713",
     "classification": "semantic",
     "sites": [
       {
@@ -323,6 +323,11 @@
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "no_result_error",
         "content_hash": "4a002dd947bf783c"
+      },
+      {
+        "file": "crates/rigger-domain/src/ingest.rs",
+        "name": "a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error",
+        "content_hash": "69fdfd75fbc8c354"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -361,7 +366,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 10 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 11 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -3739,6 +3744,25 @@
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
     "note": "mandatory sweep: .rigger-path string literals - 549 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-e20edf1fe4a4",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "refuse_next_append",
+        "content_hash": "79ac94363af44337"
+      },
+      {
+        "file": "crates/rigger-driver/src/driver/workflow.rs",
+        "name": "finish",
+        "content_hash": "6c2f8ccc65ac7cf9"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-driver/src/driver/workflow.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
   {
