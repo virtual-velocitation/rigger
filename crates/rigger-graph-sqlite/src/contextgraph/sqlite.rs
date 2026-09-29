@@ -3889,57 +3889,141 @@ mod tests {
         assert!(!again, "a paid rebuild does not run again");
     }
 
+    /// A lost fold owed by the `graph.db` at `path`, then paid: a fresh projector on the file
+    /// names the lost fold as the cause, a rebuild from `log` returns that it rebuilt, and the
+    /// rebuilt file owes nothing and folds again.
+    fn a_fresh_projector_owes_the_lost_fold_and_a_rebuild_pays_it(path: &str, log: &[Event]) {
+        assert_eq!(
+            Projector::open(path, "test")
+                .unwrap()
+                .owed_because()
+                .unwrap(),
+            vec![OWED_LOST_FOLD],
+            "a fresh projector on the file sees the lost fold"
+        );
+        let rebuilt = Projector::rebuild(
+            path,
+            "test",
+            &mut |after, sink| stream_past(log, after, 10, sink),
+            &mut |_| {},
+        );
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (rebuilt.unwrap(), p.owed_because().unwrap()),
+            (true, Vec::<&str>::new()),
+            "the rebuild pays the debt"
+        );
+        crate::test_support::folds(&p, &[decision_at("d9", "z.rs", 9)]);
+    }
+
+    /// A `DecisionMade` `id` governing `file` at log position `position`.
+    fn decision_at(id: &str, file: &str, position: u64) -> Event {
+        let payload = serde_json::json!({
+            "id": id, "summary": "x", "governs": [file], "supersedes": ""
+        });
+        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+        e.position = position;
+        e
+    }
+
     /// A batch that fails to fold into a current `graph.db` whose owed mark cannot be written (its
-    /// directory is not writable) is never silent: the fold's own error comes back with the mark's
-    /// failure beside it, and the projector that lost the fold answers as owed from then on,
-    /// naming the lost fold as the cause, and refuses every later fold.
+    /// directory is not writable) records the debt in the file itself, so it outlives the process
+    /// that lost the fold: that projector refuses every later fold, and once the directory is
+    /// writable again a fresh projector on the same file owes the rebuild and a rebuild pays it.
     #[test]
-    fn a_failed_fold_whose_owed_mark_cannot_be_written_says_so_and_still_owes() {
+    fn a_lost_fold_whose_owed_mark_cannot_be_written_is_owed_by_the_file_itself() {
         use crate::contextgraph::Fold;
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         let mark = dir.path().join("graph.db.owed");
-        let p = Projector::open(path, "test").unwrap();
         let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
-        poison.position = 1;
-        let fold_error = match Fold::of_batch(Some(&p), std::slice::from_ref(&poison)) {
-            Fold::NotFolded(why) => why,
-            Fold::Folded => panic!("the poison folds nothing"),
-        };
-        drop(p);
-        std::fs::remove_file(&mark).unwrap();
-
+        poison.position = 2;
+        let log = [decision_at("d1", "a.rs", 1), poison.clone()];
         let p = Projector::open(path, "test").unwrap();
+        crate::test_support::folds(&p, &log[..1]);
+        let fold_error = p.fold_batch(std::slice::from_ref(&poison)).unwrap_err();
+
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
         let folded = Fold::of_batch(Some(&p), std::slice::from_ref(&poison));
-        let (owed, why, marked) = (
-            p.rebuild_owed().unwrap(),
-            p.owed_because().unwrap(),
-            mark.exists(),
-        );
+        let (why, marked) = (p.owed_because().unwrap(), mark.exists());
         let refused = Fold::of_batch(Some(&p), std::slice::from_ref(&poison));
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        drop(p);
         assert_eq!(
-            folded,
-            Fold::NotFolded(format!(
-                "{fold_error}; the mark that graph.db owes its rebuild was not written ({}: \
-                 Permission denied (os error 13)), so only this process knows it",
-                mark.display()
-            )),
-            "the fold's error comes back with the mark's failure beside it"
+            (folded, why, marked, refused),
+            (
+                Fold::NotFolded(fold_error.to_string()),
+                vec![OWED_LOST_FOLD],
+                false,
+                Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
+            ),
+            "the file records the lost fold its mark could not, and refuses every later fold"
         );
+        a_fresh_projector_owes_the_lost_fold_and_a_rebuild_pays_it(path, &log);
+    }
+
+    /// A batch that fails to fold into a `graph.db` where neither the owed mark nor the file can
+    /// record the debt (the directory is not writable and another writer holds the file's lock) is
+    /// never silent: the fold's error comes back with both failures beside it, and the projector
+    /// that lost it owes its rebuild on its own record, refusing every later fold. It records the
+    /// debt the first time it checks with a writable place to put it, so the debt then outlives it:
+    /// a fresh projector owes it and a rebuild pays it - after which the long-lived projector owes
+    /// nothing and folds again.
+    #[test]
+    fn a_lost_fold_no_record_can_hold_is_owed_by_its_projector_until_it_records_it() {
+        use crate::contextgraph::Fold;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let mark = dir.path().join("graph.db.owed");
+        let log = [decision_at("d1", "a.rs", 1), decision_at("d2", "b.rs", 2)];
+        let p = Projector::open(path, "test").unwrap();
+        crate::test_support::folds(&p, &log[..1]);
+        p.conn
+            .lock()
+            .unwrap()
+            .busy_timeout(std::time::Duration::from_millis(1))
+            .unwrap();
+        let writer = Connection::open(path).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let folded = Fold::of_batch(Some(&p), &log[1..]);
+        let (why, marked) = (p.owed_because().unwrap(), mark.exists());
+        let refused = Fold::of_batch(Some(&p), &log[1..]);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        writer.execute_batch("ROLLBACK;").unwrap();
         assert_eq!(
-            (owed, why, marked),
-            (true, vec![OWED_LOST_FOLD], false),
-            "the projector that lost the fold owes its rebuild though no mark was written"
+            (folded, why, marked, refused),
+            (
+                Fold::NotFolded(format!(
+                    "graph: database is locked; the record that graph.db owes its rebuild was not \
+                     written ({}: Permission denied (os error 13); graph.db: database is locked), \
+                     so only this process knows it until it can write it",
+                    mark.display()
+                )),
+                vec![OWED_LOST_FOLD],
+                false,
+                Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
+            ),
+            "the fold's error names both failed records, and its projector still owes the rebuild"
         );
+
         assert_eq!(
-            refused,
-            Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
-            "and it refuses every later fold"
+            (p.owed_because().unwrap(), mark.exists()),
+            (vec![OWED_LOST_FOLD], true),
+            "the next check records the debt where it now can"
         );
+        a_fresh_projector_owes_the_lost_fold_and_a_rebuild_pays_it(path, &log);
+        assert_eq!(
+            p.owed_because().unwrap(),
+            Vec::<&str>::new(),
+            "the long-lived projector owes nothing once the rebuild paid its record"
+        );
+        crate::test_support::folds(&p, &[decision_at("d10", "y.rs", 10)]);
     }
 
     /// A graph file owes its rebuild for what it says: an older fold rule, a lost fold, or both -
