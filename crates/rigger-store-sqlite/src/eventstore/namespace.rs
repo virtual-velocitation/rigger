@@ -8,8 +8,8 @@
 //! backend - dependency inversion buying the single implementation.
 
 use super::{
-    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead, Position,
-    Revision, Subscription, TypeSelection,
+    Appended, Direction, Error, Event, EventBatchSink, EventStore, ExpectedRevision, Filter,
+    GroupHead, Position, Revision, Subscription, TypeSelection,
 };
 
 /// Namespaced wraps an EventStore so all of its data is scoped to one project.
@@ -160,7 +160,7 @@ impl EventStore for Namespaced<'_> {
         stream: &str,
         from: Revision,
         batch: usize,
-        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+        sink: &mut EventBatchSink,
     ) -> Result<(), Error> {
         self.inner
             .read_stream_batched(&self.scoped(stream), from, batch, sink)

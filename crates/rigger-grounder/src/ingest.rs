@@ -18,8 +18,8 @@
 
 use crate::contextgraph::{fold_loss_clause, wired, Fold, Projection};
 use crate::eventstore::{
-    Appended, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead, Position, Revision,
-    Subscription, TypeSelection,
+    Appended, Error, Event, EventBatchSink, EventStore, ExpectedRevision, Filter, GroupHead,
+    Position, Revision, Subscription, TypeSelection,
 };
 
 pub use rigger_domain::ingest::*;
@@ -221,7 +221,7 @@ where
         stream: &str,
         from: Revision,
         batch: usize,
-        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+        sink: &mut EventBatchSink,
     ) -> Result<(), Error> {
         self.store.read_stream_batched(stream, from, batch, sink)
     }

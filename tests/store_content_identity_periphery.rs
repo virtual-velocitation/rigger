@@ -38,8 +38,8 @@ use rigger::contextgraph::{Error as CgError, Projection, TYPE_DECISION_MADE};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{
-    Appended, ContentIdentity, Direction, Error as StoreError, Event, EventStore, ExpectedRevision,
-    Filter, Position, Revision, Subscription,
+    Appended, ContentIdentity, Direction, Error as StoreError, Event, EventBatchSink, EventStore,
+    ExpectedRevision, Filter, Position, Revision, Subscription,
 };
 use rigger::ingest::folding_into;
 
@@ -258,7 +258,7 @@ impl EventStore for PortDouble {
         _stream: &str,
         _from: rigger::eventstore::Revision,
         _batch: usize,
-        _sink: &mut dyn FnMut(&[Event], Position) -> Result<(), StoreError>,
+        _sink: &mut EventBatchSink,
     ) -> Result<(), StoreError> {
         Err(unreadable())
     }

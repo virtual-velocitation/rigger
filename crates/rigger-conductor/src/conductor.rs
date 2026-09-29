@@ -32561,10 +32561,7 @@ mod tests {
                 stream: &str,
                 from: crate::eventstore::Revision,
                 batch: usize,
-                sink: &mut dyn FnMut(
-                    &[Event],
-                    crate::eventstore::Position,
-                ) -> Result<(), crate::eventstore::Error>,
+                sink: &mut crate::eventstore::EventBatchSink,
             ) -> Result<(), crate::eventstore::Error> {
                 self.charge()?;
                 self.inner.read_stream_batched(stream, from, batch, sink)

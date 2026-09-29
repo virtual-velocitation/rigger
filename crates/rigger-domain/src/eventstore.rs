@@ -638,6 +638,10 @@ impl Subscription {
     }
 }
 
+/// Where [`EventStore::read_stream_batched`] hands each batch of events it reads, with the
+/// position of the stream's last event.
+pub type EventBatchSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 's;
+
 /// EventStore is the append-only, bi-temporal log port (KurrentDB-shaped).
 /// Implementations are safe to share across threads.
 ///
@@ -771,7 +775,7 @@ pub trait EventStore: Send + Sync {
         stream: &str,
         from: Revision,
         batch: usize,
-        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+        sink: &mut EventBatchSink,
     ) -> Result<(), Error>;
 
     /// The NEWEST event on `stream` whose [`META_GROUP`] entry is `group` - its position, type and

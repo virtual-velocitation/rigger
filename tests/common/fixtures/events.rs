@@ -1,8 +1,8 @@
 //! Event fixtures.
 
 use rigger::eventstore::{
-    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead, Position,
-    Revision, Subscription, TypeSelection,
+    Appended, Direction, Error, Event, EventBatchSink, EventStore, ExpectedRevision, Filter,
+    GroupHead, Position, Revision, Subscription, TypeSelection,
 };
 
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
@@ -109,10 +109,7 @@ macro_rules! delegate_event_store_reads {
             stream: &str,
             from: rigger::eventstore::Revision,
             batch: usize,
-            sink: &mut dyn FnMut(
-                &[rigger::eventstore::Event],
-                rigger::eventstore::Position,
-            ) -> Result<(), rigger::eventstore::Error>,
+            sink: &mut rigger::eventstore::EventBatchSink,
         ) -> Result<(), rigger::eventstore::Error> {
             self.inner.read_stream_batched(stream, from, batch, sink)
         }
@@ -192,7 +189,7 @@ impl EventStore for SilentStore {
         _stream: &str,
         _from: Revision,
         _batch: usize,
-        _sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+        _sink: &mut EventBatchSink,
     ) -> Result<(), Error> {
         Ok(())
     }
@@ -266,7 +263,7 @@ impl EventStore for GroupLookupOnly {
         _: &str,
         _: Revision,
         _: usize,
-        _: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+        _: &mut EventBatchSink,
     ) -> Result<(), Error> {
         panic!("only the group lookup is reachable: nothing reads the stream in batches")
     }
@@ -601,7 +598,7 @@ impl EventStore for ReadCountingStore<'_> {
         stream: &str,
         from: Revision,
         batch: usize,
-        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+        sink: &mut EventBatchSink,
     ) -> Result<(), Error> {
         let at = self.record(CountedRead::StreamBatched {
             stream: stream.to_string(),

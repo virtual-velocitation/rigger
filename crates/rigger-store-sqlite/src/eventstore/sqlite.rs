@@ -15,8 +15,8 @@ use crate::sqlite::open_connection;
 
 use super::{
     from_nanos, to_nanos, AliasHistory, Appended, ContentIdentity, Direction, Error, Event,
-    EventStore, ExpectedRevision, FactIdentity, Filter, GroupHead, Position, Revision,
-    Subscription, TypeSelection, META_GROUP, NO_STREAM,
+    EventBatchSink, EventStore, ExpectedRevision, FactIdentity, Filter, GroupHead, Position,
+    Revision, Subscription, TypeSelection, META_GROUP, NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -1367,7 +1367,7 @@ impl EventStore for Store {
         stream: &str,
         from: Revision,
         batch: usize,
-        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+        sink: &mut EventBatchSink,
     ) -> Result<(), Error> {
         let conn = self.conn.lock().unwrap();
         let head: Option<i64> = conn

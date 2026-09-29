@@ -1436,10 +1436,7 @@ mod tests {
             _stream: &str,
             _from: crate::eventstore::Revision,
             _batch: usize,
-            _sink: &mut dyn FnMut(
-                &[crate::eventstore::Event],
-                crate::eventstore::Position,
-            ) -> Result<(), crate::eventstore::Error>,
+            _sink: &mut crate::eventstore::EventBatchSink,
         ) -> Result<(), crate::eventstore::Error> {
             Err(FailingReadStore::read_failure())
         }

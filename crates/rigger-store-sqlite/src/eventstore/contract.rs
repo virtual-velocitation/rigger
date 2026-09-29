@@ -265,6 +265,8 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
 fn batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_head(
     store: &dyn EventStore,
 ) {
+    // An event as the read handed it: its position, type and payload.
+    type Seen = (u64, String, Vec<u8>);
     let at = |t: &str| Event::new(t, t.as_bytes().to_vec());
     for (stream, t) in [
         ("c-batched", "A"),
@@ -284,7 +286,7 @@ fn batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_hea
         .read_stream("c-batched", 0, Direction::Forward)
         .expect("the stream reads");
     let head = held.last().unwrap().position;
-    let batches = |stream: &str, from| -> Vec<(Vec<(u64, String, Vec<u8>)>, u64)> {
+    let batches = |stream: &str, from| -> Vec<(Vec<Seen>, u64)> {
         let mut out = Vec::new();
         store
             .read_stream_batched(stream, from, 2, &mut |events, head| {
@@ -300,7 +302,7 @@ fn batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_hea
             .unwrap_or_else(|e| panic!("the batched read must succeed: {e}"));
         out
     };
-    let full = |range: std::ops::Range<usize>| -> Vec<(u64, String, Vec<u8>)> {
+    let full = |range: std::ops::Range<usize>| -> Vec<Seen> {
         held[range]
             .iter()
             .map(|e| (e.position, e.type_.clone(), e.data.clone()))

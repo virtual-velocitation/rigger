@@ -51,8 +51,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    from_nanos, to_nanos, Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter,
-    GroupHead, Position, Revision, Subscription, TypeSelection, META_GROUP, NO_STREAM,
+    from_nanos, to_nanos, Appended, Direction, Error, Event, EventBatchSink, EventStore,
+    ExpectedRevision, Filter, GroupHead, Position, Revision, Subscription, TypeSelection,
+    META_GROUP, NO_STREAM,
 };
 
 /// The envelope carrying Rigger's metadata and valid-time in KurrentDB's custom
@@ -951,7 +952,7 @@ impl EventStore for Store {
         stream: &str,
         from: Revision,
         batch: usize,
-        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+        sink: &mut EventBatchSink,
     ) -> Result<(), Error> {
         let head = first_match(
             self.newest_first(stream)
