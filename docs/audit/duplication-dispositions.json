@@ -953,5 +953,10 @@
     "id": "dup-0b2669324614",
     "disposition": "not-a-duplicate",
     "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
+  },
+  {
+    "id": "dup-36ebafe7bb7e",
+    "disposition": "not-a-duplicate",
+    "reason": "`holds_table` asks a graph.db's sqlite_master whether a named table exists through the file's one `exists` query helper, while `poison` rewrites a run stream's meta column to invalid bytes through `rewrite_run_stream`; they share only a one-call delegating body."
   }
 ]

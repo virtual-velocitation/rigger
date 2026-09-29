@@ -5536,7 +5536,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4b044c6d78af",
+    "id": "dup-0c5269462bb9",
     "classification": "semantic",
     "sites": [
       {
@@ -5682,11 +5682,6 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "a26e651ef0fda2a7"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
@@ -5698,6 +5693,11 @@
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "c9acaf03cef6d3a0"
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -7657,6 +7657,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/product_binary_authority_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-36ebafe7bb7e",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "holds_table",
+        "content_hash": "902d0839d40374a5"
+      },
+      {
+        "file": "tests/one_shot_reads_periphery.rs",
+        "name": "poison",
+        "content_hash": "4909275603027308"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/one_shot_reads_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
