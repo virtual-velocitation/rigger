@@ -168,10 +168,7 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         for (i, mut e) in events.into_iter().enumerate() {
             e.position = (i + 1) as u64;
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&p, std::slice::from_ref(&e));
         }
 
         let g = p
@@ -288,10 +285,7 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         for (i, mut e) in events.into_iter().enumerate() {
             e.position = (i + 1) as u64;
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&p, std::slice::from_ref(&e));
         }
 
         let g = p

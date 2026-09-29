@@ -106,26 +106,17 @@ fn whole_reads_the_projection_with_deterministic_node_and_edge_ordering() {
 
     // Apply in an order that is NOT the sorted `from_id` order (d2 before d1, files interleaved), so
     // a returned edge sequence sorted by `from_id` can only come from the read's own ORDER BY.
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&decision_event(1, "d2", "second", &["z.rs"], ""))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&decision_event(1, "d2", "second", &["z.rs"], "")),
     );
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&decision_event(2, "d1", "first", &["y.rs"], ""))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&decision_event(2, "d1", "first", &["y.rs"], "")),
     );
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&code_entity_event(3, "a.rs", "run", 5))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(3, "a.rs", "run", 5)),
     );
 
     let g = p.whole().unwrap();
@@ -194,32 +185,20 @@ fn whole_reaches_nodes_the_run_seeded_subgraph_cannot_and_is_a_superset_of_it() 
 
     // A decision seeds one component (d1 GOVERNS src/combat.rs, which CONTAINS apply_damage).
     let d1 = decision_event(1, "d1", "wire combat", &["src/combat.rs"], "");
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&d1)),
-        rigger::contextgraph::Fold::Folded
-    );
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&code_entity_event(2, "src/combat.rs", "apply_damage", 7))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(&p, std::slice::from_ref(&d1));
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(2, "src/combat.rs", "apply_damage", 7)),
     );
     // A SEPARATE component with no path to the seed: code ingest of an unrelated file. No decision
     // or finding concerns it, so no run seed can ever reach it.
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&code_entity_event(3, "src/unrelated.rs", "helper", 3))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(3, "src/unrelated.rs", "helper", 3)),
     );
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&edge_inferred_event(4, "src/unrelated.rs", "detail"))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&edge_inferred_event(4, "src/unrelated.rs", "detail")),
     );
 
     // The run-seeded read the OLD provider used: seeds derived from the run log (the decision only),
@@ -261,33 +240,21 @@ fn code_ingest_db(dir: &std::path::Path, identity: &str) -> String {
     let path = dir.join("graph.db");
     let path = path.to_str().unwrap().to_string();
     let p = Projector::open(&path, identity).unwrap();
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&code_entity_event(1, "src/combat.rs", "apply_damage", 7))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(1, "src/combat.rs", "apply_damage", 7)),
     );
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&code_entity_event(2, "src/combat.rs", "take_hit", 20))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(2, "src/combat.rs", "take_hit", 20)),
     );
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&edge_inferred_event(3, "src/combat.rs", "clamp"))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&edge_inferred_event(3, "src/combat.rs", "clamp")),
     );
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(
-            Some(&p),
-            std::slice::from_ref(&code_entity_event(4, "src/loot.rs", "roll_drop", 11))
-        ),
-        rigger::contextgraph::Fold::Folded
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(4, "src/loot.rs", "roll_drop", 11)),
     );
     path
 }

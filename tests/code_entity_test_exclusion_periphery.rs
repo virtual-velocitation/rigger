@@ -449,10 +449,7 @@ fn fold_events(
     let p = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
     for (zero_based, mut event) in events.into_iter().enumerate() {
         event.position = zero_based as u64 + 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&event)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(&event));
     }
     p
 }

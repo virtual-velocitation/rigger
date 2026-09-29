@@ -1230,10 +1230,7 @@ mod tests {
         // active run's decision plus the code it governs.
         let graph = Projector::open(":memory:", "test").unwrap();
         for e in &stream {
-            assert_eq!(
-                rigger::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(e)),
-                rigger::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&graph, std::slice::from_ref(e));
         }
         let boundary = superseded_edge_boundary(&stream);
         graph.prune(&drop, boundary).unwrap();

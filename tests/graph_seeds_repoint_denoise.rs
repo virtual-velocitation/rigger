@@ -95,10 +95,7 @@ fn a_runs_seeds_land_on_a_real_neighborhood_through_the_public_projection() {
     let run = a_run();
     let p = Projector::open(":memory:", "test").unwrap();
     for e in &run {
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(e)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(e));
     }
 
     let seeds = graph_seeds(&run);

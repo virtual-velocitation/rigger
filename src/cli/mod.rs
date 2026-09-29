@@ -8727,10 +8727,7 @@ mod tests {
             serde_json::to_vec(&payload).unwrap(),
         );
         e.position = 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&legacy_graph), std::slice::from_ref(&e)),
-            rigger::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&legacy_graph, std::slice::from_ref(&e));
         (backend, graph_path)
     }
 
@@ -8828,10 +8825,7 @@ mod tests {
                 serde_json::to_vec(&payload).unwrap(),
             );
             e.position = pos;
-            assert_eq!(
-                rigger::contextgraph::Fold::of_batch(Some(g), std::slice::from_ref(&e)),
-                rigger::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(g, std::slice::from_ref(&e));
         };
         {
             let legacy_graph = Projector::open(graph_path, "oldname").unwrap();

@@ -329,7 +329,7 @@ fn fold_in_batches(graph_db: &Path, project: &str, batches: &[Vec<Event>]) -> St
 
     let open = || Projector::open(graph_db.to_str().unwrap(), project).unwrap();
     for batch in batches {
-        assert_eq!(Fold::of_batch(Some(&open()), batch), Fold::Folded);
+        common::fixtures::folds(&open(), batch);
     }
     serde_json::to_string(&open().whole().unwrap()).unwrap()
 }
@@ -2804,10 +2804,7 @@ fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
         (2, 2),
         "only the retired CONTAINS edges of h1 (alpha's and gone's) are reclaimable"
     );
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(&graph), &later_events()),
-        rigger::contextgraph::Fold::Folded
-    );
+    common::fixtures::folds(&graph, &later_events());
     assert_eq!(
         tiers_into(&graph.whole().unwrap(), "community/1/c0"),
         vec![("src/f.rs::gone", "IN_COMMUNITY", "inferred")],
@@ -4540,5 +4537,5 @@ fn a_failed_fold_into_an_in_memory_graph_marks_nothing_owed_and_the_next_batch_f
         br#"{"id":"d","summary":"s","governs":["a.rs"],"supersedes":""}"#.to_vec(),
     );
     good.position = 2;
-    assert_eq!(Fold::of_batch(Some(&graph), &[good]), Fold::Folded);
+    common::fixtures::folds(&graph, &[good]);
 }

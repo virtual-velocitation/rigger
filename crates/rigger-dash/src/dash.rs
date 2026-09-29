@@ -7546,10 +7546,7 @@ mod tests {
         ]);
         let p = Projector::open(":memory:", "test").unwrap();
         for e in &run {
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&p, std::slice::from_ref(e));
         }
         let seeds = graph_seeds(&run);
         assert!(
@@ -7612,10 +7609,7 @@ mod tests {
         // depth 2), so the route sees the same in-memory graph production serves.
         let p = Projector::open(":memory:", "test").unwrap();
         for e in &run {
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&p, std::slice::from_ref(e));
         }
         let graph = p.subgraph(&graph_seeds(&run), 2).unwrap();
         assert!(

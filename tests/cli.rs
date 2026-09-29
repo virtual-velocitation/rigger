@@ -26472,10 +26472,7 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
             r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
         let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
         e.position = 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(&e));
     }
 
     let mut mcp = McpSession::start(root);

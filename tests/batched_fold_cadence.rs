@@ -347,10 +347,7 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
 
     // The default apply_batch folds every event through apply, in order.
     let default_proj = RecordingProjection::default();
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(&default_proj), &batch),
-        rigger::contextgraph::Fold::Folded
-    );
+    common::fixtures::folds(&default_proj, &batch);
     assert_eq!(
         *default_proj.applied.lock().unwrap(),
         vec![1, 2, 3],
@@ -361,10 +358,7 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     // default's RESULT is exactly what applying each event in order would produce.
     let per_event = RecordingProjection::default();
     for e in &batch {
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&per_event), std::slice::from_ref(e)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&per_event, std::slice::from_ref(e));
     }
     assert_eq!(
         *default_proj.applied.lock().unwrap(),

@@ -56,10 +56,7 @@ fn fold(events: &[Event]) -> Graph {
     for (i, e) in events.iter().enumerate() {
         let mut e = e.clone();
         e.position = i as u64 + 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(&e));
     }
     p.whole().unwrap()
 }

@@ -296,10 +296,7 @@ mod tests {
             for (i, e) in events.iter().enumerate() {
                 let mut e = e.clone();
                 e.position = i as u64 + 1;
-                assert_eq!(
-                    crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-                    crate::contextgraph::Fold::Folded
-                );
+                crate::test_support::folds(&p, std::slice::from_ref(&e));
             }
             // Read the folded REALIZES membership: <member> --REALIZES--> <concept>.
             p.whole()
@@ -331,10 +328,7 @@ mod tests {
             for (i, e) in evs.iter().enumerate() {
                 let mut e = e.clone();
                 e.position = i as u64 + 1;
-                assert_eq!(
-                    crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-                    crate::contextgraph::Fold::Folded
-                );
+                crate::test_support::folds(&p, std::slice::from_ref(&e));
             }
             p.whole()
                 .unwrap()

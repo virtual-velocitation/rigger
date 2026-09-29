@@ -20,13 +20,19 @@ pub fn event_of(type_: &str, json: serde_json::Value) -> Event {
     Event::new(type_, serde_json::to_vec(&json).unwrap())
 }
 
+/// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
+/// seeding a graph a test then reads.
+pub fn folds(p: &dyn Projection, events: &[Event]) {
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(p), events),
+        rigger::contextgraph::Fold::Folded
+    );
+}
+
 /// Fold `e` onto `p` at log position `pos`.
 fn fold_at(p: &Projector, pos: u64, mut e: Event) {
     e.position = pos;
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
-        rigger::contextgraph::Fold::Folded
-    );
+    folds(p, std::slice::from_ref(&e));
 }
 
 /// Fold one `type_` event carrying `json` onto `p` at log position `pos`.

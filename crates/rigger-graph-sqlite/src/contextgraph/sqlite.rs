@@ -3570,19 +3570,13 @@ mod tests {
         });
         let mut fe = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&finding).unwrap());
         fe.position = 3;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&fe)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&fe));
         // A lesson about the same file: the caller never drops a lesson, so it must survive.
         let lesson =
             serde_json::json!({"id": "keep-lesson", "summary": "y", "about": ["shared.rs"]});
         let mut le = Event::new(TYPE_LESSON_LEARNED, serde_json::to_vec(&lesson).unwrap());
         le.position = 4;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&le)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&le));
 
         // Before: every node is reachable from the shared file.
         let before = p.subgraph(&["shared.rs".to_string()], 2).unwrap();
@@ -3698,18 +3692,12 @@ mod tests {
         // Reference: fold each event one at a time.
         let per_event = Projector::open(":memory:", "test").unwrap();
         for e in &batch {
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&per_event), std::slice::from_ref(e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&per_event, std::slice::from_ref(e));
         }
 
         // Batched: fold the whole slice in ONE call.
         let batched = Projector::open(":memory:", "test").unwrap();
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&batched), &batch),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&batched, &batch);
 
         assert_eq!(
             live_governs(&batched).len(),
@@ -3723,10 +3711,7 @@ mod tests {
         );
 
         // Idempotent per position: re-applying the SAME batch at the same positions adds nothing.
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&batched), &batch),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&batched, &batch);
         assert_eq!(
             live_governs(&batched).len(),
             3,
@@ -3771,10 +3756,7 @@ mod tests {
         );
 
         // The `applied` guard was rolled back too, so a retry re-folds the good event cleanly.
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&good)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&good));
         assert_eq!(
             live_governs(&p).len(),
             1,
@@ -3806,7 +3788,7 @@ mod tests {
         let mark = dir.path().join("graph.db.owed");
 
         let p = Projector::open(path, "test").unwrap();
-        assert_eq!(Fold::of_batch(Some(&p), &log[..1]), Fold::Folded);
+        crate::test_support::folds(&p, &log[..1]);
         assert_eq!(
             (p.rebuild_owed().unwrap(), mark.exists()),
             (false, false),
@@ -4642,22 +4624,10 @@ mod tests {
         // a node the graph does not hold is not live); a decision naming them holds them.
         let held: Vec<&str> = g1.nodes.iter().map(|n| n.id.as_str()).collect();
         apply_decision(&p, 900_000, "d-hold", "the intent layer", &held, "");
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d1), 1, 1_000)),
-            crate::contextgraph::Fold::Folded
-        );
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d2), 1_000, 1_500)),
-            crate::contextgraph::Fold::Folded
-        );
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d10), 2_000, 1_600)),
-            crate::contextgraph::Fold::Folded
-        );
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d11), 3_000, 1_700)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, &stamped(events(&d1), 1, 1_000));
+        crate::test_support::folds(&p, &stamped(events(&d2), 1_000, 1_500));
+        crate::test_support::folds(&p, &stamped(events(&d10), 2_000, 1_600));
+        crate::test_support::folds(&p, &stamped(events(&d11), 3_000, 1_700));
 
         // A grain's REALIZES edges across its member nodes, read RAW (retired rows included) and keyed
         // by the grain's own `concept/<res>/` id prefix - the exact substring the retire scopes by.
@@ -4724,10 +4694,7 @@ mod tests {
             m1b["src/b2.rs"], "concept/1/0",
             "after the change the mover derives into concept/1/0"
         );
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d1b), 4_000, 3_000)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, &stamped(events(&d1b), 4_000, 3_000));
 
         // === RE-RUN SUPERSESSION, asserted on the mover via the edges_from RAW read ===
         let mover: Vec<(String, Option<i64>)> = edges_from(&p, "src/b2.rs")
@@ -6740,14 +6707,8 @@ mod tests {
             serde_json::to_vec(&payload).unwrap(),
         );
         e.position = 1;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        ); // same position, replayed: still a no-op
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
+        crate::test_support::folds(&p, std::slice::from_ref(&e)); // same position, replayed: still a no-op
         for seed in [["u1"], ["a.rs"], ["b.rs"]] {
             let g = p
                 .subgraph(&seed.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 2)
@@ -6769,10 +6730,7 @@ mod tests {
         let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
         e.meta.insert(META_ACTOR.to_string(), "agent-7".to_string());
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
         let g = p.subgraph(&["d1".to_string()], 2).unwrap();
         // Content survives.
         assert!(
@@ -6817,10 +6775,7 @@ mod tests {
         });
         let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
 
         // Reachable from the file it is ABOUT.
         let g = p.subgraph(&["combat.rs".to_string()], 2).unwrap();
@@ -6865,10 +6820,7 @@ mod tests {
         e.position = 1;
         e.meta
             .insert(META_ACTOR.to_string(), "adversary".to_string());
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
         let g = p.subgraph(&["f1".to_string()], 2).unwrap();
         assert!(
             g.nodes
@@ -6896,10 +6848,7 @@ mod tests {
         for _ in 0..2 {
             let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap());
             e.position = 1; // same position, replayed
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&p, std::slice::from_ref(&e));
         }
         let g = p.subgraph(&["a.rs".to_string()], 2).unwrap();
         let about = g
@@ -6933,10 +6882,7 @@ mod tests {
         let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap())
             .with_meta(crate::conductor::META_SPAWN, spawn);
         e.position = pos;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(p, std::slice::from_ref(&e));
     }
 
     #[test]
@@ -6973,10 +6919,7 @@ mod tests {
             .to_event()
             .unwrap();
         e.position = 4;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
 
         let after = p.subgraph(&["a.rs".to_string()], 2).unwrap();
         assert!(
@@ -7025,10 +6968,7 @@ mod tests {
             .to_event()
             .unwrap();
         e.position = 3;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
 
         let after = p.subgraph(&["a.rs".to_string()], 2).unwrap();
         for id in ["f-kept", "f-also-kept"] {
@@ -7045,10 +6985,7 @@ mod tests {
             .to_event()
             .unwrap();
         e.position = pos;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(p, std::slice::from_ref(&e));
     }
 
     fn apply_unit_integrated(p: &Projector, pos: u64, unit: &str, commit: &str) {
@@ -7295,10 +7232,7 @@ mod tests {
             serde_json::json!({"unit": "u2", "criterion": "c", "agent": "impl", "needs": ["u1"]});
         let mut e = Event::new(TYPE_UNIT_STARTED, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
         for seed in [["u2"], ["u1"], ["impl"]] {
             let g = p
                 .subgraph(&seed.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 2)
@@ -7331,10 +7265,7 @@ mod tests {
         d.position = 1;
         d.meta
             .insert(META_ACTOR.to_string(), "rust-engineer".to_string());
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&d)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&d));
 
         // FileTouched (agent touches file).
         let mut ft = Event::new(
@@ -7343,10 +7274,7 @@ mod tests {
                 .unwrap(),
         );
         ft.position = 2;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ft)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&ft));
 
         // GateVerdict on the file.
         let mut gv = Event::new(
@@ -7357,10 +7285,7 @@ mod tests {
             .unwrap(),
         );
         gv.position = 3;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&gv)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&gv));
 
         // UnitStarted (unit assigned to an agent, blocked by another unit).
         let mut us = Event::new(
@@ -7371,10 +7296,7 @@ mod tests {
             .unwrap(),
         );
         us.position = 4;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&us)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&us));
 
         // ReviewFinding raised by a reviewer about the file.
         let mut rf = Event::new(
@@ -7385,10 +7307,7 @@ mod tests {
             .unwrap(),
         );
         rf.position = 5;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&rf)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&rf));
 
         // UnitIntegrated.
         let mut ui = Event::new(
@@ -7396,10 +7315,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({ "id": "u2", "commit": "abc" })).unwrap(),
         );
         ui.position = 6;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ui)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&ui));
 
         let (nodes, edges) = all_nodes_edges(&p);
         for kind in [KIND_AGENT, KIND_UNIT, KIND_GATE] {
@@ -7440,10 +7356,7 @@ mod tests {
             .unwrap(),
         );
         le.position = 3;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&le)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&le));
 
         let g = p.subgraph(&["combat.rs".to_string()], 2).unwrap();
         // Content nodes survive, reachable from the code they concern.
@@ -7532,10 +7445,7 @@ mod tests {
         // Fold into the (de-noised) graph.
         let p = Projector::open(":memory:", "test").unwrap();
         for e in &events {
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&p, std::slice::from_ref(e));
         }
         let (nodes, _) = all_nodes_edges(&p);
         assert!(
@@ -7557,10 +7467,7 @@ mod tests {
         let alias = serde_json::json!({"alias": "the editor", "canonical": "content-editor"});
         let mut ae = Event::new(TYPE_ALIAS_DEFINED, serde_json::to_vec(&alias).unwrap());
         ae.position = 1;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ae)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&ae));
         apply_decision(&p, 2, "d1", "x", &["the editor"], "");
         let g = p.subgraph(&["content-editor".to_string()], 2).unwrap();
         assert!(
@@ -7581,10 +7488,7 @@ mod tests {
         let payload = serde_json::json!({"mention": "some thing"});
         let mut e = Event::new(TYPE_ALIAS_UNRESOLVED, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
         let g = p.subgraph(&["some thing".to_string()], 1).unwrap();
         let n = g
             .nodes
@@ -7602,10 +7506,7 @@ mod tests {
         let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
         e.valid_from = vf;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
         let g = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
         let edge = g.edges.iter().find(|x| x.rel == REL_GOVERNS).unwrap();
         assert_eq!(
@@ -7780,10 +7681,7 @@ mod tests {
         let payload = serde_json::json!({"id": "old-d", "summary": "fresh", "governs": ["old.rs"]});
         let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
         e.position = 2;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&other), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&other, std::slice::from_ref(&e));
         let after = node_projects(&other);
         let old_d: Vec<&str> = after
             .iter()
@@ -8256,10 +8154,7 @@ mod tests {
                 let p = projectors
                     .entry(proj.to_string())
                     .or_insert_with(|| Projector::open(path, proj).unwrap());
-                assert_eq!(
-                    crate::contextgraph::Fold::of_batch(Some(&*p), std::slice::from_ref(&e)),
-                    crate::contextgraph::Fold::Folded
-                );
+                crate::test_support::folds(&*p, std::slice::from_ref(&e));
             }
             projectors
                 .iter()
@@ -8479,10 +8374,7 @@ mod tests {
             .unwrap(),
         );
         e.position = 1;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&p, std::slice::from_ref(&e));
         let g = p.subgraph(&["d1".to_string()], 2).unwrap();
         assert_eq!(
             edge_tier(&g, REL_GOVERNS, "combat.rs"),
@@ -9231,10 +9123,7 @@ mod tests {
             });
             let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
             e.position = 1;
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&p, std::slice::from_ref(&e));
 
             let g = p
                 .subgraph(&["tests/only_sentinel.rs".to_string()], 1)
@@ -9284,10 +9173,7 @@ mod tests {
             });
             let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&boundary).unwrap());
             e.position = 10;
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&p, std::slice::from_ref(&e));
 
             // The legacy test entity is retired: `rigger validate`'s own counting authority now
             // reports it, and no live edge reaches it - though its row and the superseded CONTAINS
@@ -9376,10 +9262,7 @@ mod tests {
                 .with_meta(rigger_domain::ingest::META_REPLAY_KEY, key)
                 .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
             e.position = pos;
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(p, std::slice::from_ref(&e));
         }
 
         fn def(name: &str, line: u64, fresh: bool) -> serde_json::Value {

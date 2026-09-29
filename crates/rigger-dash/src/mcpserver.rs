@@ -2168,10 +2168,7 @@ mod tests {
             r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
         let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
         e.position = 1;
-        assert_eq!(
-            crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
-            crate::contextgraph::Fold::Folded
-        );
+        crate::test_support::folds(&graph, std::slice::from_ref(&e));
 
         let server = Server::new(&driver, &store, "run")
             .with_graph(&graph)
@@ -2293,10 +2290,7 @@ mod tests {
             );
             let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
             e.position = pos;
-            assert_eq!(
-                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
-                crate::contextgraph::Fold::Folded
-            );
+            crate::test_support::folds(&graph, std::slice::from_ref(&e));
         }
 
         let server = Server::new(&driver, &store, "run")

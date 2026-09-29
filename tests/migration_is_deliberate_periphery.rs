@@ -109,10 +109,7 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
     );
     legacy_event.position = pos;
     pos += 1;
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&legacy_event)),
-        rigger::contextgraph::Fold::Folded
-    );
+    common::fixtures::folds(&p, std::slice::from_ref(&legacy_event));
 
     // The unrelated product file's REAL first ingest, through the public pipeline.
     let idx = build_index(root.path().to_str().unwrap(), None);
@@ -123,10 +120,7 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
     for mut ev in extract_events("keep.rs", keep_fs) {
         ev.position = pos;
         pos += 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ev)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(&ev));
     }
 
     assert_eq!(
@@ -153,10 +147,7 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
     for ev in boundary_events.iter_mut() {
         ev.position = pos;
         pos += 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(ev)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(ev));
     }
 
     assert_eq!(
@@ -225,10 +216,7 @@ fn a_lone_empty_structural_sentinel_through_the_real_pipeline_creates_nothing_at
     let p = Projector::open(":memory:", "test").unwrap();
     for ev in events.iter_mut() {
         ev.position = 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(ev)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(ev));
     }
 
     let g = p.subgraph(&["tests/fresh.rs".to_string()], 1).unwrap();
@@ -270,10 +258,7 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
     for mut ev in extract_events("wrapped.rs", fs1) {
         ev.position = pos;
         pos += 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ev)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(&ev));
     }
     let live = p.subgraph(&["wrapped.rs".to_string()], 2).unwrap();
     assert!(
@@ -303,10 +288,7 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
     for ev in boundary_events.iter_mut() {
         ev.position = pos;
         pos += 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(ev)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(ev));
     }
 
     assert_eq!(
@@ -358,10 +340,7 @@ fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     for mut ev in entry(root_str) {
         ev.position = pos;
         pos += 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ev)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(&ev));
     }
     let before = p
         .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 2)
@@ -390,10 +369,7 @@ fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     for mut ev in entry(root_str) {
         ev.position = pos;
         pos += 1;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ev)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, std::slice::from_ref(&ev));
     }
 
     assert_eq!(

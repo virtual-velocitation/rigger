@@ -31,3 +31,21 @@ mod contextgraph {
 }
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::test_cases;
+
+/// The fold fixtures the inline fold tests share with the root crate's tests, compiled here from
+/// the same file. It names the crate as `rigger::...`, which `extern crate self as rigger` makes
+/// resolve to this crate.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+extern crate self as rigger;
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/fold.rs"]
+mod test_support;

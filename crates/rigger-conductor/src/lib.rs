@@ -88,6 +88,10 @@ mod config_fixtures;
 mod event_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/fold.rs"]
+mod fold_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/git.rs"]
 mod git_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
@@ -103,6 +107,7 @@ mod test_support {
     pub use crate::conductor_fixtures::*;
     pub use crate::config_fixtures::*;
     pub use crate::event_fixtures::*;
+    pub use crate::fold_fixtures::*;
     pub use crate::git_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

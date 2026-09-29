@@ -23,6 +23,8 @@
 // light (`--no-default-features`) lane would compile this file down to nothing BUT these
 // top-level imports and flag every one of them unused.
 #[cfg(feature = "symbols")]
+mod common;
+#[cfg(feature = "symbols")]
 use rigger::community;
 #[cfg(feature = "symbols")]
 use rigger::console::map;
@@ -62,11 +64,7 @@ fn real_graph() -> Graph {
             e.position = next_position;
             next_position += 1;
         }
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&projector), &stamped),
-            rigger::contextgraph::Fold::Folded,
-            "fold this repository's own real extraction batch"
-        );
+        common::fixtures::folds(&projector, &stamped);
     }
 
     let whole = projector.whole().expect("read the whole live projection");
@@ -82,11 +80,7 @@ fn real_graph() -> Graph {
         e.position = next_position;
         next_position += 1;
     }
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(&projector), &community_events),
-        rigger::contextgraph::Fold::Folded,
-        "fold the real community-detection pass's own events"
-    );
+    common::fixtures::folds(&projector, &community_events);
 
     projector
         .whole()

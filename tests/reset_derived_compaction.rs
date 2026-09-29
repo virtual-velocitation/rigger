@@ -489,10 +489,7 @@ fn fold_snapshot(events: &[Event], project: &str, path: &Path) -> (Vec<String>, 
 
     {
         let p = Projector::open(path.to_str().unwrap(), project).unwrap();
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(&p), events),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(&p, events);
     }
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut nodes: Vec<String> = conn
@@ -859,10 +856,7 @@ fn rebuilt_graph_bytes(events: &[Event], project: &str, path: &Path) -> Vec<u8> 
     use rigger::contextgraph::sqlite::Projector;
 
     let p = Projector::open(path.to_str().unwrap(), project).unwrap();
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(Some(&p), events),
-        rigger::contextgraph::Fold::Folded
-    );
+    common::fixtures::folds(&p, events);
     serde_json::to_vec(&p.whole().unwrap()).unwrap()
 }
 

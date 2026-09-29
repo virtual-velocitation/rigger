@@ -108,10 +108,7 @@ fn fold_assignment(p: &Projector, assignment: &Assignment, next_pos: u64) -> u64
     let mut events = community::events(assignment);
     for (i, e) in events.iter_mut().enumerate() {
         e.position = next_pos + i as u64;
-        assert_eq!(
-            rigger::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(e)),
-            rigger::contextgraph::Fold::Folded
-        );
+        common::fixtures::folds(p, std::slice::from_ref(e));
     }
     next_pos + events.len() as u64
 }
