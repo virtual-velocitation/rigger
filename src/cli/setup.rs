@@ -638,8 +638,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
     let scaffold = init_project(root)?;
-    // Pay the one cold rebuild a `graph.db` folded under an older fold rule owes (spec 101): the
-    // only command that rebuilds it, because it is the verb every install already runs.
+    // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
+    // a fold into it failed: the only command that rebuilds it, because it is the verb every
+    // install already runs.
     let graph_rebuilt = rebuild_owed_graph()?;
     let workflow = install_workflow(root)?;
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
@@ -814,15 +815,18 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
 /// its last committed batch, and a batch is what it holds in memory at once.
 const REBUILD_BATCH: usize = 10_000;
 
-/// Rebuild this project's `graph.db` from the event log when it was folded under an older fold
-/// rule (spec 101), saying so and reporting how far along it is, and report whether it did. A
-/// project with no `graph.db`, or one that owes nothing, is left untouched. The rebuild folds the
+/// Rebuild this project's `graph.db` from the event log when it owes that rebuild (spec 101) -
+/// it was folded under an older fold rule, or a fold into it failed - saying so, naming the cause,
+/// and reporting how far along it is, and report whether it did. A `graph.db` that owes nothing is
+/// left untouched; with no `graph.db` there is nothing to rebuild, and the owed mark a removed one
+/// left behind is dropped, so the file a later command makes in its place starts owing nothing. The rebuild folds the
 /// log's live selection - the rows `rigger reset --derived` keeps - into a shadow file that
 /// replaces `graph.db` in one step ([`Projector::rebuild`]), streaming the log once and resuming
 /// an interrupted rebuild from its last committed batch.
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     if !Path::new(&graph_db).exists() {
+        Projector::forget_orphaned_mark(&graph_db)?;
         return Ok(false);
     }
     // The scaffold may just have minted the durable identity: the log moves to it first (the
@@ -830,10 +834,12 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     // namespace still holds.
     migrate_local_identity()?;
     let project = project_identity();
-    if Projector::open(&graph_db, &project)?.rebuild_owed()? {
+    let causes = Projector::open(&graph_db, &project)?.owed_because()?;
+    if !causes.is_empty() {
         println!(
-            "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
-             the log's live selection is refolded once"
+            "rebuilding graph.db from the event log: {}, so the log's live selection is refolded \
+             once",
+            causes.join(", and ")
         );
     }
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());

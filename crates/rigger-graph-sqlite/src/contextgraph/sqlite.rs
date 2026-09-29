@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -167,6 +168,9 @@ pub struct Projector {
     project: String,
     /// Where a failed fold marks this file as owing its rebuild ([`owed_mark`]).
     owed_mark: Option<PathBuf>,
+    /// Set when a fold failed and its [`owed_mark`] could not be written: the one record of that
+    /// debt is then this projector's own, so it answers as owed until the process ends.
+    unmarked_loss: AtomicBool,
 }
 
 /// The file beside the graph file at `path` whose presence marks it as owing its rebuild because a
@@ -227,6 +231,7 @@ impl Projector {
             conn: Mutex::new(conn),
             project: project.to_string(),
             owed_mark: owed_mark(path),
+            unmarked_loss: AtomicBool::new(false),
         })
     }
 
@@ -299,14 +304,30 @@ impl Projector {
         Ok(true)
     }
 
-    /// Why this file owes its rebuild, each cause it carries in order; none when it owes nothing.
+    /// Why this file owes its rebuild (spec 101), each cause it carries in order - it records an
+    /// older fold rule ([`OWED_OLDER_RULE`]), a fold into it failed ([`OWED_LOST_FOLD`]: its
+    /// [`owed_mark`] is present, or this projector could not write it) - and none when it owes
+    /// nothing. Read from the file on every call, so another process's [`Projector::rebuild`] or
+    /// failed fold is seen at once.
     pub fn owed_because(&self) -> Result<Vec<&'static str>, Error> {
-        Ok(Vec::new())
+        let mut causes = Vec::new();
+        if rebuild_owed(&self.conn.lock().unwrap())? {
+            causes.push(OWED_OLDER_RULE);
+        }
+        if self.unmarked_loss.load(Ordering::SeqCst) || marked(&self.owed_mark) {
+            causes.push(OWED_LOST_FOLD);
+        }
+        Ok(causes)
     }
 
-    /// Drop the owed mark of the graph file at `path` once that file is gone.
-    pub fn forget_orphaned_mark(_path: &str) -> Result<(), Error> {
-        Ok(())
+    /// Drop the [`owed_mark`] of the graph file at `path` once that file is gone: the mark records
+    /// a fold lost from that file, so a file made in its place owes nothing it recorded. A mark
+    /// whose file stands is kept.
+    pub fn forget_orphaned_mark(path: &str) -> Result<(), Error> {
+        match owed_mark(path).filter(|m| m.exists() && !Path::new(path).exists()) {
+            Some(mark) => std::fs::remove_file(mark).map_err(be),
+            None => Ok(()),
+        }
     }
 
     /// Fold `events` in ONE transaction, rolled back whole on any failure.
@@ -926,9 +947,10 @@ fn layered_call_walk(
 /// Fold what `source` hands after `conn`'s [`REBUILD_CURSOR`], one committed transaction per
 /// batch that also records the batch's last position as the cursor, reporting each to
 /// `progress`. Each event folds exactly as [`Projection::apply`] folds it and one at a time, so an
-/// event whose fold fails (a malformed payload the log holds) is skipped exactly as the live fold
-/// skips it and the rest still fold; one the file already folded is passed over by the fold's
-/// per-position guard.
+/// event whose fold fails (a malformed payload the log holds) is skipped and the rest still fold -
+/// where the live fold rolls its whole batch back and marks the file owed, the rebuild is what pays
+/// that debt, so it passes over the one event no fold can hold rather than owing it again. One the
+/// file already folded is passed over by the fold's per-position guard.
 fn fold_source(
     conn: &mut Connection,
     project: &str,
@@ -1153,10 +1175,9 @@ impl Projection for Projector {
         self.apply_batch(std::slice::from_ref(e), access)
     }
 
-    /// Read from the file (and its [`owed_mark`]) on every call, never remembered: another
-    /// process's [`Projector::rebuild`] may pay it, or its failed fold mark it, at any moment.
+    /// Whether [`Projector::owed_because`] names any cause.
     fn rebuild_owed(&self) -> Result<bool, Error> {
-        Ok(marked(&self.owed_mark) || rebuild_owed(&self.conn.lock().unwrap())?)
+        Ok(!self.owed_because()?.is_empty())
     }
 
     /// Fold a whole batch of events in ONE transaction (spec 49's batched-fold cadence): the store's
@@ -1170,16 +1191,27 @@ impl Projection for Projector {
     /// A batch that fails to fold into a file that owed nothing leaves that file behind the log
     /// for good - nothing folds a position twice - so the failure marks it as owing its rebuild
     /// ([`owed_mark`]): from then on it refuses every fold and every answer that depends on the
-    /// fold with [`REBUILD_OWED`] until `rigger setup` pays it.
+    /// fold with [`REBUILD_OWED`] until `rigger setup` pays it. A mark that cannot be written is
+    /// never silent either: the fold's error comes back with the mark's failure beside it, and this
+    /// projector owes the rebuild from then on on its own record.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
         if self.rebuild_owed()? {
             return Err(Error(REBUILD_OWED.to_string()));
         }
-        let folded = self.fold_batch(events);
-        if let (Err(_), Some(mark)) = (&folded, &self.owed_mark) {
-            std::fs::write(mark, b"").map_err(be)?;
-        }
-        folded
+        let (lost, mark) = match (self.fold_batch(events), &self.owed_mark) {
+            (Err(lost), Some(mark)) => (lost, mark),
+            (folded, _) => return folded,
+        };
+        std::fs::write(mark, b"").map_err(|unwritten| {
+            self.unmarked_loss.store(true, Ordering::SeqCst);
+            Error(format!(
+                "{}; the mark that graph.db owes its rebuild was not written ({}: {unwritten}), \
+                 so only this process knows it",
+                lost.0,
+                mark.display()
+            ))
+        })?;
+        Err(lost)
     }
 
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {

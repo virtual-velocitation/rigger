@@ -400,9 +400,9 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
 }
 
 /// Open this project's `graph.db` for `command`, whose answer depends on the fold (spec 101): a
-/// file folded under an older fold rule is refused at once, naming `rigger setup` - the one
-/// command that rebuilds it - never waited on, rebuilt or folded into here. The open itself writes
-/// nothing to such a file.
+/// file that owes its rebuild - folded under an older fold rule, or a fold into it failed - is
+/// refused at once, naming `rigger setup` - the one command that rebuilds it - never waited on,
+/// rebuilt or folded into here. The open itself writes nothing to such a file.
 fn open_graph(
     graph_db: &str,
     project: &str,

@@ -2865,16 +2865,16 @@ impl RunCtx<'_> {
             &stamped,
         )?;
         // The events are on the log whatever became of the fold; a fold into a wired graph that
-        // it could not make is said, never swallowed (a failed fold into a current graph also
+        // it could not make is said through the injected log, never swallowed (a failed fold into a current graph also
         // marks it owed, so the next step refuses rather than advancing over a graph that lost
         // them). A run wired to no graph - an offline replay's isolated re-drive - folds nothing
         // by design and has nothing to say.
         if let (Some(_), contextgraph::Fold::NotFolded(_)) = (self.deps.graph, &done.fold) {
-            eprintln!(
+            (self.deps.log)(&format!(
                 "rigger: recorded {} run event(s){}",
                 stamped.len(),
                 contextgraph::fold_loss_clause(&done.fold)
-            );
+            ));
         }
         Ok(done.appended)
     }
