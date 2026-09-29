@@ -3754,13 +3754,14 @@ rigger::test_cases! {
         ]);
 }
 
-/// Whether `db` still holds the cursor of a rebuild whose tail is not yet folded.
-fn holds_rebuild_cursor(db: &Path) -> bool {
+/// Whether `db` holds a table named `table`: `rebuild_cursor` while a rebuild's tail is not yet
+/// folded, `lost_fold` while the file itself records a fold lost into it.
+fn holds_table(db: &Path, table: &str) -> bool {
     rusqlite::Connection::open(db)
         .unwrap()
         .query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'rebuild_cursor')",
-            [],
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [table],
             |r| r.get(0),
         )
         .unwrap()
@@ -3822,7 +3823,7 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
     assert_eq!(
         (
             user_version(&store.graph_db),
-            holds_rebuild_cursor(&store.graph_db)
+            holds_table(&store.graph_db, "rebuild_cursor")
         ),
         (1, true),
         "the rebuilt file is swapped in and still owes its tail"
@@ -3861,7 +3862,7 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
     resume.send(()).unwrap();
     assert!(rebuilder.join().unwrap(), "the rebuild ran");
     assert!(
-        !holds_rebuild_cursor(&store.graph_db),
+        !holds_table(&store.graph_db, "rebuild_cursor"),
         "the tail is folded and its cursor dropped"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
@@ -4367,6 +4368,83 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
     assert!(
         ok && out.ends_with(" and folded it into the context graph\n"),
         "the next emit folds into a fresh graph; stdout: {out} stderr: {err}"
+    );
+}
+
+/// Given a current `graph.db` whose fold of an emit was lost where the owed mark could not be
+/// written, so the file records the lost fold itself (its `lost_fold` table), when later processes
+/// act on it, then every one of them owes the rebuild: an emit appends and says it was not folded
+/// because the rebuild is owed, `rigger setup` names the lost fold as the cause and its rebuild
+/// folds the lost event and the one emitted while owed into a file that no longer records the loss,
+/// the next emit folds, and a second `rigger setup` owes nothing.
+#[test]
+fn a_graph_db_that_records_its_own_lost_fold_is_owed_by_every_later_process_until_setup_pays_it() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    let mark = rigger_file(root, "graph.db.owed");
+    with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
+    let lost = read_run_events(root).last().unwrap().position;
+    std::fs::remove_file(&mark).unwrap();
+    rusqlite::Connection::open(&graph_db)
+        .unwrap()
+        .execute_batch("CREATE TABLE lost_fold (lost INTEGER);")
+        .unwrap();
+
+    let (out, err, ok) = emit_decision(root, "d-after");
+    let after = read_run_events(root).last().unwrap().position;
+    assert_eq!(
+        (ok, out, applied(&graph_db, after)),
+        (
+            true,
+            format!(
+                "emitted DecisionMade (position {after}); not folded into the context graph: \
+                 graph: {}\n",
+                rigger::contextgraph::REBUILD_OWED
+            ),
+            false
+        ),
+        "the file's own record of the lost fold makes a later process owe the rebuild; \
+         stderr: {err}"
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("rebuilding graph.db"))
+            .collect::<Vec<_>>(),
+        vec![
+            "rebuilding graph.db from the event log: a fold into it failed, so the log's live \
+             selection is refolded once"
+        ],
+        "setup names the lost fold the file records as the cause; stdout: {out}"
+    );
+    assert_eq!(
+        (
+            applied(&graph_db, lost),
+            applied(&graph_db, after),
+            holds_table(&graph_db, "lost_fold"),
+            mark.exists()
+        ),
+        (true, true, false, false),
+        "setup's rebuild folds the lost event and the one emitted while owed into a file that no \
+         longer records the loss"
+    );
+    let (out, err, ok) = emit_decision(root, "d-rebuilt");
+    assert!(
+        ok && out.ends_with(" and folded it into the context graph\n"),
+        "once rebuilt, an emit folds again; stdout: {out} stderr: {err}"
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok && !out.contains("graph.db"),
+        "a paid rebuild is not owed or reported again; stdout: {out} stderr: {err}"
     );
 }
 
