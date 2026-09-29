@@ -757,3 +757,35 @@ mod subscription_map_tests {
         drop(mapped);
     }
 }
+
+/// The alias replay a compaction resolves a recording's names through: the latest definition
+/// recorded strictly BEFORE the recording, one hop, else the name itself - as the fold resolved it.
+#[cfg(test)]
+mod alias_history_tests {
+    use super::AliasHistory;
+
+    #[test]
+    fn a_name_resolves_through_the_latest_definition_recorded_before_it() {
+        let mut aliases = AliasHistory::default();
+        aliases.define(3, "old".to_string(), "first".to_string());
+        aliases.define(7, "old".to_string(), "second".to_string());
+        aliases.define(5, "hop".to_string(), "old".to_string());
+        let at = |mention: &str, position| aliases.resolve(mention, position);
+        assert_eq!(
+            [
+                at("old", 2),
+                at("old", 3),
+                at("old", 4),
+                at("old", 7),
+                at("old", 8)
+            ],
+            ["old", "old", "first", "first", "second"].map(String::from),
+            "no definition applies at or before its own position; the latest earlier one does"
+        );
+        assert_eq!(
+            [at("hop", 9), at("other", 9)],
+            ["old", "other"].map(String::from),
+            "one hop only, and an undefined name is itself"
+        );
+    }
+}

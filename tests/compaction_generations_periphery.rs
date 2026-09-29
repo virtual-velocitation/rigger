@@ -30,6 +30,7 @@ use common::cli::keyed;
 use common::cli::nanos;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
+use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
 use common::fixtures::meta_replay_key;
@@ -1392,6 +1393,142 @@ fn a_fact_recorded_in_both_sinks_spellings_keeps_its_earliest_date() {
     );
 }
 
+/// A policy that declares no [`rigger::eventstore::FactIdentity`] has no way to tell two spellings
+/// of one fact apart from two facts: it carries a valid-time only between byte-identical payloads
+/// (the fail-safe direction), where the shipped policy, which declares the fold's own fact key,
+/// carries across spellings too.
+#[test]
+fn a_policy_without_a_fact_identity_carries_only_between_byte_identical_payloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, db) = store_with(
+        dir.path(),
+        &[(
+            rigger::conductor::STREAM,
+            vec![
+                keyed(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    link("src/a.rs"),
+                    "gd/docs/f.md@h1#0",
+                    10,
+                ),
+                keyed(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    link("src/a.rs"),
+                    "gd/docs/f.md@h2#0",
+                    20,
+                ),
+                keyed(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    link("src/b.rs"),
+                    "gd/docs/g.md@h1#0",
+                    10,
+                ),
+                keyed(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    link_respelled("src/b.rs", false),
+                    "gd/docs/g.md@h2#0",
+                    20,
+                ),
+            ],
+        )],
+    );
+    let identity = identity_without_key_parts().with_key_parts(rigger::ingest::derived_key_parts);
+    assert!(
+        identity.facts().is_none(),
+        "the policy declares no fact identity"
+    );
+    backend
+        .prune_derived_index(&Namespaced::prefix_for(PROJECT), &identity)
+        .unwrap();
+    let kept: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
+    assert_eq!(
+        kept,
+        vec![
+            ("gd/docs/f.md@h2#0".to_string(), nanos(10)),
+            ("gd/docs/g.md@h2#0".to_string(), nanos(20)),
+        ],
+        "identical bytes carry the earliest date; a respelling does not"
+    );
+}
+
+/// An `AliasDefined` recording naming `alias` as `src/a.rs`, at `secs`.
+fn alias_of_a(alias: &str, secs: u64) -> Event {
+    Event::new(
+        rigger::contextgraph::TYPE_ALIAS_DEFINED,
+        serde_json::to_vec(&serde_json::json!({"alias": alias, "canonical": "src/a.rs"})).unwrap(),
+    )
+    .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+}
+
+/// A link a later generation spells through a name alias is the fact the fold resolves it to, as
+/// of that recording: `h2` links `docs/f.md` to `a-alias`. Defined as `src/a.rs` BEFORE `h1` linked
+/// `src/a.rs`, both generations assert one link and the survivor carries `h1`'s date; defined only
+/// BETWEEN the generations, `h1` linked the bare name and `h2` is a new link from its own date. The
+/// compaction keys facts as the fold does either way, so the compacted log rebuilds the whole
+/// log's graph.
+fn an_alias_spelled_link_is_the_fact_the_fold_resolves_it_to(defined_first: bool) {
+    let events = || {
+        let (h1_to, alias_at) = if defined_first {
+            ("src/a.rs", 0)
+        } else {
+            ("a-alias", 1)
+        };
+        let mut events = vec![
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link(h1_to),
+                "gd/docs/f.md@h1#0",
+                10,
+            ),
+            keyed(
+                TYPE_DOC_LINK_EXTRACTED,
+                link("a-alias"),
+                "gd/docs/f.md@h2#0",
+                20,
+            ),
+        ];
+        events.insert(alias_at, alias_of_a("a-alias", 5));
+        events
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, db) = store_with(dir.path(), &[(rigger::conductor::STREAM, events())]);
+    backend
+        .prune_derived_index(
+            &Namespaced::prefix_for(PROJECT),
+            &rigger::ingest::derived_index_identity(),
+        )
+        .unwrap();
+    let kept: Vec<(String, i64)> = keyed_rows(&db).into_iter().map(|r| (r.3, r.4)).collect();
+    let since = if defined_first { 10 } else { 20 };
+    assert_eq!(
+        kept,
+        vec![("gd/docs/f.md@h2#0".to_string(), nanos(since))],
+        "the survivor is dated as the fold dates the link it resolves to"
+    );
+    let graph = compaction_rebuilds_the_whole_logs_graph(
+        events(),
+        &[("docs/f.md", "artifact"), ("src/a.rs", "artifact")],
+    );
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .map(|e| (e.to.as_str(), e.valid_from))
+            .collect::<Vec<_>>(),
+        vec![("src/a.rs", nanos(since))],
+        "the whole log's link holds from that same date"
+    );
+}
+
+rigger::test_cases! {
+    /// The alias is defined before either generation links.
+    an_alias_defined_first_joins_both_generations_into_one_link:
+        an_alias_spelled_link_is_the_fact_the_fold_resolves_it_to(true);
+    /// The alias is defined only between the generations.
+    an_alias_defined_between_generations_starts_a_new_link:
+        an_alias_spelled_link_is_the_fact_the_fold_resolves_it_to(false);
+}
+
 /// A test file's proof reference to `name` at `line`: test-origin evidence heading its file's batch.
 fn proof(name: &str, line: u32) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -1925,7 +2062,7 @@ fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 6. A graph.db folded before the generation rule is rebuilt once
+// 6. A graph.db folded before the generation rule is rebuilt once, by `rigger setup`
 // ---------------------------------------------------------------------------------------
 
 /// `src/f.rs` drops `gone` and `docs/f.md` drops its link to `src/old.rs` between h1 and h2: the
@@ -1986,9 +2123,13 @@ fn a_pre_rule_graph_db(db: &Path, events: &[Event], ledgers: &str) {
     .unwrap();
 }
 
+/// What a rebuild that reports nothing hands its progress callback.
+fn no_progress(_: usize, _: usize) {}
+
 /// A `graph.db` folded before the generation rule - with no ledgers at all, or with them in an
-/// older shape - is rebuilt cold from the log on its next open: nothing folds into it until then,
-/// the rebuild reaches exactly what a fresh fold of the log reaches, and it happens once.
+/// older shape - owes one cold rebuild: nothing folds into it until then, the rebuild reaches
+/// exactly what a fresh fold of the log reaches, reporting each event it folds of the whole log,
+/// and it happens once - a paid rebuild never reads the log again.
 fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
@@ -2002,15 +2143,28 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     a_pre_rule_graph_db(&old_db, &log[..3], ledgers);
 
     let graph = Projector::open(old_db.to_str().unwrap(), PROJECT).unwrap();
-    assert!(graph.rebuild_owed(), "a pre-rule graph.db owes a rebuild");
+    assert!(
+        graph.rebuild_owed().unwrap(),
+        "a pre-rule graph.db owes a rebuild"
+    );
     assert_eq!(
         graph.apply_batch(&log[3..]).unwrap_err().0,
-        "graph.db was folded under an older fold rule and must be rebuilt from the log before \
-         anything folds into it (rigger graph build rebuilds it)",
+        rigger::contextgraph::REBUILD_OWED,
         "nothing folds incrementally into a pre-rule graph.db"
     );
-    graph.rebuild(&log).unwrap();
-    assert!(!graph.rebuild_owed(), "the rebuild is recorded");
+    let mut reported = Vec::new();
+    let ran = graph
+        .rebuild(&|| Ok(log.clone()), &mut |folded, total| {
+            reported.push((folded, total))
+        })
+        .unwrap();
+    assert!(ran, "the owed rebuild runs");
+    assert_eq!(
+        reported,
+        vec![(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)],
+        "the rebuild reports each event it folds of the whole log"
+    );
+    assert!(!graph.rebuild_owed().unwrap(), "the rebuild is recorded");
     drop(graph);
 
     fold_in_batches(&fresh_db, PROJECT, &[log]);
@@ -2020,7 +2174,17 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
         "the rebuilt graph.db is the log's, fold state included"
     );
     let reopened = Projector::open(old_db.to_str().unwrap(), PROJECT).unwrap();
-    assert!(!reopened.rebuild_owed(), "the rebuild happens once");
+    assert!(
+        !reopened.rebuild_owed().unwrap(),
+        "the rebuild happens once"
+    );
+    let again = reopened
+        .rebuild(
+            &|| panic!("a paid rebuild never reads the log"),
+            &mut no_progress,
+        )
+        .unwrap();
+    assert!(!again, "a paid rebuild does not run again");
     reopened.apply_batch(&later_events()).unwrap();
 }
 
@@ -2053,10 +2217,12 @@ fn a_rebuild_skips_an_event_whose_fold_fails() {
     let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
     let log = run_events(&backend, PROJECT);
     let (rebuilt, clean) = (dir.path().join("rebuilt.db"), dir.path().join("clean.db"));
-    Projector::open(rebuilt.to_str().unwrap(), PROJECT)
+    a_pre_rule_graph_db(&rebuilt, &log[..1], "");
+    let ran = Projector::open(rebuilt.to_str().unwrap(), PROJECT)
         .unwrap()
-        .rebuild(&log)
+        .rebuild(&|| Ok(log.clone()), &mut no_progress)
         .unwrap();
+    assert!(ran, "the owed rebuild runs");
     let without: Vec<Event> = log
         .iter()
         .filter(|e| e.position != log[3].position)
@@ -2070,8 +2236,50 @@ fn a_rebuild_skips_an_event_whose_fold_fails() {
     );
 }
 
+/// An event appended while the rebuild ran - after it read the log, by an emit that found the file
+/// still owing and so did not fold - is on the log when the rebuild commits: the rebuild reads the
+/// log once more and folds what it gained, so the rebuilt graph is the whole log's.
+#[test]
+fn a_rebuild_folds_what_the_log_gained_while_it_ran() {
+    use rigger::contextgraph::sqlite::Projector;
+    let dir = tempfile::tempdir().unwrap();
+    let (backend, _) = store_with(
+        dir.path(),
+        &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
+    );
+    let log = run_events(&backend, PROJECT);
+    let (rebuilt, fresh) = (dir.path().join("rebuilt.db"), dir.path().join("fresh.db"));
+    a_pre_rule_graph_db(&rebuilt, &log[..3], "");
+    let reads = std::cell::Cell::new(0);
+    let ran = Projector::open(rebuilt.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .rebuild(
+            &|| {
+                reads.set(reads.get() + 1);
+                Ok(if reads.get() == 1 {
+                    log[..3].to_vec()
+                } else {
+                    log.clone()
+                })
+            },
+            &mut no_progress,
+        )
+        .unwrap();
+    assert_eq!(
+        (ran, reads.get()),
+        (true, 2),
+        "read before and after the commit"
+    );
+    fold_in_batches(&fresh, PROJECT, &[log]);
+    assert_eq!(
+        identity_of(&rebuilt),
+        identity_of(&fresh),
+        "the events appended during the rebuild are folded after it"
+    );
+}
+
 /// `rigger reset --derived` refuses to compact while the project's `graph.db` still owes its
-/// rebuild, and says how to pay it; `rigger graph build` rebuilds it from the log, after which the
+/// rebuild, and says how to pay it; `rigger setup` rebuilds it from the log, after which the
 /// compaction runs.
 #[test]
 fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
@@ -2113,13 +2321,13 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
     assert!(
         err.contains(&format!(
             "reset --derived: {} was folded under an older fold rule and must be rebuilt from \
-             the whole event log once before the log is compacted - run `rigger graph build`",
+             the whole event log once before the log is compacted - run `rigger setup`",
             graph_db.to_str().unwrap()
         )),
         "the refusal names the file and the command that rebuilds it; stderr: {err}"
     );
-    let (_, err, ok) = run_rigger(root, &["graph", "build"]);
-    assert!(ok, "graph build must rebuild the graph; stderr: {err}");
+    let (_, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must rebuild the graph; stderr: {err}");
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(
         ok,
@@ -2226,19 +2434,21 @@ fn user_version(db: &Path) -> i64 {
 /// The fold rule a `graph.db` records after an open of it, and whether that open owes a rebuild.
 fn version_and_owed(db: &Path) -> (i64, bool) {
     use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
     let owed = Projector::open(db.to_str().unwrap(), PROJECT)
         .unwrap()
-        .rebuild_owed();
+        .rebuild_owed()
+        .unwrap();
     (user_version(db), owed)
 }
 
-/// Opening a pre-rule `graph.db` never pays its rebuild by itself: every open until
-/// [`Projector::rebuild`] owes it again and leaves the file at its old fold rule, so a command
-/// that opens and refuses (`rigger reset --derived`) cannot let the next one fold onto it. A file
-/// at the old rule that never folded anything holds nothing a rebuild could change: its open owes
+/// Opening a pre-rule `graph.db` never pays its rebuild and never writes to it: every open until
+/// [`Projector::rebuild`] owes it again and leaves the file byte for byte as it was, so a command
+/// that opens and refuses cannot let the next one fold onto it or undo a rebuild. A file at the
+/// old rule that never folded anything holds nothing a rebuild could change: its open owes
 /// nothing and records the current rule.
 #[test]
-fn an_open_owes_the_rebuild_until_it_is_paid_and_an_unfolded_file_owes_none() {
+fn an_open_owes_the_rebuild_until_it_is_paid_writes_nothing_and_an_unfolded_file_owes_none() {
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(
         dir.path(),
@@ -2247,6 +2457,7 @@ fn an_open_owes_the_rebuild_until_it_is_paid_and_an_unfolded_file_owes_none() {
     let log = run_events(&backend, PROJECT);
     let folded = dir.path().join("folded.db");
     a_pre_rule_graph_db(&folded, &log[..3], "");
+    let before = std::fs::read(&folded).unwrap();
     assert_eq!(
         version_and_owed(&folded),
         (0, true),
@@ -2256,6 +2467,10 @@ fn an_open_owes_the_rebuild_until_it_is_paid_and_an_unfolded_file_owes_none() {
         version_and_owed(&folded),
         (0, true),
         "an open that did not rebuild leaves the rebuild owed"
+    );
+    assert!(
+        std::fs::read(&folded).unwrap() == before,
+        "opening a file that owes its rebuild writes nothing to it"
     );
 
     let unfolded = dir.path().join("unfolded.db");
@@ -2271,6 +2486,7 @@ fn an_open_owes_the_rebuild_until_it_is_paid_and_an_unfolded_file_owes_none() {
 /// The `graph.db` schema of the release before the generation rule: no ledgers, no `proofs`, and
 /// the `pending_proof` table that rule replaced.
 const RELEASE_ERA_SCHEMA: &str = "
+PRAGMA journal_mode = WAL;
 CREATE TABLE nodes (
   id TEXT NOT NULL, kind TEXT NOT NULL, attrs TEXT,
   project TEXT NOT NULL DEFAULT '',
@@ -2296,36 +2512,40 @@ CREATE TABLE pending_proof (
 CREATE INDEX idx_pending_proof_name ON pending_proof(project, name);
 ";
 
-/// Given an operator store whose `graph.db` the release before the generation rule folded - it
-/// still holds the definition and the design link a superseded generation asserted, and a test's
-/// proof waiting in `pending_proof` - when the operator's next command that folds (`rigger emit`)
-/// runs, then that `graph.db` is rebuilt cold from the log first: the superseded facts are gone,
-/// the old table is dropped, the file records the current rule, and the emitted decision lands
-/// on exactly the graph a fresh fold of the whole log reaches.
-#[test]
-fn the_next_command_that_folds_rebuilds_a_release_era_graph_db_from_the_log() {
-    use rigger::contextgraph::sqlite::Projector;
-    let dir = temp_store_project();
-    let root = dir.path();
-    let project = run_stream_identity(root);
-    let mut log = two_generations_dropping_facts();
-    log.push(keyed(
-        TYPE_EDGE_INFERRED,
-        proof("alpha", 3),
-        "gc/tests/t.rs@k1#0",
-        30,
-    ));
-    let events_db = rigger_file(root, "events.db");
-    let graph_db = rigger_file(root, "graph.db");
-    let appended = {
-        let backend = Store::open(events_db.to_str().unwrap()).unwrap();
-        Namespaced::new(&backend, &project)
-            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &log)
-            .unwrap();
-        run_events(&backend, &project)
-    };
-    let _ = std::fs::remove_file(&graph_db);
-    {
+/// An operator store whose log holds [`two_generations_dropping_facts`] plus a test's proof, and
+/// whose `graph.db` the release before the generation rule folded: it still holds the definition
+/// and the design link a superseded generation asserted, and the proof waiting in `pending_proof`.
+struct ReleaseEraStore {
+    dir: tempfile::TempDir,
+    project: String,
+    events_db: std::path::PathBuf,
+    graph_db: std::path::PathBuf,
+}
+
+impl ReleaseEraStore {
+    fn new() -> Self {
+        let dir = temp_store_project();
+        let root = dir.path();
+        // The durable identity is already minted, so `rigger setup` keeps the namespace.
+        std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
+        let project = run_stream_identity(root);
+        let mut log = two_generations_dropping_facts();
+        log.push(keyed(
+            TYPE_EDGE_INFERRED,
+            proof("alpha", 3),
+            "gc/tests/t.rs@k1#0",
+            30,
+        ));
+        let events_db = rigger_file(root, "events.db");
+        let graph_db = rigger_file(root, "graph.db");
+        let appended = {
+            let backend = Store::open(events_db.to_str().unwrap()).unwrap();
+            Namespaced::new(&backend, &project)
+                .append(rigger::conductor::STREAM, ExpectedRevision::Any, &log)
+                .unwrap();
+            run_events(&backend, &project)
+        };
+        let _ = std::fs::remove_file(&graph_db);
         let conn = rusqlite::Connection::open(&graph_db).unwrap();
         conn.execute_batch(RELEASE_ERA_SCHEMA).unwrap();
         for e in &appended {
@@ -2356,19 +2576,87 @@ fn the_next_command_that_folds_rebuilds_a_release_era_graph_db_from_the_log() {
             [project.as_str()],
         )
         .unwrap();
+        drop(conn);
+        ReleaseEraStore {
+            dir,
+            project,
+            events_db,
+            graph_db,
+        }
     }
 
-    let (out, err, ok) = run_rigger(
-        root,
-        &[
-            "emit",
-            "DecisionMade",
-            r#"{"id":"d-up","summary":"s","governs":["src/f.rs::alpha"],"supersedes":""}"#,
-        ],
-    );
-    assert!(ok, "the emit must succeed; stdout: {out} stderr: {err}");
+    fn root(&self) -> &Path {
+        self.dir.path()
+    }
 
-    let pending_proof_tables: i64 = rusqlite::Connection::open(&graph_db)
+    /// The project's run stream as the log now records it.
+    fn log(&self) -> Vec<Event> {
+        run_events(
+            &Store::open(self.events_db.to_str().unwrap()).unwrap(),
+            &self.project,
+        )
+    }
+
+    /// The `graph.db` file's bytes: equal before and after a command that wrote nothing to it.
+    fn graph_bytes(&self) -> Vec<u8> {
+        std::fs::read(&self.graph_db).unwrap()
+    }
+
+    /// The live projection and fold state of the project's `graph.db`, beside those of a fresh
+    /// fold of the whole log.
+    fn graph_and_a_fresh_fold_of_the_log(&self) -> ((String, Vec<String>), (String, Vec<String>)) {
+        use rigger::contextgraph::sqlite::Projector;
+        let whole = Projector::open(self.graph_db.to_str().unwrap(), &self.project)
+            .unwrap()
+            .whole()
+            .unwrap();
+        let fresh = self.root().join("fresh.db");
+        (
+            (
+                serde_json::to_string(&whole).unwrap(),
+                fold_state(&self.graph_db),
+            ),
+            (
+                fold_in_batches(&fresh, &self.project, &[self.log()]),
+                fold_state(&fresh),
+            ),
+        )
+    }
+}
+
+/// Given an operator store whose `graph.db` the release before the generation rule folded, when
+/// the operator runs `rigger setup`, then that `graph.db` is rebuilt cold from the log - setup says
+/// it is rebuilding and reports how far along it is - the superseded facts are gone, the old table
+/// is dropped, the file records the current rule, and it holds exactly the graph a fresh fold of
+/// the whole log reaches. A second `rigger setup` owes and reports no rebuild.
+#[test]
+fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    let store = ReleaseEraStore::new();
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let rebuild: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("graph.db") || l.starts_with("rebuilt "))
+        .collect();
+    assert_eq!(
+        rebuild,
+        vec![
+            "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
+             the whole log is refolded once",
+            "rebuilt 1 of 6 events (16%)",
+            "rebuilt 2 of 6 events (33%)",
+            "rebuilt 3 of 6 events (50%)",
+            "rebuilt 4 of 6 events (66%)",
+            "rebuilt 5 of 6 events (83%)",
+            "rebuilt 6 of 6 events (100%)",
+            "rebuilt graph.db from the event log",
+        ],
+        "setup says it is rebuilding and how far along it is; stdout: {out}"
+    );
+
+    let pending_proof_tables: i64 = rusqlite::Connection::open(&store.graph_db)
         .unwrap()
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE name = 'pending_proof'",
@@ -2377,12 +2665,12 @@ fn the_next_command_that_folds_rebuilds_a_release_era_graph_db_from_the_log() {
         )
         .unwrap();
     assert_eq!(
-        (user_version(&graph_db), pending_proof_tables),
+        (user_version(&store.graph_db), pending_proof_tables),
         (1, 0),
         "the rebuilt file records the current rule and no longer holds the old table"
     );
-    let rebuilt = Projector::open(graph_db.to_str().unwrap(), &project).unwrap();
-    assert!(!rebuilt.rebuild_owed(), "the rebuild was paid");
+    let rebuilt = Projector::open(store.graph_db.to_str().unwrap(), &store.project).unwrap();
+    assert!(!rebuilt.rebuild_owed().unwrap(), "the rebuild was paid");
     let whole = rebuilt.whole().unwrap();
     drop(rebuilt);
     assert_eq!(
@@ -2393,23 +2681,181 @@ fn the_next_command_that_folds_rebuilds_a_release_era_graph_db_from_the_log() {
         (false, false),
         "the superseded generation's definition and design link are gone"
     );
-
-    let full_log = run_events(&Store::open(events_db.to_str().unwrap()).unwrap(), &project);
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert_eq!(
-        full_log.len(),
-        appended.len() + 1,
-        "the log holds the seeded events and the emitted decision"
+        graph, fresh,
+        "the rebuilt graph.db is the whole log's, fold state included"
     );
-    let fresh = root.join("fresh.db");
+
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "a second setup must succeed; stderr: {err}");
+    assert!(
+        !out.contains("graph.db"),
+        "a paid rebuild is not owed or reported again; stdout: {out}"
+    );
+}
+
+/// Given a `graph.db` still at the old fold rule, when an agent runs `rigger emit`, then the event
+/// is appended to the log and the emit says it was not folded, naming `rigger setup`, and
+/// `graph.db` is left byte for byte as it was; `rigger setup` then folds the event with the rest.
+#[test]
+fn an_emit_at_the_old_rule_appends_says_it_skipped_the_fold_and_leaves_graph_db_unchanged() {
+    let store = ReleaseEraStore::new();
+    let before = store.graph_bytes();
+    let (out, err, ok) = run_rigger(
+        store.root(),
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d-up","summary":"s","governs":["src/f.rs::alpha"],"supersedes":""}"#,
+        ],
+    );
+    assert!(ok, "the emit must succeed; stdout: {out} stderr: {err}");
+    let log = store.log();
+    let last = log.last().unwrap();
     assert_eq!(
-        (
-            serde_json::to_string(&whole).unwrap(),
-            fold_state(&graph_db)
+        (log.len(), last.type_.as_str()),
+        (7, "DecisionMade"),
+        "the decision is appended to the log"
+    );
+    assert_eq!(
+        out,
+        format!(
+            "emitted DecisionMade (position {}); not folded into the context graph: {}\n",
+            last.position,
+            rigger::contextgraph::REBUILD_OWED
         ),
-        (
-            fold_in_batches(&fresh, &project, &[full_log]),
-            fold_state(&fresh)
-        ),
-        "the emit folded onto the graph the whole log rebuilds, fold state included"
+        "the emit says it skipped the fold and names the rebuild"
+    );
+    assert!(
+        store.graph_bytes() == before,
+        "an emit at the old rule writes nothing to graph.db"
+    );
+
+    let (_, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stderr: {err}");
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(
+        graph, fresh,
+        "the rebuild folds the emitted decision with the rest of the log"
+    );
+}
+
+/// Given a `graph.db` still at the old fold rule, a command whose answer depends on the fold
+/// (`rigger graph build`) refuses at once naming `rigger setup` and writes nothing, while a
+/// read-only inspection (`rigger graph --around`) answers from the graph as it stands, says the
+/// rebuild is owed, and writes nothing either.
+#[test]
+fn a_fold_dependent_command_refuses_at_the_old_rule_and_an_inspection_answers_as_it_stands() {
+    let store = ReleaseEraStore::new();
+    let before = store.graph_bytes();
+    let (out, err, ok) = run_rigger(store.root(), &["graph", "build"]);
+    assert!(!ok, "graph build must refuse; stdout: {out}");
+    assert!(
+        err.contains(&format!(
+            "graph build: {}",
+            rigger::contextgraph::REBUILD_OWED
+        )),
+        "the refusal names `rigger setup`; stderr: {err}"
+    );
+    assert!(store.graph_bytes() == before, "the refusal writes nothing");
+
+    let (out, err, ok) = run_rigger(store.root(), &["graph", "--around", "docs/f.md"]);
+    assert!(ok, "an inspection still answers; stderr: {err}");
+    assert!(
+        err.contains(&format!(
+            "note: {} - until then the context graph answers as it stands",
+            rigger::contextgraph::REBUILD_OWED
+        )),
+        "the inspection says the rebuild is owed; stderr: {err}"
+    );
+    assert!(
+        out.contains("src/old.rs"),
+        "it answers from the graph as it stands; stdout: {out}"
+    );
+    assert!(
+        store.graph_bytes() == before,
+        "the inspection writes nothing"
+    );
+}
+
+/// While `rigger setup`'s rebuild holds its one transaction, a read-only open answers from the old
+/// file without waiting and changes nothing, a command that depends on the fold refuses at once
+/// naming `rigger setup` rather than failing on the lock, and an emit appends without folding;
+/// when the rebuild commits, its ledgers are intact and it has folded the emitted event too - the
+/// graph is exactly the whole log's.
+#[test]
+fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::Projection;
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+    let store = ReleaseEraStore::new();
+    let (paused_tx, paused) = channel();
+    let (resume, resume_rx) = channel::<()>();
+    let rebuilder = {
+        let (events_db, graph_db) = (store.events_db.clone(), store.graph_db.clone());
+        let project = store.project.clone();
+        std::thread::spawn(move || {
+            let backend = Store::open(events_db.to_str().unwrap()).unwrap();
+            let log = || Ok(run_events(&backend, &project));
+            Projector::open(graph_db.to_str().unwrap(), &project)
+                .unwrap()
+                .rebuild(&log, &mut |folded, _| {
+                    if folded == 1 {
+                        paused_tx.send(()).unwrap();
+                        resume_rx.recv().unwrap();
+                    }
+                })
+                .unwrap()
+        })
+    };
+    paused.recv().unwrap();
+
+    let started = Instant::now();
+    let reader = Projector::open(store.graph_db.to_str().unwrap(), &store.project).unwrap();
+    let (owed, whole) = (reader.rebuild_owed().unwrap(), reader.whole().unwrap());
+    drop(reader);
+    assert_eq!(
+        (owed, whole.edges.iter().any(|e| e.to == "src/old.rs")),
+        (true, true),
+        "a read during the rebuild sees the old file as it stands"
+    );
+    let (_, err, ok) = run_rigger(store.root(), &["graph", "build"]);
+    assert!(
+        !ok && err.contains(&format!(
+            "graph build: {}",
+            rigger::contextgraph::REBUILD_OWED
+        )),
+        "a folding command during the rebuild refuses naming `rigger setup`; stderr: {err}"
+    );
+    let (out, err, ok) = run_rigger(
+        store.root(),
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d-race","summary":"s","governs":["src/f.rs::alpha"],"supersedes":""}"#,
+        ],
+    );
+    assert!(
+        ok && out.contains("not folded into the context graph"),
+        "an emit during the rebuild appends without folding; stdout: {out} stderr: {err}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "none of them waited on the rebuild's lock (the busy timeout is 5s)"
+    );
+
+    resume.send(()).unwrap();
+    assert!(rebuilder.join().unwrap(), "the rebuild ran");
+    assert_eq!(
+        user_version(&store.graph_db),
+        1,
+        "and recorded the current rule"
+    );
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(
+        graph, fresh,
+        "the rebuilt ledgers are intact and the raced emit is folded"
     );
 }

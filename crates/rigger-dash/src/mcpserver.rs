@@ -2141,6 +2141,74 @@ mod tests {
         assert_eq!(structured["site"]["kind"], "fn");
     }
 
+    /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends
+    /// on the fold - `rigger_graph` (both selectors) and `rigger_ground` - at once, naming
+    /// `rigger setup` and never reading the projection, while `rigger_emit` on the same server
+    /// still appends (its fold refused, the rebuild re-deriving it from the log).
+    #[test]
+    fn tools_that_depend_on_the_fold_refuse_a_graph_owing_its_rebuild_while_emit_appends() {
+        use crate::contextgraph::{Error as GraphError, Graph, REBUILD_OWED};
+        use crate::grounder::Nop;
+
+        struct Owing;
+        impl Projection for Owing {
+            fn apply(&self, _: &Event) -> Result<(), GraphError> {
+                Err(GraphError(REBUILD_OWED.to_string()))
+            }
+            fn subgraph(&self, _: &[String], _: i64) -> Result<Graph, GraphError> {
+                panic!("a graph owing its rebuild is never read")
+            }
+            fn resolve(&self, _: &str) -> Result<Option<String>, GraphError> {
+                panic!("a graph owing its rebuild is never read")
+            }
+            fn rebuild_owed(&self) -> Result<bool, GraphError> {
+                Ok(true)
+            }
+        }
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let grounder = Nop;
+        let graph = Owing;
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_graph(&graph)
+            .with_grounder(Ok(&grounder))
+            .with_spawn("u/implementer#0");
+        let call = |name: &str, args: &str| {
+            let input = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+            );
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            serde_json::from_str::<Value>(String::from_utf8(out).unwrap().trim()).unwrap()
+        };
+        for (tool, args) in [
+            ("rigger_graph", r#"{"around":"src/f.rs"}"#),
+            ("rigger_graph", r#"{"show":"alpha"}"#),
+            ("rigger_ground", r#"{"query":"alpha"}"#),
+        ] {
+            assert_eq!(
+                call(tool, args)["error"]["message"],
+                format!("{tool}: {REBUILD_OWED}"),
+                "{tool} {args} refuses naming the rebuild"
+            );
+        }
+        let emitted = call(
+            "rigger_emit",
+            r#"{"type":"DecisionMade","data":{"id":"d","summary":"s","governs":[],"supersedes":""}}"#,
+        );
+        assert_eq!(emitted["result"]["structuredContent"], json!({}));
+        let log = store
+            .read_stream("run", 0, crate::eventstore::Direction::Forward)
+            .unwrap();
+        assert_eq!(
+            log.iter().map(|e| e.type_.as_str()).collect::<Vec<_>>(),
+            vec!["DecisionMade"],
+            "the emit appended although the graph refused its fold"
+        );
+    }
+
     /// The sibling of `lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method`
     /// for [`Located::Many`]: this diff's own new `"status": "many"` JSON shape
     /// (`tool_graph`, the candidate-list branch) has no coverage anywhere else - the CLI's

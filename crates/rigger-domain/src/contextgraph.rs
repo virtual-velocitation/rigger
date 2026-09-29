@@ -856,6 +856,81 @@ mod caller_wire_contract {
     }
 }
 
+/// Spec 101: a projection that is not persisted across binaries is never folded under an older
+/// rule, so the port's default owes no rebuild.
+#[cfg(test)]
+mod rebuild_owed_default {
+    use super::Projection;
+    use crate::test_support::MinimalProjection;
+
+    #[test]
+    fn a_projection_with_no_override_owes_no_rebuild() {
+        assert_eq!(MinimalProjection.rebuild_owed().unwrap(), false);
+    }
+}
+
+/// Spec 101: the fact a re-asserting recording asserts, keyed as the fold keys it.
+#[cfg(test)]
+mod asserted_fact_tests {
+    use super::{
+        alias_definition, asserted_fact, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+        TYPE_DOC_LINK_EXTRACTED,
+    };
+
+    fn upper(name: &str) -> String {
+        name.to_uppercase()
+    }
+
+    #[test]
+    fn a_link_is_its_resolved_endpoints_and_relation_however_it_is_spelled() {
+        let one = br#"{"from":"d.md","to":"a.rs","rel":"SPECIFIES"}"#;
+        let respelled = br#"{"rel":"SPECIFIES","note":"x","to":"a.rs","from":"d.md"}"#;
+        let key = asserted_fact(TYPE_DOC_LINK_EXTRACTED, one, &upper);
+        assert_eq!(
+            key.as_deref(),
+            Some(br#"["D.MD","SPECIFIES","A.RS"]"#.as_slice()),
+            "both endpoints resolve, the relation does not"
+        );
+        assert_eq!(
+            asserted_fact(TYPE_DOC_LINK_EXTRACTED, respelled, &upper),
+            key
+        );
+    }
+
+    #[test]
+    fn a_concept_is_its_resolved_id() {
+        let concept = br#"{"kind":"design-doc","id":"d.md","title":"t"}"#;
+        assert_eq!(
+            asserted_fact(TYPE_DOC_CONCEPT_EXTRACTED, concept, &upper).as_deref(),
+            Some(b"D.MD".as_slice())
+        );
+    }
+
+    #[test]
+    fn a_payload_the_fold_cannot_read_or_another_type_asserts_no_fact() {
+        let link = br#"{"from":"d.md","to":"a.rs","rel":"SPECIFIES"}"#;
+        assert_eq!(
+            [
+                asserted_fact(TYPE_DOC_LINK_EXTRACTED, br#"{"from":"d.md"}"#, &upper),
+                asserted_fact(TYPE_DOC_CONCEPT_EXTRACTED, b"[]", &upper),
+                asserted_fact(TYPE_DECISION_MADE, link, &upper),
+            ],
+            [None, None, None]
+        );
+    }
+
+    #[test]
+    fn an_alias_definition_reads_its_alias_and_canonical() {
+        assert_eq!(
+            [
+                alias_definition(br#"{"alias":"x","canonical":"y"}"#),
+                alias_definition(br#"{"alias":"x"}"#),
+            ],
+            [Some(("x".to_string(), "y".to_string())), None]
+        );
+    }
+}
+
 /// spec 92, criterion 4's fix round: [`Projection::locate`]'s DEFAULT (the sqlite `Projector`
 /// is the only implementor that overrides it) - proven against a minimal double that
 /// implements only the trait's REQUIRED methods, so it inherits the default rather than

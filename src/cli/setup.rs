@@ -1405,6 +1405,38 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::tool_available;
 
+    /// Spec 101: a graph rebuild reports its progress in tenths of the log - a line each time the
+    /// folded count crosses one, the last on the final event - with the exact count and percent.
+    #[test]
+    fn a_rebuild_reports_each_tenth_of_the_log_it_folds() {
+        let lines = |total: usize| -> Vec<String> {
+            (1..=total)
+                .filter_map(|folded| rebuild_progress_line(folded, total))
+                .collect()
+        };
+        assert_eq!(
+            lines(20),
+            (1..=10)
+                .map(|tenth| format!("rebuilt {} of 20 events ({}%)", tenth * 2, tenth * 10))
+                .collect::<Vec<_>>(),
+            "every second event of twenty crosses a tenth"
+        );
+        assert_eq!(
+            lines(3),
+            vec![
+                "rebuilt 1 of 3 events (33%)",
+                "rebuilt 2 of 3 events (66%)",
+                "rebuilt 3 of 3 events (100%)",
+            ],
+            "on a log shorter than ten events every event crosses one"
+        );
+        assert_eq!(
+            [rebuild_progress_line(15, 40), rebuild_progress_line(16, 40)],
+            [None, Some("rebuilt 16 of 40 events (40%)".to_string())],
+            "a count inside a tenth prints nothing, the one completing it prints"
+        );
+    }
+
     /// spec 24, crit 2 (idempotency + non-clobbering, byte level): a pre-existing pre-commit
     /// hook that is NOT valid UTF-8 (e.g. a compiled/binary hook, or one carrying non-UTF-8
     /// bytes) must NEVER be clobbered by a fresh script (sdet-u24-1r-nonutf8-clobber-persists /
