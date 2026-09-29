@@ -940,7 +940,46 @@ impl EventStore for Store {
             Err(e) => Some(Err(failed(e))),
         })
         .filter_map(Result::transpose);
-        super::positions_in_batches(positions, batch, sink)
+        super::in_batches(positions, batch, sink)
+    }
+
+    /// The stream's head is its newest event's position, read newest-first and stopping at the
+    /// first; then one forward read from `from`, each record pulled from the server only as the
+    /// batch needs it, so no more than one batch of events is ever held.
+    fn read_stream_batched(
+        &self,
+        stream: &str,
+        from: Revision,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let head = first_match(
+            self.newest_first(stream)
+                .map(|pulled| pulled.map(|ev| original(&ev).map(|rec| rec.position.commit))),
+            "stream head",
+            |position| position,
+        )?;
+        let Some(head) = head else {
+            return Ok(());
+        };
+        let opts = ReadStreamOptions::default()
+            .position(stream_position(from))
+            .forwards();
+        let failed = |e| Error::Backend(format!("kurrentdb: read stream: {e}"));
+        let mut rs = match self.rt.block_on(self.client.read_stream(stream, &opts)) {
+            Ok(rs) => rs,
+            Err(kurrentdb::Error::ResourceNotFound) => return Ok(()),
+            Err(e) => return Err(failed(e)),
+        };
+        let events = std::iter::from_fn(|| match self.rt.block_on(rs.next()) {
+            Ok(Some(ev)) => Some(Ok(original(&ev)
+                .and_then(|rec| to_event(rec, &Filter::default()))
+                .filter(|e| e.revision >= from))),
+            Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => None,
+            Err(e) => Some(Err(failed(e))),
+        })
+        .filter_map(Result::transpose);
+        super::in_batches(events, batch, &mut |events| sink(events, head as Position))
     }
     /// The newest-first read ([`Store::newest_first`]) of the identity's group stream, each link
     /// paired with the event its revision holds, ending at the newest link that holds the event

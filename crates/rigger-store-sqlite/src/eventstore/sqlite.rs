@@ -1353,11 +1353,44 @@ impl EventStore for Store {
         let positions = stmt
             .query_map(params![stream], |r| r.get::<_, i64>(0))
             .map_err(be)?;
-        super::positions_in_batches(
+        super::in_batches(
             positions.map(|p| p.map(|p| p as Position).map_err(be)),
             batch,
             sink,
         )
+    }
+
+    /// The stream's rows from `from`, streamed row by row in position order off the events table,
+    /// each batch handed with the stream's last position read by one seek of its index first.
+    fn read_stream_batched(
+        &self,
+        stream: &str,
+        from: Revision,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let conn = self.conn.lock().unwrap();
+        let head: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(position) FROM events WHERE stream = ?1",
+                params![stream],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        let Some(head) = head else {
+            return Ok(());
+        };
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {COLS} FROM events WHERE stream = ?1 AND revision >= ?2 ORDER BY position"
+            ))
+            .map_err(be)?;
+        let events = stmt
+            .query_map(params![stream, from], row_to_event)
+            .map_err(be)?;
+        super::in_batches(events.map(|e| e.map_err(be)), batch, &mut |events| {
+            sink(events, head as Position)
+        })
     }
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         let conn = self.conn.lock().unwrap();

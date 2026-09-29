@@ -1431,6 +1431,18 @@ mod tests {
         ) -> Result<(), crate::eventstore::Error> {
             Err(FailingReadStore::read_failure())
         }
+        fn read_stream_batched(
+            &self,
+            _stream: &str,
+            _from: crate::eventstore::Revision,
+            _batch: usize,
+            _sink: &mut dyn FnMut(
+                &[crate::eventstore::Event],
+                crate::eventstore::Position,
+            ) -> Result<(), crate::eventstore::Error>,
+        ) -> Result<(), crate::eventstore::Error> {
+            Err(FailingReadStore::read_failure())
+        }
         fn latest_in_group(
             &self,
             _stream: &str,

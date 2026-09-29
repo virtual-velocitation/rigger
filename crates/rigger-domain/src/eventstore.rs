@@ -760,6 +760,20 @@ pub trait EventStore: Send + Sync {
         sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
     ) -> Result<(), Error>;
 
+    /// Hand `sink` the events of one stream from revision `from` (inclusive), in position order,
+    /// in batches of at most `batch`, each with the [`Position`] of the stream's last event
+    /// (spec 101): one ordered pass that holds at most one batch at a time, never the stream as
+    /// one list - what a rebuild of a log with no live selection folds. A stream the store does
+    /// not hold, or a `from` past its end, hands nothing; a sink's error ends the read with that
+    /// error.
+    fn read_stream_batched(
+        &self,
+        stream: &str,
+        from: Revision,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+    ) -> Result<(), Error>;
+
     /// The NEWEST event on `stream` whose [`META_GROUP`] entry is `group` - its position, type and
     /// metadata, never its data - or `None` when no event of the stream carries that group
     /// (spec 101). A backend answers from its own group index or group stream, never by reading

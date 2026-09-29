@@ -173,9 +173,10 @@ pub fn stream_positions<'s>(
 }
 
 /// The [`RebuildSource`] over `stream` of `store`, for a store with no live selection: each call
-/// reads only what the stream gained since the call before it - the first from its start - and
-/// hands the events past `after` in batches of at most `batch`, so a rebuild's fold and its tail
-/// read each event of the stream once between them.
+/// reads only what the stream gained since the call before it - the first from its start - through
+/// the store's batched read ([`EventStore::read_stream_batched`]), holding at most one batch of
+/// `batch` events at a time, and hands on the events of each batch past `after`, so a rebuild's
+/// fold and its tail read each event of the stream once between them and never hold the stream.
 pub fn stream_source<'s>(
     store: &'s dyn EventStore,
     stream: &'s str,
@@ -183,11 +184,16 @@ pub fn stream_source<'s>(
 ) -> impl FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's {
     let mut next: Revision = 0;
     move |after, sink| {
-        let gained = store
-            .read_stream(stream, next, crate::eventstore::Direction::Forward)
-            .map_err(be)?;
-        next = gained.last().map_or(next, |e| e.revision + 1);
-        stream_past(&gained, after, batch, sink)
+        store
+            .read_stream_batched(stream, next, batch, &mut |events, head| {
+                next = events.last().map_or(next, |e| e.revision + 1);
+                let past = &events[events.partition_point(|e| e.position <= after)..];
+                if past.is_empty() {
+                    return Ok(());
+                }
+                sink(past, head).map_err(|e| crate::eventstore::Error::Backend(e.0))
+            })
+            .map_err(be)
     }
 }
 

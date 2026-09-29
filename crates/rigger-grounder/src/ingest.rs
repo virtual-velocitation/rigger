@@ -216,6 +216,16 @@ where
         self.store.read_stream_positions(stream, batch, sink)
     }
 
+    fn read_stream_batched(
+        &self,
+        stream: &str,
+        from: Revision,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.store.read_stream_batched(stream, from, batch, sink)
+    }
+
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.store.latest_in_group(stream, group)
     }

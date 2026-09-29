@@ -27,18 +27,19 @@ pub mod contract;
 
 pub use rigger_domain::eventstore::*;
 
-/// Hand `sink` the positions `positions` yields, in order, in batches of at most `batch`: the one
-/// batching of an adapter's [`EventStore::read_stream_positions`]. The first error - the backend's
-/// or the sink's - ends the read with that error.
+/// Hand `sink` what `items` yields, in order, in batches of at most `batch`, holding no more than
+/// one batch at a time: the one batching of an adapter's [`EventStore::read_stream_positions`] and
+/// [`EventStore::read_stream_batched`]. The first error - the backend's or the sink's - ends the
+/// read with that error.
 #[cfg(any(feature = "store", not(feature = "core")))]
-fn positions_in_batches(
-    positions: impl Iterator<Item = Result<Position, Error>>,
+fn in_batches<T>(
+    items: impl Iterator<Item = Result<T, Error>>,
     batch: usize,
-    sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    sink: &mut dyn FnMut(&[T]) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let mut held = Vec::with_capacity(batch);
-    for position in positions {
-        held.push(position?);
+    for item in items {
+        held.push(item?);
         if held.len() == batch {
             sink(&held)?;
             held.clear();

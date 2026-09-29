@@ -104,6 +104,18 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<(), rigger::eventstore::Error> {
             self.inner.read_stream_positions(stream, batch, sink)
         }
+        fn read_stream_batched(
+            &self,
+            stream: &str,
+            from: rigger::eventstore::Revision,
+            batch: usize,
+            sink: &mut dyn FnMut(
+                &[rigger::eventstore::Event],
+                rigger::eventstore::Position,
+            ) -> Result<(), rigger::eventstore::Error>,
+        ) -> Result<(), rigger::eventstore::Error> {
+            self.inner.read_stream_batched(stream, from, batch, sink)
+        }
     };
 }
 
@@ -175,6 +187,15 @@ impl EventStore for SilentStore {
     ) -> Result<(), Error> {
         Ok(())
     }
+    fn read_stream_batched(
+        &self,
+        _stream: &str,
+        _from: Revision,
+        _batch: usize,
+        _sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
     fn latest_in_group(&self, _stream: &str, _group: &str) -> Result<Option<GroupHead>, Error> {
         Ok(None)
     }
@@ -239,6 +260,15 @@ impl EventStore for GroupLookupOnly {
         _: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
     ) -> Result<(), Error> {
         panic!("only the group lookup is reachable: nothing reads positions")
+    }
+    fn read_stream_batched(
+        &self,
+        _: &str,
+        _: Revision,
+        _: usize,
+        _: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        panic!("only the group lookup is reachable: nothing reads the stream in batches")
     }
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.asked
@@ -562,6 +592,26 @@ impl EventStore for ReadCountingStore<'_> {
             .read_stream_positions(stream, batch, &mut |positions| {
                 self.reads.lock().unwrap()[at].add(positions.len());
                 sink(positions)
+            })?;
+        self.land_interleaved(at);
+        Ok(())
+    }
+    fn read_stream_batched(
+        &self,
+        stream: &str,
+        from: Revision,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let at = self.record(CountedRead::StreamBatched {
+            stream: stream.to_string(),
+            from,
+            batches: Vec::new(),
+        });
+        self.inner
+            .read_stream_batched(stream, from, batch, &mut |events, head| {
+                self.reads.lock().unwrap()[at].add(events.len());
+                sink(events, head)
             })?;
         self.land_interleaved(at);
         Ok(())

@@ -155,6 +155,16 @@ impl EventStore for Namespaced<'_> {
         self.inner
             .read_stream_positions(&self.scoped(stream), batch, sink)
     }
+    fn read_stream_batched(
+        &self,
+        stream: &str,
+        from: Revision,
+        batch: usize,
+        sink: &mut dyn FnMut(&[Event], Position) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.inner
+            .read_stream_batched(&self.scoped(stream), from, batch, sink)
+    }
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.inner.latest_in_group(&self.scoped(stream), group)
     }

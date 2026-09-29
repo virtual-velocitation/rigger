@@ -253,6 +253,15 @@ impl EventStore for PortDouble {
     ) -> Result<(), StoreError> {
         Err(unreadable())
     }
+    fn read_stream_batched(
+        &self,
+        _stream: &str,
+        _from: rigger::eventstore::Revision,
+        _batch: usize,
+        _sink: &mut dyn FnMut(&[Event], Position) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        Err(unreadable())
+    }
     fn latest_in_group(
         &self,
         _stream: &str,

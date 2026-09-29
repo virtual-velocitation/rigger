@@ -32556,6 +32556,19 @@ mod tests {
                 self.charge()?;
                 self.inner.read_stream_positions(stream, batch, sink)
             }
+            fn read_stream_batched(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+                batch: usize,
+                sink: &mut dyn FnMut(
+                    &[Event],
+                    crate::eventstore::Position,
+                ) -> Result<(), crate::eventstore::Error>,
+            ) -> Result<(), crate::eventstore::Error> {
+                self.charge()?;
+                self.inner.read_stream_batched(stream, from, batch, sink)
+            }
             fn latest_in_group(
                 &self,
                 stream: &str,
