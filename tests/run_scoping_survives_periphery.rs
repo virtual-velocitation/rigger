@@ -21,7 +21,7 @@
 //!    exercised here". A hand-spelled key cannot prove that a REAL RUN ever mints one of that
 //!    shape; if it never did, the type gate would be guarding nothing on the run path. These tests
 //!    close that with the run's OWN minted lifecycle key, read back off the log.
-//! 3. The seam is `conductor::run` -> `ingest::project_scoped_replay_keys` across a module
+//! 3. The seam is `conductor::run` -> `ingest::project_scoped_latest_generations` across a module
 //!    boundary, observed through the public `eventstore` read path. Neither module's own tests see
 //!    both halves at once from outside.
 //!
@@ -43,7 +43,7 @@ use rigger::contextgraph::{TYPE_EDGE_INFERRED, TYPE_GATE_VERDICT};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::Event;
 use rigger::gate::ExecRunner;
-use rigger::ingest::project_scoped_replay_keys;
+use rigger::ingest::project_scoped_latest_generations;
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
 use rigger::run::{current_run, TYPE_RUN_STARTED};
 use std::collections::BTreeSet;
@@ -194,7 +194,7 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
 /// rather than hand-spelled ones.
 ///
 /// The claim stops at that arm, deliberately, because that is where the type test lives
-/// (`ingest::project_scoped_replay_keys` skips a non-derived event before it ever reads that
+/// (`ingest::project_scoped_latest_generations` skips a non-derived event before it ever reads that
 /// event's key). What both arms pour into is ONE flat key set, and the suppression DECISION
 /// downstream is a plain membership test on it with no type test of its own - so this pins what
 /// ENTERS the set, and never the stronger claim that a lifecycle emit cannot be suppressed.
@@ -231,7 +231,10 @@ fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_th
         .iter()
         .map(|k| Event::new(TYPE_EDGE_INFERRED, Vec::new()).with_meta(META_REPLAY_KEY, k))
         .collect();
-    let eligible = project_scoped_replay_keys(&as_derived);
+    let eligible = project_scoped_latest_generations(&as_derived)
+        .into_values()
+        .flat_map(|(_, keys)| keys)
+        .collect::<std::collections::HashSet<String>>();
     let missed: Vec<&String> = verdict_keys
         .iter()
         .filter(|k| !eligible.contains(*k))
@@ -247,9 +250,16 @@ fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_th
     // events, the predicate offers nothing at all. No domain or lifecycle event a run records
     // contributes a key to the project-scoped arm of the seed, however its key is spelled.
     assert!(
-        project_scoped_replay_keys(&log).is_empty(),
+        project_scoped_latest_generations(&log)
+            .into_values()
+            .flat_map(|(_, keys)| keys)
+            .collect::<std::collections::HashSet<String>>()
+            .is_empty(),
         "a non-derived event is ineligible for the project-scoped arm of the seed whatever its \
          key looks like; over a real run's log the predicate returned {:?}",
-        project_scoped_replay_keys(&log)
+        project_scoped_latest_generations(&log)
+            .into_values()
+            .flat_map(|(_, keys)| keys)
+            .collect::<std::collections::HashSet<String>>()
     );
 }

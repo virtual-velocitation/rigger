@@ -245,7 +245,10 @@ mod dedup_tests {
             Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new()),
         ];
 
-        let keys = project_scoped_replay_keys(&stream);
+        let keys = project_scoped_latest_generations(&stream)
+            .into_values()
+            .flat_map(|(_, keys)| keys)
+            .collect::<std::collections::HashSet<String>>();
 
         assert_eq!(
             keys,
@@ -265,7 +268,11 @@ mod dedup_tests {
             "a domain event is ineligible however its replay key is spelled"
         );
         assert!(
-            project_scoped_replay_keys(&[]).is_empty(),
+            project_scoped_latest_generations(&[])
+                .into_values()
+                .flat_map(|(_, keys)| keys)
+                .collect::<std::collections::HashSet<String>>()
+                .is_empty(),
             "an empty stream suppresses nothing"
         );
     }
@@ -287,7 +294,10 @@ mod dedup_tests {
         ];
 
         assert_eq!(
-            project_scoped_replay_keys(&stream),
+            project_scoped_latest_generations(&stream)
+                .into_values()
+                .flat_map(|(_, keys)| keys)
+                .collect::<std::collections::HashSet<String>>(),
             HashSet::from([
                 "gc/vendor/pkg@1.2.3/a.rs@h1#0".to_string(),
                 "gc/vendor/pkg@1.2.3/a.rs@h1#1".to_string(),
@@ -336,7 +346,11 @@ mod dedup_tests {
                 "{key:?} is not the content-key shape, so it names no batch identity"
             );
             assert!(
-                project_scoped_replay_keys(&[keyed(TYPE_CODE_ENTITY_EXTRACTED, key)]).is_empty(),
+                project_scoped_latest_generations(&[keyed(TYPE_CODE_ENTITY_EXTRACTED, key)])
+                    .into_values()
+                    .flat_map(|(_, keys)| keys)
+                    .collect::<std::collections::HashSet<String>>()
+                    .is_empty(),
                 "{key:?} must suppress nothing - a key we cannot parse re-emits (fail-safe)"
             );
         }
@@ -347,6 +361,207 @@ mod dedup_tests {
             derived_key_parts("gc/src/a.rs@h1#0"),
             Some(("gc/src/a.rs", "h1")),
             "the well-formed content key still parses"
+        );
+    }
+}
+
+/// THE GROUP STAMP AND THE LATEST-GENERATION READER (spec 101), at the unit level: what a keyed
+/// derived event carries, and which generation the one domain reader cuts from the store's group
+/// answer. The store's own answer is pinned per backend by the contract suite; here the store is a
+/// double answering one fixed head, so every arm of the reader is driven directly.
+#[cfg(test)]
+mod group_lookup_tests {
+    use super::{
+        batch_is_latest_recorded, keyed_derived_event, latest_generation, META_REPLAY_KEY,
+    };
+    use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_REVIEW_FINDING};
+    use crate::eventstore::{
+        Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead,
+        Position, Revision, Subscription, TypeSelection, META_GROUP,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    /// A store whose group lookup answers `head` for every group and records each `(stream,
+    /// group)` it was asked; every other port method is unreachable, so a reader that touched the
+    /// stream any other way fails.
+    struct OneHead {
+        head: Option<GroupHead>,
+        asked: Mutex<Vec<(String, String)>>,
+    }
+
+    impl OneHead {
+        fn new(head: Option<GroupHead>) -> Self {
+            OneHead {
+                head,
+                asked: Mutex::new(Vec::new()),
+            }
+        }
+        fn asked(&self) -> Vec<(String, String)> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl EventStore for OneHead {
+        fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
+            unreachable!("the reader never appends")
+        }
+        fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
+            unreachable!("the reader never reads the stream")
+        }
+        fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
+            unreachable!("the reader never reads the log")
+        }
+        fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
+            unreachable!("the reader never subscribes")
+        }
+        fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
+            unreachable!("the reader never subscribes")
+        }
+        fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
+            unreachable!("the reader never looks up a boundary")
+        }
+        fn read_stream_typed(
+            &self,
+            _: &str,
+            _: Revision,
+            _: TypeSelection,
+        ) -> Result<Vec<Event>, Error> {
+            unreachable!("the reader never reads by type")
+        }
+        fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((stream.to_string(), group.to_string()));
+            Ok(self.head.clone())
+        }
+    }
+
+    fn head(type_: &str, key: Option<&str>) -> GroupHead {
+        let mut meta = BTreeMap::new();
+        if let Some(key) = key {
+            meta.insert(META_REPLAY_KEY.to_string(), key.to_string());
+        }
+        GroupHead {
+            position: 7,
+            type_: type_.to_string(),
+            meta,
+        }
+    }
+
+    #[test]
+    fn a_keyed_derived_event_carries_its_replay_key_and_its_batch_identity_as_its_group() {
+        let event = keyed_derived_event(
+            Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec()),
+            "gc/vendor/pkg@1.2.3/a.rs@h1#4",
+        );
+        assert_eq!(
+            event.meta,
+            BTreeMap::from([
+                (
+                    META_GROUP.to_string(),
+                    "gc/vendor/pkg@1.2.3/a.rs".to_string()
+                ),
+                (
+                    META_REPLAY_KEY.to_string(),
+                    "gc/vendor/pkg@1.2.3/a.rs@h1#4".to_string()
+                ),
+            ]),
+            "the group is the whole `<prefix>/<file>` span the key parser cuts"
+        );
+        assert_eq!(event.type_, TYPE_CODE_ENTITY_EXTRACTED);
+        assert_eq!(event.data, b"{}".to_vec(), "the payload is untouched");
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_content_key_shape_stamps_no_group() {
+        let event = keyed_derived_event(Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]), "gc/a.rs");
+        assert_eq!(
+            event.meta,
+            BTreeMap::from([(META_REPLAY_KEY.to_string(), "gc/a.rs".to_string())]),
+            "no identity, so no group: the event is never answered by a group lookup"
+        );
+    }
+
+    #[test]
+    fn the_latest_generation_is_cut_from_the_newest_group_members_replay_key() {
+        let store = OneHead::new(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#3"))));
+        assert_eq!(
+            latest_generation(&store, "rigger", "gc/a.rs").unwrap(),
+            Some("h2".to_string())
+        );
+        assert_eq!(
+            store.asked(),
+            [("rigger".to_string(), "gc/a.rs".to_string())],
+            "one group lookup of that identity on that stream, and nothing else"
+        );
+    }
+
+    #[test]
+    fn no_recorded_member_a_non_derived_member_or_an_unparseable_key_answers_no_generation() {
+        for (store, why) in [
+            (OneHead::new(None), "a never-recorded identity"),
+            (
+                OneHead::new(Some(head(TYPE_REVIEW_FINDING, Some("gc/a.rs@h2#0")))),
+                "a newest member outside the derived types (type first)",
+            ),
+            (
+                OneHead::new(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs")))),
+                "a newest member whose key does not parse",
+            ),
+            (
+                OneHead::new(Some(head(TYPE_CODE_ENTITY_EXTRACTED, None))),
+                "a newest member with no replay key",
+            ),
+        ] {
+            assert_eq!(
+                latest_generation(&store, "rigger", "gc/a.rs").unwrap(),
+                None,
+                "{why} answers no generation, so its batch re-emits"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_is_the_latest_recorded_only_when_its_generation_is_the_recorded_one() {
+        let ev = Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]);
+        let batch = |generation: &str| -> Vec<(String, &Event)> {
+            (0..2)
+                .map(|i| (format!("gc/a.rs@{generation}#{i}"), &ev))
+                .collect()
+        };
+        let store = OneHead::new(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#1"))));
+        assert!(
+            batch_is_latest_recorded(&store, "rigger", &batch("h2")).unwrap(),
+            "the recorded generation: its keys are the recorded ones, it appends nothing"
+        );
+        assert!(
+            !batch_is_latest_recorded(&store, "rigger", &batch("h1")).unwrap(),
+            "another generation (a change or a revert) appends"
+        );
+        assert_eq!(
+            store.asked(),
+            [
+                ("rigger".to_string(), "gc/a.rs".to_string()),
+                ("rigger".to_string(), "gc/a.rs".to_string())
+            ],
+            "each question is one lookup of the batch's identity"
+        );
+        let empty = OneHead::new(None);
+        assert!(
+            !batch_is_latest_recorded(&empty, "rigger", &batch("h2")).unwrap(),
+            "a never-recorded identity appends"
+        );
+        assert!(
+            !batch_is_latest_recorded(&store, "rigger", &[("gc/a.rs".to_string(), &ev)]).unwrap()
+                && !batch_is_latest_recorded(&store, "rigger", &[]).unwrap(),
+            "an unparseable or empty batch appends"
+        );
+        assert_eq!(
+            store.asked().len(),
+            2,
+            "a batch that names no identity asks the store nothing"
         );
     }
 }

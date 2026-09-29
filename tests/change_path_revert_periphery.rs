@@ -98,7 +98,10 @@ fn temp_churn_project() -> tempfile::TempDir {
 /// The LIVE suppression set the shipped predicate returns over the log the binary wrote: each
 /// file's latest recorded generation only, which is exactly what the next build will skip.
 fn live_suppression_set(root: &std::path::Path) -> BTreeSet<String> {
-    rigger::ingest::project_scoped_replay_keys(&read_run_events(root))
+    rigger::ingest::project_scoped_latest_generations(&read_run_events(root))
+        .into_values()
+        .flat_map(|(_, keys)| keys)
+        .collect::<std::collections::HashSet<String>>()
         .into_iter()
         .collect()
 }

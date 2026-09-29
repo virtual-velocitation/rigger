@@ -1112,24 +1112,82 @@ mod tests {
         crate::eventstore::contract::assert_contract(&Store::open(":memory:").unwrap());
     }
 
-    /// THE BOUNDARY IS A QUERY, on this backend an INDEXED LOOKUP (spec 101): sqlite's own plan
-    /// for the lookup is one search of the stream-and-type index, never a scan of the table, so
-    /// its cost does not grow with the derived events the stream holds.
+    /// EVERY LOOKUP IS ONE SEEK (spec 101): sqlite's own plan for the boundary lookup is one search
+    /// of the stream-and-type index, and for the group lookup one search of the partial group index
+    /// over the stream and the group entry - never a scan of the table and never a sort step, so
+    /// neither cost grows with the events the stream holds.
     #[test]
-    fn the_boundary_lookup_is_one_seek_of_the_stream_and_type_index() {
+    fn each_lookup_is_one_seek_of_its_index() {
         let s = Store::open(":memory:").unwrap();
         let conn = s.conn.lock().unwrap();
-        let plan: Vec<String> = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {LAST_POSITION_SQL}"))
-            .unwrap()
-            .query_map(params!["rigger", "RunStarted"], |r| r.get::<_, String>(3))
-            .unwrap()
-            .collect::<Result<_, _>>()
+        for (sql, key, plan) in [
+            (
+                LAST_POSITION_SQL.to_string(),
+                "RunStarted",
+                "SEARCH events USING INDEX idx_events_stream_type (stream=? AND type=?)",
+            ),
+            (
+                latest_in_group_sql(),
+                "gc/a.rs",
+                "SEARCH events USING INDEX idx_events_group (stream=? AND <expr>=?)",
+            ),
+        ] {
+            let got: Vec<String> = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(params!["rigger", key], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(
+                got,
+                [plan],
+                "a single index search with no scan and no sort step"
+            );
+        }
+    }
+
+    /// An events file written before the group index existed gains it when it is opened, so the
+    /// first lookup on an upgraded store is answered by the index over the rows already recorded.
+    #[test]
+    fn an_events_file_from_before_the_group_index_is_indexed_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        {
+            let old = Connection::open(path).unwrap();
+            old.execute_batch(SCHEMA).unwrap();
+            old.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+                 VALUES ('rigger', 'X', 'e0', x'', ?1, 0, 0, 0)",
+                params![r#"{"group":"gc/a.rs","tag":"before"}"#],
+            )
             .unwrap();
+            // A row a broken writer left with undecodable metadata: the index skips it.
+            old.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+                 VALUES ('rigger', 'X', 'e1', x'', x'ff', 0, 0, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(path).expect("an undecodable row never fails the index's creation");
+        s.conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE events SET meta = x'ff' WHERE id = 'e1'", [])
+            .expect("nor a later write of one");
+        let head = s.latest_in_group("rigger", "gc/a.rs").unwrap();
         assert_eq!(
-            plan,
-            ["SEARCH events USING INDEX idx_events_stream_type (stream=? AND type=?)"],
-            "the lookup must be a single index search with no scan and no sort step"
+            head,
+            Some(GroupHead {
+                position: 1,
+                type_: "X".to_string(),
+                meta: [("group", "gc/a.rs"), ("tag", "before")]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            })
         );
     }
 

@@ -694,6 +694,22 @@ mod appended_one_tests {
 }
 
 #[cfg(test)]
+mod expected_revision_tests {
+    use super::{ExpectedRevision, NO_STREAM};
+
+    #[test]
+    fn an_expectation_admits_exactly_the_last_revisions_it_names() {
+        for last in [NO_STREAM, 0, 3] {
+            assert!(ExpectedRevision::Any.admits(last), "Any admits {last}");
+        }
+        assert!(ExpectedRevision::NoStream.admits(NO_STREAM));
+        assert!(!ExpectedRevision::NoStream.admits(0));
+        assert!(ExpectedRevision::Exact(3).admits(3));
+        assert!(!ExpectedRevision::Exact(3).admits(2) && !ExpectedRevision::Exact(3).admits(4));
+    }
+}
+
+#[cfg(test)]
 mod subscription_map_tests {
     use super::{Event, Subscription};
     use std::sync::atomic::{AtomicBool, Ordering};

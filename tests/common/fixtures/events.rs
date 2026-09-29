@@ -1,8 +1,8 @@
 //! Event fixtures.
 
 use rigger::eventstore::{
-    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription, TypeSelection,
+    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, GroupHead, Position,
+    Revision, Subscription, TypeSelection,
 };
 
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
@@ -83,6 +83,13 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
             self.inner.read_stream_typed(stream, from, selection)
         }
+        fn latest_in_group(
+            &self,
+            stream: &str,
+            group: &str,
+        ) -> Result<Option<rigger::eventstore::GroupHead>, rigger::eventstore::Error> {
+            self.inner.latest_in_group(stream, group)
+        }
     };
 }
 
@@ -146,6 +153,9 @@ impl EventStore for SilentStore {
     ) -> Result<Vec<Event>, Error> {
         Ok(Vec::new())
     }
+    fn latest_in_group(&self, _stream: &str, _group: &str) -> Result<Option<GroupHead>, Error> {
+        Ok(None)
+    }
 }
 
 /// One call a [`ReadCountingStore`] forwarded, with how many events it handed back - the unit a
@@ -178,6 +188,12 @@ pub enum CountedRead {
         stream: String,
         event_type: String,
     },
+    /// A group lookup: it hands back no event, only the newest member's position, type and
+    /// metadata.
+    LatestInGroup {
+        stream: String,
+        group: String,
+    },
     /// A typed read: `only` is whether the selection named the types it hands back (`Only`)
     /// or the ones it refuses (`Except`), and `types` are those names in the order given.
     Typed {
@@ -198,7 +214,7 @@ impl CountedRead {
             | CountedRead::Typed { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
-            CountedRead::LastPosition { .. } => 0,
+            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => 0,
         }
     }
 
@@ -211,7 +227,7 @@ impl CountedRead {
             | CountedRead::Typed { materialized, .. } => *materialized = 0,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
-            CountedRead::LastPosition { .. } => {}
+            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
         }
         read
     }
@@ -224,7 +240,7 @@ impl CountedRead {
             | CountedRead::Typed { materialized, .. } => *materialized += n,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
-            CountedRead::LastPosition { .. } => {}
+            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
         }
     }
 }
@@ -387,6 +403,15 @@ impl EventStore for ReadCountingStore<'_> {
         });
         let events = self.inner.read_stream_typed(stream, from, selection)?;
         Ok(self.handed_back(at, events))
+    }
+    fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
+        let at = self.record(CountedRead::LatestInGroup {
+            stream: stream.to_string(),
+            group: group.to_string(),
+        });
+        let head = self.inner.latest_in_group(stream, group);
+        self.land_interleaved(at);
+        head
     }
 }
 

@@ -1167,3 +1167,263 @@ mod tests {
         );
     }
 }
+
+/// The group-link protocol and the group lookup's scan are pinned WITHOUT a server (spec 101):
+/// which revision each group links, the order the three server calls run in, when a conflict is
+/// retried and when it is the caller's, and which resolved link answers the lookup.
+#[cfg(test)]
+mod group_links {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn member(group: Option<&str>) -> Event {
+        let event = Event::new("X", Vec::new());
+        match group {
+            Some(group) => event.with_meta(META_GROUP, group),
+            None => event,
+        }
+    }
+
+    #[test]
+    fn each_group_links_the_revision_of_its_newest_event_in_first_appearance_order() {
+        let events = [
+            member(Some("gc/b.rs")),
+            member(None),
+            member(Some("gc/a.rs")),
+            member(Some("gc/b.rs")),
+        ];
+        assert_eq!(
+            group_links(4, &events),
+            [("gc/b.rs", 8), ("gc/a.rs", 7)],
+            "revisions count on from the stream's last one; a group's later member moves its link"
+        );
+        assert_eq!(
+            group_links(NO_STREAM, &events[..1]),
+            [("gc/b.rs", 0)],
+            "a stream that does not exist starts at revision 0"
+        );
+        assert!(group_links(4, &[member(None)]).is_empty());
+    }
+
+    #[test]
+    fn a_pinned_write_expects_exactly_the_revision_it_linked_against() {
+        assert_eq!(pinned(NO_STREAM), ExpectedRevision::NoStream);
+        assert_eq!(pinned(0), ExpectedRevision::Exact(0));
+        assert_eq!(pinned(7), ExpectedRevision::Exact(7));
+    }
+
+    #[test]
+    fn the_group_stream_and_the_link_name_the_event_they_resolve_to() {
+        assert_eq!(
+            group_stream("proj-x-rigger", "gc/a.rs"),
+            "rigger-group/proj-x-rigger/gc/a.rs"
+        );
+        let link = link_event("proj-x-rigger", 12);
+        assert_eq!(link.type_, "$>");
+        assert_eq!(link.data, b"12@proj-x-rigger".to_vec());
+        assert!(
+            !delivered("rigger-group/s/gc/a.rs", &link.type_, &Filter::default()),
+            "a link never reaches a caller, whatever stream holds it"
+        );
+    }
+
+    #[test]
+    fn only_a_non_system_record_of_an_admitted_stream_is_delivered() {
+        let all = Filter::default();
+        let scoped = Filter {
+            stream_prefix: Some("proj-a-".into()),
+        };
+        assert!(delivered("rigger", "X", &all));
+        assert!(!delivered("$stats", "X", &all), "a system stream");
+        assert!(!delivered("rigger", "$>", &all), "a system record");
+        assert!(delivered("proj-a-rigger", "X", &scoped));
+        assert!(
+            !delivered("proj-b-rigger", "X", &scoped),
+            "a stream outside the prefix"
+        );
+        assert!(!delivered("proj-a-rigger", "$metadata", &scoped));
+    }
+
+    /// The protocol's calls, in order, over a scripted server: `lasts` answers each read of the
+    /// stream's last revision, `writes` each pinned write.
+    fn drive(
+        expected: ExpectedRevision,
+        lasts: Vec<Revision>,
+        writes: Vec<Result<Appended, Error>>,
+    ) -> (Result<Appended, Error>, Vec<String>) {
+        let calls = RefCell::new(Vec::new());
+        let lasts = RefCell::new(lasts.into_iter());
+        let writes = RefCell::new(writes.into_iter());
+        let events = [member(Some("gc/a.rs")), member(Some("gc/a.rs"))];
+        let result = append_linked(
+            "s",
+            expected,
+            &events,
+            || {
+                calls.borrow_mut().push("last".to_string());
+                Ok(lasts.borrow_mut().next().expect("a scripted last revision"))
+            },
+            |group, revision| {
+                calls.borrow_mut().push(format!("link {group} {revision}"));
+                Ok(())
+            },
+            |pinned| {
+                calls.borrow_mut().push(format!("write {pinned:?}"));
+                writes.borrow_mut().next().expect("a scripted write")
+            },
+        );
+        (result, calls.into_inner())
+    }
+
+    fn conflict() -> Result<Appended, Error> {
+        Err(Error::Conflict {
+            stream: "s".into(),
+            expected: ExpectedRevision::Exact(3),
+            actual: 4,
+        })
+    }
+
+    #[test]
+    fn the_link_is_written_before_the_events_it_names() {
+        let (result, calls) = drive(
+            ExpectedRevision::Any,
+            vec![3],
+            vec![Ok(Appended::all(vec![9, 10]))],
+        );
+        assert_eq!(result.unwrap().last(), Some(10));
+        assert_eq!(calls, ["last", "link gc/a.rs 5", "write Exact(3)"]);
+    }
+
+    #[test]
+    fn an_any_append_that_loses_its_pinned_revision_re_reads_and_re_links() {
+        let (result, calls) = drive(
+            ExpectedRevision::Any,
+            vec![3, 4],
+            vec![conflict(), Ok(Appended::all(vec![11, 12]))],
+        );
+        assert_eq!(result.unwrap().last(), Some(12));
+        assert_eq!(
+            calls,
+            [
+                "last",
+                "link gc/a.rs 5",
+                "write Exact(3)",
+                "last",
+                "link gc/a.rs 6",
+                "write Exact(4)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pinned_callers_conflict_is_the_callers_and_is_not_retried() {
+        let (result, calls) = drive(ExpectedRevision::Exact(3), vec![3], vec![conflict()]);
+        assert!(matches!(result, Err(Error::Conflict { actual: 4, .. })));
+        assert_eq!(calls, ["last", "link gc/a.rs 5", "write Exact(3)"]);
+    }
+
+    #[test]
+    fn an_expectation_the_stream_does_not_meet_is_refused_before_anything_is_linked() {
+        for (expected, last) in [
+            (ExpectedRevision::Exact(2), 3),
+            (ExpectedRevision::NoStream, 0),
+        ] {
+            let (result, calls) = drive(expected, vec![last], Vec::new());
+            match result {
+                Err(Error::Conflict {
+                    stream,
+                    expected: named,
+                    actual,
+                }) => {
+                    assert_eq!((stream.as_str(), named, actual), ("s", expected, last));
+                }
+                other => panic!("{expected:?} over {last} must conflict: {other:?}"),
+            }
+            assert_eq!(calls, ["last"], "nothing is linked or written");
+        }
+        let (result, calls) = drive(
+            ExpectedRevision::NoStream,
+            vec![NO_STREAM],
+            vec![Ok(Appended::all(vec![1, 2]))],
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, ["last", "link gc/a.rs 1", "write NoStream"]);
+    }
+
+    #[test]
+    fn a_failed_revision_read_or_link_ends_the_append_before_the_write() {
+        let failed = append_linked(
+            "s",
+            ExpectedRevision::Any,
+            &[member(Some("gc/a.rs"))],
+            || Err(Error::Backend("down".into())),
+            |_, _| panic!("nothing is linked"),
+            |_| panic!("nothing is written"),
+        );
+        assert!(matches!(failed, Err(Error::Backend(m)) if m == "down"));
+        let failed = append_linked(
+            "s",
+            ExpectedRevision::Any,
+            &[member(Some("gc/a.rs"))],
+            || Ok(0),
+            |_, _| Err(Error::Backend("link down".into())),
+            |_| panic!("an unlinked recording is never written"),
+        );
+        assert!(matches!(failed, Err(Error::Backend(m)) if m == "link down"));
+    }
+
+    fn resolved(
+        stream: &str,
+        group: Option<&str>,
+        position: u64,
+    ) -> Result<Option<Event>, kurrentdb::Error> {
+        let mut event = member(group);
+        event.stream = stream.to_string();
+        event.position = position;
+        Ok(Some(event))
+    }
+
+    #[test]
+    fn the_lookup_answers_the_newest_link_that_resolves_to_an_event_of_its_group() {
+        let links = vec![
+            Ok(None),                                // a dangling link
+            resolved("s", Some("gc/b.rs"), 90),      // another group's event at the linked revision
+            resolved("other", Some("gc/a.rs"), 80),  // another stream's event
+            resolved("s", None, 70),                 // an ungrouped event
+            resolved("s", Some("gc/a.rs"), 60),      // the answer
+            Err(kurrentdb::Error::ResourceNotFound), // never pulled
+        ];
+        let head = newest_in_group(links, "s", "gc/a.rs").unwrap().unwrap();
+        assert_eq!((head.position, head.type_.as_str()), (60, "X"));
+        assert_eq!(
+            head.meta.get(META_GROUP).map(String::as_str),
+            Some("gc/a.rs")
+        );
+    }
+
+    #[test]
+    fn a_group_with_no_resolving_link_or_no_group_stream_has_no_member() {
+        assert_eq!(
+            newest_in_group(vec![Ok(None)], "s", "gc/a.rs").unwrap(),
+            None
+        );
+        assert_eq!(
+            newest_in_group(
+                vec![Err(kurrentdb::Error::ResourceNotFound)],
+                "s",
+                "gc/a.rs"
+            )
+            .unwrap(),
+            None
+        );
+        let failed = newest_in_group(
+            vec![Ok(None), Err(kurrentdb::Error::AccessDenied)],
+            "s",
+            "gc/a.rs",
+        );
+        assert!(failed
+            .unwrap_err()
+            .to_string()
+            .contains("kurrentdb: latest in group"));
+    }
+}

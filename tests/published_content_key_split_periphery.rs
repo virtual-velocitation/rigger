@@ -13,7 +13,7 @@
 //!    assertion stayed green over both - so the offsets are what an external test has to pin.
 //! 2. `derived_key_spans` and the private slice view the suppression predicate uses are claimed to
 //!    be ONE parse with two views. From outside, that claim is only observable as an agreement:
-//!    the generations `project_scoped_replay_keys` retires and keeps must be the generations the
+//!    the generations `project_scoped_latest_generations` retires and keeps must be the generations the
 //!    published spans cut. A second parser hiding behind the predicate would satisfy every
 //!    hand-spelled unit test and disagree here.
 //!
@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
 use rigger::eventstore::Event;
-use rigger::ingest::{derived_key_spans, project_scoped_replay_keys, META_REPLAY_KEY};
+use rigger::ingest::{derived_key_spans, project_scoped_latest_generations, META_REPLAY_KEY};
 
 /// The published spans as the two slices they name, for readable assertions. It cuts what
 /// `derived_key_spans` returns and computes nothing of its own, so a disagreement between this and
@@ -230,7 +230,12 @@ fn the_suppression_predicate_groups_by_the_published_spans() {
          test cannot pass by making both sides empty"
     );
 
-    let kept: BTreeSet<String> = project_scoped_replay_keys(&recorded).into_iter().collect();
+    let kept: BTreeSet<String> = project_scoped_latest_generations(&recorded)
+        .into_values()
+        .flat_map(|(_, keys)| keys)
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
     let kept: BTreeSet<&str> = kept.iter().map(String::as_str).collect();
 
     assert_eq!(

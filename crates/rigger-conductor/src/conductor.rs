@@ -19869,7 +19869,10 @@ mod tests {
         let as_derived = Event::new(contextgraph::TYPE_EDGE_INFERRED, Vec::new())
             .with_meta(META_REPLAY_KEY, &verdict_key);
         assert!(
-            crate::ingest::project_scoped_replay_keys(std::slice::from_ref(&as_derived))
+            crate::ingest::project_scoped_latest_generations(std::slice::from_ref(&as_derived))
+                .into_values()
+                .flat_map(|(_, keys)| keys)
+                .collect::<std::collections::HashSet<String>>()
                 .contains(&verdict_key),
             "the fixture is vacuous unless {verdict_key} really parses as a \
              <prefix>/<file>@<hash>#<i> content key - fix the fixture, not this assertion"
@@ -19878,10 +19881,17 @@ mod tests {
         // offers nothing at all. Type first - the key never reaches the comparison, so the
         // project-scoped arm of the seed never reads a non-derived event's key, however spelled.
         assert!(
-            crate::ingest::project_scoped_replay_keys(&after_two).is_empty(),
+            crate::ingest::project_scoped_latest_generations(&after_two)
+                .into_values()
+                .flat_map(|(_, keys)| keys)
+                .collect::<std::collections::HashSet<String>>()
+                .is_empty(),
             "a non-derived event is ineligible for the project-scoped arm of the seed whatever \
              its key looks like; the predicate returned {:?}",
-            crate::ingest::project_scoped_replay_keys(&after_two)
+            crate::ingest::project_scoped_latest_generations(&after_two)
+                .into_values()
+                .flat_map(|(_, keys)| keys)
+                .collect::<std::collections::HashSet<String>>()
         );
     }
 
@@ -31513,6 +31523,194 @@ mod tests {
         );
     }
 
+    /// A `rigger step` THAT INGESTS SEEDS BY GROUP LOOKUP (spec 101 criterion 3): over the
+    /// 200,000-derived-event one-shot fixture, a project whose `unchanged.rs` still holds its
+    /// recorded generation, whose `changed.rs` moved to a new one and whose `reverted.rs` went back
+    /// to a generation it has since left, a step that parks a stage's spawn - and so walks and
+    /// ingests the tree - materializes no derived event: every read it makes is exactly the read
+    /// a twin step that does NOT ingest makes over the same fixture (the run's events plus the typed
+    /// carry-over), plus one `latest_in_group` lookup per identity the walk emits. And it appends
+    /// exactly the changed and reverted files' batches, each keyed and grouped. Asserted through the
+    /// counting store double.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_step_that_ingests_seeds_each_identity_by_group_lookup_and_appends_only_what_moved() {
+        use crate::test_support::{
+            git_commit_all, seed_one_shot_fixture, CountedRead, ReadCountingStore,
+        };
+
+        let repo = temp_git_project_with_commit();
+        let root = repo.path();
+        let root_str = root.to_str().unwrap().to_string();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let tree = |files: &[(&str, &str)]| {
+            for (file, body) in files {
+                std::fs::write(root.join(file), body).unwrap();
+            }
+            git_commit_all(root, "tree");
+        };
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                ..Default::default()
+            },
+        );
+        // The ingesting step's store and a twin that will run the same step without ingesting.
+        let inner = Store::open(":memory:").unwrap();
+        let fixture = seed_one_shot_fixture(&inner, STREAM, &[]);
+        let twin = Store::open(":memory:").unwrap();
+        assert_eq!(seed_one_shot_fixture(&twin, STREAM, &[]), fixture);
+
+        // What the walk of the tree as it stands emits: each batch's identity and keys, in order.
+        let walk = || -> Vec<(String, Vec<String>)> {
+            let mut batches = Vec::new();
+            crate::ingest::ingest_project_batched(&root_str, |keyed| {
+                let identity = crate::ingest::derived_key_parts(&keyed[0].0).unwrap().0;
+                batches.push((
+                    identity.to_string(),
+                    keyed.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+                ));
+            });
+            batches
+        };
+        // One earlier process's ingest of the tree as it stands, recorded in `inner`.
+        let record = || {
+            let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = Deps {
+                repo: root_str.clone(),
+                graph: Some(&graph),
+                ..stub_deps(&inner, &driver, Vec::new())
+            };
+            let history_cfg = Config::default();
+            RunCtx::for_test(&history_cfg, &deps).ingest_project_batches();
+        };
+        tree(&[
+            ("src/unchanged.rs", "pub fn kept() {}\n"),
+            ("src/changed.rs", "pub fn before() {}\n"),
+            ("src/reverted.rs", "pub fn first() {}\n"),
+        ]);
+        let first_reverted = walk()
+            .into_iter()
+            .find(|(identity, _)| identity == "gc/src/reverted.rs")
+            .expect("the walk emits the reverted file")
+            .1;
+        record();
+        tree(&[("src/reverted.rs", "pub fn second() {}\n")]);
+        record();
+        tree(&[
+            ("src/changed.rs", "pub fn after() {}\n"),
+            ("src/reverted.rs", "pub fn first() {}\n"),
+        ]);
+        let now = walk();
+        let recorded_before = inner
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .len();
+
+        let step = |store: &dyn EventStore, ingests: bool| -> Vec<CountedRead> {
+            let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let counted = ReadCountingStore::new(store);
+            let driver = crate::driver::replay::ReplayDriver::new(&counted);
+            let deps = Deps {
+                repo: root_str.clone(),
+                graph: ingests.then_some(&graph as &dyn Projection),
+                ..stub_deps(&counted, &driver, Vec::new())
+            };
+            let rs = run_isolated(&cfg, &deps).expect("the step runs");
+            assert_eq!(rs.units["s"].status, ledger::Status::Grounding);
+            counted.reads()
+        };
+        let ingesting = step(&inner, true);
+        let not_ingesting = step(&twin, false);
+
+        // The twin reads only the run from its boundary and the carry-over by type ...
+        let one_read: Vec<CountedRead> = fixture
+            .read(STREAM)
+            .iter()
+            .map(CountedRead::uncounted)
+            .collect();
+        let shapes: Vec<CountedRead> = not_ingesting.iter().map(CountedRead::uncounted).collect();
+        assert!(!shapes.is_empty(), "the step reads the run");
+        assert_eq!(
+            shapes,
+            (0..shapes.len() / one_read.len())
+                .flat_map(|_| one_read.clone())
+                .collect::<Vec<_>>(),
+            "the step that does not ingest reads the run and the typed carry-over alone"
+        );
+        // ... and the ingesting step reads exactly that, event for event, plus the lookups.
+        let (lookups, reads): (Vec<CountedRead>, Vec<CountedRead>) = ingesting
+            .into_iter()
+            .partition(|r| matches!(r, CountedRead::LatestInGroup { .. }));
+        assert_eq!(
+            reads, not_ingesting,
+            "a step that ingests costs exactly the reads of one that does not"
+        );
+        assert_eq!(
+            lookups,
+            now.iter()
+                .map(|(identity, _)| CountedRead::LatestInGroup {
+                    stream: STREAM.to_string(),
+                    group: identity.clone(),
+                })
+                .collect::<Vec<_>>(),
+            "one group lookup per identity the walk emits, in walk order, and nothing else"
+        );
+        assert!(
+            now.iter()
+                .any(|(identity, _)| identity == "gc/src/unchanged.rs"),
+            "the unchanged file is walked, so its lookup is what spares its batch"
+        );
+
+        // It appended exactly the changed and reverted files' batches, keyed and grouped.
+        let appended: Vec<Event> = inner
+            .read_stream(
+                STREAM,
+                recorded_before as crate::eventstore::Revision,
+                Direction::Forward,
+            )
+            .unwrap()
+            .into_iter()
+            .filter(|e| crate::ingest::is_derived_index_type(&e.type_))
+            .collect();
+        let moved: Vec<String> = now
+            .iter()
+            .filter(|(identity, _)| {
+                identity == "gc/src/changed.rs" || identity == "gc/src/reverted.rs"
+            })
+            .flat_map(|(_, keys)| keys.clone())
+            .collect();
+        assert_eq!(
+            appended
+                .iter()
+                .map(|e| e.meta[META_REPLAY_KEY].clone())
+                .collect::<Vec<_>>(),
+            moved,
+            "the changed and reverted batches, whole, and no other"
+        );
+        assert!(
+            moved.iter().any(|k| first_reverted.contains(k)),
+            "the reverted batch re-emits keys the log already records, because they are no \
+             longer its latest generation"
+        );
+        assert!(
+            appended.iter().all(|e| {
+                let (identity, _) =
+                    crate::ingest::derived_key_parts(&e.meta[META_REPLAY_KEY]).unwrap();
+                e.meta
+                    .get(crate::eventstore::META_GROUP)
+                    .map(String::as_str)
+                    == Some(identity)
+            }),
+            "every appended event carries its batch identity as its group"
+        );
+    }
+
     #[test]
     fn a_step_whose_width_is_filled_by_parked_units_returns_instead_of_re_reading_the_stream() {
         // The wave loop re-offers every ready stage until `wave_ready` is empty. A stage the
@@ -31591,6 +31789,14 @@ mod tests {
             ) -> Result<Vec<Event>, crate::eventstore::Error> {
                 self.charge()?;
                 self.inner.read_stream_typed(stream, from, selection)
+            }
+            fn latest_in_group(
+                &self,
+                stream: &str,
+                group: &str,
+            ) -> Result<Option<crate::eventstore::GroupHead>, crate::eventstore::Error>
+            {
+                self.inner.latest_in_group(stream, group)
             }
         }
         const READ_CAP: u32 = 200;
