@@ -17563,6 +17563,38 @@ fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker(
     );
 }
 
+/// A dash that holds its port but does not answer within the probe window (busy, not dead) is
+/// reported by `rigger watch --once` as unresponsive, naming its port and pid - never as a dead
+/// or not-serving dash, and never silently healthy. The listener accepts the probe's connection
+/// into its backlog and never answers, exactly what a live dash busy on a long request looks like
+/// from outside; a truly absent dash still reads as dead
+/// (`watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker`).
+#[test]
+fn watch_once_reports_a_dash_that_holds_its_port_but_does_not_answer_as_unresponsive_not_dead() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let pid = std::process::id();
+    write_dash_breadcrumbs(root, &format!("http://127.0.0.1:{port}/"), port, pid);
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    drop(held);
+    assert!(ok, "rigger watch --once must exit 0; stderr:\n{err}");
+    assert!(
+        !out.contains("not serving")
+            && !out.contains("dead pid")
+            && !out.contains("does not answer"),
+        "a dash that holds its port but is slow to answer must never read as dead; stdout:\n{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "dash on port {port} (pid {pid}) did not answer within 750ms - busy, not dead"
+        )),
+        "watch must report the unanswered probe truthfully; stdout:\n{out}"
+    );
+}
+
 /// A seeded store under a fresh project whose `.rigger/dash.url` holds `url` when given, and
 /// whose `.rigger/dash.marker` names `marker` (port, pid) when given; each absent breadcrumb
 /// is proven absent - the exact shape under test.

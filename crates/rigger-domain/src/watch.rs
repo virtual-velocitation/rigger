@@ -940,6 +940,39 @@ mod tests {
 
     // --- Signal 3: dash liveness ---
 
+    /// A dash whose port is held but which did not answer within the probe window is busy,
+    /// not dead: `detect` reports exactly that (naming port, pid and window) and never the
+    /// dead-pid / does-not-answer wording, and never reads it as healthy.
+    #[test]
+    fn an_unresponsive_dash_is_reported_busy_never_dead() {
+        let no_heartbeats = BTreeMap::new();
+        let inputs = WatchInputs {
+            dash: DashProbe::Unresponsive {
+                pid: Some(4242),
+                port: 7420,
+                window_ms: 750,
+            },
+            ..empty_inputs(&[], &no_heartbeats)
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(
+            anomalies.len(),
+            1,
+            "a held-but-silent dash is never silently healthy"
+        );
+        let line = anomalies[0].line();
+        assert!(
+            line.contains(
+                "dash on port 7420 (pid 4242) did not answer within 750ms - busy, not dead"
+            ),
+            "the truthful busy line; got: {line}"
+        );
+        assert!(
+            !line.contains("dead pid") && !line.contains("does not answer"),
+            "a busy dash never reads as dead; got: {line}"
+        );
+    }
+
     /// A dash on port 7420 probed `NotServing` (naming `pid`, when a marker recorded one) for a
     /// run that began `run_started_ago` seconds ago with its breadcrumb written
     /// `breadcrumb_ago` seconds ago, `attempted` this run, must be reported as exactly one
