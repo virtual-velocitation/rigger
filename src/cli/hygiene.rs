@@ -134,8 +134,17 @@ fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     let drop = superseded_graph_nodes(&events);
     let boundary = superseded_edge_boundary(&events);
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
-    let stats = graph.count_prunable(&drop, boundary)?;
-    println!("{}", runs_menu_line(&stats));
+    // A graph that owes its rebuild is read as it stands, which may predate the tables the prune
+    // reads: nothing is prunable from it until `rigger setup` pays that, exactly as `--runs`
+    // refuses until then.
+    if graph.rebuild_owed()? {
+        println!("--runs: {}", contextgraph::REBUILD_OWED);
+    } else {
+        println!(
+            "{}",
+            runs_menu_line(&graph.count_prunable(&drop, boundary)?)
+        );
+    }
 
     // --derived: a mechanic of the embedded sqlite store (see `reset_derived`'s own doc) - honest
     // per backend rather than a number a server-backed project could never actually reclaim.
