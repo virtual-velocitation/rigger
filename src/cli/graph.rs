@@ -533,43 +533,43 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// ([`rigger::ingest::batch_is_latest_recorded`], the one first-sight helper the run's keyed sink
 /// also calls). An unchanged file's batch is, and appends nothing; a changed, reverted or
 /// never-recorded file's batch is not, and appends whole - a revert re-emits because the records its
-/// keys match are no longer the file's latest generation. A lookup the store cannot answer is the
-/// build's error, returned once the walk ends, and its batch is never appended: an unanswered
-/// lookup is not an answer, in either direction.
+/// keys match are no longer the file's latest generation.
 ///
 /// Each appended event is built by the one keyed derived-event builder
 /// ([`rigger::ingest::keyed_derived_event`]), so it carries its replay key and its group, and the
 /// batch is appended and folded in ONE store append and ONE graph transaction through the shared
 /// batched append-and-fold authority (spec 49), exactly as the run's keyed sink does. There is no
 /// run to stamp, so the events carry no run id.
+///
+/// The walk runs under the one walk policy both ingest sinks share
+/// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose
+/// append the store refuses, records nothing, the walk goes on, and the first such error is the
+/// build's - an unanswered lookup is not an answer in either direction, and a refused append is not
+/// a skipped batch.
 fn ingest_tree(
     store: &dyn EventStore,
     graph: &dyn Projection,
     root: &str,
 ) -> Result<usize, rigger::eventstore::Error> {
     let mut appended = 0usize;
-    let mut unread = None;
-    rigger::ingest::ingest_project_batched(root, |keyed| {
-        match rigger::ingest::batch_is_latest_recorded(store, conductor::STREAM, keyed) {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(e) => {
-                unread.get_or_insert(e);
-                return;
+    rigger::ingest::sink_walked_batches(
+        |sink| {
+            rigger::ingest::ingest_project_batched(root, sink);
+        },
+        |keyed| {
+            if rigger::ingest::batch_is_latest_recorded(store, conductor::STREAM, keyed)? {
+                return Ok(());
             }
-        }
-        let batch: Vec<Event> = keyed
-            .iter()
-            .map(|(key, ev)| rigger::ingest::keyed_derived_event((*ev).clone(), key))
-            .collect();
-        // Fold best-effort, exactly as the run's batched append-and-fold does: a fold failure must
-        // not fail the ingest, which already landed durably in the log.
-        match rigger::ingest::append_and_fold_batch(store, Some(graph), conductor::STREAM, &batch) {
-            Ok(_) => appended += batch.len(),
-            Err(e) => eprintln!("graph build: skipping a batch that failed to append: {e}"),
-        }
-    });
-    unread.map_or(Ok(appended), Err)
+            let batch: Vec<Event> = keyed
+                .iter()
+                .map(|(key, ev)| rigger::ingest::keyed_derived_event((*ev).clone(), key))
+                .collect();
+            rigger::ingest::append_and_fold_batch(store, Some(graph), conductor::STREAM, &batch)?;
+            appended += batch.len();
+            Ok(())
+        },
+    )?;
+    Ok(appended)
 }
 
 /// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection

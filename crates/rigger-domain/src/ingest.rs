@@ -149,6 +149,24 @@ pub fn batch_is_latest_recorded(
     Ok(latest_generation(store, stream, identity)?.as_deref() == Some(generation))
 }
 
+/// A WALK INTO A FALLIBLE SINK (spec 101): drive `walk`, handing each batch it produces to `sink`,
+/// and answer the FIRST error the sink returned. A failed batch never stops the walk - every batch
+/// after it still reaches the sink - and its error is never swallowed. The one policy both ingest
+/// sinks walk under, the run's keyed emit and a cold `rigger graph build`, so a batch whose lookup
+/// or append failed is answered the same way by both: the walk fails.
+pub fn sink_walked_batches<E>(
+    walk: impl FnOnce(&mut dyn FnMut(&[(String, &Event)])),
+    mut sink: impl FnMut(&[(String, &Event)]) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut first = None;
+    walk(&mut |keyed| {
+        if let Err(e) = sink(keyed) {
+            first.get_or_insert(e);
+        }
+    });
+    first.map_or(Ok(()), Err)
+}
+
 /// The derived index's CONTENT-IDENTITY POLICY as one value: the metadata key a derived event
 /// carries its content key under, the four types that carry content identity, and WHICH of those
 /// types re-assert a fact in place rather than superseding the subject's prior recording.

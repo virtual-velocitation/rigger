@@ -10251,8 +10251,10 @@ impl RunCtx<'_> {
     /// emit authority. Ingestion is OFF when there is no project tree to read (`repo` empty) or no
     /// graph to fold into - the shipped non-repo / graph-less paths stay byte-for-byte unchanged.
     ///
-    /// A batch whose group lookup goes unanswered is never read as "nothing to append": it appends
-    /// nothing, the walk goes on, and the first such error is returned once the walk ends.
+    /// The walk runs under the one walk policy both ingest sinks share
+    /// ([`crate::ingest::sink_walked_batches`]): a batch whose group lookup goes unanswered, or
+    /// whose append fails, appends nothing, the walk goes on, and the first such error is returned
+    /// once the walk ends - an unanswered lookup is never read as "nothing to append".
     #[cfg(feature = "symbols")]
     fn ingest_project_batches(&self) -> Result<(), Error> {
         if !self.deps.ingests() {
@@ -10310,27 +10312,12 @@ impl RunCtx<'_> {
         //
         // The dedup lock is held only around the key set (released before the append), so a concurrent
         // unit in the wave still appends its own keyed events in parallel.
-        self.emit_walked_batches(|sink| {
-            crate::ingest::ingest_project_batched(&root, sink);
-        })
-    }
-
-    /// Drive `walk` into the one keyed emit sink [`emit_keyed_batch`](RunCtx::emit_keyed_batch),
-    /// answering the first batch error the walk met, if any. A failed batch appends nothing and
-    /// the walk goes on, so every batch whose group lookup answered still lands; the error is
-    /// never swallowed.
-    #[cfg(feature = "symbols")]
-    fn emit_walked_batches(
-        &self,
-        walk: impl FnOnce(&mut dyn FnMut(&[(String, &Event)])),
-    ) -> Result<(), Error> {
-        let mut failed = None;
-        walk(&mut |keyed| {
-            if let Err(e) = self.emit_keyed_batch(keyed) {
-                failed.get_or_insert(e);
-            }
-        });
-        failed.map_or(Ok(()), Err)
+        crate::ingest::sink_walked_batches(
+            |sink| {
+                crate::ingest::ingest_project_batched(&root, sink);
+            },
+            |keyed| self.emit_keyed_batch(keyed),
+        )
     }
 
     /// Light lane: no extraction pass is compiled, so there is nothing to ingest - the always-
@@ -10359,9 +10346,12 @@ impl RunCtx<'_> {
             return Ok(());
         }
         let root = self.deps.repo.clone();
-        self.emit_walked_batches(|sink| {
-            crate::ingest::ingest_files_batched(&root, files, sink);
-        })
+        crate::ingest::sink_walked_batches(
+            |sink| {
+                crate::ingest::ingest_files_batched(&root, files, sink);
+            },
+            |keyed| self.emit_keyed_batch(keyed),
+        )
     }
 
     /// Light lane: no extraction pass is compiled, so there is nothing to reindex.
