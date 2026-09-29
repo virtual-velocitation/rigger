@@ -202,6 +202,21 @@ fn marked(mark: &Option<PathBuf>) -> bool {
     mark.as_ref().is_some_and(|m| m.exists())
 }
 
+/// Why the graph file behind `conn`, whose [`owed_mark`] is `mark`, says it owes its rebuild, each
+/// cause it carries in order: it records an older fold rule ([`OWED_OLDER_RULE`]), or its mark says
+/// it misses an event the log holds ([`OWED_LOST_FOLD`]). The one reading of the file's own
+/// records that [`Projector::owed_because`] answers and [`Projector::rebuild`] pays on.
+fn owed_by_file(conn: &Connection, mark: &Option<PathBuf>) -> Result<Vec<&'static str>, Error> {
+    let mut causes = Vec::new();
+    if rebuild_owed(conn)? {
+        causes.push(OWED_OLDER_RULE);
+    }
+    if marked(mark) {
+        causes.push(OWED_LOST_FOLD);
+    }
+    Ok(causes)
+}
+
 /// What one [`Projector::prune`] reclaimed, both in the same transaction: the dead-run
 /// decision/finding nodes it dropped (spec 21) and the superseded structural edges it reclaimed
 /// beyond the retention boundary (spec 41). A plain count pair so `rigger reset --runs` reports
@@ -281,7 +296,7 @@ impl Projector {
         let mut live = open_connection(path).map_err(be)?;
         let shadow_path = format!("{path}.rebuild");
         let mark = owed_mark(path);
-        if owed || marked(&mark) || rebuild_owed(&live)? {
+        if owed || !owed_by_file(&live, &mark)?.is_empty() {
             let mut shadow = Connection::open(&shadow_path).map_err(be)?;
             shadow
                 .execute_batch("PRAGMA locking_mode = EXCLUSIVE;")
@@ -322,15 +337,7 @@ impl Projector {
     /// on every call, so another process's [`Projector::rebuild`] or failed fold is seen at once;
     /// it reads nothing else and writes nothing.
     pub fn owed_because(&self) -> Result<Vec<&'static str>, Error> {
-        let conn = self.conn.lock().unwrap();
-        let mut causes = Vec::new();
-        if rebuild_owed(&conn)? {
-            causes.push(OWED_OLDER_RULE);
-        }
-        if marked(&self.owed_mark) {
-            causes.push(OWED_LOST_FOLD);
-        }
-        Ok(causes)
+        owed_by_file(&self.conn.lock().unwrap(), &self.owed_mark)
     }
 
     /// Why this file owes its rebuild once its `applied` ledger is read against the log (spec
