@@ -517,28 +517,44 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         }
     };
 
-    // A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk
-    // hands this command each batch identity (`gc`/`gd` per file) exactly once, so each batch asks
-    // the store, through the group lookup, whether it is already its identity's latest recorded
-    // generation ([`rigger::ingest::batch_is_latest_recorded`], the one first-sight helper the
-    // run's keyed sink also calls). An unchanged file's batch is, and appends nothing; a changed,
-    // reverted or never-recorded file's batch is not, and appends whole - a revert re-emits
-    // because the records its keys match are no longer the file's latest generation.
-    //
-    // Each appended event is built by the one keyed derived-event builder
-    // ([`rigger::ingest::keyed_derived_event`]), so it carries its replay key and its group, and
-    // the batch is appended and folded in ONE store append and ONE graph transaction through the
-    // shared batched append-and-fold authority (spec 49), exactly as the run's keyed sink does.
-    // There is no run to stamp, so the events carry no run id.
+    let appended = ingest_tree(&store, &graph, &root)?;
+    println!(
+        "graph build: ingested {appended} code-ingest event(s) into {}",
+        db_path("graph.db")
+    );
+    Ok(())
+}
+
+/// The walk of the tree at `root` into `store` and `graph`, answering how many events it appended.
+///
+/// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
+/// this each batch identity (`gc`/`gd` per file) exactly once, so each batch asks the store, through
+/// the group lookup, whether it is already its identity's latest recorded generation
+/// ([`rigger::ingest::batch_is_latest_recorded`], the one first-sight helper the run's keyed sink
+/// also calls). An unchanged file's batch is, and appends nothing; a changed, reverted or
+/// never-recorded file's batch is not, and appends whole - a revert re-emits because the records its
+/// keys match are no longer the file's latest generation. A lookup the store cannot answer is the
+/// build's error, returned once the walk ends, and its batch is never appended: an unanswered
+/// lookup is not an answer, in either direction.
+///
+/// Each appended event is built by the one keyed derived-event builder
+/// ([`rigger::ingest::keyed_derived_event`]), so it carries its replay key and its group, and the
+/// batch is appended and folded in ONE store append and ONE graph transaction through the shared
+/// batched append-and-fold authority (spec 49), exactly as the run's keyed sink does. There is no
+/// run to stamp, so the events carry no run id.
+fn ingest_tree(
+    store: &dyn EventStore,
+    graph: &dyn Projection,
+    root: &str,
+) -> Result<usize, rigger::eventstore::Error> {
     let mut appended = 0usize;
-    rigger::ingest::ingest_project_batched(&root, |keyed| {
-        match rigger::ingest::batch_is_latest_recorded(&store, conductor::STREAM, keyed) {
+    let mut unread = None;
+    rigger::ingest::ingest_project_batched(root, |keyed| {
+        match rigger::ingest::batch_is_latest_recorded(store, conductor::STREAM, keyed) {
             Ok(true) => return,
             Ok(false) => {}
             Err(e) => {
-                eprintln!(
-                    "graph build: skipping a batch whose recorded generation is unreadable: {e}"
-                );
+                unread.get_or_insert(e);
                 return;
             }
         }
@@ -548,22 +564,12 @@ fn cmd_graph_build(_args: &[String]) -> Res {
             .collect();
         // Fold best-effort, exactly as the run's batched append-and-fold does: a fold failure must
         // not fail the ingest, which already landed durably in the log.
-        match rigger::ingest::append_and_fold_batch(
-            &store,
-            Some(&graph as &dyn Projection),
-            conductor::STREAM,
-            &batch,
-        ) {
+        match rigger::ingest::append_and_fold_batch(store, Some(graph), conductor::STREAM, &batch) {
             Ok(_) => appended += batch.len(),
             Err(e) => eprintln!("graph build: skipping a batch that failed to append: {e}"),
         }
     });
-
-    println!(
-        "graph build: ingested {appended} code-ingest event(s) into {}",
-        db_path("graph.db")
-    );
-    Ok(())
+    unread.map_or(Ok(appended), Err)
 }
 
 /// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
@@ -944,9 +950,7 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
 mod tests {
     use super::*;
     use crate::test_support::MinimalProjection;
-    use rigger::eventstore::{
-        Appended, Error, GroupHead, Revision, Subscription, TypeSelection,
-    };
+    use rigger::eventstore::{Appended, Error, GroupHead, Revision, Subscription, TypeSelection};
 
     /// A store whose group lookup cannot be read. Nothing else is reachable: a build that weighed
     /// a batch any other way, or appended one whose recorded generation it could not read, panics.
@@ -991,8 +995,16 @@ mod tests {
     fn a_build_whose_recorded_generation_is_unreadable_fails_with_that_error() {
         let tree = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tree.path().join("src")).unwrap();
-        std::fs::write(tree.path().join("src/lib.rs"), "pub fn answer() -> u32 { 42 }\n").unwrap();
-        match ingest_tree(&UnreadableGroups, &MinimalProjection, tree.path().to_str().unwrap()) {
+        std::fs::write(
+            tree.path().join("src/lib.rs"),
+            "pub fn answer() -> u32 { 42 }\n",
+        )
+        .unwrap();
+        match ingest_tree(
+            &UnreadableGroups,
+            &MinimalProjection,
+            tree.path().to_str().unwrap(),
+        ) {
             Err(Error::Backend(msg)) => assert_eq!(msg, "group index unreadable"),
             other => panic!("the lookup's failure is the build's, got {other:?}"),
         }
