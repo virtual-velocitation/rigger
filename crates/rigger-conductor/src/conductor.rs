@@ -19568,6 +19568,71 @@ mod tests {
         );
     }
 
+    /// Spec 101 (A REINDEX THAT FAILS AFTER LANDING RE-EMITS NOTHING ON RESUME): GIVEN a merging
+    /// unit whose worker writes `feature.rs`, over a store whose first group lookup of that file
+    /// goes unanswered, WHEN the unit lands and the integration's reindex fails on that lookup,
+    /// THEN the step fails with the store's error, and the step that resumes the landed unit
+    /// records exactly one `FileTouched` and one per-artifact `GateVerdict` for the file and
+    /// exactly one `UnitIntegrated` - the failed reindex left no unkeyed edge for the resume to
+    /// append a second time.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_landed_unit_whose_reindex_lookup_fails_resumes_to_one_file_touched_and_one_integration() {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            ..Stub::new()
+        };
+        let inner = Store::open(":memory:").unwrap();
+        let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse).of_group("gc/feature.rs");
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            graph: Some(&graph),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+
+        let landed = format!("{:?}", run_isolated(&cfg, &deps).map(|_| ()));
+        assert!(
+            landed.starts_with("Err(") && landed.contains(LOOKUP_REFUSED),
+            "the landed unit's reindex fails with the store's error; got {landed}"
+        );
+        run_isolated(&cfg, &deps).unwrap();
+
+        let events = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let about_feature = |type_: &str, field: &str| {
+            events
+                .iter()
+                .filter(|e| e.type_ == type_)
+                .filter(|e| {
+                    serde_json::from_slice::<Value>(&e.data).unwrap()[field] == json!("feature.rs")
+                })
+                .count()
+        };
+        assert_eq!(
+            (
+                about_feature(contextgraph::TYPE_FILE_TOUCHED, "path"),
+                about_feature(contextgraph::TYPE_GATE_VERDICT, "artifact"),
+                count_of_type(&events, ledger::TYPE_UNIT_INTEGRATED),
+            ),
+            (1, 1, 1),
+            "one FileTouched and one GateVerdict for the landed file, and one UnitIntegrated"
+        );
+    }
+
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): `empty_structural_boundary_event`'s
     /// payload is CONSTANT per `(file, lang)` - it carries no content-derived field at all - so
     /// re-excluding the SAME file within one long-lived process hashes to the IDENTICAL replay
