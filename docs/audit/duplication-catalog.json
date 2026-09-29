@@ -5669,7 +5669,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-063f548babaa",
+    "id": "dup-3709101dd60e",
     "classification": "semantic",
     "sites": [
       {
@@ -5766,6 +5766,11 @@
         "file": "tests/graph_additive_indexes_persist.rs",
         "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/group_lookup_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "3f6732b7e0275276"
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
@@ -5869,7 +5874,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 39 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 40 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
