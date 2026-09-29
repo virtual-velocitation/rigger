@@ -6877,7 +6877,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "32573f05462c87ce"
+    "content_hash": "3a1cafda36107fb4"
   },
   {
     "file": "src/cli/mod.rs",
