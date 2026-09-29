@@ -13953,14 +13953,9 @@ mod tests {
         let driver = Stub::new();
         let runner = ExecRunner;
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -14034,14 +14029,9 @@ mod tests {
         let driver = Stub::new();
         let runner = ExecRunner;
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -14131,14 +14121,9 @@ mod tests {
         let driver = Stub::new();
         let runner = ExecRunner;
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["u-halt"].status, ledger::Status::Verified);
@@ -28727,14 +28712,9 @@ mod tests {
             let driver = EnvRecordingDriver::new();
             let runner = RecordingRunner::new(&[]);
             let deps = Deps {
-                store: &store,
-                driver: &driver,
                 gates: &runner,
                 repo: repo_path.clone(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-                log: &|_| {},
+                ..stub_deps(&store, &driver, Vec::new())
             };
             run_isolated(&cfg, &deps).unwrap();
             // "solo"'s own per-unit CARGO_TARGET_DIR (spec 77 c1): the SAME single-source
@@ -28903,14 +28883,9 @@ mod tests {
         };
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -28968,14 +28943,9 @@ mod tests {
         };
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -29353,14 +29323,9 @@ mod tests {
         };
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -30832,14 +30797,9 @@ mod tests {
         };
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -30915,14 +30875,9 @@ mod tests {
         };
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let result = run_isolated(&cfg, &deps);
         assert!(
@@ -31883,14 +31838,9 @@ mod tests {
         let driver = Stub::answering("reviewed the diff");
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
@@ -35422,14 +35372,9 @@ mod tests {
         };
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -36127,14 +36072,9 @@ mod tests {
         };
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
-            store: &store,
-            driver: &driver,
             gates: &runner,
             repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
+            ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
