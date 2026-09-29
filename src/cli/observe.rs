@@ -118,6 +118,13 @@ fn dash_status_line(status: &dash::DashStatus) -> Option<String> {
              next step restarts it"
                 .to_string(),
         ),
+        dash::DashStatus::Unresponsive { url, pid } => {
+            let pid = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
+            Some(format!(
+                "dashboard: {url}{pid} did not answer within {}ms - busy, not dead",
+                dash::DASH_PROBE_WINDOW_MS
+            ))
+        }
     }
 }
 
@@ -134,6 +141,9 @@ fn dash_status_json(status: &dash::DashStatus) -> Option<serde_json::Value> {
         dash::DashStatus::Serving(url) => serde_json::json!({"status": "serving", "url": url}),
         dash::DashStatus::NotServing { pid } => {
             serde_json::json!({"status": "not_serving", "pid": pid})
+        }
+        dash::DashStatus::Unresponsive { url, pid } => {
+            serde_json::json!({"status": "unresponsive", "url": url, "pid": pid})
         }
     };
     Some(serde_json::json!({ "dashboard": dashboard }))
@@ -293,7 +303,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
 
     // Spec 69, criterion 4: never printed (or, under `--json`, ever wired) on trust alone.
-    // [`dash::dash_status`] probes with [`dash::dash_serving_on`] directly - the SAME
+    // [`dash::dash_status`] probes with [`dash::dash_answer_on`] directly - the SAME
     // underlying probe [`dash_marker_serving`] wraps for the step path's own idempotent-start
     // decision, so this surface and the step path can never disagree about whether a recorded
     // dash is alive. A marker-less recorded URL (the guard-bound `rigger run` / `rigger
@@ -305,8 +315,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // carries the same truth as the human table (round 2: the prior placement after the
     // `--json` return left `--json` structurally unable to compute it at all).
     let dash_marker = dash::DashMarker::read(Path::new(&loc.file(DASH_MARKER_FILE)));
-    let dash_status =
-        dash::dash_status(recorded_dash_url(&loc), dash_marker, dash::dash_serving_on);
+    let dash_status = dash::dash_status(recorded_dash_url(&loc), dash_marker, dash::dash_answer_on);
 
     if json {
         // The dashboard truth is APPENDED to the in-flight-agent array rather than wrapping
@@ -614,6 +623,18 @@ mod tests {
             "a directly-proven-dead url with no matching marker names both self-heal paths \
              without fabricating a pid"
         );
+        assert_eq!(
+            dash_status_line(&dash::DashStatus::Unresponsive {
+                url: "http://127.0.0.1:7420/".into(),
+                pid: Some(4242),
+            }),
+            Some(
+                "dashboard: http://127.0.0.1:7420/ (pid 4242) did not answer within 750ms - \
+                 busy, not dead"
+                    .to_string()
+            ),
+            "a held port that did not answer in the window is busy, never reported dead"
+        );
     }
 
     /// Spec 69, criterion 4's third clause ("`--json` carries the same truth"): the JSON
@@ -649,6 +670,16 @@ mod tests {
             })),
             "a directly-proven-dead url with no matching marker carries null, never a \
              fabricated pid"
+        );
+        assert_eq!(
+            dash_status_json(&dash::DashStatus::Unresponsive {
+                url: "http://127.0.0.1:7420/".into(),
+                pid: None,
+            }),
+            Some(serde_json::json!({
+                "dashboard": {"status": "unresponsive", "url": "http://127.0.0.1:7420/", "pid": null}
+            })),
+            "a held port that did not answer in the window carries its url, never not_serving"
         );
     }
 

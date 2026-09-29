@@ -259,44 +259,88 @@ pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
 /// [`dash_serving_pid_on`] (which needs the FULL block, since [`DASH_HEADER_PID`] can arrive on a
 /// LATER line) passes a predicate that never fires early.
 ///
-/// Returns `None` on any connect/write/read failure, or once the deadline elapses before the
-/// header block ends (and before `stop_early` fires) - the caller then reports its own failure
-/// sentinel (`false` / `None`), never distinguishing WHY the probe failed. Returns `Some(head)`
+/// Returns `Err(ProbeMiss::Silent)` when the port accepted the connection (or the connect itself
+/// timed out) but no header block arrived before the deadline - a holder that is alive but busy,
+/// never proof it is gone - and `Err(ProbeMiss::Refused)` on any other connect/write/read failure
+/// (nothing listening, or the peer reset). Returns `Ok(head)`
 /// once EITHER `stop_early` fires, OR the header block ends, OR the byte cap is reached, OR the
 /// peer closes the connection - in every one of those cases the caller inspects `head` itself to
 /// decide what it found (mirroring each original function's own "decide on exactly what arrived"
 /// handling of a peer close).
-fn probe_dash_head(port: u16, mut stop_early: impl FnMut(&[u8]) -> bool) -> Option<Vec<u8>> {
+fn probe_dash_head(
+    port: u16,
+    mut stop_early: impl FnMut(&[u8]) -> bool,
+) -> Result<Vec<u8>, ProbeMiss> {
     use std::io::Read;
 
+    let miss = |e: io::Error| match e.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ProbeMiss::Silent,
+        _ => ProbeMiss::Refused,
+    };
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).map_err(miss)?;
     stream
         .set_write_timeout(Some(Duration::from_millis(500)))
-        .ok()?;
+        .map_err(miss)?;
     stream
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .ok()?;
+        .map_err(miss)?;
 
-    let deadline = std::time::Instant::now() + Duration::from_millis(750);
+    let deadline = std::time::Instant::now() + Duration::from_millis(DASH_PROBE_WINDOW_MS);
     const MAX_HEAD_BYTES: usize = 8 * 1024;
     let mut head: Vec<u8> = Vec::with_capacity(512);
     let mut buf = [0u8; 512];
     loop {
-        let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
-        if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
-            return None;
-        }
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|r| !r.is_zero())
+            .ok_or(ProbeMiss::Silent)?;
+        stream.set_read_timeout(Some(remaining)).map_err(miss)?;
         match stream.read(&mut buf) {
-            Ok(0) => return Some(head), // closed: caller decides on exactly what arrived
+            Ok(0) => return Ok(head), // closed: caller decides on exactly what arrived
             Ok(n) => {
                 head.extend_from_slice(&buf[..n]);
                 if stop_early(&head) || head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
-                    return Some(head);
+                    return Ok(head);
                 }
             }
-            Err(_) => return None, // a slow/silent holder times out here, or the peer reset
+            Err(e) => return Err(miss(e)), // a slow/silent holder times out, or the peer reset
         }
+    }
+}
+
+/// Why [`probe_dash_head`] got no header block.
+enum ProbeMiss {
+    /// Nothing listens on the port, or the peer reset the connection.
+    Refused,
+    /// Something holds the port but did not answer within the probe window.
+    Silent,
+}
+
+/// What a bounded probe of a loopback port found ([`dash_answer_on`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashAnswer {
+    /// A rigger dash answered with its [`DASH_HEADER`].
+    Serving,
+    /// Something holds the port but did not answer within [`DASH_PROBE_WINDOW_MS`] - alive but
+    /// busy (or hung), never proof the dash is gone.
+    Unresponsive,
+    /// Nothing listens there, the peer reset, or what answered is not a rigger dash.
+    NotServing,
+}
+
+/// The overall wall-clock window [`probe_dash_head`] waits for a header block.
+pub const DASH_PROBE_WINDOW_MS: u64 = 750;
+
+/// Probe loopback `port` once and classify the answer ([`DashAnswer`]), so a caller can tell a
+/// dash that is gone from one that is merely slow to answer. [`dash_serving_on`] is this probe
+/// reduced to "is a dash serving".
+pub fn dash_answer_on(port: u16) -> DashAnswer {
+    let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+    match probe_dash_head(port, |head| head_has_header_line(head, needle.as_bytes())) {
+        Ok(head) if head_has_header_line(&head, needle.as_bytes()) => DashAnswer::Serving,
+        Err(ProbeMiss::Silent) => DashAnswer::Unresponsive,
+        Ok(_) | Err(ProbeMiss::Refused) => DashAnswer::NotServing,
     }
 }
 
@@ -313,9 +357,7 @@ fn probe_dash_head(port: u16, mut stop_early: impl FnMut(&[u8]) -> bool) -> Opti
 /// match test, so the probe returns the instant the header line is seen - this function never
 /// waits out the rest of the header block once it already has its answer.
 pub fn dash_serving_on(port: u16) -> bool {
-    let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
-    probe_dash_head(port, |head| head_has_header_line(head, needle.as_bytes()))
-        .is_some_and(|head| head_has_header_line(&head, needle.as_bytes()))
+    dash_answer_on(port) == DashAnswer::Serving
 }
 
 /// The pid ACTUALLY serving loopback `port` right now, or `None` when no rigger dash answers
@@ -348,7 +390,7 @@ pub fn dash_serving_on(port: u16) -> bool {
 pub fn dash_serving_pid_on(port: u16) -> Option<u32> {
     let dash_needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
     let pid_needle = format!("{DASH_HEADER_PID}:").to_ascii_lowercase();
-    let head = probe_dash_head(port, |_| false)?;
+    let head = probe_dash_head(port, |_| false).ok()?;
     if !head_has_header_line(&head, dash_needle.as_bytes()) {
         return None; // not a rigger dash at all - never guess a pid from an unrelated listener
     }
@@ -785,12 +827,20 @@ pub enum DashStatus {
         /// other direction (round 3, adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url).
         pid: Option<u32>,
     },
+    /// Something holds the recorded URL's port but did not answer within the probe window: a
+    /// busy dash, reported as such - never as dead, and never withheld as a stale breadcrumb.
+    Unresponsive {
+        /// The recorded URL.
+        url: String,
+        /// The pid a MATCHING marker names, as [`DashStatus::NotServing`] does.
+        pid: Option<u32>,
+    },
 }
 
 /// Decide [`DashStatus`] from the two on-disk breadcrumbs and an injected port-serving probe
 /// (spec 69, criterion 4). Pure, so both the trusted-URL and the caught-lie outcomes are
 /// provable without a real dashboard process; the production caller (`rigger status`) injects
-/// [`dash_serving_on`] directly - the SAME underlying probe the step path's own idempotent-start
+/// [`dash_answer_on`] directly - the SAME underlying probe the step path's own idempotent-start
 /// decision ([`dash_start_needed`]) verifies through, so `rigger status` and the step path can
 /// never disagree about whether a recorded dash is alive.
 ///
@@ -819,7 +869,7 @@ pub enum DashStatus {
 pub fn dash_status(
     recorded_url: Option<String>,
     marker: Option<DashMarker>,
-    port_serving: impl Fn(u16) -> bool,
+    port_serving: impl Fn(u16) -> DashAnswer,
 ) -> DashStatus {
     let Some(url) = recorded_url else {
         return DashStatus::Absent;
@@ -838,19 +888,24 @@ pub fn dash_status(
     // were this url's. Shared with `watch_poll` (`src/cli/mod.rs`) via [`pid_if_port_matches`] so
     // the rule is implemented exactly once in the crate.
     let pid = pid_if_port_matches(&marker, port);
-    if port_serving(port) {
-        DashStatus::Serving(url)
-    } else {
-        // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): filtered HERE, at
-        // the display construction site, never inside `pid_if_port_matches` itself, via the one
-        // shared `displayable_pid` (see its doc for why). A pid of `UNATTRIBUTED_PID` names no
-        // real process - `spawn_run_dashboard_detached` (`src/cli/run.rs`) records it only to keep
-        // the marker's PORT usable for idempotency, and documents that no reader may treat it as
-        // a real pid. Printing it unfiltered here would render "marker names dead pid 0" for a
-        // process that was never assigned that pid - a literal violation of spec 69 criterion 4's
-        // "never lies about the dash" text.
-        DashStatus::NotServing {
+    match port_serving(port) {
+        DashAnswer::Serving => DashStatus::Serving(url),
+        DashAnswer::Unresponsive => DashStatus::Unresponsive {
+            url,
             pid: displayable_pid(pid),
+        },
+        DashAnswer::NotServing => {
+            // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): filtered HERE, at
+            // the display construction site, never inside `pid_if_port_matches` itself, via the one
+            // shared `displayable_pid` (see its doc for why). A pid of `UNATTRIBUTED_PID` names no
+            // real process - `spawn_run_dashboard_detached` (`src/cli/run.rs`) records it only to keep
+            // the marker's PORT usable for idempotency, and documents that no reader may treat it as
+            // a real pid. Printing it unfiltered here would render "marker names dead pid 0" for a
+            // process that was never assigned that pid - a literal violation of spec 69 criterion 4's
+            // "never lies about the dash" text.
+            DashStatus::NotServing {
+                pid: displayable_pid(pid),
+            }
         }
     }
 }
@@ -8446,6 +8501,17 @@ mod tests {
         );
     }
 
+    /// A holder that accepts the probe's connection but never answers reads as unresponsive;
+    /// a port nothing listens on reads as not serving - the two are never conflated.
+    #[test]
+    fn dash_answer_on_tells_a_silent_holder_from_an_empty_port() {
+        let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let held_port = held.local_addr().unwrap().port();
+        assert_eq!(dash_answer_on(held_port), DashAnswer::Unresponsive);
+        drop(held);
+        assert_eq!(dash_answer_on(held_port), DashAnswer::NotServing);
+    }
+
     #[test]
     fn dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies() {
         let m = DashMarker {
@@ -8479,7 +8545,7 @@ mod tests {
         assert_eq!(
             dash_status(Some(url.clone()), Some(m), |p| {
                 assert_eq!(p, 7442, "must probe the matching marker's own port");
-                true
+                DashAnswer::Serving
             }),
             DashStatus::Serving(url.clone()),
             "a marker proven serving -> the recorded URL is trusted"
@@ -8488,12 +8554,23 @@ mod tests {
         // A MATCHING marker whose port the probe PROVES is NOT serving -> the lie this
         // criterion closes: no URL, just the pid the matching marker names.
         assert_eq!(
-            dash_status(Some(url), Some(m), |p| {
+            dash_status(Some(url.clone()), Some(m), |p| {
                 assert_eq!(p, 7442, "must probe the matching marker's own port");
-                false
+                DashAnswer::NotServing
             }),
             DashStatus::NotServing { pid: Some(4242) },
             "a marker proven dead -> not serving, naming its pid"
+        );
+
+        // A MATCHING marker whose port is held but does not answer within the probe window ->
+        // unresponsive (busy), never dead: the URL and the pid are both named.
+        assert_eq!(
+            dash_status(Some(url.clone()), Some(m), |_| DashAnswer::Unresponsive),
+            DashStatus::Unresponsive {
+                url: url.clone(),
+                pid: Some(4242),
+            },
+            "a held port that does not answer in the window -> unresponsive, not dead"
         );
     }
 
@@ -8517,7 +8594,7 @@ mod tests {
         assert_eq!(
             dash_status(Some(url), Some(sentinel), |p| {
                 assert_eq!(p, 7442, "must probe the matching marker's own port");
-                false
+                DashAnswer::NotServing
             }),
             DashStatus::NotServing { pid: None },
             "a sentinel-pid marker proven dead must name NO pid, not the sentinel value \
@@ -8581,7 +8658,7 @@ mod tests {
                     p, 7442,
                     "must probe the url's own port, never the mismatched marker's"
                 );
-                true
+                DashAnswer::Serving
             }),
             DashStatus::Serving(url.clone()),
             "a mismatched marker must never suppress a genuinely-alive url"
@@ -8598,7 +8675,7 @@ mod tests {
                     p, 7442,
                     "must probe the url's own port, never the mismatched marker's"
                 );
-                false
+                DashAnswer::NotServing
             }),
             DashStatus::NotServing { pid: None },
             "a mismatched marker must not let a genuinely dead url sail through as trusted"

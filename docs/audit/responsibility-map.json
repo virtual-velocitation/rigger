@@ -8805,7 +8805,15 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "2fb5699d64097126"
+    "content_hash": "57f289afce40872b"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "dash_answer_on",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "4bce999130001098"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -8813,7 +8821,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "10cc6889f7ad5edb"
+    "content_hash": "38e19e222626c15f"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -8821,7 +8829,7 @@
     "is_test": false,
     "proposed_module": "dash::registry",
     "reason": "name contains \"pid\" (instance registry); grouped under `dash::registry`.",
-    "content_hash": "62f26cfcdcb4ef21"
+    "content_hash": "07685dd7e41eaae0"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -8973,7 +8981,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "dec742422748c778"
+    "content_hash": "913206772ce1210d"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -10265,11 +10273,19 @@
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
+    "name": "dash_answer_on_tells_a_silent_holder_from_an_empty_port",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "596210057bd581b4"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies",
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a3fca3be029d8d1f"
+    "content_hash": "24cc58a1554df855"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -10277,7 +10293,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c0e168a4ea52a29d"
+    "content_hash": "cd2f29344d6f1781"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -10293,7 +10309,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aa9625a7d9075a20"
+    "content_hash": "bb7632ca77816378"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
