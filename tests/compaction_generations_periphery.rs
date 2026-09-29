@@ -36,6 +36,8 @@ use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
 use common::cli::with_graph_locked;
+use common::cli::write_workflow_fixture;
+use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::fixtures::meta_replay_key;
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::RebuildSink;
@@ -4560,6 +4562,121 @@ fn every_event_rigger_s_own_verbs_append_is_folded_so_setup_owes_no_rebuild() {
         Vec::<&str>::new(),
         "setup owes no rebuild for a log its verbs folded; stdout: {out}"
     );
+}
+
+/// A git project scaffolded with the escalating one-unit workflow, its grounder one the binary
+/// rejects: a `--fresh` step or run mints its boundary, re-pins the definition and then fails at
+/// the grounder, before it drives anything or serves stdin.
+fn fresh_run_project() -> tempfile::TempDir {
+    let dir = temp_git_project_with_commit();
+    write_workflow_fixture(dir.path(), &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
+    let body = REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW
+        .body
+        .replace("grounder: nop", "grounder: totally-bogus-grounder");
+    std::fs::write(rigger_file(dir.path(), "workflow.yml"), body).unwrap();
+    dir
+}
+
+/// `(position, type)` of every event on `root`'s run stream, oldest first.
+fn run_log(root: &Path) -> Vec<(u64, String)> {
+    read_run_events(root)
+        .into_iter()
+        .map(|e| (e.position, e.type_))
+        .collect()
+}
+
+/// Given a project, when the operator begins a new run with `args` (`rigger step --fresh`, or
+/// `rigger run --fresh` on either driver), then the boundary it mints and every other event it
+/// appends before it drives are folded: the graph's ledger holds every position the log does.
+fn a_fresh_runs_mint_is_folded(args: &[&str]) {
+    let dir = fresh_run_project();
+    let root = dir.path();
+    let (out, err, ok) = run_rigger(root, args);
+    assert!(
+        !ok && err.contains("totally-bogus-grounder"),
+        "the run fails at the grounder, after its mint; stdout: {out} stderr: {err}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    let log = run_log(root);
+    assert_eq!(
+        (
+            log.iter().filter(|(_, t)| t == "RunStarted").count(),
+            log.iter()
+                .filter(|(p, _)| !applied(&graph_db, *p))
+                .cloned()
+                .collect::<Vec<_>>(),
+        ),
+        (1, Vec::<(u64, String)>::new()),
+        "the fresh boundary is on the log and every appended event is in the graph's ledger; \
+         log: {log:?}"
+    );
+}
+
+/// Given a project whose `graph.db` owes its rebuild (a fold lost to another writer's lock), when
+/// the operator begins a new run with `args`, then it refuses naming `rigger setup` before it
+/// appends anything: no boundary is minted that the graph would miss, and neither the log nor
+/// `graph.db` changes.
+fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
+    args: &[&str],
+    command: &str,
+) {
+    let dir = fresh_run_project();
+    let root = dir.path();
+    common::cli::seed_store(root);
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(ok, "the first emit creates the graph; stderr: {err}");
+    let graph_db = rigger_file(root, "graph.db");
+    let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
+    assert!(
+        out.ends_with("; not folded into the context graph: graph: database is locked\n"),
+        "the locked emit's fold is lost, so the graph owes its rebuild; stdout: {out} stderr: {err}"
+    );
+    let (log, graph) = (run_log(root), std::fs::read(&graph_db).unwrap());
+
+    let (out, err, ok) = run_rigger(root, args);
+    assert_eq!(
+        (
+            ok,
+            err.trim_end()
+                .ends_with(&rigger::contextgraph::rebuild_owed_refusal(command))
+        ),
+        (false, true),
+        "the fresh run refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+    );
+    assert_eq!(
+        (run_log(root), std::fs::read(&graph_db).unwrap() == graph),
+        (log, true),
+        "the refusal mints no boundary and leaves graph.db as it was"
+    );
+}
+
+rigger::test_cases! {
+    /// `rigger step --fresh` mints its boundary through the step's folding store.
+    a_fresh_steps_mint_is_folded: a_fresh_runs_mint_is_folded(&["step", "--fresh"]);
+    /// `rigger run --driver cli --fresh` mints its boundary through a folding store.
+    a_fresh_cli_runs_mint_is_folded:
+        a_fresh_runs_mint_is_folded(&["run", "--driver", "cli", "--base", "HEAD", "--fresh"]);
+    /// `rigger run --driver workflow --fresh` mints its boundary through a folding store.
+    a_fresh_workflow_runs_mint_is_folded:
+        a_fresh_runs_mint_is_folded(&["run", "--driver", "workflow", "--base", "HEAD", "--fresh"]);
+    /// `rigger step --fresh` opens the graph before it mints.
+    a_fresh_step_on_an_owed_graph_refuses_before_it_mints:
+        a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
+            &["step", "--fresh"],
+            "step",
+        );
+    /// `rigger run --driver cli --fresh` opens the graph before it mints.
+    a_fresh_cli_run_on_an_owed_graph_refuses_before_it_mints:
+        a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
+            &["run", "--driver", "cli", "--base", "HEAD", "--fresh"],
+            "run",
+        );
+    /// `rigger run --driver workflow --fresh` opens the graph before it mints.
+    a_fresh_workflow_run_on_an_owed_graph_refuses_before_it_mints:
+        a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
+            &["run", "--driver", "workflow", "--base", "HEAD", "--fresh"],
+            "run",
+        );
 }
 
 /// Given a `graph.db` still at the old fold rule, when the operator runs `rigger reset --runs`,
