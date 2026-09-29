@@ -3993,3 +3993,59 @@ fn an_emit_into_a_graph_it_cannot_open_is_on_the_log_and_reported_not_folded() {
         "the unopenable graph.db is left exactly as it was"
     );
 }
+
+/// Given history recorded before the project minted its durable identity, when a command that
+/// opens the store (a bare `rigger reset`) runs the one-time identity migration, then the
+/// migration's own `DecisionMade` goes through the one emit core into the graph it was wired with:
+/// it is on the log under the minted identity AND folded into the current `graph.db`, where it
+/// resolves - no rebuild will ever re-derive an event a current graph missed.
+#[test]
+fn the_identity_migrations_decision_is_folded_into_the_graph_it_migrates() {
+    use rigger::contextgraph::Projection;
+
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_, err, ok) = emit_decision(root, "d-legacy");
+    assert!(
+        ok,
+        "the legacy emit creates the store and graph; stderr: {err}"
+    );
+    let legacy = run_stream_identity(root);
+    let (_, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init mints the identity; stderr: {err}");
+    let minted = run_stream_identity(root);
+    assert_ne!(minted, legacy, "init minted a distinct identity");
+
+    let (_, err, ok) = run_rigger(root, &["reset"]);
+    assert!(
+        ok && err.contains("rigger: migrated project identity - renamed 1 stream(s)"),
+        "the bare reset migrates the one legacy stream; stderr: {err}"
+    );
+
+    let log = read_run_events(root);
+    let migration = format!("identity-migration-{minted}");
+    let last = log.last().unwrap();
+    assert_eq!(
+        (
+            log.len(),
+            last.type_.as_str(),
+            serde_json::from_slice::<serde_json::Value>(&last.data).unwrap()["id"].clone()
+        ),
+        (2, "DecisionMade", serde_json::json!(migration)),
+        "the migration's decision follows the legacy one on the minted run stream"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        (
+            applied(&graph_db, log[0].position),
+            applied(&graph_db, last.position)
+        ),
+        (true, true),
+        "both the legacy emit and the migration's decision are folded"
+    );
+    assert_eq!(
+        common::cli::open_graph(root).resolve(&migration).unwrap(),
+        Some(migration.clone()),
+        "the migration's decision resolves in the graph under the minted identity"
+    );
+}
