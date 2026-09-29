@@ -143,11 +143,15 @@ that step-wide assertion. Neither unit builds the other's half.
   (the latest generation of every file the walk emits), stamped; every later lookup answers. That
   one re-emission is the upgrade cost on both backends, and criterion 4's exact-key dedup reclaims
   the unstamped copies. No migration rewrites recorded events.
-- *The reference.* `project_scoped_latest_generations` and `project_scoped_replay_keys` stay as the
-  pure reference over a slice: `rigger validate` (a project-health command that already reads the
-  whole stream for its other advisories, out of scope like the cross-run commands) keeps its
-  index-lag sample on them, and the lookup's contract test asserts that the lookup answers what
-  they answer on the same log, on both backends.
+- *The reference.* `project_scoped_latest_generations` is the one pure reference over a slice:
+  `rigger validate` (a project-health command that already reads the whole stream for its other
+  advisories, out of scope like the cross-run commands) keeps its index-lag sample on it, and the
+  lookup's contract test asserts that the lookup answers what it answers on the same log, on both
+  backends. `project_scoped_replay_keys` is retired the moment its last production caller seeds by
+  group lookup: an uncalled production function fails the dead-code gate, so keeping it is not an
+  option. A test that wants the keys-only view flattens the reference through one test-support
+  helper per test boundary (the domain crate's tests, the conductor crate's `test_support`, the
+  root `tests/common`), never an inline copy per test.
 
 **THE CONSTRAINTS WALK OVER CRITERIA 2 AND 3.**
 - *Empty store:* no group is recorded, so every identity the walk emits appends, exactly a first
