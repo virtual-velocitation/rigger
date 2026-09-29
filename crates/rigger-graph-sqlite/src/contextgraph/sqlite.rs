@@ -131,6 +131,20 @@ pub type RebuildSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 
 /// production.
 pub type RebuildSource<'s> = dyn FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's;
 
+/// Hand `sink` the events of `log` - in position order - past position `after`, in batches of at
+/// most `batch`, each with the log's last position: the [`RebuildSource`] body for a log already
+/// read into memory, which is how a store with no live selection (a server-backed log) is read.
+pub fn stream_past(
+    log: &[Event],
+    after: Position,
+    batch: usize,
+    sink: &mut RebuildSink,
+) -> Result<(), Error> {
+    let head = log.last().map_or(after, |e| e.position);
+    let from = log.partition_point(|e| e.position <= after);
+    log[from..].chunks(batch).try_for_each(|b| sink(b, head))
+}
+
 /// How far a [`Projector::rebuild`] has folded: `folded` events so far, the last through position
 /// `through`, of the log from `start` (exclusive) to `head`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

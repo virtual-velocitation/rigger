@@ -881,12 +881,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                     let log = store
                         .read_stream(conductor::STREAM, 0, Direction::Forward)
                         .map_err(graph_error)?;
-                    let head = log.last().map_or(after, |e| e.position);
-                    let gained: Vec<Event> =
-                        log.into_iter().filter(|e| e.position > after).collect();
-                    gained
-                        .chunks(REBUILD_BATCH)
-                        .try_for_each(|batch| sink(batch, head))
+                    contextgraph::sqlite::stream_past(&log, after, REBUILD_BATCH, sink)
                 },
                 &mut progress,
             )?
