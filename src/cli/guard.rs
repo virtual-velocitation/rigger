@@ -862,7 +862,10 @@ mod tests {
     #[test]
     fn grep_guard_decision_reads_shell_comments_as_inert_and_only_at_a_word_start() {
         assert_eq!(
-            grep_guard_decision("Bash", &serde_json::json!({"command": "ls src # grep later"})),
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "ls src # grep later"})
+            ),
             GuardDecision::Allow,
             "a grep named only inside a comment is not an invocation"
         );
