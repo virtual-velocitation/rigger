@@ -47,6 +47,7 @@ use std::process::Output;
 mod common;
 use common::cli::rigger_file;
 use common::cli::temp_rigger_project;
+use common::cli::{courier_project, emit};
 #[path = "common/store_courier.rs"]
 mod store_courier;
 use store_courier::run_bare_result;
@@ -253,4 +254,39 @@ rigger::test_cases! {
             &["stats"],
             "no runs recorded yet",
         );
+}
+
+/// `rigger prime` resolves its store through the ONE store-location authority every courier uses,
+/// never the raw cwd: a session started in a subdirectory of the project (or a unit worktree)
+/// prints the project's own decisions - the same store and identity `rigger status` reads - rather
+/// than namespacing to the cwd and reporting none.
+#[test]
+fn prime_from_a_subdirectory_reads_the_projects_store_not_its_raw_cwd() {
+    let project = courier_project();
+    let root = project.path();
+    emit(
+        root,
+        "DecisionMade",
+        r#"{"id":"d-root","summary":"chose the root store"}"#,
+    );
+    let sub = root.join("src").join("nested");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let from_root = run_read(root, &["prime"], None);
+    let from_sub = run_read(&sub, &["prime"], None);
+    let root_out = String::from_utf8_lossy(&from_root.stdout);
+    let sub_out = String::from_utf8_lossy(&from_sub.stdout);
+    assert!(
+        root_out.contains("- d-root: chose the root store"),
+        "control: prime at the project root prints its decision; stdout:\n{root_out}"
+    );
+    assert!(
+        from_sub.status.success(),
+        "prime from a subdirectory must succeed; stderr:\n{}",
+        String::from_utf8_lossy(&from_sub.stderr)
+    );
+    assert_eq!(
+        sub_out, root_out,
+        "prime from a subdirectory must read the project's store, exactly as at the root"
+    );
 }

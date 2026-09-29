@@ -264,6 +264,15 @@ pub enum DashProbe {
     /// mismatched marker's pid belongs to some other dash and is never named as this
     /// url's) - there is genuinely no pid to name in either case, never a guess.
     NotServing { pid: Option<u32>, port: u16 },
+    /// Something holds the recorded port but did not answer within the probe window
+    /// (`window_ms`, the caller's one probe-window constant) - a dash that is alive but
+    /// busy (or hung), never proof it is gone. `pid` follows [`NotServing`](DashProbe::NotServing)'s
+    /// rule: named only when a marker recorded one for this port.
+    Unresponsive {
+        pid: Option<u32>,
+        port: u16,
+        window_ms: u64,
+    },
 }
 
 /// Everything [`detect`] needs, already gathered by the caller (store, process
@@ -496,7 +505,7 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
     // breadcrumb is success (the dash did its job and stopped), not a permanent
     // anomaly (round-4 reject: adv-u69c1r4-dash-anomaly-permanent-false-positive).
     if !run.done() {
-        if let DashProbe::NotServing { pid, port } = &inputs.dash {
+        if let Some(detail) = dash_anomaly_detail(&inputs.dash) {
             // Round-6 fix (round-5 reject cause adv2-u69c1-r5-uphold-sdet-second-run-
             // stale-marker): `!run.done()` alone only closes the DONE-run half of the
             // stale-breadcrumb problem. Both dash breadcrumb files are project-level
@@ -528,18 +537,6 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
                     (Some(written), Some(started)) if written < started
                 );
             if !breadcrumb_predates_this_run {
-                let detail = match pid {
-                    Some(pid) => format!("marker names dead pid {pid} on port {port}"),
-                    // No MATCHING marker: either none was ever recorded (rigger run /
-                    // rigger serve) or the one on disk names a different port than the
-                    // recorded dash.url's - either way there is genuinely no pid to name
-                    // for THIS url (dash_status's canonical mismatch handling).
-                    None => {
-                        format!(
-                            "recorded dash.url port {port} does not answer (no matching marker, no pid)"
-                        )
-                    }
-                };
                 out.push(Anomaly {
                     signal: Signal::DashNotServing,
                     subject: "dash".to_string(),
@@ -562,6 +559,33 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
 
     out.sort_by_key(|a| (a.signal, a.subject.clone()));
     out
+}
+
+/// The Signal 3 detail a dash probe warrants, or `None` when it warrants none (never recorded,
+/// or serving). A dash that did not answer within the probe window is reported busy - never
+/// with the dead / does-not-answer wording a verifiably absent dash gets.
+fn dash_anomaly_detail(probe: &DashProbe) -> Option<String> {
+    Some(match probe {
+        DashProbe::NotRecorded | DashProbe::Serving => return None,
+        DashProbe::Unresponsive {
+            pid,
+            port,
+            window_ms,
+        } => {
+            let pid = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
+            format!("dash on port {port}{pid} did not answer within {window_ms}ms - busy, not dead")
+        }
+        DashProbe::NotServing {
+            pid: Some(pid),
+            port,
+        } => format!("marker names dead pid {pid} on port {port}"),
+        // No MATCHING marker: either none was ever recorded (rigger run / rigger serve) or the
+        // one on disk names a different port than the recorded dash.url's - either way there is
+        // genuinely no pid to name for THIS url (dash_status's canonical mismatch handling).
+        DashProbe::NotServing { pid: None, port } => {
+            format!("recorded dash.url port {port} does not answer (no matching marker, no pid)")
+        }
+    })
 }
 
 /// Streaming-mode dedup (spec 69 Design: "Alerts dedupe until cleared, DEDUP STATE
@@ -939,6 +963,39 @@ mod tests {
     }
 
     // --- Signal 3: dash liveness ---
+
+    /// A dash whose port is held but which did not answer within the probe window is busy,
+    /// not dead: `detect` reports exactly that (naming port, pid and window) and never the
+    /// dead-pid / does-not-answer wording, and never reads it as healthy.
+    #[test]
+    fn an_unresponsive_dash_is_reported_busy_never_dead() {
+        let no_heartbeats = BTreeMap::new();
+        let inputs = WatchInputs {
+            dash: DashProbe::Unresponsive {
+                pid: Some(4242),
+                port: 7420,
+                window_ms: 750,
+            },
+            ..empty_inputs(&[], &no_heartbeats)
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(
+            anomalies.len(),
+            1,
+            "a held-but-silent dash is never silently healthy"
+        );
+        let line = anomalies[0].line();
+        assert!(
+            line.contains(
+                "dash on port 7420 (pid 4242) did not answer within 750ms - busy, not dead"
+            ),
+            "the truthful busy line; got: {line}"
+        );
+        assert!(
+            !line.contains("dead pid") && !line.contains("does not answer"),
+            "a busy dash never reads as dead; got: {line}"
+        );
+    }
 
     /// A dash on port 7420 probed `NotServing` (naming `pid`, when a marker recorded one) for a
     /// run that began `run_started_ago` seconds ago with its breadcrumb written

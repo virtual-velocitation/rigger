@@ -16318,6 +16318,42 @@ fn status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverif
     );
 }
 
+/// A dash that holds its port but does not answer within the probe window (busy, not dead) is
+/// reported as unresponsive, naming its url and pid - never as a dead dash. The listener here
+/// accepts the probe's connection into its backlog and never answers, exactly what a live dash
+/// busy on a long request looks like from outside; a truly absent dash still reads as not
+/// serving (`status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash`).
+#[test]
+fn status_reports_a_dash_that_holds_its_port_but_does_not_answer_as_unresponsive_not_dead() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let pid = std::process::id();
+    let url = format!("http://127.0.0.1:{port}/");
+    write_dash_breadcrumbs(root, &url, port, pid);
+
+    let reads = StatusReads::of(root);
+    drop(held);
+
+    let (out, json) = reads.checked();
+    assert!(
+        !out.contains("not serving") && !out.contains("dead pid"),
+        "a dash that holds its port but is slow to answer must never read as dead; stdout:\n{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "dashboard: {url} (pid {pid}) did not answer within 750ms - busy, not dead"
+        )),
+        "status must report the unanswered probe truthfully; stdout:\n{out}"
+    );
+    assert_eq!(
+        json,
+        serde_json::json!([{"dashboard": {"status": "unresponsive", "url": url, "pid": pid}}]),
+        "`--json` must carry the same unresponsive truth"
+    );
+}
+
 /// Spec 69, criterion 4's third clause, the baseline: a project that has never recorded a
 /// dash gets `--json` output BYTE-IDENTICAL to before this criterion - a bare array of the
 /// in-flight agents (empty here, nothing in flight), with no `"dashboard"` entry appended.
@@ -17524,6 +17560,38 @@ fn watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker(
          line naming the dead pid {dead_pid} for a marker like this one - either the skill \
          overclaims what the compiled binary does, or `rigger watch`'s own dash-liveness \
          signal has regressed; got:\n{out}"
+    );
+}
+
+/// A dash that holds its port but does not answer within the probe window (busy, not dead) is
+/// reported by `rigger watch --once` as unresponsive, naming its port and pid - never as a dead
+/// or not-serving dash, and never silently healthy. The listener accepts the probe's connection
+/// into its backlog and never answers, exactly what a live dash busy on a long request looks like
+/// from outside; a truly absent dash still reads as dead
+/// (`watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_marker`).
+#[test]
+fn watch_once_reports_a_dash_that_holds_its_port_but_does_not_answer_as_unresponsive_not_dead() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let pid = std::process::id();
+    write_dash_breadcrumbs(root, &format!("http://127.0.0.1:{port}/"), port, pid);
+
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    drop(held);
+    assert!(ok, "rigger watch --once must exit 0; stderr:\n{err}");
+    assert!(
+        !out.contains("not serving")
+            && !out.contains("dead pid")
+            && !out.contains("does not answer"),
+        "a dash that holds its port but is slow to answer must never read as dead; stdout:\n{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "dash on port {port} (pid {pid}) did not answer within 750ms - busy, not dead"
+        )),
+        "watch must report the unanswered probe truthfully; stdout:\n{out}"
     );
 }
 
