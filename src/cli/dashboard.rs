@@ -893,7 +893,10 @@ mod tests {
                 serde_json::to_vec(&def).unwrap(),
             );
             e.position = 1;
-            p.apply(&e).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                rigger::contextgraph::Fold::Folded
+            );
             let refr =
                 serde_json::json!({ "file": "src/combat.rs", "name": "clamp", "lang": "rust" });
             let mut e2 = Event::new(
@@ -901,7 +904,10 @@ mod tests {
                 serde_json::to_vec(&refr).unwrap(),
             );
             e2.position = 2;
-            p.apply(&e2).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e2)),
+                rigger::contextgraph::Fold::Folded
+            );
         }
 
         // Precondition = the never-built dead-end. The run log carries no content events, so

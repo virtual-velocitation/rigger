@@ -26446,7 +26446,7 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
 #[test]
 fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknown_one() {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
+    use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
     use rigger::eventstore::Event;
 
     let dir = temp_store_project();
@@ -26461,7 +26461,10 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
             r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
         let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
         e.position = 1;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
 
     let mut mcp = McpSession::start(root);

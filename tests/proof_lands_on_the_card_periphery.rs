@@ -110,7 +110,10 @@ fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_f
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
-        p.apply(event).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(event)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
 
     let seed_files = [
@@ -222,7 +225,10 @@ fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_it
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
-        p.apply(event).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(event)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
 
     let g = p
@@ -298,11 +304,13 @@ fn apply_events(
     events: &mut [rigger::eventstore::Event],
     next_position: &mut u64,
 ) {
-    use rigger::contextgraph::Projection;
     for event in events.iter_mut() {
         event.position = *next_position;
         *next_position += 1;
-        p.apply(event).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(event)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
 }
 

@@ -31,7 +31,10 @@ use rigger::eventstore::Event;
 fn fold_and_prefetch(run: &[Event]) -> Graph {
     let p = Projector::open(":memory:", "test").unwrap();
     for e in run {
-        p.apply(e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     p.subgraph(&graph_seeds(run), 2).unwrap()
 }

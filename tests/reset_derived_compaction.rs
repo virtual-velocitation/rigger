@@ -486,10 +486,13 @@ fn reported_reclaimed(out: &str) -> Option<u64> {
 /// live edges with the provenance the fold assigned them.
 fn fold_snapshot(events: &[Event], project: &str, path: &Path) -> (Vec<String>, Vec<String>) {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
+
     {
         let p = Projector::open(path.to_str().unwrap(), project).unwrap();
-        p.apply_batch(events).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), events),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut nodes: Vec<String> = conn
@@ -854,9 +857,12 @@ fn seed_three_generations(root: &Path) {
 /// column, as the bytes a consumer receives.
 fn rebuilt_graph_bytes(events: &[Event], project: &str, path: &Path) -> Vec<u8> {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
+
     let p = Projector::open(path.to_str().unwrap(), project).unwrap();
-    p.apply_batch(events).unwrap();
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(&p), events),
+        rigger::contextgraph::Fold::Folded
+    );
     serde_json::to_vec(&p.whole().unwrap()).unwrap()
 }
 

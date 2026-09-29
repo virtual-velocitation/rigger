@@ -21,7 +21,6 @@ use std::collections::BTreeMap;
 
 use rigger::community::{self, Coupling, DEFAULT_RESOLUTION};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::Projection;
 use rigger::eventstore::Event;
 
 mod common;
@@ -86,7 +85,10 @@ fn a_rebuild_from_the_recorded_events_reproduces_byte_identical_membership_rows(
     let (_assignment, events) = run_pass(&p1, next);
     // Materialize the community layer on the first projection.
     for e in &events {
-        p1.apply(e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p1), std::slice::from_ref(e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     let snapshot_a = community_snapshot(&p1.whole().unwrap());
 
@@ -94,7 +96,10 @@ fn a_rebuild_from_the_recorded_events_reproduces_byte_identical_membership_rows(
     let p2 = Projector::open(":memory:", "test").unwrap();
     seed_two_subsystems(&p2);
     for e in &events {
-        p2.apply(e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p2), std::slice::from_ref(e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     let snapshot_b = community_snapshot(&p2.whole().unwrap());
 

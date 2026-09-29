@@ -527,17 +527,24 @@ pub struct ConceptRealized {
 #[error("graph: {0}")]
 pub struct Error(pub String);
 
-/// What became of folding one event, already durably on the log, into the context graph: the one
-/// outcome every emit surface reports, so none can claim a fold that did not happen.
+/// What became of folding events already durably on the log into the context graph: the one
+/// outcome every append-then-fold surface reports, so none can claim a fold that did not happen.
+#[must_use = "a fold that is not reported is a fold that can be silently lost"]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fold {
-    /// The event is in the graph.
+    /// The events are in the graph.
     Folded,
-    /// The event is not in the graph, for this reason: the graph could not be had (unopenable,
+    /// The events are not in the graph, for this reason: the graph could not be had (unopenable,
     /// not wired), owes its rebuild ([`REBUILD_OWED`]), or refused the write (held past its
     /// busy timeout).
     NotFolded(String),
 }
+
+/// The permission to fold into a [`Projection`]: its field is private to this module, so only
+/// [`Fold::of`] and [`Fold::of_batch`] can hand one over, and every fold is therefore one whose
+/// outcome is reported.
+#[derive(Debug, Clone, Copy)]
+pub struct FoldAccess(());
 
 impl Fold {
     /// Fold `event` into `graph`, or say why it was not folded.
@@ -545,24 +552,75 @@ impl Fold {
         graph: Result<G, Error>,
         event: &Event,
     ) -> Self {
-        match graph.and_then(|g| g.apply(event)) {
+        Self::settle(graph.and_then(|g| g.apply(event, FoldAccess(()))))
+    }
+
+    /// Fold `events` into `graph` in one transaction, or say why they were not folded - with no
+    /// graph wired, that there is none. No events is nothing to fold, so it is folded without
+    /// asking the graph.
+    pub fn of_batch(graph: Option<&dyn Projection>, events: &[Event]) -> Self {
+        if events.is_empty() {
+            return Fold::Folded;
+        }
+        Self::settle(
+            graph
+                .ok_or_else(|| Error(NO_GRAPH.to_string()))
+                .and_then(|g| g.apply_batch(events, FoldAccess(()))),
+        )
+    }
+
+    fn settle(folded: Result<(), Error>) -> Self {
+        match folded {
             Ok(()) => Fold::Folded,
             Err(e) => Fold::NotFolded(e.to_string()),
         }
     }
 }
 
+/// Why events appended with no context graph wired were not folded.
+const NO_GRAPH: &str = "no context graph is wired";
+
+/// The one spelling of events on the log that the context graph does not hold, and why.
+pub fn not_folded(why: &str) -> String {
+    format!("not folded into the context graph: {why}")
+}
+
+/// What a command that appended an event adds to its own report line about that event's fold,
+/// so no command claims a fold that did not happen or stays silent about one that failed.
+pub fn fold_clause(fold: &Fold) -> String {
+    match fold {
+        Fold::Folded => " and folded it into the context graph".to_string(),
+        Fold::NotFolded(_) => fold_loss_clause(fold),
+    }
+}
+
+/// What a report line that already names the graph it wrote adds about the fold: nothing when it
+/// folded, and the fold it could not make, with the reason, when it did not.
+pub fn fold_loss_clause(fold: &Fold) -> String {
+    match fold {
+        Fold::Folded => String::new(),
+        Fold::NotFolded(why) => format!("; {}", not_folded(why)),
+    }
+}
+
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
 /// fold, and what every command that depends on the fold says when it refuses: the one spelling of
 /// the refusal, naming the one command that pays the rebuild.
-pub const REBUILD_OWED: &str = "graph.db was folded under an older fold rule and owes one \
-     rebuild from the event log - run `rigger setup` to rebuild it";
+pub const REBUILD_OWED: &str = "graph.db owes one rebuild from the event log (it was folded \
+     under an older fold rule, or a fold into it was lost) - run `rigger setup` to rebuild it";
+
+/// The refusal `command`, whose answer depends on the fold, gives while the graph owes its
+/// rebuild.
+pub fn rebuild_owed_refusal(command: &str) -> String {
+    format!("{command}: {REBUILD_OWED}")
+}
 
 /// Projection is the context-graph read model. `apply` folds one event; `subgraph`
 /// and `resolve` query it, returning only currently valid edges.
 pub trait Projection: Send + Sync {
-    /// Fold a single event into the graph, idempotently per global position.
-    fn apply(&self, e: &Event) -> Result<(), Error>;
+    /// Fold a single event into the graph, idempotently per global position. Reached only through
+    /// [`Fold::of`], which holds the [`FoldAccess`] it takes.
+    fn apply(&self, e: &Event, access: FoldAccess) -> Result<(), Error>;
 
     /// Fold a whole batch of events into the graph in ONE transaction, idempotently per global
     /// position - the batched analogue of [`apply`](Projection::apply). The result is exactly what
@@ -574,17 +632,17 @@ pub trait Projection: Send + Sync {
     /// open ONE transaction for the whole batch: that is what lets an ingest sink fold a file's
     /// whole batch at the store's transaction cost of ONE commit instead of one per event (spec 49
     /// - the measured cold-build throughput was transaction-cadence bound, not parse-bound).
-    fn apply_batch(&self, events: &[Event]) -> Result<(), Error> {
+    fn apply_batch(&self, events: &[Event], access: FoldAccess) -> Result<(), Error> {
         for e in events {
-            self.apply(e)?;
+            self.apply(e, access)?;
         }
         Ok(())
     }
 
-    /// Whether this projection was folded under an older fold rule and owes one rebuild from the
-    /// log (spec 101): until `rigger setup` pays it nothing folds into it, and nothing whose answer
-    /// depends on the fold may answer from it - it refuses with [`REBUILD_OWED`]. Only a
-    /// projection persisted across binaries can have been folded under an older rule.
+    /// Whether this projection owes one rebuild from the log (spec 101) - it was folded under an
+    /// older fold rule, or a fold into it failed, so it no longer holds what the log does: until
+    /// `rigger setup` pays it nothing folds into it, and nothing whose answer depends on the fold
+    /// may answer from it - it refuses with [`REBUILD_OWED`].
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops,
@@ -1079,6 +1137,15 @@ mod fold_outcome {
     }
 
     #[test]
+    fn no_events_are_folded_without_asking_the_graph_or_needing_one() {
+        let recording = Recording::default();
+        assert_eq!(Fold::of_batch(Some(&recording), &[]), Fold::Folded);
+        assert_eq!(*recording.0.lock().unwrap(), Vec::<u64>::new());
+        assert_eq!(Fold::of_batch(Some(&Refusing), &[]), Fold::Folded);
+        assert_eq!(Fold::of_batch(None, &[]), Fold::Folded);
+    }
+
+    #[test]
     fn a_batch_with_no_graph_wired_is_not_folded_and_says_so() {
         assert_eq!(
             Fold::of_batch(None, &[at(1)]),
@@ -1139,6 +1206,9 @@ mod fold_outcome {
 
     #[test]
     fn the_owed_refusal_names_the_refusing_command_before_the_one_spelling() {
-        assert_eq!(rebuild_owed_refusal("step"), format!("step: {REBUILD_OWED}"));
+        assert_eq!(
+            rebuild_owed_refusal("step"),
+            format!("step: {REBUILD_OWED}")
+        );
     }
 }

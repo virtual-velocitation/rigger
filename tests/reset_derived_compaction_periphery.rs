@@ -91,7 +91,6 @@ use common::cli::temp_rigger_project;
 use common::fixtures::{meta_replay_key, plant_free_pages, pragma_i64};
 use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::{PrunedDerived, Store};
 use rigger::eventstore::{ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision};
@@ -1396,7 +1395,11 @@ fn seed_both_stores(root: &Path, rounds: u64) {
         .expect("read the seeded log back");
     let graph = Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id)
         .expect("open the context graph");
-    graph.apply_batch(&written).expect("fold the seeded log");
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(&graph), &written),
+        rigger::contextgraph::Fold::Folded,
+        "fold the seeded log"
+    );
 }
 
 /// `rigger reset` drives TWO prunes over TWO stores, and each one tells the operator it left the
@@ -2526,7 +2529,11 @@ fn fold_live_with_dates(
 ) -> (Vec<String>, Vec<String>) {
     {
         let p = Projector::open(path.to_str().unwrap(), project).expect("open the context graph");
-        p.apply_batch(events).expect("fold the log");
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), events),
+            rigger::contextgraph::Fold::Folded,
+            "fold the log"
+        );
     }
     let conn = rusqlite::Connection::open(path).expect("open the context graph");
     let mut nodes: Vec<String> = conn

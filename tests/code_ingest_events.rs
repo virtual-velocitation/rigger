@@ -33,7 +33,10 @@ fn fold_tree(p: &Projector, root: &std::path::Path, pos: &mut u64) {
     for mut e in common::project_events(root.to_str().unwrap()) {
         *pos += 1;
         e.position = *pos;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
 }
 
@@ -1196,7 +1199,10 @@ fn project_batches_lowers_a_whole_tree_into_per_file_code_batches_the_fold_inges
             pos += 1;
             let mut ev = e.clone();
             ev.position = pos;
-            p.apply(&ev).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ev)),
+                rigger::contextgraph::Fold::Folded
+            );
         }
     }
     let g = p

@@ -48,11 +48,15 @@ struct CapturingProjection {
 }
 
 impl Projection for CapturingProjection {
-    fn apply(&self, _e: &Event) -> Result<(), CgError> {
+    fn apply(&self, _e: &Event, _access: rigger::contextgraph::FoldAccess) -> Result<(), CgError> {
         self.per_event_applies.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn apply_batch(&self, events: &[Event]) -> Result<(), CgError> {
+    fn apply_batch(
+        &self,
+        events: &[Event],
+        _access: rigger::contextgraph::FoldAccess,
+    ) -> Result<(), CgError> {
         self.batch_positions
             .lock()
             .unwrap()
@@ -75,7 +79,7 @@ struct RecordingProjection {
 }
 
 impl Projection for RecordingProjection {
-    fn apply(&self, e: &Event) -> Result<(), CgError> {
+    fn apply(&self, e: &Event, _access: rigger::contextgraph::FoldAccess) -> Result<(), CgError> {
         if self.fail_at == Some(e.position) {
             return Err(CgError(format!("apply failed at position {}", e.position)));
         }
@@ -118,6 +122,8 @@ fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per
         &batch,
     )
     .unwrap();
+    assert_eq!(appended.fold, rigger::contextgraph::Fold::Folded);
+    let appended = appended.appended;
 
     // The store's own assignment is the oracle: read the stream and pick out this batch's events by
     // id, in stream order.
@@ -179,6 +185,12 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     let n =
         rigger::ingest::append_and_fold_batch(&store, Some(&cap0 as &dyn Projection), "main", &[])
             .unwrap();
+    assert_eq!(
+        n.fold,
+        rigger::contextgraph::Fold::Folded,
+        "an empty batch is nothing to fold"
+    );
+    let n = n.appended;
     assert_eq!(n.handed(), 0, "an empty batch hands the store no events");
     assert_eq!(
         n.last(),
@@ -214,6 +226,12 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     )
     .expect("a fold error must NOT fail the append - the batch already landed durably in the log");
     assert_eq!(
+        appended.fold,
+        rigger::contextgraph::Fold::NotFolded("graph: fold failed".to_string()),
+        "the fold error is returned beside the append, for the caller to report"
+    );
+    let appended = appended.appended;
+    assert_eq!(
         failing.batch_positions.lock().unwrap().len(),
         1,
         "the fold was attempted (and errored) exactly once"
@@ -236,6 +254,12 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
         .map(|i| Event::new("Batched", format!("c{i}").into_bytes()))
         .collect();
     let appended2 = rigger::ingest::append_and_fold_batch(&store2, None, "main", &batch2).unwrap();
+    assert_eq!(
+        appended2.fold,
+        rigger::contextgraph::Fold::NotFolded("no context graph is wired".to_string()),
+        "graph=None folds nothing and says so"
+    );
+    let appended2 = appended2.appended;
     assert_eq!(
         store2
             .read_stream("main", 0, Direction::Forward)
@@ -274,13 +298,14 @@ fn append_and_fold_batch_folds_a_whole_batch_through_a_real_projector() {
         decision("d3", "c.rs"),
     ];
 
-    rigger::ingest::append_and_fold_batch(
+    let done = rigger::ingest::append_and_fold_batch(
         &store,
         Some(&projector as &dyn Projection),
         "main",
         &batch,
     )
     .unwrap();
+    assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
 
     let g = projector
         .subgraph(
@@ -322,7 +347,10 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
 
     // The default apply_batch folds every event through apply, in order.
     let default_proj = RecordingProjection::default();
-    default_proj.apply_batch(&batch).unwrap();
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(&default_proj), &batch),
+        rigger::contextgraph::Fold::Folded
+    );
     assert_eq!(
         *default_proj.applied.lock().unwrap(),
         vec![1, 2, 3],
@@ -333,7 +361,10 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     // default's RESULT is exactly what applying each event in order would produce.
     let per_event = RecordingProjection::default();
     for e in &batch {
-        per_event.apply(e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&per_event), std::slice::from_ref(e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     assert_eq!(
         *default_proj.applied.lock().unwrap(),
@@ -347,8 +378,9 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
         fail_at: Some(2),
         ..Default::default()
     };
-    assert!(
-        failing.apply_batch(&batch).is_err(),
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(&failing), &batch),
+        rigger::contextgraph::Fold::NotFolded("graph: boom".to_string()),
         "an apply error must surface from the default apply_batch"
     );
     assert_eq!(

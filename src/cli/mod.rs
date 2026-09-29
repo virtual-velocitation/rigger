@@ -13,7 +13,7 @@ use rigger::config;
 use rigger::config_store;
 use rigger::console;
 use rigger::contextgraph::{
-    self,
+    self, fold_clause, fold_loss_clause, not_folded,
     sqlite::{Projector, PruneStats},
     Located, Projection,
 };
@@ -405,7 +405,7 @@ fn open_graph(
 ) -> Result<Projector, Box<dyn std::error::Error>> {
     let graph = Projector::open(graph_db, project)?;
     if graph.rebuild_owed()? {
-        return Err(format!("{command}: {}", contextgraph::REBUILD_OWED).into());
+        return Err(contextgraph::rebuild_owed_refusal(command).into());
     }
     Ok(graph)
 }
@@ -1131,20 +1131,6 @@ fn migrate_identity_at(loc: &StoreLocation) -> Res {
         );
     }
     Ok(())
-}
-
-/// The one CLI spelling of an event on the log that the context graph does not hold, and why.
-fn not_folded(why: &str) -> String {
-    format!("not folded into the context graph: {why}")
-}
-
-/// What a command that appended an event adds to its own report line about that event's fold,
-/// so no command claims a fold that did not happen or stays silent about one that failed.
-fn fold_clause(fold: &contextgraph::Fold) -> String {
-    match fold {
-        contextgraph::Fold::Folded => " and folded it into the context graph".to_string(),
-        contextgraph::Fold::NotFolded(why) => format!("; {}", not_folded(why)),
-    }
 }
 
 fn db_path(name: &str) -> String {
@@ -4972,10 +4958,13 @@ mod tests {
             br#"{"id":"d","summary":"s","governs":[],"supersedes":""}"#.to_vec(),
         );
         decision.position = 1;
-        Projector::open(graph_db, "p")
-            .unwrap()
-            .apply(&decision)
-            .unwrap();
+        assert_eq!(
+            contextgraph::Fold::of_batch(
+                Some(&Projector::open(graph_db, "p").unwrap()),
+                std::slice::from_ref(&decision)
+            ),
+            contextgraph::Fold::Folded
+        );
         assert_eq!(
             graph_rebuild_owed_note(graph_db, "p"),
             None,
@@ -8740,7 +8729,10 @@ mod tests {
             serde_json::to_vec(&payload).unwrap(),
         );
         e.position = 1;
-        legacy_graph.apply(&e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&legacy_graph), std::slice::from_ref(&e)),
+            rigger::contextgraph::Fold::Folded
+        );
         (backend, graph_path)
     }
 
@@ -8838,7 +8830,10 @@ mod tests {
                 serde_json::to_vec(&payload).unwrap(),
             );
             e.position = pos;
-            g.apply(&e).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(g), std::slice::from_ref(&e)),
+                rigger::contextgraph::Fold::Folded
+            );
         };
         {
             let legacy_graph = Projector::open(graph_path, "oldname").unwrap();

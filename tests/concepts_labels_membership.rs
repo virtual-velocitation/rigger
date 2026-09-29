@@ -32,7 +32,7 @@ use common::fixtures::pair_map;
 use rigger::concepts::{derive, events, intent_layer, Derivation, DEFAULT_RESOLUTION};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_HANDBOOK_RULE,
+    Graph, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_HANDBOOK_RULE,
     KIND_RATIONALE, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_EXTRACTED,
 };
 use rigger::eventstore::Event;
@@ -56,7 +56,10 @@ fn fold(events: &[Event]) -> Graph {
     for (i, e) in events.iter().enumerate() {
         let mut e = e.clone();
         e.position = i as u64 + 1;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     p.whole().unwrap()
 }

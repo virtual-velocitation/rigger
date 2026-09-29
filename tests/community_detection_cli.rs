@@ -120,13 +120,14 @@ fn seed_coupling(root: &Path) {
         // A single weak bridge A -> B (one call): too thin to fuse the subsystems.
         call("src/combat/hit.rs", "paint", "strike"),
     ];
-    append_and_fold_batch(
+    let done = append_and_fold_batch(
         &store,
         Some(&graph as &dyn Projection),
         conductor::STREAM,
         &events,
     )
     .expect("seed the coupling graph through the real append-and-fold seam");
+    assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
 }
 
 #[test]

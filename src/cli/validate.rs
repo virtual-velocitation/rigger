@@ -2172,7 +2172,10 @@ mod tests {
                 serde_json::to_vec(&def).unwrap(),
             );
             e.position = 1;
-            p.apply(&e).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                rigger::contextgraph::Fold::Folded
+            );
             let boundary = serde_json::json!({
                 "file": "tests/integration.rs", "name": "", "lang": "rust", "fresh": true,
             });
@@ -2181,7 +2184,10 @@ mod tests {
                 serde_json::to_vec(&boundary).unwrap(),
             );
             e.position = 2;
-            p.apply(&e).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                rigger::contextgraph::Fold::Folded
+            );
         }
         let advisory = retired_entities_advisory_for(path.to_str().unwrap(), "proj")
             .expect("the migration retired exactly one entity, so the advisory must fire");

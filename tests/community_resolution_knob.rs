@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rigger::community::{self, Assignment, Coupling};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY};
+use rigger::contextgraph::{Graph, KIND_COMMUNITY, REL_IN_COMMUNITY};
 
 mod common;
 use common::fixtures::{hold, live_node_ids, seed_two_subsystems};
@@ -108,7 +108,10 @@ fn fold_assignment(p: &Projector, assignment: &Assignment, next_pos: u64) -> u64
     let mut events = community::events(assignment);
     for (i, e) in events.iter_mut().enumerate() {
         e.position = next_pos + i as u64;
-        p.apply(e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     next_pos + events.len() as u64
 }

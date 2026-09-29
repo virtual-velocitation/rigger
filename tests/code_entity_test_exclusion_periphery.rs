@@ -446,12 +446,13 @@ mod tests {
 fn fold_events(
     events: impl IntoIterator<Item = rigger::eventstore::Event>,
 ) -> rigger::contextgraph::sqlite::Projector {
-    use rigger::contextgraph::Projection;
-
     let p = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
     for (zero_based, mut event) in events.into_iter().enumerate() {
         event.position = zero_based as u64 + 1;
-        p.apply(&event).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&event)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     p
 }

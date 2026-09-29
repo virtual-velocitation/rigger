@@ -2855,12 +2855,25 @@ impl RunCtx<'_> {
                 .map(|e| e.clone().with_meta(crate::run::META_RUN_ID, &self.run_id))
                 .collect()
         };
-        Ok(crate::ingest::append_and_fold_batch(
+        let done = crate::ingest::append_and_fold_batch(
             self.deps.store,
             self.deps.graph,
             STREAM,
             &stamped,
-        )?)
+        )?;
+        // The events are on the log whatever became of the fold; a fold into a wired graph that
+        // it could not make is said, never swallowed (a failed fold into a current graph also
+        // marks it owed, so the next step refuses rather than advancing over a graph that lost
+        // them). A run wired to no graph - an offline replay's isolated re-drive - folds nothing
+        // by design and has nothing to say.
+        if let (Some(_), contextgraph::Fold::NotFolded(_)) = (self.deps.graph, &done.fold) {
+            eprintln!(
+                "rigger: recorded {} run event(s){}",
+                stamped.len(),
+                contextgraph::fold_loss_clause(&done.fold)
+            );
+        }
+        Ok(done.appended)
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the
@@ -13174,11 +13187,19 @@ mod tests {
         }
 
         impl Projection for SpyGraph {
-            fn apply(&self, _e: &Event) -> Result<(), contextgraph::Error> {
+            fn apply(
+                &self,
+                _e: &Event,
+                _access: crate::contextgraph::FoldAccess,
+            ) -> Result<(), contextgraph::Error> {
                 self.per_event.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn apply_batch(&self, events: &[Event]) -> Result<(), contextgraph::Error> {
+            fn apply_batch(
+                &self,
+                events: &[Event],
+                _access: crate::contextgraph::FoldAccess,
+            ) -> Result<(), contextgraph::Error> {
                 self.batch_folds.lock().unwrap().push(events.len());
                 Ok(())
             }
@@ -15211,7 +15232,10 @@ mod tests {
             pos += 1;
             let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         };
         apply(
             contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
@@ -17463,7 +17487,10 @@ mod tests {
             .unwrap(),
         );
         e.position = 999;
-        graph.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
 
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -17530,7 +17557,10 @@ mod tests {
             .unwrap(),
         );
         e.position = 1;
-        graph.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         let unit = Stage {
@@ -17662,7 +17692,10 @@ mod tests {
             .unwrap(),
         );
         e.position = 1;
-        graph.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
 
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -17752,7 +17785,10 @@ mod tests {
                 .unwrap(),
             );
             e.position = (i as u64) + 1;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
 
         let mut cfg = Config::default();
@@ -17856,7 +17892,10 @@ mod tests {
         for (i, payload) in payloads.iter().enumerate() {
             let mut e = Event::new(type_, serde_json::to_vec(payload).unwrap());
             e.position = (i as u64) + 1;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
         graph.subgraph(seed, 2).unwrap()
     }
@@ -17941,7 +17980,10 @@ mod tests {
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut node = decision.clone();
         node.position = 1;
-        graph.apply(&node).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&node)),
+            crate::contextgraph::Fold::Folded
+        );
         let g = graph.subgraph(&seed, 2).unwrap();
         let mut rendered = String::new();
         write_capped_decisions(&mut rendered, &g, &seed);
@@ -18278,7 +18320,10 @@ mod tests {
                 .unwrap(),
             );
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
 
         // Non-vacuity guard: BEFORE the disposition, the SAME render path returns BOTH
@@ -18300,7 +18345,10 @@ mod tests {
             .to_event()
             .unwrap();
         disposition.position = 999;
-        graph.apply(&disposition).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&disposition)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // Assemble the FULL grounding slice `graph_context` renders for a review/planner spawn - the
         // findings section lives there (spec 36 trims it from the implement prompt), and the
@@ -18455,7 +18503,10 @@ mod tests {
             pos += 1;
             let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         };
 
         // RESTORE scenario (decisions section): a baseline `d_dep` the N-cap drops on rank,
@@ -18594,7 +18645,10 @@ mod tests {
             pos += 1;
             let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         };
 
         // CODE NEIGHBORHOOD (29a): a definition the run extracted from the touched file, plus a
@@ -19310,12 +19364,14 @@ mod tests {
                 .filter(|(key, _)| seen.insert(key.clone()))
                 .map(|(key, ev)| (*ev).clone().with_meta(META_REPLAY_KEY, key.as_str()))
                 .collect();
-            let _ = crate::ingest::append_and_fold_batch(
+            let done = crate::ingest::append_and_fold_batch(
                 &store,
                 Some(&graph as &dyn Projection),
                 STREAM,
                 &survivors,
-            );
+            )
+            .unwrap();
+            assert_eq!(done.fold, crate::contextgraph::Fold::Folded);
         });
         (store, graph)
     }
@@ -20018,7 +20074,10 @@ mod tests {
             pos += 1;
             let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         };
 
         // DESIGN INTENT that BINDS the touched file (29b): the handbook rule that GOVERNS it, the RA
@@ -20193,7 +20252,10 @@ mod tests {
             pos += 1;
             let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         };
 
         // A genuine handbook rule that GOVERNS the file - a design-intent node bound by the shared
@@ -20262,7 +20324,10 @@ mod tests {
             pos += 1;
             let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         };
 
         // Fold MORE handbook rules bound to the one file than the verbatim cap keeps, in ascending
@@ -20402,7 +20467,10 @@ mod tests {
                 .unwrap(),
             );
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
         let g = graph.subgraph(seed, 2).unwrap();
         let mut b = String::new();

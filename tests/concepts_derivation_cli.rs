@@ -159,13 +159,14 @@ fn seed_intent(root: &Path) {
     // `decision` node is not an intent-doc, so the layer must EXCLUDE it.
     events.push(decision_noise("d-noise", "src/graph/store.rs"));
 
-    append_and_fold_batch(
+    let done = append_and_fold_batch(
         &store,
         Some(&graph as &dyn Projection),
         conductor::STREAM,
         &events,
     )
     .expect("seed the intent layer through the real append-and-fold seam");
+    assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
 }
 
 #[test]

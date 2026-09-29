@@ -656,7 +656,7 @@ impl<'a> Server<'a> {
             None => false,
         };
         if owed {
-            return Err(format!("{tool}: {}", crate::contextgraph::REBUILD_OWED).into());
+            return Err(crate::contextgraph::rebuild_owed_refusal(tool).into());
         }
         Ok(())
     }
@@ -799,6 +799,7 @@ const EMITTABLE_TYPES: [&str; 4] = [
 
 /// One emit, appended: the [`Position`](crate::eventstore::Position) the store issued and what
 /// became of folding it into the context graph.
+#[must_use = "an emit whose fold is not reported is a fold that can be silently lost"]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Emitted {
     pub position: crate::eventstore::Position,
@@ -2177,7 +2178,10 @@ mod tests {
             r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
         let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
         e.position = 1;
-        graph.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
 
         let server = Server::new(&driver, &store, "run")
             .with_graph(&graph)
@@ -2206,7 +2210,11 @@ mod tests {
 
         struct Owing;
         impl Projection for Owing {
-            fn apply(&self, _: &Event) -> Result<(), GraphError> {
+            fn apply(
+                &self,
+                _: &Event,
+                _access: crate::contextgraph::FoldAccess,
+            ) -> Result<(), GraphError> {
                 Err(GraphError(REBUILD_OWED.to_string()))
             }
             fn subgraph(&self, _: &[String], _: i64) -> Result<Graph, GraphError> {
@@ -2295,7 +2303,10 @@ mod tests {
             );
             let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
             e.position = pos;
-            graph.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
 
         let server = Server::new(&driver, &store, "run")

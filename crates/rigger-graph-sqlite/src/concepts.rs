@@ -19,9 +19,9 @@ mod tests {
     use std::collections::BTreeMap;
     // `Projection` (the `.whole()` trait) and the two rel constants are needed only by the
     // sqlite-backed rebuild test above, gated the same way for the same reason.
-    #[cfg(any(feature = "store", not(feature = "core")))]
-    use crate::contextgraph::{Projection, REL_IN_COMMUNITY, REL_REALIZES};
     use crate::contextgraph::{KIND_DECISION, KIND_FILE, TIER_EXTRACTED};
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    use crate::contextgraph::{REL_IN_COMMUNITY, REL_REALIZES};
     use crate::test_support::pair_map;
 
     /// The canonical spec-54 intent fixture: TWO documents governing DISJOINT code regions, each
@@ -296,7 +296,10 @@ mod tests {
             for (i, e) in events.iter().enumerate() {
                 let mut e = e.clone();
                 e.position = i as u64 + 1;
-                p.apply(&e).unwrap();
+                assert_eq!(
+                    crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                    crate::contextgraph::Fold::Folded
+                );
             }
             // Read the folded REALIZES membership: <member> --REALIZES--> <concept>.
             p.whole()
@@ -328,7 +331,10 @@ mod tests {
             for (i, e) in evs.iter().enumerate() {
                 let mut e = e.clone();
                 e.position = i as u64 + 1;
-                p.apply(&e).unwrap();
+                assert_eq!(
+                    crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                    crate::contextgraph::Fold::Folded
+                );
             }
             p.whole()
                 .unwrap()

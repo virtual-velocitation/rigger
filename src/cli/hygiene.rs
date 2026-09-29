@@ -761,7 +761,7 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Opt
     // run) reclaims no edge, so LIVE and recent history are both untouched.
     let boundary = superseded_edge_boundary(&events);
 
-    let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
+    let graph = open_graph(&loc.file("graph.db"), &loc.identity(), "reset --runs")?;
     let facts = live_writer_facts(loc, selection, registry_dir, &events)?;
     close_landed_units(loc, &store, &graph, &events, &facts)?;
     let removed = graph.prune(&drop, boundary)?;
@@ -815,12 +815,14 @@ fn close_landed_units(
             Ok(ev.with_meta(runscope::META_RUN_ID, &run_id))
         })
         .collect::<Result<Vec<Event>, serde_json::Error>>()?;
-    rigger::ingest::append_and_fold_batch(store, Some(graph), conductor::STREAM, &closing)?;
+    let done =
+        rigger::ingest::append_and_fold_batch(store, Some(graph), conductor::STREAM, &closing)?;
+    let lost = fold_loss_clause(&done.fold);
     for (unit, tip) in &landed {
         println!(
             "reset --runs: closed unit {unit:?} of run {run_id}: no driver is alive and its \
              branch tip {tip} is landed on {RUN_BRANCH}, so its UnitIntegrated is recorded \
-             (by operator)"
+             (by operator){lost}"
         );
     }
     Ok(())
@@ -1228,7 +1230,10 @@ mod tests {
         // active run's decision plus the code it governs.
         let graph = Projector::open(":memory:", "test").unwrap();
         for e in &stream {
-            graph.apply(e).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&graph), std::slice::from_ref(e)),
+                rigger::contextgraph::Fold::Folded
+            );
         }
         let boundary = superseded_edge_boundary(&stream);
         graph.prune(&drop, boundary).unwrap();

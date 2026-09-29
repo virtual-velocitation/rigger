@@ -3,21 +3,21 @@
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::query::name_suffix;
 use super::{
-    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, Error, Graph, Located,
-    Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
-    KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
-    KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE, REBUILD_OWED,
-    REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
-    REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES,
-    REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS,
-    TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, Error, FoldAccess,
+    Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
+    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
+    KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE,
+    REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
+    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES,
+    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
     TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
     TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
@@ -165,6 +165,21 @@ pub struct RebuildProgress {
 pub struct Projector {
     conn: Mutex<Connection>,
     project: String,
+    /// Where a failed fold marks this file as owing its rebuild ([`owed_mark`]).
+    owed_mark: Option<PathBuf>,
+}
+
+/// The file beside the graph file at `path` whose presence marks it as owing its rebuild because a
+/// fold into it failed - a write lost to another writer's lock past the busy timeout leaves the
+/// file current but missing an event no later fold re-derives, and that same lock forbids
+/// recording the debt inside the file. `None` for an in-memory graph, which no rebuild outlives.
+fn owed_mark(path: &str) -> Option<PathBuf> {
+    (path != ":memory:").then(|| PathBuf::from(format!("{path}.owed")))
+}
+
+/// Whether `mark` is present: a fold into its graph file failed and the rebuild is owed.
+fn marked(mark: &Option<PathBuf>) -> bool {
+    mark.as_ref().is_some_and(|m| m.exists())
 }
 
 /// What one [`Projector::prune`] reclaimed, both in the same transaction: the dead-run
@@ -205,11 +220,13 @@ impl Projector {
         Ok(Projector {
             conn: Mutex::new(conn),
             project: project.to_string(),
+            owed_mark: owed_mark(path),
         })
     }
 
     /// Pay the rebuild the `graph.db` at `path` owes (spec 101), and report whether there was one
-    /// to pay. The rebuild folds `source` - the log's live selection, whose cost is bounded by the
+    /// to pay - owed because the file records an older fold rule or carries the [`owed_mark`] a
+    /// failed fold left, which is dropped once the rebuilt file is in place. The rebuild folds `source` - the log's live selection, whose cost is bounded by the
     /// live projection rather than the log's age - into a fresh SHADOW file beside `path`, in the
     /// batches `source` hands it, each committed with the last position it folded
     /// ([`REBUILD_CURSOR`]) and reported to `progress`; the live file is only ever read meanwhile.
@@ -240,7 +257,8 @@ impl Projector {
     ) -> Result<bool, Error> {
         let mut live = open_connection(path).map_err(be)?;
         let shadow_path = format!("{path}.rebuild");
-        if rebuild_owed(&live)? {
+        let mark = owed_mark(path);
+        if marked(&mark) || rebuild_owed(&live)? {
             let mut shadow = Connection::open(&shadow_path).map_err(be)?;
             shadow
                 .execute_batch("PRAGMA locking_mode = EXCLUSIVE;")
@@ -256,6 +274,11 @@ impl Projector {
                 .map_err(be)?
                 .run_to_completion(i32::MAX, std::time::Duration::from_millis(50), None)
                 .map_err(be)?;
+            // Paid: the swapped-in file holds every event the source held. Dropped before the
+            // tail, so a fold lost while the tail runs marks the file owed again.
+            if let Some(mark) = mark.filter(|m| m.exists()) {
+                std::fs::remove_file(mark).map_err(be)?;
+            }
         } else if !rebuild_tail_owed(&live)? {
             return Ok(false);
         }
@@ -268,6 +291,14 @@ impl Projector {
         live.execute_batch("DROP TABLE rebuild_cursor;")
             .map_err(be)?;
         Ok(true)
+    }
+
+    /// Fold `events` in ONE transaction, rolled back whole on any failure.
+    fn fold_batch(&self, events: &[Event]) -> Result<(), Error> {
+        let mut guard = self.conn.lock().unwrap();
+        let tx = guard.transaction().map_err(be)?;
+        fold_new(&tx, events, &self.project)?;
+        tx.commit().map_err(be)
     }
 
     /// The WHOLE live projection for this project: every node plus every currently-valid edge
@@ -1102,14 +1133,14 @@ fn be<E: std::fmt::Display>(e: E) -> Error {
 }
 
 impl Projection for Projector {
-    fn apply(&self, e: &Event) -> Result<(), Error> {
-        self.apply_batch(std::slice::from_ref(e))
+    fn apply(&self, e: &Event, access: FoldAccess) -> Result<(), Error> {
+        self.apply_batch(std::slice::from_ref(e), access)
     }
 
-    /// Read from the file on every call, never remembered: another process's
-    /// [`Projector::rebuild`] may pay it at any moment.
+    /// Read from the file (and its [`owed_mark`]) on every call, never remembered: another
+    /// process's [`Projector::rebuild`] may pay it, or its failed fold mark it, at any moment.
     fn rebuild_owed(&self) -> Result<bool, Error> {
-        rebuild_owed(&self.conn.lock().unwrap())
+        Ok(marked(&self.owed_mark) || rebuild_owed(&self.conn.lock().unwrap())?)
     }
 
     /// Fold a whole batch of events in ONE transaction (spec 49's batched-fold cadence): the store's
@@ -1119,18 +1150,20 @@ impl Projection for Projector {
     /// order - same per-position idempotency guard (`applied`), same fold - so batching alters
     /// CADENCE only, never the graph. Atomic: a fold error rolls the whole batch back (the events are
     /// still durable in the log, and the sink folds best-effort), never a half-applied batch.
-    fn apply_batch(&self, events: &[Event]) -> Result<(), Error> {
-        if events.is_empty() {
-            return Ok(());
-        }
+    ///
+    /// A batch that fails to fold into a file that owed nothing leaves that file behind the log
+    /// for good - nothing folds a position twice - so the failure marks it as owing its rebuild
+    /// ([`owed_mark`]): from then on it refuses every fold and every answer that depends on the
+    /// fold with [`REBUILD_OWED`] until `rigger setup` pays it.
+    fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
         if self.rebuild_owed()? {
             return Err(Error(REBUILD_OWED.to_string()));
         }
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
-        fold_new(&tx, events, &self.project)?;
-        tx.commit().map_err(be)?;
-        Ok(())
+        let folded = self.fold_batch(events);
+        if let (Err(_), Some(mark)) = (&folded, &self.owed_mark) {
+            std::fs::write(mark, b"").map_err(be)?;
+        }
+        folded
     }
 
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
@@ -3537,13 +3570,19 @@ mod tests {
         });
         let mut fe = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&finding).unwrap());
         fe.position = 3;
-        p.apply(&fe).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&fe)),
+            crate::contextgraph::Fold::Folded
+        );
         // A lesson about the same file: the caller never drops a lesson, so it must survive.
         let lesson =
             serde_json::json!({"id": "keep-lesson", "summary": "y", "about": ["shared.rs"]});
         let mut le = Event::new(TYPE_LESSON_LEARNED, serde_json::to_vec(&lesson).unwrap());
         le.position = 4;
-        p.apply(&le).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&le)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // Before: every node is reachable from the shared file.
         let before = p.subgraph(&["shared.rs".to_string()], 2).unwrap();
@@ -3659,12 +3698,18 @@ mod tests {
         // Reference: fold each event one at a time.
         let per_event = Projector::open(":memory:", "test").unwrap();
         for e in &batch {
-            per_event.apply(e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&per_event), std::slice::from_ref(e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
 
         // Batched: fold the whole slice in ONE call.
         let batched = Projector::open(":memory:", "test").unwrap();
-        batched.apply_batch(&batch).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&batched), &batch),
+            crate::contextgraph::Fold::Folded
+        );
 
         assert_eq!(
             live_governs(&batched).len(),
@@ -3678,7 +3723,10 @@ mod tests {
         );
 
         // Idempotent per position: re-applying the SAME batch at the same positions adds nothing.
-        batched.apply_batch(&batch).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&batched), &batch),
+            crate::contextgraph::Fold::Folded
+        );
         assert_eq!(
             live_governs(&batched).len(),
             3,
@@ -3710,7 +3758,10 @@ mod tests {
 
         let p = Projector::open(":memory:", "test").unwrap();
         assert!(
-            p.apply_batch(&[good.clone(), poison]).is_err(),
+            matches!(
+                crate::contextgraph::Fold::of_batch(Some(&p), &[good.clone(), poison]),
+                crate::contextgraph::Fold::NotFolded(_)
+            ),
             "a fold error must surface from apply_batch"
         );
         assert_eq!(
@@ -3720,12 +3771,99 @@ mod tests {
         );
 
         // The `applied` guard was rolled back too, so a retry re-folds the good event cleanly.
-        p.apply(&good).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&good)),
+            crate::contextgraph::Fold::Folded
+        );
         assert_eq!(
             live_governs(&p).len(),
             1,
             "after the rollback the good event still folds on its own (its position was not consumed)"
         );
+    }
+
+    /// A batch that fails to fold into a current `graph.db` leaves it behind the log for good, so
+    /// the failure marks it owed: the same projector and a fresh open both say so and refuse every
+    /// later fold, until a rebuild from the log pays it - which folds what was lost, drops the mark
+    /// and is then not owed again.
+    #[test]
+    fn a_failed_fold_into_a_current_file_marks_it_owed_until_a_rebuild_pays_it() {
+        use crate::contextgraph::Fold;
+        let decision = |id: &str, file: &str, position: u64| {
+            let payload = serde_json::json!({
+                "id": id, "summary": "x", "governs": [file], "supersedes": ""
+            });
+            let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+            e.position = position;
+            e
+        };
+        let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+        poison.position = 2;
+        let log = [
+            decision("d1", "a.rs", 1),
+            poison,
+            decision("d3", "b.rs", 3),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let mark = dir.path().join("graph.db.owed");
+
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(Fold::of_batch(Some(&p), &log[..1]), Fold::Folded);
+        assert_eq!(
+            (p.rebuild_owed().unwrap(), mark.exists()),
+            (false, false),
+            "a fold that succeeds owes nothing"
+        );
+        assert!(matches!(
+            Fold::of_batch(Some(&p), &log[1..2]),
+            Fold::NotFolded(_)
+        ));
+        assert_eq!(
+            (p.rebuild_owed().unwrap(), mark.exists()),
+            (true, true),
+            "the failed fold marks the file owed"
+        );
+        assert_eq!(
+            Fold::of_batch(Some(&p), &log[2..]),
+            Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
+            "a marked file refuses every later fold"
+        );
+        assert!(
+            Projector::open(path, "test").unwrap().rebuild_owed().unwrap(),
+            "a fresh open sees the mark"
+        );
+        drop(p);
+
+        let rebuilt = Projector::rebuild(
+            path,
+            "test",
+            &mut |after, sink| stream_past(&log, after, 10, sink),
+            &mut |_| {},
+        )
+        .unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (rebuilt, mark.exists(), p.rebuild_owed().unwrap()),
+            (true, false, false),
+            "the rebuild pays the debt and drops the mark"
+        );
+        let governed: Vec<String> = live_governs(&p).into_iter().map(|g| g.1).collect();
+        assert_eq!(
+            governed,
+            vec!["a.rs".to_string(), "b.rs".to_string()],
+            "the rebuilt file holds the event the refused fold lost"
+        );
+        drop(p);
+        let again = Projector::rebuild(
+            path,
+            "test",
+            &mut |_, _| panic!("a paid rebuild reads nothing"),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(!again, "a paid rebuild does not run again");
     }
 
     /// Every LIVE `GOVERNS` edge as `(from, to, source, valid_from)`, read straight from the
@@ -4505,10 +4643,22 @@ mod tests {
         // a node the graph does not hold is not live); a decision naming them holds them.
         let held: Vec<&str> = g1.nodes.iter().map(|n| n.id.as_str()).collect();
         apply_decision(&p, 900_000, "d-hold", "the intent layer", &held, "");
-        p.apply_batch(&stamped(events(&d1), 1, 1_000)).unwrap();
-        p.apply_batch(&stamped(events(&d2), 1_000, 1_500)).unwrap();
-        p.apply_batch(&stamped(events(&d10), 2_000, 1_600)).unwrap();
-        p.apply_batch(&stamped(events(&d11), 3_000, 1_700)).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d1), 1, 1_000)),
+            crate::contextgraph::Fold::Folded
+        );
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d2), 1_000, 1_500)),
+            crate::contextgraph::Fold::Folded
+        );
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d10), 2_000, 1_600)),
+            crate::contextgraph::Fold::Folded
+        );
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d11), 3_000, 1_700)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // A grain's REALIZES edges across its member nodes, read RAW (retired rows included) and keyed
         // by the grain's own `concept/<res>/` id prefix - the exact substring the retire scopes by.
@@ -4575,7 +4725,10 @@ mod tests {
             m1b["src/b2.rs"], "concept/1/0",
             "after the change the mover derives into concept/1/0"
         );
-        p.apply_batch(&stamped(events(&d1b), 4_000, 3_000)).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), &stamped(events(&d1b), 4_000, 3_000)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // === RE-RUN SUPERSESSION, asserted on the mover via the edges_from RAW read ===
         let mover: Vec<(String, Option<i64>)> = edges_from(&p, "src/b2.rs")
@@ -6588,8 +6741,14 @@ mod tests {
             serde_json::to_vec(&payload).unwrap(),
         );
         e.position = 1;
-        p.apply(&e).unwrap();
-        p.apply(&e).unwrap(); // same position, replayed: still a no-op
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        ); // same position, replayed: still a no-op
         for seed in [["u1"], ["a.rs"], ["b.rs"]] {
             let g = p
                 .subgraph(&seed.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 2)
@@ -6611,7 +6770,10 @@ mod tests {
         let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
         e.meta.insert(META_ACTOR.to_string(), "agent-7".to_string());
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
         let g = p.subgraph(&["d1".to_string()], 2).unwrap();
         // Content survives.
         assert!(
@@ -6656,7 +6818,10 @@ mod tests {
         });
         let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // Reachable from the file it is ABOUT.
         let g = p.subgraph(&["combat.rs".to_string()], 2).unwrap();
@@ -6701,7 +6866,10 @@ mod tests {
         e.position = 1;
         e.meta
             .insert(META_ACTOR.to_string(), "adversary".to_string());
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
         let g = p.subgraph(&["f1".to_string()], 2).unwrap();
         assert!(
             g.nodes
@@ -6729,7 +6897,10 @@ mod tests {
         for _ in 0..2 {
             let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap());
             e.position = 1; // same position, replayed
-            p.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
         let g = p.subgraph(&["a.rs".to_string()], 2).unwrap();
         let about = g
@@ -6763,7 +6934,10 @@ mod tests {
         let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap())
             .with_meta(crate::conductor::META_SPAWN, spawn);
         e.position = pos;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
     }
 
     #[test]
@@ -6800,7 +6974,10 @@ mod tests {
             .to_event()
             .unwrap();
         e.position = 4;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
 
         let after = p.subgraph(&["a.rs".to_string()], 2).unwrap();
         assert!(
@@ -6849,7 +7026,10 @@ mod tests {
             .to_event()
             .unwrap();
         e.position = 3;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
 
         let after = p.subgraph(&["a.rs".to_string()], 2).unwrap();
         for id in ["f-kept", "f-also-kept"] {
@@ -6866,7 +7046,10 @@ mod tests {
             .to_event()
             .unwrap();
         e.position = pos;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
     }
 
     fn apply_unit_integrated(p: &Projector, pos: u64, unit: &str, commit: &str) {
@@ -7113,7 +7296,10 @@ mod tests {
             serde_json::json!({"unit": "u2", "criterion": "c", "agent": "impl", "needs": ["u1"]});
         let mut e = Event::new(TYPE_UNIT_STARTED, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
         for seed in [["u2"], ["u1"], ["impl"]] {
             let g = p
                 .subgraph(&seed.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 2)
@@ -7146,7 +7332,10 @@ mod tests {
         d.position = 1;
         d.meta
             .insert(META_ACTOR.to_string(), "rust-engineer".to_string());
-        p.apply(&d).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&d)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // FileTouched (agent touches file).
         let mut ft = Event::new(
@@ -7155,7 +7344,10 @@ mod tests {
                 .unwrap(),
         );
         ft.position = 2;
-        p.apply(&ft).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ft)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // GateVerdict on the file.
         let mut gv = Event::new(
@@ -7166,7 +7358,10 @@ mod tests {
             .unwrap(),
         );
         gv.position = 3;
-        p.apply(&gv).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&gv)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // UnitStarted (unit assigned to an agent, blocked by another unit).
         let mut us = Event::new(
@@ -7177,7 +7372,10 @@ mod tests {
             .unwrap(),
         );
         us.position = 4;
-        p.apply(&us).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&us)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // ReviewFinding raised by a reviewer about the file.
         let mut rf = Event::new(
@@ -7188,7 +7386,10 @@ mod tests {
             .unwrap(),
         );
         rf.position = 5;
-        p.apply(&rf).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&rf)),
+            crate::contextgraph::Fold::Folded
+        );
 
         // UnitIntegrated.
         let mut ui = Event::new(
@@ -7196,7 +7397,10 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({ "id": "u2", "commit": "abc" })).unwrap(),
         );
         ui.position = 6;
-        p.apply(&ui).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ui)),
+            crate::contextgraph::Fold::Folded
+        );
 
         let (nodes, edges) = all_nodes_edges(&p);
         for kind in [KIND_AGENT, KIND_UNIT, KIND_GATE] {
@@ -7237,7 +7441,10 @@ mod tests {
             .unwrap(),
         );
         le.position = 3;
-        p.apply(&le).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&le)),
+            crate::contextgraph::Fold::Folded
+        );
 
         let g = p.subgraph(&["combat.rs".to_string()], 2).unwrap();
         // Content nodes survive, reachable from the code they concern.
@@ -7326,7 +7533,10 @@ mod tests {
         // Fold into the (de-noised) graph.
         let p = Projector::open(":memory:", "test").unwrap();
         for e in &events {
-            p.apply(e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
         let (nodes, _) = all_nodes_edges(&p);
         assert!(
@@ -7348,7 +7558,10 @@ mod tests {
         let alias = serde_json::json!({"alias": "the editor", "canonical": "content-editor"});
         let mut ae = Event::new(TYPE_ALIAS_DEFINED, serde_json::to_vec(&alias).unwrap());
         ae.position = 1;
-        p.apply(&ae).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ae)),
+            crate::contextgraph::Fold::Folded
+        );
         apply_decision(&p, 2, "d1", "x", &["the editor"], "");
         let g = p.subgraph(&["content-editor".to_string()], 2).unwrap();
         assert!(
@@ -7369,7 +7582,10 @@ mod tests {
         let payload = serde_json::json!({"mention": "some thing"});
         let mut e = Event::new(TYPE_ALIAS_UNRESOLVED, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
         let g = p.subgraph(&["some thing".to_string()], 1).unwrap();
         let n = g
             .nodes
@@ -7387,7 +7603,10 @@ mod tests {
         let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
         e.valid_from = vf;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
         let g = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
         let edge = g.edges.iter().find(|x| x.rel == REL_GOVERNS).unwrap();
         assert_eq!(
@@ -7562,7 +7781,10 @@ mod tests {
         let payload = serde_json::json!({"id": "old-d", "summary": "fresh", "governs": ["old.rs"]});
         let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
         e.position = 2;
-        other.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&other), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
         let after = node_projects(&other);
         let old_d: Vec<&str> = after
             .iter()
@@ -8032,11 +8254,13 @@ mod tests {
         let rebuild = |path: &str| -> BTreeMap<String, BTreeSet<String>> {
             let mut projectors: BTreeMap<String, Projector> = BTreeMap::new();
             for (proj, e) in two_project_log() {
-                projectors
+                let p = projectors
                     .entry(proj.to_string())
-                    .or_insert_with(|| Projector::open(path, proj).unwrap())
-                    .apply(&e)
-                    .unwrap();
+                    .or_insert_with(|| Projector::open(path, proj).unwrap());
+                assert_eq!(
+                    crate::contextgraph::Fold::of_batch(Some(&*p), std::slice::from_ref(&e)),
+                    crate::contextgraph::Fold::Folded
+                );
             }
             projectors
                 .iter()
@@ -8256,7 +8480,10 @@ mod tests {
             .unwrap(),
         );
         e.position = 1;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            crate::contextgraph::Fold::Folded
+        );
         let g = p.subgraph(&["d1".to_string()], 2).unwrap();
         assert_eq!(
             edge_tier(&g, REL_GOVERNS, "combat.rs"),
@@ -9005,7 +9232,10 @@ mod tests {
             });
             let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
             e.position = 1;
-            p.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
 
             let g = p
                 .subgraph(&["tests/only_sentinel.rs".to_string()], 1)
@@ -9055,7 +9285,10 @@ mod tests {
             });
             let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&boundary).unwrap());
             e.position = 10;
-            p.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
 
             // The legacy test entity is retired: `rigger validate`'s own counting authority now
             // reports it, and no live edge reaches it - though its row and the superseded CONTAINS
@@ -9144,7 +9377,10 @@ mod tests {
                 .with_meta(rigger_domain::ingest::META_REPLAY_KEY, key)
                 .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
             e.position = pos;
-            p.apply(&e).unwrap();
+            assert_eq!(
+                crate::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
+                crate::contextgraph::Fold::Folded
+            );
         }
 
         fn def(name: &str, line: u64, fresh: bool) -> serde_json::Value {

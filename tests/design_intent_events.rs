@@ -42,7 +42,10 @@ fn fold(events: impl IntoIterator<Item = Event>) -> Projector {
     let p = Projector::open(":memory:", "test").unwrap();
     for (i, mut e) in events.into_iter().enumerate() {
         e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     p
 }
@@ -328,7 +331,10 @@ fn the_public_extraction_pipeline_is_a_deterministic_reproducible_rebuild() {
     let mut seeds = Vec::new();
     for (i, mut e) in first.into_iter().enumerate() {
         e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+            rigger::contextgraph::Fold::Folded
+        );
     }
     for path in ["docs/architecture.md", "docs/adr/0001-code-as-events.md"] {
         seeds.push(path.to_string());
@@ -506,7 +512,10 @@ fn the_public_link_pipeline_folds_edges_that_emanate_from_their_typed_design_int
         for mut e in concept_events(&extract_concepts(path, contents)) {
             pos += 1;
             e.position = pos;
-            p.apply(&e).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                rigger::contextgraph::Fold::Folded
+            );
         }
     }
     // ... then the links (the edges), so each edge folds onto a node that already has its kind.
@@ -514,7 +523,10 @@ fn the_public_link_pipeline_folds_edges_that_emanate_from_their_typed_design_int
         for mut e in link_events(&extract_links(path, contents)) {
             pos += 1;
             e.position = pos;
-            p.apply(&e).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                rigger::contextgraph::Fold::Folded
+            );
         }
     }
 
@@ -599,7 +611,10 @@ fn the_public_link_pipeline_is_an_order_independent_reproducible_edge_rebuild() 
             for mut e in link_events(&extract_links(path, contents)) {
                 pos += 1;
                 e.position = pos;
-                p.apply(&e).unwrap();
+                assert_eq!(
+                    rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&e)),
+                    rigger::contextgraph::Fold::Folded
+                );
             }
         }
         // Seed at every possible from-node (each source doc, and the rationale comment site) so the
@@ -1065,7 +1080,10 @@ fn project_batches_lowers_a_whole_tree_into_per_file_design_batches_the_fold_ing
             pos += 1;
             let mut ev = e.clone();
             ev.position = pos;
-            p.apply(&ev).unwrap();
+            assert_eq!(
+                rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&ev)),
+                rigger::contextgraph::Fold::Folded
+            );
         }
     }
     // The design doc folds a design-doc node; the source's `# WHY:` folds a rationale node reachable

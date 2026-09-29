@@ -29,7 +29,7 @@ use rigger::console::map;
 #[cfg(feature = "symbols")]
 use rigger::contextgraph::sqlite::Projector;
 #[cfg(feature = "symbols")]
-use rigger::contextgraph::{Graph, Projection};
+use rigger::contextgraph::Graph;
 
 /// Ingest this repository's own `src/` tree into a fresh in-memory projection, run the real
 /// community-detection pass over its real coupling layer, and return the resulting live graph -
@@ -62,9 +62,11 @@ fn real_graph() -> Graph {
             e.position = next_position;
             next_position += 1;
         }
-        projector
-            .apply_batch(&stamped)
-            .expect("fold this repository's own real extraction batch");
+        assert_eq!(
+            rigger::contextgraph::Fold::of_batch(Some(&projector), &stamped),
+            rigger::contextgraph::Fold::Folded,
+            "fold this repository's own real extraction batch"
+        );
     }
 
     let whole = projector.whole().expect("read the whole live projection");
@@ -80,9 +82,11 @@ fn real_graph() -> Graph {
         e.position = next_position;
         next_position += 1;
     }
-    projector
-        .apply_batch(&community_events)
-        .expect("fold the real community-detection pass's own events");
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(&projector), &community_events),
+        rigger::contextgraph::Fold::Folded,
+        "fold the real community-detection pass's own events"
+    );
 
     projector
         .whole()

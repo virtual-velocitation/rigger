@@ -292,7 +292,10 @@ fn disposition_expiry_still_fires_on_integration_with_no_unit_node() {
     .to_event()
     .unwrap();
     adj.position = 2;
-    p.apply(&adj).unwrap();
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(&p), std::slice::from_ref(&adj)),
+        rigger::contextgraph::Fold::Folded
+    );
 
     // Marking alone expires nothing: the upheld finding is still LIVE (reachable from the file it is
     // ABOUT) until its unit lands.

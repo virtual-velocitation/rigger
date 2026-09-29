@@ -80,11 +80,15 @@ impl CapturingProjection {
 }
 
 impl Projection for CapturingProjection {
-    fn apply(&self, e: &Event) -> Result<(), CgError> {
+    fn apply(&self, e: &Event, _access: rigger::contextgraph::FoldAccess) -> Result<(), CgError> {
         self.singles.lock().unwrap().push(e.position);
         Ok(())
     }
-    fn apply_batch(&self, events: &[Event]) -> Result<(), CgError> {
+    fn apply_batch(
+        &self,
+        events: &[Event],
+        _access: rigger::contextgraph::FoldAccess,
+    ) -> Result<(), CgError> {
         self.batches
             .lock()
             .unwrap()
@@ -267,6 +271,8 @@ fn the_fold_uses_the_reported_positions_on_a_backend_whose_positions_have_gaps()
 
     let appended = append_and_fold_batch(&gapped, Some(&cap as &dyn Projection), "run", &events)
         .expect("the append succeeds");
+    assert_eq!(appended.fold, rigger::contextgraph::Fold::Folded);
+    let appended = appended.appended;
 
     assert_eq!(
         cap.folded(),
@@ -298,6 +304,12 @@ fn a_port_that_wrote_nothing_is_never_folded_at_a_fabricated_position() {
 
     let appended = append_and_fold_batch(&silent, Some(&cap as &dyn Projection), "run", &events)
         .expect("an append that wrote nothing is not an error");
+    assert_eq!(
+        appended.fold,
+        rigger::contextgraph::Fold::Folded,
+        "nothing written is nothing to fold"
+    );
+    let appended = appended.appended;
 
     assert_eq!(appended.written(), 0);
     assert_eq!(appended.last(), None);

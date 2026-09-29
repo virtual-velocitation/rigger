@@ -36,6 +36,7 @@ use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
 use common::fixtures::meta_replay_key;
 use rigger::contextgraph::sqlite::RebuildSink;
+use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
     TYPE_EDGE_INFERRED,
@@ -324,10 +325,10 @@ fn run_events(store: &Store, project: &str) -> Vec<Event> {
 /// successive runs fold one live `graph.db`), and return the whole live projection's wire form.
 fn fold_in_batches(graph_db: &Path, project: &str, batches: &[Vec<Event>]) -> String {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
+
     let open = || Projector::open(graph_db.to_str().unwrap(), project).unwrap();
     for batch in batches {
-        open().apply_batch(batch).unwrap();
+        assert_eq!(Fold::of_batch(Some(&open()), batch), Fold::Folded);
     }
     serde_json::to_string(&open().whole().unwrap()).unwrap()
 }
@@ -2231,11 +2232,14 @@ fn two_generations_dropping_facts() -> Vec<Event> {
 /// is cleared.
 fn a_pre_rule_graph_db(db: &Path, events: &[Event], ledgers: &str) {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
-    Projector::open(db.to_str().unwrap(), PROJECT)
-        .unwrap()
-        .apply_batch(events)
-        .unwrap();
+
+    assert_eq!(
+        Fold::of_batch(
+            Some(&Projector::open(db.to_str().unwrap(), PROJECT).unwrap()),
+            events
+        ),
+        Fold::Folded
+    );
     let conn = rusqlite::Connection::open(db).unwrap();
     conn.execute_batch(&format!(
         "DROP VIEW live_node_assertions; DROP VIEW live_edge_assertions;
@@ -2322,8 +2326,8 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
         "a pre-rule graph.db owes a rebuild"
     );
     assert_eq!(
-        graph.apply_batch(&log[3..]).unwrap_err().0,
-        rigger::contextgraph::REBUILD_OWED,
+        Fold::of_batch(Some(&graph), &log[3..]),
+        Fold::NotFolded(format!("graph: {}", rigger::contextgraph::REBUILD_OWED)),
         "nothing folds incrementally into a pre-rule graph.db"
     );
     drop(graph);
@@ -2380,10 +2384,13 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     })
     .unwrap();
     assert!(!again, "a paid rebuild does not run again");
-    Projector::open(old_db.to_str().unwrap(), PROJECT)
-        .unwrap()
-        .apply_batch(&later_events())
-        .unwrap();
+    assert_eq!(
+        Fold::of_batch(
+            Some(&Projector::open(old_db.to_str().unwrap(), PROJECT).unwrap()),
+            &later_events()
+        ),
+        Fold::Folded
+    );
 }
 
 rigger::test_cases! {
@@ -2693,11 +2700,17 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
             )
             .unwrap();
         use rigger::contextgraph::sqlite::Projector;
-        use rigger::contextgraph::Projection;
-        Projector::open(graph_db.to_str().unwrap(), &run_stream_identity(root))
-            .unwrap()
-            .apply_batch(&log[..3])
-            .unwrap();
+
+        assert_eq!(
+            Fold::of_batch(
+                Some(
+                    &Projector::open(graph_db.to_str().unwrap(), &run_stream_identity(root))
+                        .unwrap()
+                ),
+                &log[..3]
+            ),
+            Fold::Folded
+        );
         rusqlite::Connection::open(&graph_db)
             .unwrap()
             .execute_batch("PRAGMA user_version = 0;")
@@ -2733,7 +2746,7 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
 #[test]
 fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
+
     let dir = tempfile::tempdir().unwrap();
     let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(11);
     let (backend, _) = store_with(
@@ -2790,7 +2803,10 @@ fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
         (2, 2),
         "only the retired CONTAINS edges of h1 (alpha's and gone's) are reclaimable"
     );
-    graph.apply_batch(&later_events()).unwrap();
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(&graph), &later_events()),
+        rigger::contextgraph::Fold::Folded
+    );
     assert_eq!(
         tiers_into(&graph.whole().unwrap(), "community/1/c0"),
         vec![("src/f.rs::gone", "IN_COMMUNITY", "inferred")],
@@ -4230,7 +4246,10 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
     let dir = temp_store_project();
     let root = dir.path();
     let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(ok, "the first emit creates the store and graph; stderr: {err}");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
     let graph_db = rigger_file(root, "graph.db");
     let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
     assert!(
@@ -4306,7 +4325,10 @@ fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses
     let dir = temp_store_project();
     let root = dir.path();
     let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(ok, "the first emit creates the store and graph; stderr: {err}");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src").join("lib.rs"), "pub fn alpha() {}\n").unwrap();
     let graph_db = rigger_file(root, "graph.db");
@@ -4348,7 +4370,10 @@ fn a_step_whose_fold_is_lost_to_a_lock_says_so_and_the_next_step_refuses() {
     common::cli::seed_store(root);
     common::cli::write_workflow(root, "");
     let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step parks the stage's spawn; stdout: {out} stderr: {err}");
+    assert!(
+        ok,
+        "the first step parks the stage's spawn; stdout: {out} stderr: {err}"
+    );
     let (_, err, ok) = run_rigger(root, &["result", "a/implementer#0", "done"]);
     assert!(ok, "the spawn's result is recorded; stderr: {err}");
 

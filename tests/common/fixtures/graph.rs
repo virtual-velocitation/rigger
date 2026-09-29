@@ -144,7 +144,11 @@ macro_rules! projection_reads_nothing {
 pub struct MinimalProjection;
 
 impl rigger::contextgraph::Projection for MinimalProjection {
-    fn apply(&self, _e: &rigger::eventstore::Event) -> Result<(), rigger::contextgraph::Error> {
+    fn apply(
+        &self,
+        _e: &rigger::eventstore::Event,
+        _access: rigger::contextgraph::FoldAccess,
+    ) -> Result<(), rigger::contextgraph::Error> {
         Ok(())
     }
     projection_reads_nothing!();

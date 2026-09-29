@@ -15,7 +15,7 @@
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
 //! no-op there.
 
-use crate::contextgraph::Projection;
+use crate::contextgraph::{Fold, Projection};
 use crate::eventstore::{Appended, Event, EventStore, ExpectedRevision};
 
 pub use rigger_domain::ingest::*;
@@ -23,9 +23,9 @@ pub use rigger_domain::ingest::*;
 /// Append a whole batch of events to `stream` in ONE store append and fold them into `graph` in ONE
 /// transaction (via [`Projection::apply_batch`]) - the batched-fold cadence spec 49 needs: one store
 /// transaction per file's batch, not one per event (the measured cold-build throughput was
-/// transaction-cadence bound, not parse-bound). The fold is best-effort - a fold failure never fails
-/// the append, which already landed durably in the log, exactly as the run's per-event
-/// `append_and_fold` folds best-effort. Returns the store's own report of what it wrote.
+/// transaction-cadence bound, not parse-bound). A fold failure never fails the append, which
+/// already landed durably in the log: it is returned as the batch's [`Fold`], beside the store's
+/// own report of what it wrote, for the caller to report.
 ///
 /// # Every folded event is stamped with the position THE STORE ISSUED
 ///
@@ -50,9 +50,12 @@ pub fn append_and_fold_batch(
     graph: Option<&dyn Projection>,
     stream: &str,
     events: &[Event],
-) -> Result<Appended, crate::eventstore::Error> {
+) -> Result<AppendedAndFolded, crate::eventstore::Error> {
     if events.is_empty() {
-        return Ok(Appended::default());
+        return Ok(AppendedAndFolded {
+            appended: Appended::default(),
+            fold: Fold::Folded,
+        });
     }
     let appended = store.append(stream, ExpectedRevision::Any, events)?;
     // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
@@ -69,22 +72,29 @@ pub fn append_and_fold_batch(
             events.len()
         )));
     }
-    if let Some(g) = graph {
-        let positioned: Vec<Event> = appended
-            .placed()
-            .filter_map(|(i, position)| {
-                events.get(i).map(|e| {
-                    let mut e = e.clone();
-                    e.position = position;
-                    e
-                })
+    let positioned: Vec<Event> = appended
+        .placed()
+        .filter_map(|(i, position)| {
+            events.get(i).map(|e| {
+                let mut e = e.clone();
+                e.position = position;
+                e
             })
-            .collect();
-        if !positioned.is_empty() {
-            let _ = g.apply_batch(&positioned);
-        }
-    }
-    Ok(appended)
+        })
+        .collect();
+    Ok(AppendedAndFolded {
+        appended,
+        fold: Fold::of_batch(graph, &positioned),
+    })
+}
+
+/// What [`append_and_fold_batch`] did: the store's own report of what it wrote, and what became
+/// of folding it into the context graph - which the caller reports, never drops.
+#[must_use = "a fold that is not reported is a fold that can be silently lost"]
+#[derive(Debug)]
+pub struct AppendedAndFolded {
+    pub appended: Appended,
+    pub fold: Fold,
 }
 
 /// What a walk did, reported back to the caller. `batches_emitted` counts the file batches the walk

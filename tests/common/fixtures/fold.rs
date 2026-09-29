@@ -23,7 +23,10 @@ pub fn event_of(type_: &str, json: serde_json::Value) -> Event {
 /// Fold `e` onto `p` at log position `pos`.
 fn fold_at(p: &Projector, pos: u64, mut e: Event) {
     e.position = pos;
-    p.apply(&e).unwrap();
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(Some(p), std::slice::from_ref(&e)),
+        rigger::contextgraph::Fold::Folded
+    );
 }
 
 /// Fold one `type_` event carrying `json` onto `p` at log position `pos`.

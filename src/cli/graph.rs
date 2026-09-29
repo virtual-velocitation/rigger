@@ -546,6 +546,9 @@ fn cmd_graph_build(_args: &[String]) -> Res {
     // keyed sink uses ([`rigger::ingest::append_and_fold_batch`]), so a build and a run fold a file's
     // batch identically.
     let mut appended = 0usize;
+    // The first fold this build could not make, if any: a lost fold marks a current graph owed,
+    // so every batch after it is refused for the same debt - the first names the cause.
+    let mut fold = contextgraph::Fold::Folded;
     rigger::ingest::ingest_project_batched(&root, |keyed| {
         // Keep only the not-yet-seen events of this file's batch, stamping each survivor with its
         // replay key (the same content-keyed dedup a run seeds from the log). A batch already wholly
@@ -564,22 +567,28 @@ fn cmd_graph_build(_args: &[String]) -> Res {
                     .with_meta(conductor::META_REPLAY_KEY, key.as_str())
             })
             .collect();
-        // Fold best-effort, exactly as the run's batched append-and-fold does: a fold failure must
-        // not fail the ingest, which already landed durably in the log.
+        // A fold failure must not fail the ingest, which already landed durably in the log; it is
+        // reported on the build's line instead.
         match rigger::ingest::append_and_fold_batch(
             &store,
             Some(&graph as &dyn Projection),
             conductor::STREAM,
             &survivors,
         ) {
-            Ok(_) => appended += survivors.len(),
+            Ok(done) => {
+                appended += survivors.len();
+                if fold == contextgraph::Fold::Folded {
+                    fold = done.fold;
+                }
+            }
             Err(e) => eprintln!("graph build: skipping a batch that failed to append: {e}"),
         }
     });
 
     println!(
-        "graph build: ingested {appended} code-ingest event(s) into {}",
-        db_path("graph.db")
+        "graph build: ingested {appended} code-ingest event(s) into {}{}",
+        db_path("graph.db"),
+        fold_loss_clause(&fold)
     );
     Ok(())
 }
@@ -677,13 +686,13 @@ fn run_graph_pass(
     )?;
 
     let (events, summary) = derive(&graph.whole()?, resolution);
-    rigger::ingest::append_and_fold_batch(
+    let done = rigger::ingest::append_and_fold_batch(
         &store,
         Some(&graph as &dyn Projection),
         conductor::STREAM,
         &events,
     )?;
-    println!("graph {verb}: {summary}");
+    println!("graph {verb}: {summary}{}", fold_loss_clause(&done.fold));
     Ok(())
 }
 
