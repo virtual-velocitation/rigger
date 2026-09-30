@@ -559,22 +559,24 @@ impl Store {
 /// revision `from` (inclusive) on, in revision order, handed to `read` as the statement steps, so
 /// a caller collects them ([`EventStore::read_stream`]), batches them
 /// ([`EventStore::read_stream_batched`]) or polls past a revision a stream subscription has
-/// delivered ([`poll_stream`]) and never spells the read a second time.
-fn read_forward<R>(
+/// delivered ([`poll_stream`]) and never spells the read a second time. A failure of the read is
+/// spelled by `fail`: the port's error for a port read, the database's own for a subscription.
+fn read_forward<R, E>(
     conn: &Connection,
     stream: &str,
     from: Revision,
-    read: impl FnOnce(&mut dyn Iterator<Item = Result<Event, Error>>) -> Result<R, Error>,
-) -> Result<R, Error> {
+    fail: fn(rusqlite::Error) -> E,
+    read: impl FnOnce(&mut dyn Iterator<Item = Result<Event, E>>) -> Result<R, E>,
+) -> Result<R, E> {
     let mut stmt = conn
         .prepare(&format!(
             "SELECT {COLS} FROM events WHERE stream = ?1 AND revision >= ?2 ORDER BY revision"
         ))
-        .map_err(be)?;
+        .map_err(fail)?;
     let mut events = stmt
         .query_map(params![stream, from], row_to_event)
-        .map_err(be)?
-        .map(|e| e.map_err(be));
+        .map_err(fail)?
+        .map(|e| e.map_err(fail));
     read(&mut events)
 }
 
@@ -1264,7 +1266,8 @@ impl EventStore for Store {
         dir: Direction,
     ) -> Result<Vec<Event>, Error> {
         let conn = self.conn.lock().unwrap();
-        let mut events: Vec<Event> = read_forward(&conn, stream, from, |events| events.collect())?;
+        let mut events: Vec<Event> =
+            read_forward(&conn, stream, from, be, |events| events.collect())?;
         if matches!(dir, Direction::Backward) {
             events.reverse();
         }
@@ -1402,7 +1405,7 @@ impl EventStore for Store {
         let Some(head) = stream_head(&tx, stream)? else {
             return Ok(());
         };
-        read_forward(&tx, stream, from, |events| {
+        read_forward(&tx, stream, from, be, |events| {
             super::in_batches(events, batch, &mut |events| sink(events, head))
         })
     }
@@ -1429,10 +1432,9 @@ struct Watermark {
 
 /// Spawn a polling subscription: `poll` returns the next batch given the current
 /// watermark; the thread advances the watermark from each delivered event.
-fn spawn_subscription<F, E>(poll: F, start: Watermark) -> Subscription
+fn spawn_subscription<F>(poll: F, start: Watermark) -> Subscription
 where
-    F: Fn(&mut Watermark) -> Result<Vec<Event>, E> + Send + 'static,
-    E: std::fmt::Display,
+    F: Fn(&mut Watermark) -> rusqlite::Result<Vec<Event>> + Send + 'static,
 {
     let (tx, rx) = channel();
     let err = Arc::new(Mutex::new(None));
@@ -1472,9 +1474,11 @@ fn poll_all(conn: &Connection, after: Position, like: &str) -> rusqlite::Result<
 }
 
 /// The events of `stream` past revision `after`, read through the one forward read
-/// ([`read_forward`]).
-fn poll_stream(conn: &Connection, stream: &str, after: Revision) -> Result<Vec<Event>, Error> {
-    read_forward(conn, stream, after + 1, |events| events.collect())
+/// ([`read_forward`]); a failure is the database's own, which the subscription reports as it is.
+fn poll_stream(conn: &Connection, stream: &str, after: Revision) -> rusqlite::Result<Vec<Event>> {
+    read_forward(conn, stream, after + 1, std::convert::identity, |events| {
+        events.collect()
+    })
 }
 
 fn direction_sql(dir: Direction) -> &'static str {
