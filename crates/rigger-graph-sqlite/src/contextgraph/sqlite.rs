@@ -4030,7 +4030,7 @@ mod tests {
     use crate::test_support::{
         apply_call, apply_code_entity, apply_decision, apply_def, apply_def_at, apply_governs_at,
         apply_json, apply_json_as, apply_ref, call_back_edge, call_edge_pairs, call_layer,
-        call_node_ids, decision_json,
+        call_node_ids, decision_json, dir_snapshot,
     };
 
     #[test]
@@ -5511,20 +5511,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
-        let beside = || -> Vec<(String, u64)> {
-            let mut files: Vec<(String, u64)> = std::fs::read_dir(dir.path())
-                .unwrap()
-                .map(|f| {
-                    let f = f.unwrap();
-                    (
-                        f.file_name().into_string().unwrap(),
-                        f.metadata().unwrap().len(),
-                    )
-                })
-                .collect();
-            files.sort();
-            files
-        };
+        let beside = || dir_snapshot(dir.path(), "");
         let found = beside();
         let held = Projector::lock_rebuild(path).unwrap();
         let taken = beside();
@@ -5536,7 +5523,7 @@ mod tests {
         let next = Projector::lock_rebuild(path)
             .map(drop)
             .map_err(|e| e.to_string());
-        let lock_file = vec![("graph.db.lock".to_string(), 0)];
+        let lock_file = vec![("graph.db.lock".to_string(), Some(vec![]))];
         assert_eq!(
             (found, taken, second, refused, next, beside()),
             (
@@ -5627,21 +5614,7 @@ mod tests {
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
         let shadow = format!("{path}.rebuild");
-        // Every file in the graph's directory, with its bytes.
-        let files = || -> Vec<(String, Vec<u8>)> {
-            let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir.path())
-                .unwrap()
-                .map(|f| {
-                    let f = f.unwrap();
-                    (
-                        f.file_name().into_string().unwrap(),
-                        std::fs::read(f.path()).unwrap(),
-                    )
-                })
-                .collect();
-            files.sort();
-            files
-        };
+        let files = || dir_snapshot(dir.path(), "");
         // A second rebuild, started now: what it answered, what it read of the log, whether the
         // holder's shadow stood, and whether every file stands exactly as it did.
         let second = || {

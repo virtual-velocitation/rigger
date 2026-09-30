@@ -40,6 +40,7 @@ use common::cli::with_graph_locked;
 use common::cli::write_workflow_fixture;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::fixtures::cleanup;
+use common::fixtures::dir_snapshot;
 use common::fixtures::files_open_by;
 use common::fixtures::meta_replay_key;
 use common::fixtures::wait_until_for;
@@ -6193,22 +6194,9 @@ enum RebuildPhase {
     FoldingTheTail,
 }
 
-/// Every `graph.db*` entry under `.rigger/` of `root`, with its bytes - `None` for a directory -
-/// sorted by name.
+/// Every `graph.db*` entry under `.rigger/` of `root` ([`dir_snapshot`]).
 fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
-    let mut files: Vec<(String, Option<Vec<u8>>)> = std::fs::read_dir(rigger_file(root, ""))
-        .unwrap()
-        .map(|f| f.unwrap())
-        .filter(|f| f.file_name().to_string_lossy().starts_with("graph.db"))
-        .map(|f| {
-            (
-                f.file_name().into_string().unwrap(),
-                (!f.file_type().unwrap().is_dir()).then(|| std::fs::read(f.path()).unwrap()),
-            )
-        })
-        .collect();
-    files.sort();
-    files
+    dir_snapshot(&rigger_file(root, ""), "graph.db")
 }
 
 /// Given a rebuild in progress holding `graph.db.lock` - before its first write, in its fold, in its

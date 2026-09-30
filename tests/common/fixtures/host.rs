@@ -20,6 +20,26 @@ pub fn write_file(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
+/// Every entry of `dir` whose name starts with `prefix` - every entry, for an empty one - with its
+/// bytes (`None` for a directory), sorted by name: the snapshot a test compares to prove a step
+/// left the directory exactly as it found it.
+pub fn dir_snapshot(dir: &Path, prefix: &str) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut entries: Vec<(String, Option<Vec<u8>>)> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+        .map(|entry| {
+            (
+                entry.file_name().into_string().unwrap(),
+                (!entry.file_type().unwrap().is_dir())
+                    .then(|| std::fs::read(entry.path()).unwrap()),
+            )
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
 /// Restores the process's current directory to the held path when dropped, so a test that
 /// changes directory cannot leak that change past a failed assertion.
 pub struct CwdGuard(pub PathBuf);
