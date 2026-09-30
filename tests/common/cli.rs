@@ -88,6 +88,21 @@ pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {
 /// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
 /// (stdout, stderr, success).
 pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
+    // Bound to `state` so the dir lives until after the command runs.
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
+    let out = rigger_command(cwd, args, envs, state.path())
+        .output()
+        .expect("failed to spawn the rigger binary");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.success(),
+    )
+}
+
+/// `rigger <args...>` in `cwd` with extra environment `envs`, as [`run_rigger_envs`] runs it, for
+/// a caller that spawns it and acts while it runs; `state` must outlive the process.
+pub fn rigger_command(cwd: &Path, args: &[&str], envs: &[(&str, &str)], state: &Path) -> Command {
     let mut cmd = super::rigger_courier();
     cmd.args(args).current_dir(cwd);
     // The step path auto-starts a persistent, detached run dashboard (spec 39, criterion 1);
@@ -99,20 +114,14 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     // XDG_STATE_HOME (spec 50, criterion 2). Default it to a per-invocation temp dir so the
     // many tests that drive those paths never seed a phantom into the operator's real
     // ~/.local/state/rigger/instances - a live discovery entry, rooted at a since-deleted test
-    // tempdir, that a running dash would otherwise pick up. Bound to `state` so the dir lives
-    // until after the command runs; set before the caller's envs so the registry tests that pass
-    // an explicit XDG_STATE_HOME (to read the registry back) still override it.
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
+    // tempdir, that a running dash would otherwise pick up. Set before the caller's envs so the
+    // registry tests that pass an explicit XDG_STATE_HOME (to read the registry back) still
+    // override it.
+    cmd.env("XDG_STATE_HOME", state);
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
+    cmd
 }
 
 /// A [`temp_project`] that already carries an empty `.rigger/` dir.
@@ -134,12 +143,7 @@ pub fn temp_store_project() -> tempfile::TempDir {
 /// the CALLER-OWNED `state_home`, so a sequence of calls reads back and re-writes the same
 /// registry directory.
 pub fn run_rigger_in_state_home(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
-    super::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        // Never let a short-lived courier or driver step spawn a real dashboard under test.
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state_home)
+    rigger_command(cwd, args, &[], state_home)
         .output()
         .expect("the rigger binary runs")
 }
