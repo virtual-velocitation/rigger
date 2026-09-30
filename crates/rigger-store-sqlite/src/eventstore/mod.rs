@@ -29,8 +29,8 @@ pub use rigger_domain::eventstore::*;
 
 /// Hand `sink` what `items` yields, in order, in batches of at most `batch`, holding no more than
 /// one batch at a time: the one batching of an adapter's [`EventStore::read_stream_positions`] and
-/// [`EventStore::read_stream_batched`]. The first error - the backend's or the sink's - ends the
-/// read with that error.
+/// [`EventStore::read_stream_batched`], and of the sqlite store's live-selection reads. The first
+/// error - the backend's or the sink's - ends the read with that error.
 #[cfg(any(feature = "store", not(feature = "core")))]
 fn in_batches<T>(
     items: impl Iterator<Item = Result<T, Error>>,
