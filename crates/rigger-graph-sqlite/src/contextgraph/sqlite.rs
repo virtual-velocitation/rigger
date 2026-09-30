@@ -4624,13 +4624,12 @@ mod tests {
     /// A rebuild whose swap stops after it put the pruned copy in place - the owed mark it must
     /// drop is a directory it cannot remove - leaves its shadow unpruned, holding its cursor and the
     /// run attribution it gathered, and no copy behind. When the log gains a window meanwhile, the
-    /// rebuild that reruns as `rigger setup` reruns it - owed whatever the ledger says, since the
-    /// window lies past the cursor the swap carried in - resumes that shadow, its swap unfinished,
-    /// without refolding a committed batch - it reads only the window's positions - and prunes a
-    /// fresh copy of it from the whole gathered attribution:
-    /// a closed run's decision the active run records again governs both files, as its two
-    /// recordings say; a decision the active run records is kept; a run started meanwhile closes
-    /// the run that was active. Each is the graph a cold rebuild of the whole log yields and the
+    /// rebuild that reruns as `rigger setup` reruns it - whose ledger owes no lost fold, the window
+    /// lying past the cursor the swap carried in - still resumes that shadow, because its swap never
+    /// finished, without refolding a committed batch - it reads only the window's positions - and
+    /// prunes a fresh copy of it from the whole gathered attribution: a closed run's decision the
+    /// active run records again governs both files, as its two recordings say; a decision the
+    /// active run records is kept; a run started meanwhile closes the run that was active. Each is the graph a cold rebuild of the whole log yields and the
     /// graph `rigger reset --runs` leaves over it, reporting the cold rebuild's counts, and the
     /// finished rebuild drops its state with its cursor.
     #[test]
