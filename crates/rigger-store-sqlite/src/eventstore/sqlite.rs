@@ -174,14 +174,17 @@ impl Store {
     /// Prune the superseded recordings a log's derived index accreted, and reclaim the disk they
     /// held: for each type `identity` covers, within each stream under `stream_prefix`, keep only
     /// each batch identity's LATEST generation and, of that generation, the latest recording per
-    /// content key (property 1); carry each re-asserted fact's earliest valid-time onto the
-    /// recording that keeps it (property 2); delete every other recording; then `VACUUM` so the
-    /// file actually shrinks.
+    /// content key (property 1); carry each re-asserted fact's earliest valid-time within its
+    /// unbroken run of generations onto the recording that keeps it (property 2); delete every
+    /// other keyed recording; then `VACUUM` so the file actually shrinks.
     ///
     /// This is the COMPACTION half of spec 60 - the supported way to shed what edits and the
-    /// pre-dedup ingest accreted: every generation a later edit of its file superseded, and the
-    /// duplicates a store recorded BEFORE the ingest dedup existed. The dedup above the port stops
-    /// new duplicates; this removes both piles already on disk. Deleting rows and reclaiming a
+    /// pre-dedup ingest accreted: every generation a later edit of its file superseded, a
+    /// returned file's earlier recordings of the generation it came back to (a revert, a branch
+    /// switch), and the duplicates a store recorded BEFORE the ingest dedup existed. The dedup
+    /// above the port stops an UNCHANGED file re-recording its batch, not every new duplicate: a
+    /// file that returns to a generation the log already recorded re-records that batch by
+    /// design. This removes all three piles already on disk. Deleting rows and reclaiming a
     /// file is a mechanic of the embedded store, so it lives here rather than on the port: a
     /// backend that cannot do it says so to the operator instead of silently reporting a prune
     /// that did not happen.
@@ -194,7 +197,7 @@ impl Store {
     /// here before a single row is read, because it is the one input to this function that can
     /// corrupt the projection while leaving every row looking intact.
     ///
-    /// Four properties, each load-bearing:
+    /// Five properties, each load-bearing:
     ///
     /// 1. **Latest generation per identity, then latest recording per key.** A content key
     ///    names a batch identity AND its content generation ([`ContentIdentity::key_parts`]), so
@@ -209,11 +212,16 @@ impl Store {
     ///    became true"), so deleting that key's earliest recording would silently re-date the
     ///    fact to whichever recording survived - and for the design-intent edge class the date IS
     ///    the value. The policy's own declaration ([`ContentIdentity::reasserts`]) names the types
-    ///    this is true of; each of their surviving rows takes the `MIN(valid_from)` of every
-    ///    recording of its identity asserting the same fact, as the policy's
-    ///    [`ContentIdentity::facts`] keys it, before the deletes run. Because a minimum is
-    ///    associative and every deleted row's valid-time is at or above the minimum retained on
-    ///    its survivor, the compacted log then yields exactly the valid-times the whole log
+    ///    this is true of; each of their surviving rows takes, before the deletes run, the
+    ///    `MIN(valid_from)` over its fact's unbroken run of generations - the recordings of its
+    ///    identity asserting the same fact, as the policy's [`ContentIdentity::facts`] keys it,
+    ///    from its own generation back through each earlier one that asserts it, stopping at the
+    ///    first that does not - plus the earlier recordings of its own key in its generation's
+    ///    run ([`plan_derived_prune`] walks both). A generation that dropped the fact retired it,
+    ///    so the fold dates the fact anew when a later generation asserts it again, and a
+    ///    recording before that break is never carried. Because a minimum is associative and
+    ///    every deleted recording in that run has a valid-time at or above the minimum retained
+    ///    on its survivor, the compacted log then yields exactly the valid-times the whole log
     ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
     ///    assertions, so the surviving (latest) recording's own valid-time is already the one a
     ///    fold arrives at, and carrying an earlier one onto it would MOVE the graph rather than
@@ -232,12 +240,16 @@ impl Store {
     ///    Declaring an EMPTY list is a different thing and is honored: it is a caller stating that
     ///    none of its types re-assert.
     /// 3. **Nothing else is touched.** Only the types `identity` covers are eligible, and within
-    ///    them only a row whose key is recorded again LATER in the same stream. A row with no key
-    ///    at all names no content generation and is never provably redundant, so it is left alone -
-    ///    the fail-safe direction. Every surviving row keeps its position, its per-stream revision,
-    ///    its type, its id, its payload bytes and its metadata; the ONLY column this writes is the
-    ///    valid-time of a surviving DERIVED row whose duplicates it deleted, and it writes the
-    ///    value the fold would have derived anyway. No non-derived row is read, written, or moved.
+    ///    them only a keyed row that something recorded LATER in the same stream supersedes: a
+    ///    later recording of its exact key, or a later generation of its batch identity - that
+    ///    identity's latest, when it is not the row's own (property 1). A row with no key at all
+    ///    names no content generation and is never provably redundant, so it is never touched -
+    ///    the fail-safe direction. Every surviving row keeps its position, its per-stream
+    ///    revision, its type, its id, its payload bytes and its metadata; the ONLY column this
+    ///    writes is the valid-time of a surviving DERIVED row that takes an earlier valid-time
+    ///    under property 2 - which is how a survivor whose superseded or duplicate fact-mates were
+    ///    deleted keeps its fact's date - and it writes the value the fold would have derived
+    ///    anyway. No non-derived row is read, written, or moved.
     /// 4. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
     ///    that stream's revisions, which is exactly why [`Store::append`] reads the stream's
     ///    current revision as `MAX(revision)` rather than counting rows - see the comment there.
