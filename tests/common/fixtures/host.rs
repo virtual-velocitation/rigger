@@ -1,7 +1,8 @@
 //! Host fixtures: tools on PATH, files, the current directory, processes, and source text.
 
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 
 /// Whether `program` is on PATH and answers `version_arg` successfully - the guard a test that
 /// needs an optional external tool (`node`, `npm`, `go-gitsemver`) checks before skipping.
@@ -142,6 +143,30 @@ pub fn files_open_by(pid: u32, path: &Path) -> usize {
     rigger::holders::open_files(pid)
         .filter(|named| named == path)
         .count()
+}
+
+/// A process holding the OS advisory lock on `file` - the lock `std::fs::File::try_lock` takes -
+/// returned once it holds it: a shell keeps `file` open on one descriptor, which `flock(1)` locks,
+/// and waits on its stdin. The OS releases the lock when the process is gone ([`cleanup`]).
+pub fn lock_holder(file: &Path) -> Child {
+    let mut holder = Command::new("sh")
+        .arg("-c")
+        .arg(r#"exec 9>>"$1" && flock -n 9 && echo locked && read _"#)
+        .arg("sh")
+        .arg(file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn the lock holder");
+    let mut said = String::new();
+    std::io::BufReader::new(holder.stdout.as_mut().unwrap())
+        .read_line(&mut said)
+        .unwrap();
+    if said != "locked\n" {
+        cleanup(&mut holder);
+        panic!("the holder did not take the lock on {}", file.display());
+    }
+    holder
 }
 
 /// End and reap a fixture child unconditionally, ignoring errors - through the `Child` handle it

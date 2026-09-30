@@ -32,9 +32,19 @@ mod fold_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]
 mod graph_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/host.rs"]
+mod host_fixtures;
+// The reaper and the open-files reader the shared host fixtures name as `rigger::reap` and
+// `rigger::holders`.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_process::{holders, reap};
 #[cfg(test)]
 mod test_support {
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::fold_fixtures::*;
     pub use crate::graph_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::host_fixtures::*;
 }

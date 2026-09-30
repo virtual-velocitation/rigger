@@ -2303,8 +2303,9 @@ fn rebuild(
     db: &Path,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
 ) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
-    rigger::contextgraph::sqlite::Projector::rebuild(
-        db.to_str().unwrap(),
+    use rigger::contextgraph::sqlite::Projector;
+    Projector::rebuild(
+        &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
         PROJECT,
         false,
         source,
@@ -2342,7 +2343,7 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     let afters = std::cell::RefCell::new(Vec::new());
     let mut reported = Vec::new();
     let ran = Projector::rebuild(
-        old_db.to_str().unwrap(),
+        &Projector::lock_rebuild(old_db.to_str().unwrap()).unwrap(),
         PROJECT,
         false,
         &mut source_over(&log, 2, &afters),
@@ -2435,7 +2436,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
         ))
         .unwrap();
     let rebuilt = Projector::rebuild(
-        graph_db.to_str().unwrap(),
+        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
         PROJECT,
         !owed.is_empty(),
         &mut stream_source(&counting, rigger::conductor::STREAM, 2),
@@ -3380,7 +3381,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
             let mut batches = 0;
             let mut source = live_selection_of(&backend, &project, 1);
             let ran = Projector::rebuild(
-                graph_db.to_str().unwrap(),
+                &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
                 &project,
                 false,
                 &mut source,
@@ -3431,17 +3432,13 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
         started.elapsed() < Duration::from_secs(4),
         "none of them waited on the rebuild's lock (the busy timeout is 5s)"
     );
-    let second = Projector::rebuild(
-        store.graph_db.to_str().unwrap(),
-        &store.project(),
-        false,
-        &mut |_, _| panic!("a rebuild refused as busy reads nothing"),
-        &mut |_| {},
-    );
+    let second = Projector::lock_rebuild(store.graph_db.to_str().unwrap()).map(drop);
     assert_eq!(
-        second.unwrap_err().0,
-        "database is locked",
-        "a second rebuild racing this one is refused, never interleaved in its shadow"
+        second,
+        Err(rigger::contextgraph::Error(
+            rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS.to_string()
+        )),
+        "a second rebuild racing this one is refused at its lock, never interleaved in its shadow"
     );
 
     resume.send(()).unwrap();
@@ -3944,7 +3941,7 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
             let mut source = live_selection_of(&backend, &project, 1);
             let mut reads = 0;
             Projector::rebuild(
-                graph_db.to_str().unwrap(),
+                &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
                 &project,
                 false,
                 &mut |after, sink| {
@@ -6118,28 +6115,29 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
     );
 }
 
-/// Given a stale `graph.db.pruned` beside the graph - the private pruned copy a rebuild's swap
-/// left when it stopped - when `rigger reset --runs` runs while a rebuild holds its shadow, then the
-/// copy is kept and reset says nothing of it; once no rebuild holds the shadow, `rigger reset
-/// --runs` removes the copy and says so, and never touches the shadow a rebuild resumes from.
+/// Given a stale `graph.db.pruned` beside the graph, when `rigger reset --runs` runs while a
+/// rebuild holds `graph.db.lock` in its swap - its shadow open, its private copy beside it - then
+/// reset keeps the copy and names the rebuild in progress; once no rebuild holds the lock, `rigger
+/// reset --runs` removes the copy and says so, and never touches the shadow a rebuild resumes from.
 #[test]
-fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_its_shadow() {
+fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_graph_db_lock() {
     let dir = temp_store_project();
     let root = dir.path();
     closed_run_store(root);
     let copy = rigger_file(root, "graph.db.pruned");
     let shadow = rigger_file(root, "graph.db.rebuild");
-    std::fs::write(&copy, b"left by a swap that stopped").unwrap();
+    std::fs::write(&copy, b"the copy a live swap is using").unwrap();
     let removed = |out: &str| -> Vec<String> {
         out.lines()
             .filter(|l| l.contains("graph.db.pruned"))
             .map(str::to_string)
             .collect()
     };
-    let rebuilding = hold_shadow(root);
+    let rebuilding = hold_the_rebuild(root);
+    let rebuilding_shadow = hold_shadow(root);
     let (held, held_err, held_ok) = run_rigger(root, &["reset", "--runs"]);
-    let kept = copy.exists();
-    drop(rebuilding);
+    let kept = std::fs::read(&copy).ok();
+    drop((rebuilding, rebuilding_shadow));
     let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
     assert_eq!(
         (
@@ -6153,8 +6151,11 @@ fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_its_shadow() {
         ),
         (
             true,
-            Vec::<String>::new(),
-            true,
+            vec![format!(
+                "reset --runs: kept graph.db.pruned: {}",
+                rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
+            )],
+            Some(b"the copy a live swap is using".to_vec()),
             true,
             vec![
                 "reset --runs: removed graph.db.pruned, the pruned copy a rebuild's stopped swap \
@@ -6164,52 +6165,94 @@ fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_its_shadow() {
             false,
             true,
         ),
-        "the copy is kept while a rebuild holds its shadow and removed once none does; held \
-         stderr: {held_err}; stdout: {out} stderr: {err}"
+        "the copy is kept naming the rebuild in progress while it holds the lock, and removed once \
+         none does; held stderr: {held_err}; stdout: {out} stderr: {err}"
     );
 }
 
-/// Given a rebuild holding the shadow of a `graph.db` that owes its rebuild, and a `rigger setup`
-/// that has opened that shadow and waits on its lock, when the holder ends its swap as a rebuild
-/// does - removes its shadow while it still holds the lock, then lets go - and, in the second case,
-/// a third rebuild has meanwhile opened a new shadow at the same path, then the waiting setup is
-/// refused as busy in SQLite's own words: it folds, prunes and swaps nothing, leaves `graph.db`
-/// owing the rebuild it owed and the third rebuild's shadow as that rebuild made it, and prints no
-/// progress and no report; and the next `rigger setup` pays that rebuild, reports its prune and
-/// leaves the graph a cold rebuild of the same log yields, with no rebuild state, shadow or copy.
+/// Where a rebuild in progress stands when a second `rigger setup` starts.
+#[derive(Debug, Clone, Copy)]
+enum RebuildPhase {
+    /// It holds `graph.db.lock` and has written nothing yet.
+    Locked,
+    /// It folds its shadow, which it holds open under its write lock.
+    Folding,
+    /// It swaps: its shadow is open and its private pruned copy stands beside it.
+    Swapping,
+    /// Its swap has ended - no shadow, `graph.db` holding its cursor - and it folds the tail.
+    FoldingTheTail,
+}
+
+/// Every `graph.db*` file under `.rigger/` of `root`, with its bytes, sorted by name.
+fn graph_files(root: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(rigger_file(root, ""))
+        .unwrap()
+        .map(|f| f.unwrap())
+        .filter(|f| f.file_name().to_string_lossy().starts_with("graph.db"))
+        .map(|f| {
+            (
+                f.file_name().into_string().unwrap(),
+                std::fs::read(f.path()).unwrap(),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// Given a rebuild in progress holding `graph.db.lock` - before its first write, in its fold, in its
+/// swap and in its tail - when a second `rigger setup` starts, then it is refused at once with the
+/// one refusal text naming the rebuild in progress, printing nothing else about `graph.db`, never
+/// opening the shadow and leaving every `graph.db` file exactly as it found it - no shadow, copy or
+/// mark it did not find; and once the rebuild lets go, the next `rigger setup` pays what it left
+/// and reaches the graph a cold rebuild of the same log yields, with no rebuild state, shadow or
+/// copy.
 #[test]
-fn a_setup_waiting_on_a_shadow_whose_rebuild_ends_its_swap_is_refused_as_busy() {
-    for a_third_rebuild_opens_a_shadow in [false, true] {
+fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_touches_nothing() {
+    use RebuildPhase::*;
+    for phase in [Locked, Folding, Swapping, FoldingTheTail] {
         let dir = temp_store_project();
         let root = dir.path();
         closed_run_store(root);
         lose_graph(root);
+        if let FoldingTheTail = phase {
+            // The state a rebuild leaves once its swap has ended: the cursor it carried into
+            // graph.db, and no shadow.
+            stop_setup_past_its_prune(root, |root| {
+                std::fs::remove_file(rigger_file(root, "graph.db.rebuild")).unwrap();
+            });
+        }
         let graph_db = rigger_file(root, "graph.db");
-        let shadow = rigger_file(root, "graph.db.rebuild");
-        let owed = whole_graph(root);
-        let holder = hold_shadow(root);
-        let held = std::fs::canonicalize(&shadow).unwrap();
+        let shadow = rigger_file(&root.canonicalize().unwrap(), "graph.db.rebuild");
+        let holder = hold_the_rebuild(root);
+        let held_shadow = matches!(phase, Folding | Swapping).then(|| hold_shadow(root));
+        if let Swapping = phase {
+            std::fs::write(
+                rigger_file(root, "graph.db.pruned"),
+                b"the copy the swap is using",
+            )
+            .unwrap();
+        }
+        let found = graph_files(root);
         let state = tempfile::tempdir().unwrap();
-        let mut waiting = rigger_command(root, &["setup"], &[("RIGGER_NPM", "true")], state.path())
+        let mut second = rigger_command(root, &["setup"], &[("RIGGER_NPM", "true")], state.path())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let pid = waiting.id();
-        let opened = wait_until_for(4800, || {
-            files_open_by(pid, &held) > 0 || !matches!(waiting.try_wait(), Ok(None))
+        // How many descriptors the second setup ever held on the shadow while it ran: a setup
+        // that opened the held shadow would wait on its write lock, long enough to be seen.
+        let pid = second.id();
+        let mut shadow_opened = 0;
+        let ended = wait_until_for(4800, || {
+            shadow_opened = shadow_opened.max(files_open_by(pid, &shadow));
+            !matches!(second.try_wait(), Ok(None))
         });
-        if !opened {
-            cleanup(&mut waiting);
-            panic!("setup never opened the shadow in 120s");
+        if !ended {
+            cleanup(&mut second);
+            panic!("the second setup ({phase:?}) never ended in 120s");
         }
-        // The holder ends its swap as a rebuild does: its shadow removed under its lock, then closed.
-        std::fs::remove_file(&shadow).unwrap();
-        if a_third_rebuild_opens_a_shadow {
-            std::fs::write(&shadow, b"").unwrap();
-        }
-        drop(holder);
-        let refused = waiting.wait_with_output().unwrap();
+        let refused = second.wait_with_output().unwrap();
         let (out, err) = (
             String::from_utf8_lossy(&refused.stdout).into_owned(),
             String::from_utf8_lossy(&refused.stderr).into_owned(),
@@ -6220,19 +6263,16 @@ fn a_setup_waiting_on_a_shadow_whose_rebuild_ends_its_swap_is_refused_as_busy() 
                 .filter(|l| l.contains("graph.db"))
                 .map(str::to_string)
                 .collect::<Vec<_>>(),
-            rebuild_progress(&out),
             err.lines().last().map(str::to_string),
-            whole_graph(root) == owed,
-            holds_table(&graph_db, "rebuild_cursor"),
-            std::fs::read(&shadow).ok(),
-            rigger_file(root, "graph.db.pruned").exists(),
+            shadow_opened,
+            graph_files(root) == found,
         );
+        drop((holder, held_shadow));
         let (paid, paid_err, paid_ok) =
             run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
         let paid_state = (
             paid_ok,
             after_rebuilt(&paid),
-            provenance_nodes(root),
             holds_table(&graph_db, "rebuild_cursor"),
             shadow.exists(),
             rigger_file(root, "graph.db.pruned").exists(),
@@ -6241,37 +6281,186 @@ fn a_setup_waiting_on_a_shadow_whose_rebuild_ends_its_swap_is_refused_as_busy() 
         lose_graph(root);
         let (cold, cold_err, cold_ok) =
             run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-        let report =
-            "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph";
         assert_eq!(
             (refused, paid_state, (cold_ok, paid_graph)),
             (
                 (
                     false,
-                    vec![LOST_FOLD_REBUILD_LINE.to_string()],
                     Vec::<String>::new(),
-                    Some("rigger: graph: database is locked".to_string()),
+                    Some(format!(
+                        "rigger: graph: {}",
+                        rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
+                    )),
+                    0,
                     true,
-                    false,
-                    a_third_rebuild_opens_a_shadow.then(Vec::new),
-                    false,
                 ),
                 (
                     true,
-                    Some(report.to_string()),
-                    vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
+                    Some(
+                        "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the \
+                         rebuilt graph"
+                            .to_string()
+                    ),
                     false,
                     false,
                     false,
                 ),
                 (true, whole_graph(root)),
             ),
-            "the waiting setup is refused as busy and rewrites nothing, and the next setup pays \
-             the rebuild (third rebuild's shadow: {a_third_rebuild_opens_a_shadow}); refused \
-             stdout: {out} stderr: {err}; next stdout: {paid} stderr: {paid_err}; cold stdout: \
-             {cold} stderr: {cold_err}"
+            "the second setup ({phase:?}) is refused at once and touches nothing, and the next \
+             setup pays the rebuild; refused stdout: {out} stderr: {err}; next stdout: {paid} \
+             stderr: {paid_err}; cold stdout: {cold} stderr: {cold_err}"
         );
     }
+}
+
+/// Given a `rigger setup` whose rebuild committed its first batches into its shadow and whose
+/// process is then gone - killed while it still held `graph.db.lock` - when the next `rigger setup`
+/// runs, then the lock is free: that setup takes it, resumes the shadow from its last committed
+/// batch - its one progress line counts only the events past it - and reaches the graph a cold
+/// rebuild of the same log yields; while the process lived, a setup was refused naming the
+/// rebuild in progress.
+#[test]
+fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its_shadow() {
+    use rigger::contextgraph::sqlite::Projector;
+    let dir = temp_store_project();
+    let root = dir.path();
+    closed_run_store(root);
+    lose_graph(root);
+    let graph_db = rigger_file(root, "graph.db");
+    let project = run_stream_identity(root);
+    let log = read_run_events(root);
+    let head = log.last().unwrap().position;
+    // The rebuild's first two batches of two events are committed into its shadow; it stops.
+    let mut batches = 0;
+    let stopped = common::cli::with_run_store(root, |store| {
+        let mut live = live_selection_of(store, &project, 2);
+        Projector::rebuild(
+            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+            &project,
+            true,
+            &mut |after, sink| {
+                live(after, &mut |events, head| {
+                    batches += 1;
+                    if batches > 2 {
+                        return Err(rigger::contextgraph::Error("stopped".to_string()));
+                    }
+                    sink(events, head)
+                })
+            },
+            &mut |_| {},
+        )
+        .map_err(|e| e.to_string())
+    });
+    let cursor: u64 = rusqlite::Connection::open(rigger_file(root, "graph.db.rebuild"))
+        .unwrap()
+        .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
+        .unwrap();
+    // Its process holds the lock until it is gone.
+    let lock = rigger_file(root, "graph.db.lock").canonicalize().unwrap();
+    let mut rebuilding = common::fixtures::lock_holder(&lock);
+    let held = (
+        files_open_by(rebuilding.id(), &lock),
+        run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]),
+    );
+    cleanup(&mut rebuilding);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let past_the_cursor = log.iter().filter(|e| e.position > cursor).count();
+    let resumed_graph = whole_graph(root);
+    lose_graph(root);
+    let (cold, cold_err, cold_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            stopped,
+            (
+                held.0,
+                held.1 .2,
+                held.1 .1.lines().last().map(str::to_string)
+            ),
+            ok,
+            rebuild_progress(&out),
+            after_rebuilt(&out),
+            rigger_file(root, "graph.db.rebuild").exists(),
+            (cold_ok, resumed_graph),
+        ),
+        (
+            Err("graph: stopped".to_string()),
+            (
+                1,
+                false,
+                Some(format!(
+                    "rigger: graph: {}",
+                    rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
+                ))
+            ),
+            true,
+            vec![format!(
+                "rebuilt {past_the_cursor} events, through position {head} of {head} (100%)"
+            )],
+            Some(
+                "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt \
+                 graph"
+                    .to_string()
+            ),
+            false,
+            (true, whole_graph(root)),
+        ),
+        "the lock of a gone process is free and the next setup resumes its shadow; stdout: {out} \
+         stderr: {err}; cold stdout: {cold} stderr: {cold_err}"
+    );
+}
+
+/// Given a project whose `graph.db` a `rigger setup` rebuilt, then `graph.db.lock` stands beside it,
+/// zero bytes, and no `rigger reset` verb removes it: the bare menu, `--runs`, `--derived`,
+/// `--build-cache` and `--scratch-orphans` each leave it where it is.
+#[test]
+fn graph_db_lock_stands_beside_graph_db_after_setup_and_no_reset_verb_removes_it() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    closed_run_store(root);
+    lose_graph(root);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup rebuilds graph.db; stdout: {out} stderr: {err}");
+    let lock = rigger_file(root, "graph.db.lock");
+    let stands = || std::fs::metadata(&lock).map(|m| m.len()).ok();
+    let mut after = vec![("setup".to_string(), true, stands())];
+    // The cache-home reclaim verbs act on a private cache home, never the operator's.
+    let cache = tempfile::tempdir().unwrap();
+    let cache_home = [("XDG_CACHE_HOME", cache.path().to_str().unwrap())];
+    for verb in [
+        vec!["reset"],
+        vec!["reset", "--runs"],
+        vec!["reset", "--derived"],
+        vec!["reset", "--build-cache"],
+        vec!["reset", "--scratch-orphans"],
+    ] {
+        let (out, err, ok) = run_rigger_envs(root, &verb, &cache_home);
+        assert!(ok, "{verb:?} runs; stdout: {out} stderr: {err}");
+        after.push((verb.join(" "), ok, stands()));
+    }
+    assert_eq!(
+        after,
+        [
+            "setup",
+            "reset",
+            "reset --runs",
+            "reset --derived",
+            "reset --build-cache",
+            "reset --scratch-orphans"
+        ]
+        .map(|verb| (verb.to_string(), true, Some(0)))
+        .to_vec(),
+        "graph.db.lock stands, zero bytes, through every reset verb"
+    );
+}
+
+/// A rebuild in progress over the `graph.db` of `root`, holding `graph.db.lock` until it is
+/// dropped.
+fn hold_the_rebuild(root: &Path) -> rigger::contextgraph::sqlite::RebuildLock {
+    rigger::contextgraph::sqlite::Projector::lock_rebuild(
+        rigger_file(root, "graph.db").to_str().unwrap(),
+    )
+    .unwrap()
 }
 
 /// A rebuild in its fold, holding the shadow of the `graph.db` of `root` - the exclusive lock its

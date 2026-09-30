@@ -4291,7 +4291,7 @@ mod tests {
         );
         drop(p);
         let again = Projector::rebuild(
-            path,
+            &locked(path),
             "test",
             false,
             &mut |_, _| panic!("a paid rebuild reads nothing"),
@@ -4317,8 +4317,13 @@ mod tests {
         e
     }
 
+    /// The rebuild lock of the graph file at `path`, which no other rebuild holds.
+    fn locked(path: &str) -> RebuildLock {
+        Projector::lock_rebuild(path).unwrap()
+    }
+
     /// A rebuild of the graph file at `path` from `log` in batches of `batch`, owed by its caller,
-    /// recording where each read of the log started.
+    /// once it takes the rebuild lock, recording where each read of the log started.
     fn rebuild_in_batches(
         path: &str,
         log: &[Event],
@@ -4326,7 +4331,7 @@ mod tests {
         reads_from: &mut Vec<u64>,
     ) -> Result<Option<Rebuilt>, Error> {
         Projector::rebuild(
-            path,
+            &Projector::lock_rebuild(path)?,
             "test",
             true,
             &mut |after, sink| {
@@ -4405,7 +4410,7 @@ mod tests {
         drop(Projector::open(path, "test").unwrap());
         let mut reads = 0;
         let rebuilt = Projector::rebuild(
-            path,
+            &locked(path),
             "test",
             true,
             &mut |after, sink| {
@@ -4510,7 +4515,7 @@ mod tests {
     fn rebuild_as_setup_does(path: &str, log: &[Event]) -> bool {
         let owed = !owed_against_the_log(&Projector::open(path, "test").unwrap(), log).is_empty();
         Projector::rebuild(
-            path,
+            &locked(path),
             "test",
             owed,
             &mut |after, sink| stream_past(log, after, 10, sink),
@@ -4598,7 +4603,7 @@ mod tests {
         let resumed = resumed.to_str().unwrap();
         drop(Projector::open(resumed, "test").unwrap());
         let interrupted = Projector::rebuild(
-            resumed,
+            &locked(resumed),
             "test",
             true,
             &mut |after, sink| {
@@ -4718,7 +4723,7 @@ mod tests {
             let mut read = Vec::new();
             let owed = owed_against_the_log(&Projector::open(&path, "test").unwrap(), &whole);
             let resumed = Projector::rebuild(
-                &path,
+                &locked(&path),
                 "test",
                 !owed.is_empty(),
                 &mut |after, sink| {
@@ -4880,7 +4885,7 @@ mod tests {
             drop(Projector::open(&path, "test").unwrap());
             let mut reads = 0;
             let stopped = Projector::rebuild(
-                &path,
+                &locked(&path),
                 "test",
                 true,
                 &mut |after, sink| {
@@ -4903,7 +4908,7 @@ mod tests {
         let mut read = Vec::new();
         let owed = !owed_tail_only.is_empty();
         let finished = Projector::rebuild(
-            path,
+            &locked(path),
             "test",
             owed,
             &mut |after, sink| {
@@ -4974,7 +4979,7 @@ mod tests {
         drop(Projector::open(path, "test").unwrap());
         let mut batches = 0;
         let interrupted = Projector::rebuild(
-            path,
+            &locked(path),
             "test",
             true,
             &mut |after, sink| {
@@ -4988,14 +4993,33 @@ mod tests {
             },
             &mut |_| {},
         );
-        Connection::open(format!("{path}.rebuild"))
+        let shadow = format!("{path}.rebuild");
+        Connection::open(&shadow)
             .unwrap()
             .execute_batch("DROP TABLE rebuild_run_closure;")
             .unwrap();
+        // While another holds the rebuild, the torn shadow is refused to a rebuild, which reads no
+        // log and leaves it byte for byte; its holder discards it.
+        let torn = std::fs::read(&shadow).unwrap();
+        let holder = locked(path);
+        let mut refused_reads = Vec::new();
+        let refused =
+            rebuild_in_batches(path, &log, 2, &mut refused_reads).map_err(|e| e.to_string());
+        let untouched = std::fs::read(&shadow).unwrap() == torn;
+        drop(holder);
 
         let mut reads_from = Vec::new();
         rebuild_in_batches(path, &log, 2, &mut reads_from).unwrap();
         let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (refused, refused_reads, untouched),
+            (
+                Err(format!("graph: {REBUILD_IN_PROGRESS}")),
+                Vec::<u64>::new(),
+                true
+            ),
+            "a torn shadow another holds the rebuild for is refused and left as it stands"
+        );
         assert_eq!(
             (
                 interrupted.map_err(|e| e.to_string()),
@@ -5104,7 +5128,7 @@ mod tests {
         let tail = fresh("tail.db");
         let mut reads = 0;
         let tail_stopped = Projector::rebuild(
-            &tail,
+            &locked(&tail),
             "test",
             true,
             &mut |after, sink| {
@@ -5118,7 +5142,7 @@ mod tests {
         )
         .map_err(|e| e.to_string());
         let resumed_in_the_tail = Projector::rebuild(
-            &tail,
+            &locked(&tail),
             "test",
             false,
             &mut |after, sink| stream_past(&log, after, 10, sink),
@@ -5399,11 +5423,12 @@ mod tests {
         );
     }
 
-    /// A stale pruned copy is forgotten - removed, answering that it was - when no shadow stands
-    /// beside it and when the shadow beside it is held by no rebuild, which it keeps; while a
-    /// rebuild holds its shadow the copy is its own and is kept; with no copy nothing is removed.
+    /// A stale pruned copy is forgotten - removed, answering that it was - whenever no rebuild holds
+    /// the rebuild lock, whatever stands beside it; while a rebuild holds the lock the copy is that
+    /// rebuild's own and is kept, answering so; with no copy nothing is removed and no lock file is
+    /// made. The shadow beside it is never removed or rewritten here.
     #[test]
-    fn a_stale_pruned_copy_is_forgotten_unless_a_rebuild_holds_its_shadow() {
+    fn a_stale_pruned_copy_is_forgotten_unless_a_rebuild_holds_the_lock() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
@@ -5412,15 +5437,13 @@ mod tests {
         let stale = || std::fs::write(&copy, b"left by a swap that stopped").unwrap();
         let forgotten = || (Projector::forget_stale_copy(path).unwrap(), copy.exists());
 
-        let nothing = forgotten();
+        let nothing = (forgotten(), dir.path().join("graph.db.lock").exists());
         stale();
         let alone = forgotten();
         stale();
-        let rebuilding = open_shadow(shadow.to_str().unwrap()).unwrap();
+        let rebuilding = locked(path);
         let held = forgotten();
-        rebuilding
-            .execute_batch("CREATE TABLE folding (x);")
-            .unwrap();
+        std::fs::write(&shadow, b"the shadow the rebuild folds").unwrap();
         let held_through_its_fold = forgotten();
         drop(rebuilding);
         let released = forgotten();
@@ -5431,37 +5454,109 @@ mod tests {
                 held,
                 held_through_its_fold,
                 released,
-                shadow.exists()
+                std::fs::read(&shadow).unwrap()
             ),
             (
-                (false, false),
-                (true, false),
-                (false, true),
-                (false, true),
-                (true, false),
-                true
+                ((StaleCopy::Absent, false), false),
+                (StaleCopy::Removed, false),
+                (StaleCopy::InUse, true),
+                (StaleCopy::InUse, true),
+                (StaleCopy::Removed, false),
+                b"the shadow the rebuild folds".to_vec()
             ),
-            "a copy no rebuild holds is removed, one a rebuild holds is kept, and the shadow stays"
+            "a copy no rebuild holds the lock for is removed, one a rebuild holds it for is kept, \
+             and the shadow stays as it was"
         );
     }
 
-    /// How many of this process's open files name the file at `path` - a connection that opened it
-    /// holds one.
-    fn opened_here(path: &Path) -> usize {
-        std::fs::read_dir("/proc/self/fd")
-            .unwrap()
-            .filter_map(|fd| std::fs::read_link(fd.ok()?.path()).ok())
-            .filter(|named| named == path)
-            .count()
+    /// The rebuild lock of a graph file is the OS lock on the zero-byte `<path>.lock` beside it,
+    /// made by the first lock that needs it: while one holder has it a second is refused at once
+    /// with the one text, finding and leaving only that lock file; once the holder drops it the
+    /// next takes it, and the lock file stands - no holder removes it.
+    #[test]
+    fn the_rebuild_lock_is_refused_to_a_second_holder_with_the_one_text_and_free_once_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let beside = || -> Vec<(String, u64)> {
+            let mut files: Vec<(String, u64)> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|f| {
+                    let f = f.unwrap();
+                    (
+                        f.file_name().into_string().unwrap(),
+                        f.metadata().unwrap().len(),
+                    )
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        let found = beside();
+        let held = Projector::lock_rebuild(path).unwrap();
+        let taken = beside();
+        let second = Projector::lock_rebuild(path)
+            .map(drop)
+            .map_err(|e| e.to_string());
+        let refused = beside();
+        drop(held);
+        let next = Projector::lock_rebuild(path)
+            .map(drop)
+            .map_err(|e| e.to_string());
+        let lock_file = vec![("graph.db.lock".to_string(), 0)];
+        assert_eq!(
+            (found, taken, second, refused, next, beside()),
+            (
+                vec![],
+                lock_file.clone(),
+                Err(format!("graph: {REBUILD_IN_PROGRESS}")),
+                lock_file.clone(),
+                Ok(()),
+                lock_file,
+            ),
+            "the second holder is refused with the one text and leaves only the lock file, which \
+             is free once dropped and stands"
+        );
     }
 
-    /// A second rebuild that opened the shadow while the first held it, and waits on its lock as
-    /// the first ends its swap, is refused as busy: it never resumes, prunes or swaps from the
-    /// shadow the first removed, so no write meets a removed file and no removal fails on a file
-    /// already gone. `graph.db` is left as the first rebuild made it - the graph `rigger reset
-    /// --runs` leaves - holding no rebuild state, with no shadow and no copy beside it.
+    /// A rebuild lock another process holds refuses this one with the one text while that process
+    /// lives - it holds the lock file open - and is free the moment the process is gone, however it
+    /// ended: the OS releases it, so no stale lock outlives a rebuild's process.
     #[test]
-    fn a_rebuild_waiting_on_the_shadow_as_another_ends_its_swap_is_refused_as_busy() {
+    fn a_rebuild_lock_whose_holder_process_is_gone_is_free() {
+        use crate::test_support::{cleanup, files_open_by, lock_holder};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("graph.db");
+        let path = path.to_str().unwrap();
+        let lock = PathBuf::from(format!("{path}.lock"));
+        let mut holder = lock_holder(&lock);
+        let pid = holder.id();
+        let taken = || {
+            Projector::lock_rebuild(path)
+                .map(drop)
+                .map_err(|e| e.to_string())
+        };
+        let while_it_lives = (files_open_by(pid, &lock), taken());
+        cleanup(&mut holder);
+        let once_it_is_gone = (files_open_by(pid, &lock), taken());
+        assert_eq!(
+            (while_it_lives, once_it_is_gone),
+            (
+                (1, Err(format!("graph: {REBUILD_IN_PROGRESS}"))),
+                (0, Ok(()))
+            ),
+            "the lock is refused while its holder process lives and free once it is gone"
+        );
+    }
+
+    /// A rebuild started while another holds the rebuild is refused at once with the one text,
+    /// whatever the holder is doing - it has taken the lock and written nothing, it folds its
+    /// shadow, or its swap has ended and it folds its tail: the refused rebuild reads no log and
+    /// leaves every file beside `graph.db`, and `graph.db` itself, exactly as it found them - no
+    /// shadow where there was none, no copy, no mark. The holder goes on to the end: `graph.db` is
+    /// its graph, the one `rigger reset --runs` leaves, with no rebuild state, shadow or copy.
+    #[test]
+    fn a_rebuild_started_while_another_holds_the_rebuild_is_refused_and_touches_nothing() {
         let log = [
             run_started_at("r1", 1),
             decision_at("d-dead", "a.rs", 2),
@@ -5474,52 +5569,73 @@ mod tests {
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
         let shadow = format!("{path}.rebuild");
-
-        let (first, second) = std::thread::scope(|s| {
-            let mut second = None;
-            let first = Projector::rebuild(
-                path,
-                "test",
-                true,
-                &mut |after, sink| {
-                    stream_past(log, after, 10, sink)?;
-                    if second.is_none() {
-                        // The first holds the shadow: the second opens it and waits on its lock,
-                        // and only then does the first go on to end its swap.
-                        let opened = std::fs::canonicalize(&shadow).unwrap();
-                        let waiting = s.spawn(move || {
-                            Projector::rebuild(
-                                path,
-                                "test",
-                                false,
-                                &mut |after, sink| stream_past(log, after, 10, sink),
-                                &mut |_| {},
-                            )
-                            .map_err(|e| e.to_string())
-                        });
-                        while opened_here(&opened) < 2 && !waiting.is_finished() {
-                            std::thread::yield_now();
-                        }
-                        second = Some(waiting);
-                    }
-                    Ok(())
-                },
-                &mut |_| {},
+        // Every file in the graph's directory, with its bytes.
+        let files = || -> Vec<(String, Vec<u8>)> {
+            let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|f| {
+                    let f = f.unwrap();
+                    (
+                        f.file_name().into_string().unwrap(),
+                        std::fs::read(f.path()).unwrap(),
+                    )
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        // A second rebuild, started now: what it answered, what it read of the log, whether the
+        // holder's shadow stood, and whether every file stands exactly as it did.
+        let second = || {
+            let found = files();
+            let mut reads = Vec::new();
+            let refused = rebuild_in_batches(path, log, 10, &mut reads).map_err(|e| e.to_string());
+            (
+                refused,
+                reads,
+                Path::new(&shadow).exists(),
+                files() == found,
             )
-            .map_err(|e| e.to_string());
-            (first, second.unwrap().join().unwrap())
-        });
+        };
+        let refused = |shadow_stands| {
+            (
+                Err(format!("graph: {REBUILD_IN_PROGRESS}")),
+                Vec::<u64>::new(),
+                shadow_stands,
+                true,
+            )
+        };
+
+        let held = locked(path);
+        let before_its_first_write = second();
+        let mut while_it_rebuilds = Vec::new();
+        let first = Projector::rebuild(
+            &held,
+            "test",
+            true,
+            &mut |after, sink| {
+                stream_past(log, after, 10, sink)?;
+                while_it_rebuilds.push(second());
+                Ok(())
+            },
+            &mut |_| {},
+        )
+        .map_err(|e| e.to_string());
+        drop(held);
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
             (
+                before_its_first_write,
+                while_it_rebuilds,
                 first,
-                second,
                 serde_json::to_string(&p.whole().unwrap()).unwrap(),
                 rebuild_state(path),
                 Path::new(&shadow).exists(),
                 Path::new(&format!("{path}.pruned")).exists(),
             ),
             (
+                refused(false),
+                vec![refused(true), refused(false)],
                 Ok(Some(Rebuilt {
                     passed_over: 0,
                     pruned: PruneStats {
@@ -5527,14 +5643,13 @@ mod tests {
                         superseded_edges: 0
                     }
                 })),
-                Err("graph: database is locked".to_string()),
                 reset_runs_leaves(log),
                 (false, false),
                 false,
                 false,
             ),
-            "the second rebuild is refused as busy and graph.db is the first's, with no rebuild \
-             state, shadow or copy"
+            "a second rebuild is refused with the one text in every phase and touches nothing, and \
+             graph.db is the first's, with no rebuild state, shadow or copy"
         );
     }
 
@@ -5568,29 +5683,31 @@ mod tests {
         );
     }
 
-    /// Forgetting a stale copy reads a shadow beside it as held by a rebuild only when its lock is
-    /// refused as busy: a shadow that is not a database fails the forgetting with SQLite's own
-    /// error, and the copy is kept.
+    /// Forgetting a stale copy never reads the shadow beside it: beside a shadow that is not a
+    /// database, the copy no rebuild holds the lock for is removed, and the shadow stands byte for
+    /// byte.
     #[test]
-    fn a_stale_copy_beside_a_shadow_that_is_not_a_database_is_kept_and_its_failure_reported() {
+    fn forgetting_a_stale_copy_never_reads_the_shadow_beside_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         let copy = dir.path().join("graph.db.pruned");
+        let shadow = dir.path().join("graph.db.rebuild");
         std::fs::write(&copy, b"left by a swap that stopped").unwrap();
-        std::fs::write(
-            dir.path().join("graph.db.rebuild"),
-            b"a shadow that is not a database",
-        )
-        .unwrap();
+        std::fs::write(&shadow, b"a shadow that is not a database").unwrap();
 
         assert_eq!(
             (
                 Projector::forget_stale_copy(path).map_err(|e| e.to_string()),
-                copy.exists()
+                copy.exists(),
+                std::fs::read(&shadow).unwrap()
             ),
-            (Err("graph: file is not a database".to_string()), true),
-            "the shadow's failure is reported and the copy is kept"
+            (
+                Ok(StaleCopy::Removed),
+                false,
+                b"a shadow that is not a database".to_vec()
+            ),
+            "the copy is removed and the shadow is never read"
         );
     }
 
