@@ -258,16 +258,19 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
 }
 
 /// THE BATCHED READ (spec 101): `read_stream_batched` hands the sink the events of THAT stream from
-/// revision `from` - exactly what a full read of it from `from` holds, in position order - in
-/// batches of at most `batch`, each with the position of the stream's last event, and nothing of
-/// another stream; a stream the store does not hold, or a `from` past its end, hands nothing, and
-/// a sink's error ends the read with that error.
+/// revision `from` - exactly the events a full read of it from `from` holds, whole (stream name,
+/// revision, position, type, payload, metadata and valid-time alike), in order - in batches of at
+/// most `batch`, each with the position of the stream's last event, and nothing of another stream;
+/// a stream the store does not hold, or a `from` past its end, hands nothing, and a sink's error
+/// ends the read with that error.
 fn batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_head(
     store: &dyn EventStore,
 ) {
-    // An event as the read handed it: its position, type and payload.
-    type Seen = (u64, String, Vec<u8>);
-    let at = |t: &str| Event::new(t, t.as_bytes().to_vec());
+    let at = |t: &str| {
+        Event::new(t, t.as_bytes().to_vec())
+            .with_meta("tag", t)
+            .with_valid_from(UNIX_EPOCH + Duration::from_secs(u64::from(t.as_bytes()[0])))
+    };
     for (stream, t) in [
         ("c-batched", "A"),
         ("c-batched-sibling", "S"),
@@ -286,28 +289,18 @@ fn batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_hea
         .read_stream("c-batched", 0, Direction::Forward)
         .expect("the stream reads");
     let head = held.last().unwrap().position;
-    let batches = |stream: &str, from| -> Vec<(Vec<Seen>, u64)> {
+    let batches = |stream: &str, from| -> Vec<(Vec<Whole>, u64)> {
         let mut out = Vec::new();
         store
             .read_stream_batched(stream, from, 2, &mut |events, head| {
-                out.push((
-                    events
-                        .iter()
-                        .map(|e| (e.position, e.type_.clone(), e.data.clone()))
-                        .collect(),
-                    head,
-                ));
+                out.push((events.iter().map(whole).collect(), head));
                 Ok(())
             })
             .unwrap_or_else(|e| panic!("the batched read must succeed: {e}"));
         out
     };
-    let full = |range: std::ops::Range<usize>| -> Vec<Seen> {
-        held[range]
-            .iter()
-            .map(|e| (e.position, e.type_.clone(), e.data.clone()))
-            .collect()
-    };
+    let full =
+        |range: std::ops::Range<usize>| -> Vec<Whole> { held[range].iter().map(whole).collect() };
     assert_eq!(
         batches("c-batched", 1),
         vec![(full(1..3), head), (full(3..5), head), (full(5..6), head)],
@@ -336,6 +329,35 @@ fn batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_hea
         (Err("event store: the sink refused".to_string()), 1),
         "a sink's error ends the read with that error"
     );
+}
+
+/// An event whole, as a read hands it: every field of it, the id, stream name, revision and
+/// position the store stamped, its type, payload, metadata and both times.
+type Whole = (
+    String,
+    String,
+    super::Revision,
+    super::Position,
+    String,
+    Vec<u8>,
+    std::collections::BTreeMap<String, String>,
+    std::time::SystemTime,
+    std::time::SystemTime,
+);
+
+/// Every field of `e`, so two reads of one event compare whole.
+fn whole(e: &Event) -> Whole {
+    (
+        e.id.clone(),
+        e.stream.clone(),
+        e.revision,
+        e.position,
+        e.type_.clone(),
+        e.data.clone(),
+        e.meta.clone(),
+        e.valid_from,
+        e.recorded_at,
+    )
 }
 
 /// THE POSITIONS READ (spec 101): `read_stream_positions` hands the sink the global position of
