@@ -136,9 +136,13 @@ regenerate:
     run: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit"
 
 gates:                      # the project's verification library, referenced by name
-  fmt:    { run: "cargo fmt --check",                        kind: core }
-  clippy: { run: "cargo clippy --all-targets -- -D warnings", kind: core }
-  build:  { run: "cargo build",                              kind: core }
+  # fmt, clippy and build cover every workspace crate, never the root package alone: a bare
+  # `cargo clippy` or `cargo build` here reaches only the root package, so no crate's own code
+  # would be linted or built under any unit (a bare `cargo fmt --check` already walked every
+  # member; `--all` says so). Clippy runs one lane, the default features, as it always has.
+  fmt:    { run: "cargo fmt --all --check",                              kind: core }
+  clippy: { run: "cargo clippy --workspace --all-targets -- -D warnings", kind: core }
+  build:  { run: "cargo build --workspace",                              kind: core }
   # The test gate runs every workspace crate's tests (a bare `cargo test` here tests the root
   # package alone, so no crate's own unit tests would run under any unit). It first sources
   # .rigger/gates/container-env.sh, which points the container-backed tests at the local

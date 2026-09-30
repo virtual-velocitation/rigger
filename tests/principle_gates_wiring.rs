@@ -354,6 +354,23 @@ fn the_mutation_gate_runs_the_shipped_script_and_init_writes_the_same_script() {
     }
 }
 
+/// The `fmt`, `clippy` and `build` gates cover every workspace crate: a bare `cargo clippy` or
+/// `cargo build` in this repository reaches only the root package, so a crate's own code would
+/// never be linted or built under any unit. Clippy stays on its one lane, the default features.
+#[test]
+fn the_fmt_clippy_and_build_gates_cover_the_workspace() {
+    for (gate, run) in [
+        ("fmt", "cargo fmt --all --check"),
+        (
+            "clippy",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+        ),
+        ("build", "cargo build --workspace"),
+    ] {
+        assert_eq!(repo_gate_command(gate), run, "the `{gate}` gate");
+    }
+}
+
 /// The per-unit `test` gate runs every workspace crate's tests, never the root package's
 /// alone (a bare `cargo test` here tests only the root package, so no crate's own unit tests
 /// would run under any unit), and it first sources the container runtime snippet - by a path

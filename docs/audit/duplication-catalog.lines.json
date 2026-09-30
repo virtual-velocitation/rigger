@@ -3229,8 +3229,8 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 371,
-        "end_line": 371
+        "start_line": 388,
+        "end_line": 388
       },
       {
         "file": "tests/projections_stay_local.rs",
