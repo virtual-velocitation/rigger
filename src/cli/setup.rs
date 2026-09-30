@@ -824,13 +824,16 @@ const REBUILD_BATCH: usize = 10_000;
 /// it was folded under an older fold rule, or it misses an event the log holds, which setup finds
 /// on every run by reading the file's ledger of folded positions against the log's live selection
 /// whether or not a mark says so - saying so, naming the cause, reporting how far along it is, and
-/// report whether it did. A `graph.db` that owes nothing is left untouched; with no `graph.db`
-/// there is nothing to rebuild, and the owed mark a removed one left behind is dropped, so the
-/// file a later command makes in its place starts owing nothing it recorded. The rebuild folds the
-/// log's live selection - the rows `rigger reset --derived` keeps - into a shadow file whose pruned
-/// copy replaces `graph.db` in one step ([`Projector::rebuild`]), streaming the log once, resuming
-/// an interrupted rebuild from its last committed batch and finishing exactly the tail of one
-/// interrupted after its swap.
+/// report whether it did. A rebuild's own unfinished work - the shadow a stopped swap left
+/// standing, or the tail past the cursor a swap put in place - is no owed cause: it is finished
+/// with no `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and so
+/// rewrites a `graph.db` whose ledger owes nothing. Only a `graph.db` that owes nothing and holds
+/// no unfinished rebuild is left untouched; with no `graph.db` there is nothing to rebuild, and the
+/// owed mark a removed one left behind is dropped, so the file a later command makes in its place
+/// starts owing nothing it recorded. The rebuild folds the log's live selection - the rows `rigger
+/// reset --derived` keeps - into a shadow file whose pruned copy replaces `graph.db` in one step
+/// ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its last
+/// committed batch and finishing exactly the tail of one interrupted after its swap.
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     if !Path::new(&graph_db).exists() {
@@ -898,10 +901,11 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
 
 /// Read why the `graph.db` at `graph_db` owes its rebuild - its own records, and its ledger
 /// against the positions `live` streams ([`Projector::owed_against`]) - say so naming each cause,
-/// and pay it by rebuilding from `source`, printing how far along it is, what its run-closure
-/// prune removed from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own)
-/// and how many events it passed over because the fold rejects their payload; report whether it
-/// rebuilt.
+/// and pay it by rebuilding from `source`, which also finishes a rebuild's own unfinished work (a
+/// standing shadow, or a swapped-in cursor's tail) with no cause to name, since the ledger owes
+/// none of it; print how far along the rebuild is, what its run-closure prune removed from the
+/// rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own) and how many events it
+/// passed over because the fold rejects their payload; report whether it rebuilt.
 fn pay_owed_rebuild(
     graph_db: &str,
     project: &str,

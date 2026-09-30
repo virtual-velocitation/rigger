@@ -338,43 +338,47 @@ impl Projector {
     /// over because the fold rejects their payload (see `fold_source`) and what its run-closure
     /// prune removed - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
     /// read of its ledger against the log), or because the file itself records an older fold rule
-    /// or carries the [`owed_mark`] a failed fold left, both read again here, or because the
-    /// shadow a rebuild whose swap stopped left still stands, whose swap it finishes before any
-    /// tail; the mark is dropped once the rebuilt file is in place. The rebuild folds `source` - the log's live selection, whose cost is bounded by the
-    /// live projection rather than the log's age - into a fresh SHADOW file beside `path`, in the
+    /// or carries the [`owed_mark`] a failed fold left, both read again here. A rebuild's own
+    /// unfinished work is paid too, with no owed cause: the shadow a rebuild whose swap stopped
+    /// left standing, whose swap it finishes before any tail, and the tail past the cursor a swap
+    /// put in place. The mark is dropped once the rebuilt file is in place.
+    ///
+    /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
+    /// projection rather than the log's age - into a fresh SHADOW file beside `path`, in the
     /// batches `source` hands it, each committed with the last position it folded and the run
     /// attribution it gathered ([`REBUILD_STATE`]) and reported to `progress`; the live file is only
-    /// ever read meanwhile.
-    /// Once `source` is exhausted the shadow is stamped with the current [`PROJECTION_VERSION`]
-    /// and put in place of the live file's content in ONE step - one write transaction that
-    /// copies it page for page, so a racing open sees the old file, which still owes the rebuild,
-    /// or the rebuilt one, never half of either - and then removed. The copy is SQLite's online
-    /// backup rather than a rename of the file: a process holding the live file open (an agent's
-    /// MCP session, the dashboard) keeps a valid connection and reads the rebuilt file from its
-    /// next query, where a file renamed over one it holds would leave it reading the old file
-    /// through a write-ahead log the new one shares. What is copied in is not the shadow itself
-    /// but a private copy of it pruned as `rigger reset --runs` prunes the live graph
-    /// ([`prune_a_copy`]), and what that prune removed is reported: read from the rebuild state,
-    /// where it was stamped on the copy with the prune.
+    /// ever read meanwhile. Once `source` is exhausted, a private copy of the shadow, pruned as
+    /// `rigger reset --runs` prunes the live graph and stamped with the current
+    /// [`PROJECTION_VERSION`] ([`prune_a_copy`]), is put in place of the live file's content in ONE
+    /// step - one write transaction that copies it page for page, so a racing open sees the old
+    /// file, which still owes the rebuild, or the rebuilt one, never half of either - and then
+    /// removed; what that prune removed is reported, read from the rebuild state, where it was
+    /// stamped on the copy with the prune. The copy is SQLite's online backup rather than a rename
+    /// of the file: a process holding the live file open (an agent's MCP session, the dashboard)
+    /// keeps a valid connection and reads the rebuilt file from its next query, where a file renamed
+    /// over one it holds would leave it reading the old file through a write-ahead log the new one
+    /// shares. The shadow itself stays unstamped and unpruned until the swap ends by removing it
+    /// ([`remove_shadow`]).
     ///
     /// The shadow is never pruned, because the drop set is not monotone in the log: an id a closed
     /// run recorded moves from drop to keep when the active run records it again, and a prune
     /// cannot be undone. So the shadow stays a pure fold of the live selection, held under an
     /// exclusive lock for the whole fold and swap, so a second rebuild racing this one is refused
-    /// as busy rather than interleaved. An interrupted rebuild leaves the live file untouched, or
-    /// swapped whole, and the next one resumes from the shadow's last committed batch without
-    /// refolding it ([`open_shadow`]) and prunes a fresh copy from the whole run attribution the
-    /// shadow gathered - the same graph and the same counts a cold rebuild reaches, however far the
-    /// pass before it got.
+    /// as busy rather than interleaved - one that waited on that lock as the swap ended included
+    /// ([`lock_shadow`]). An interrupted rebuild leaves the live file untouched, or swapped whole,
+    /// and the next one resumes from the shadow's last committed batch without refolding it
+    /// ([`open_shadow`]) and prunes a fresh copy from the whole run attribution the shadow
+    /// gathered - the same graph and the same counts a cold rebuild reaches, however far the pass
+    /// before it got.
     ///
     /// An emit that found the old file owing appended without folding, and did so before the
-    /// copy: so after it `source` is read once more from the cursor alone, into the live file,
-    /// and only then is the cursor dropped - the per-position guard makes that tail meet an emit
-    /// that folded its own event exactly once. A rebuild interrupted in that tail finishes exactly
-    /// the tail on the next call, which `rigger setup` makes because the ledger owes the tail to
-    /// the swapped-in cursor rather than to a lost fold ([`Projector::owed_against`]), and reports
-    /// the counts stamped with the swap. Only then is the rebuild state dropped, the cursor and the
-    /// attribution together.
+    /// copy: so after it `source` is read once more from the cursor alone, into the live file and
+    /// reported to `progress`, and only then is the cursor dropped - the per-position guard makes
+    /// that tail meet an emit that folded its own event exactly once. A rebuild interrupted in that
+    /// tail finishes exactly the tail on the next call, with no owed cause - the ledger owes the
+    /// tail to the swapped-in cursor rather than to a lost fold ([`Projector::owed_against`]) - and
+    /// reports the counts stamped with the swap. Only then is the rebuild state dropped, the cursor
+    /// and the attribution together.
     pub fn rebuild(
         path: &str,
         project: &str,
@@ -445,10 +449,12 @@ impl Projector {
 
     /// Why this file owes its rebuild once its `applied` ledger is read against the log (spec
     /// 101): the causes it says it owes ([`Projector::owed_because`]), and [`OWED_LOST_FOLD`] when
-    /// a position `live` streams - the log's live selection - is missing from the ledger, whatever
-    /// left it missing: a fold lost where no mark could be written, or a process that died between
-    /// its append and its fold. The ledger is the record of that debt, durable in the very file the
-    /// fold missed; it is not read when the mark already names it. Reads, and writes nothing.
+    /// a position `live` streams - the log's live selection - is missing from the ledger: a fold
+    /// lost where no mark could be written, or a process that died between its append and its
+    /// fold. The ledger is the record of that debt, durable in the very file the fold missed; it is
+    /// not read when the mark already names it. A position past the cursor a
+    /// [`Projector::rebuild`] swapped in is no such debt: it is that rebuild's tail, which the
+    /// rebuild finishes, never a lost fold. Reads, and writes nothing.
     pub fn owed_against(&self, live: &mut PositionSource) -> Result<Vec<&'static str>, Error> {
         let mut causes = self.owed_because()?;
         if !causes.contains(&OWED_LOST_FOLD) && self.misses_any(live)? {
