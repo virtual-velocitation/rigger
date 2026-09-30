@@ -6538,11 +6538,12 @@ fn ids_under(root: &Path, identity: &str) -> Vec<String> {
 
 /// Given a `graph.db.lock` that cannot be opened - a directory stands at its path - when `rigger
 /// setup` runs over the project's `graph.db`, then it fails naming `.rigger/graph.db.lock`, prints
-/// nothing about `graph.db` and leaves every `graph.db` file as it found them; when `rigger reset
-/// --runs` runs with no stale copy beside the graph, it never tries the lock and prunes as ever;
-/// and with a stale `graph.db.pruned` beside it, `rigger reset --runs` fails naming the lock and
-/// keeps the copy byte for byte. `rigger --help` says the copy is kept while a rebuild in progress
-/// holds `graph.db.lock`.
+/// nothing about `graph.db` and leaves every `graph.db` file as it found them - the graph and the
+/// directory at the lock's path, nothing else; when `rigger reset --runs` runs with no stale copy
+/// beside the graph, it never tries the lock and prunes as ever; and with a stale
+/// `graph.db.pruned` beside it, `rigger reset --runs` fails naming the lock, and beside the graph
+/// stand only the lock's directory and the copy, byte for byte. `rigger --help` says the copy is
+/// kept while a rebuild in progress holds `graph.db.lock`.
 #[test]
 fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_over_a_stale_copy() {
     let dir = temp_store_project();
@@ -6553,11 +6554,17 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
     let copy = rigger_file(root, "graph.db.pruned");
 
     let found = graph_files(root);
+    // What setup found, by name and whether it is a file: the snapshot it must leave as it was.
+    let found_kinds: Vec<(String, bool)> = found
+        .iter()
+        .map(|(name, bytes)| (name.clone(), bytes.is_some()))
+        .collect();
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let setup = (
         ok,
         lines_naming(&out, "graph.db"),
         err.lines().last().map(str::to_string),
+        found_kinds,
         graph_files(root) == found,
     );
     let (no_copy, no_copy_err, no_copy_ok) = run_rigger(root, &["reset", "--runs"]);
@@ -6576,8 +6583,11 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
         over_copy_ok,
         lines_naming(&over_copy, "graph.db"),
         over_copy_err.lines().last().map(str::to_string),
-        std::fs::read(&copy).unwrap(),
-        lock.is_dir(),
+        // Every `graph.db` file but the graph itself, with its bytes.
+        graph_files(root)
+            .into_iter()
+            .filter(|(name, _)| name != "graph.db")
+            .collect::<Vec<_>>(),
     );
     // The usage goes to stderr.
     let (_, help, help_ok) = run_rigger(root, &["--help"]);
@@ -6605,6 +6615,10 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
                 Vec::<String>::new(),
                 // Setup names the lock file relative to the project root it runs in.
                 Some(named(&rigger_file(Path::new(""), "graph.db.lock"))),
+                vec![
+                    ("graph.db".to_string(), true),
+                    ("graph.db.lock".to_string(), false),
+                ],
                 true
             ),
             (
@@ -6620,8 +6634,13 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
                 false,
                 Vec::<String>::new(),
                 Some(named(&lock.canonicalize().unwrap())),
-                b"left by a swap that stopped".to_vec(),
-                true
+                vec![
+                    ("graph.db.lock".to_string(), None),
+                    (
+                        "graph.db.pruned".to_string(),
+                        Some(b"left by a swap that stopped".to_vec())
+                    ),
+                ]
             ),
             (
                 true,
