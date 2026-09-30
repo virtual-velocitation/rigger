@@ -5739,10 +5739,11 @@ fn live_governs(root: &Path, id: &str) -> Vec<String> {
 /// tail - the state it leaves once the owed mark and the shadow are gone, the next two steps its
 /// swap takes: `graph.db` holding the rebuild's cursor, no shadow beside it - when the log gains an
 /// event no fold made (another writer's) and an agent's `rigger emit`, which folds at once into the
-/// current file, then the next `rigger setup` names no cause and prints no progress, because the
-/// ledger owes the tail to the swapped-in cursor rather than to a lost fold, folds exactly the tail
-/// and meets the emitted event once, reports the prune stamped with the swap, drops the rebuild
-/// state, and leaves the graph a cold rebuild of the same log yields; a setup after it owes nothing.
+/// current file, then the next `rigger setup` names no cause, because the ledger owes the tail to
+/// the swapped-in cursor rather than to a lost fold, folds exactly the tail - its one progress line
+/// counts the two events past the cursor, through the log's last position - and meets the emitted
+/// event once, reports the prune stamped with the swap, drops the rebuild state, and leaves the
+/// graph a cold rebuild of the same log yields; a setup after it owes nothing.
 #[test]
 fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the_tail() {
     let dir = temp_store_project();
@@ -5802,7 +5803,9 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
             (
                 true,
                 Vec::<&str>::new(),
-                Vec::<String>::new(),
+                vec![format!(
+                    "rebuilt 2 events, through position {emitted_at} of {emitted_at} (100%)"
+                )],
                 Some(
                     "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt \
                      graph"
