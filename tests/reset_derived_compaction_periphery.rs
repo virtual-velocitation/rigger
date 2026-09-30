@@ -1118,6 +1118,10 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
                 "say what it KEEPS",
                 "only the recordings of its LATEST generation",
             ),
+            (
+                "say which recording of each replay key it KEEPS",
+                "LATEST event per replay key",
+            ),
             ("say what it costs everything else", "byte-for-byte"),
             ("say the file actually shrinks", "shrinks on disk"),
             ("say what it CANNOT reclaim", "WHAT IT CANNOT RECLAIM"),

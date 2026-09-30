@@ -1517,7 +1517,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_model_drift_periphery.rs:112-114` `prose_claiming`
 - `tests/halted_spawn_wip_recovery_periphery.rs:129-131` `unit_branch`
 - `tests/regate_landed_on_resume_periphery.rs:73-75` `unit_branch`
-- `tests/reset_derived_compaction_periphery.rs:2492-2494` `derived_key_for`
+- `tests/reset_derived_compaction_periphery.rs:2496-2498` `derived_key_for`
 
 #### `dup-cb25e49f6e22` (semantic, 2 sites)
 
@@ -2802,11 +2802,11 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/relocated_worktree_store_resolution_periphery.rs:132-132` `".rigger"`
 - `tests/reset_build_cache_periphery.rs:425-425` `".rigger"`
 - `tests/reset_build_cache_periphery.rs:504-504` `".rigger"`
-- `tests/reset_derived_compaction_periphery.rs:1273-1273` `".rigger"`
-- `tests/reset_derived_compaction_periphery.rs:2966-2966` `".rigger"`
-- `tests/reset_derived_compaction_periphery.rs:2966-2966` `"create .rigger"`
-- `tests/reset_derived_compaction_periphery.rs:2981-2981` `".rigger"`
-- `tests/reset_derived_compaction_periphery.rs:3016-3016` `".rigger"`
+- `tests/reset_derived_compaction_periphery.rs:1277-1277` `".rigger"`
+- `tests/reset_derived_compaction_periphery.rs:2970-2970` `".rigger"`
+- `tests/reset_derived_compaction_periphery.rs:2970-2970` `"create .rigger"`
+- `tests/reset_derived_compaction_periphery.rs:2985-2985` `".rigger"`
+- `tests/reset_derived_compaction_periphery.rs:3020-3020` `".rigger"`
 - `tests/reset_derived_live_writer_guard_periphery.rs:40-40` `".rigger"`
 - `tests/reset_derived_live_writer_guard_periphery.rs:49-49` `".rigger"`
 - `tests/reset_derived_live_writer_guard_periphery.rs:125-125` `"{root}/.rigger/events.db"`
@@ -3826,11 +3826,11 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/reset_derived_compaction.rs:496-496` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:112-112` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:542-542` `Connection::open`
-- `tests/reset_derived_compaction_periphery.rs:1282-1282` `Connection::open`
-- `tests/reset_derived_compaction_periphery.rs:2533-2533` `Connection::open`
-- `tests/reset_derived_compaction_periphery.rs:2738-2738` `Connection::open`
-- `tests/reset_derived_compaction_periphery.rs:3526-3526` `Connection::open`
-- `tests/reset_derived_compaction_periphery.rs:4166-4166` `Connection::open`
+- `tests/reset_derived_compaction_periphery.rs:1286-1286` `Connection::open`
+- `tests/reset_derived_compaction_periphery.rs:2537-2537` `Connection::open`
+- `tests/reset_derived_compaction_periphery.rs:2742-2742` `Connection::open`
+- `tests/reset_derived_compaction_periphery.rs:3530-3530` `Connection::open`
+- `tests/reset_derived_compaction_periphery.rs:4170-4170` `Connection::open`
 - `tests/reset_derived_live_writer_guard_periphery.rs:40-40` `Connection::open`
 - `tests/reset_menu.rs:60-60` `Connection::open`
 - `tests/reset_menu.rs:64-64` `Connection::open`
@@ -4973,7 +4973,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `tests/compiler_pass_stage1_audit.rs:50-104` `stage1_record_has_the_shape_every_consumer_relies_on` - no duplicate found by reading
 - `tests/concepts_labels_membership.rs:245-272` `label_of_the_documentless_hub` - no duplicate found by reading
 - `tests/one_shot_reads_periphery.rs:89-138` `a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read_per_selection` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/reset_derived_compaction_periphery.rs:3683-3687` `a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten` - duplicate found by reading and closed: `the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count` repeated its settled-file fixture and skipped-rewrite assertions; both now call `settled_clean_store` and `assert_prune_skips_the_rewrite`
+- `tests/reset_derived_compaction_periphery.rs:3687-3691` `a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten` - duplicate found by reading and closed: `the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count` repeated its settled-file fixture and skipped-rewrite assertions; both now call `settled_clean_store` and `assert_prune_skips_the_rewrite`
 - `tests/simplification_audit.rs:7443-7447` `a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod` - duplicate found by reading and closed: it and five sibling scanner tests re-rolled `scan_single`; all now call it or its name and span assertions
 - `tests/step_attention_periphery.rs:89-135` `hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary` - no duplicate found by reading
 - `tests/worker_persona_label_periphery.rs:222-243` `the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation` - duplicate found by reading and closed: it re-rolled `assert_worker_label` inline; it now calls it

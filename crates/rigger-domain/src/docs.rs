@@ -1415,6 +1415,11 @@ mod tests {
                 "{label} must state what the derived prune KEEPS, so an operator can predict it"
             );
             assert!(
+                out.contains("LATEST event per replay key"),
+                "{label} must state which recording of each replay key the derived prune KEEPS \
+                 within that generation, so an operator can predict the exact-key dedup"
+            );
+            assert!(
                 out.contains("byte-for-byte"),
                 "{label} must state that every other event survives the derived prune untouched"
             );
@@ -1486,6 +1491,11 @@ mod tests {
                 .contains("keeps only each file's latest generation of the derived index"),
             "the reset-store skill must state what the derived prune KEEPS, so an operator can \
              predict it"
+        );
+        assert!(
+            render_reset_store_skill(&ctx).contains("at the latest event per replay key"),
+            "the reset-store skill must state which recording of each replay key the derived \
+             prune KEEPS within that generation, so an operator can predict the exact-key dedup"
         );
     }
 
