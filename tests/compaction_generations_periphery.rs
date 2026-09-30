@@ -5940,6 +5940,69 @@ fn a_decision_recorded_before_any_run_is_live_on_both_peers_surfaces_until_a_run
     );
 }
 
+/// Given a sqlite log with a stream subscription or an all-streams subscription live over it, each
+/// having delivered the event the log held, when the log's events table is dropped under it by
+/// another connection, then the subscription ends and reports the database's own error exactly as
+/// the database spells it, never re-spelled as the port's error: the one forward read the stream
+/// subscription polls through spells a failure as its caller does, so both kinds report the same
+/// words.
+#[test]
+fn a_sqlite_subscription_whose_log_fails_reports_the_databases_own_error() {
+    type Subscribe = fn(&Store) -> rigger::eventstore::Subscription;
+    let to_the_stream: Subscribe = |store| store.subscribe_stream("s", 0).unwrap();
+    let to_every_stream: Subscribe = |store| {
+        store
+            .subscribe_all(
+                0,
+                &rigger::eventstore::Filter {
+                    stream_prefix: None,
+                },
+            )
+            .unwrap()
+    };
+    let ended = [to_the_stream, to_every_stream].map(|subscribe| {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("events.db");
+        let store = Store::open(db.to_str().unwrap()).unwrap();
+        store
+            .append(
+                "s",
+                ExpectedRevision::Any,
+                &[Event::new("E", b"{}".to_vec())],
+            )
+            .unwrap();
+        let subscription = subscribe(&store);
+        let delivered = subscription
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .map(|e| (e.stream, e.revision));
+        let other = rusqlite::Connection::open(&db).unwrap();
+        other
+            .busy_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        other.execute_batch("DROP TABLE events").unwrap();
+        let after = subscription
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .map(|e| e.revision);
+        (delivered, after, subscription.err())
+    });
+    assert_eq!(
+        ended,
+        [
+            (
+                Some(("s".to_string(), 0)),
+                None,
+                Some("no such table: events".to_string())
+            ),
+            (
+                Some(("s".to_string(), 0)),
+                None,
+                Some("no such table: events".to_string())
+            ),
+        ],
+        "each subscription delivers what the log held, then ends reporting the database's own error"
+    );
+}
+
 /// Given a project that recorded decisions, a finding and a lesson with `rigger emit` before it
 /// ever started a run, when its `graph.db` is lost and `rigger setup` rebuilds it, then setup
 /// reports it pruned nothing and the rebuilt graph is the live one, every node and edge; and
