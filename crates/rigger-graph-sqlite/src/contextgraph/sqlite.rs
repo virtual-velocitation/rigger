@@ -5519,6 +5519,34 @@ mod tests {
         );
     }
 
+    /// A rebuild lock file that cannot be opened - a directory stands at its path - fails the lock
+    /// naming it, and fails forgetting a stale copy the same way, which then keeps the copy.
+    #[test]
+    fn a_rebuild_lock_file_that_cannot_be_opened_fails_naming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let lock = dir.path().join("graph.db.lock");
+        let copy = dir.path().join("graph.db.pruned");
+        std::fs::create_dir(&lock).unwrap();
+        std::fs::write(&copy, b"left by a swap that stopped").unwrap();
+        let named = Err(format!(
+            "graph: {}: Is a directory (os error 21)",
+            lock.display()
+        ));
+        assert_eq!(
+            (
+                Projector::lock_rebuild(path)
+                    .map(drop)
+                    .map_err(|e| e.to_string()),
+                Projector::forget_stale_copy(path).map_err(|e| e.to_string()),
+                copy.exists()
+            ),
+            (named.clone(), named, true),
+            "the lock file that cannot be opened is named, and the copy is kept"
+        );
+    }
+
     /// A rebuild lock another process holds refuses this one with the one text while that process
     /// lives - it holds the lock file open - and is free the moment the process is gone, however it
     /// ended: the OS releases it, so no stale lock outlives a rebuild's process.
