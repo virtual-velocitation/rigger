@@ -93,12 +93,22 @@
 # no second constant, whatever -j the bound gives. A bound too tight for the suite shows as a
 # failing baseline run below, never as a quietly "caught" mutant.
 #
+# THE CONTAINER-BACKED TESTS RUN (2026-09-29). A test that needs a container runtime skips and
+# passes where it reaches none, so every mutant only it can catch - each one in the KurrentDB
+# adapter - would read as missed. The gate sources `container-env.sh` beside it, which points
+# testcontainers at the operator's rootless podman when no DOCKER_HOST is set and then lifts
+# the runner's per-process address-space cap from 4 GiB to 16 GiB (under 4 GiB the KurrentDB
+# contract cannot spawn its threads; that file carries the why). A runaway mutant's test
+# processes can then each grow further before failing their own allocation: the sweep's scope
+# above is what bounds them. A project without that file (`rigger init` writes this script
+# alone) sweeps exactly as before.
+#
 # THE BASELINE STAYS ON. The checkin stage lists `test` before `mutation`, but the conductor
 # runs every listed gate whatever the earlier ones returned and exports no record of their
-# verdicts to a gate command, and the `test` gate's plain `cargo test` covers the root package
-# alone - so nothing here can confirm the mutated packages are green on this tree. The
-# baseline (cargo-mutants runs it over the mutated packages only: seconds, not minutes) is
-# that confirmation; only the by-name rerun, which follows it on the same tree, skips its own.
+# verdicts to a gate command - so nothing here can confirm the mutated packages are green on
+# this tree. The baseline (cargo-mutants runs it over the mutated packages only: seconds, not
+# minutes) is that confirmation; only the by-name rerun, which follows it on the same tree,
+# skips its own.
 #
 # INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or
 # the logic has changed"). The sweep leaves three facts under `mutation-anchor/`, a sibling of
@@ -148,6 +158,10 @@ test -n "$RIGGER_RUN_BASE" || {
     echo "mutation gate: RIGGER_RUN_BASE is unset - this run recorded no base tip, so there is no spec diff to sweep; refusing rather than sweeping an empty diff"
     exit 1
 }
+
+# The container runtime for the container-backed tests (see THE CONTAINER-BACKED TESTS RUN).
+container_env="$(dirname "$0")/container-env.sh"
+test ! -f "$container_env" || . "$container_env"
 
 last="${MUTANTS:-/nonexistent}"
 last="${last%/*}/mutation-anchor"

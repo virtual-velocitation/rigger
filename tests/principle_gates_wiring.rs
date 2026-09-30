@@ -329,6 +329,8 @@ fn every_persona_carries_its_principle_gate_checklist_line() {
 /// The check-in mutation gate's logic lives in ONE shipped script: this repository's `mutation`
 /// gate runs it, and `rigger init` writes the identical file into a consumer project, so the
 /// sweep's bounds and scope reach every consumer rather than living in this repository alone.
+/// The script sources the container runtime snippet from beside itself, so `rigger init`
+/// writes that file too, identical as well.
 #[test]
 fn the_mutation_gate_runs_the_shipped_script_and_init_writes_the_same_script() {
     assert_eq!(
@@ -339,12 +341,37 @@ fn the_mutation_gate_runs_the_shipped_script_and_init_writes_the_same_script() {
     let dir = temp_project();
     let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let shipped = std::fs::read_to_string(repo_root().join(".rigger/gates/mutation.sh"))
-        .expect("the shipped mutation gate script");
-    let scaffolded = std::fs::read_to_string(dir.path().join(".rigger/gates/mutation.sh"))
-        .expect("rigger init must write .rigger/gates/mutation.sh");
-    assert_eq!(
-        scaffolded, shipped,
-        "the consumer gets the same script, byte for byte"
+    for file in ["mutation.sh", "container-env.sh"] {
+        let path = format!(".rigger/gates/{file}");
+        let shipped = std::fs::read_to_string(repo_root().join(&path))
+            .unwrap_or_else(|e| panic!("the shipped {path}: {e}"));
+        let scaffolded = std::fs::read_to_string(dir.path().join(&path))
+            .unwrap_or_else(|e| panic!("rigger init must write {path}: {e}"));
+        assert_eq!(
+            scaffolded, shipped,
+            "the consumer gets the same {path}, byte for byte"
+        );
+    }
+}
+
+/// The per-unit `test` gate runs every workspace crate's tests, never the root package's
+/// alone (a bare `cargo test` here tests only the root package, so no crate's own unit tests
+/// would run under any unit), and it first sources the container runtime snippet - by a path
+/// relative to the worktree root the gate runs in, which the repository carries - so the
+/// container-backed tests run instead of skipping.
+#[test]
+fn the_test_gate_covers_the_workspace_with_the_container_runtime() {
+    let run = repo_gate_command("test");
+    let (sourced, tests) = run
+        .split_once(" && ")
+        .unwrap_or_else(|| panic!("the test gate sources the snippet, then tests: {run:?}"));
+    let snippet = sourced
+        .strip_prefix(". ")
+        .unwrap_or_else(|| panic!("the test gate's first command sources a file: {sourced:?}"));
+    assert_eq!(snippet, ".rigger/gates/container-env.sh");
+    assert!(
+        repo_root().join(snippet).is_file(),
+        "the sourced {snippet} is carried by the repository"
     );
+    assert_eq!(tests, "cargo test --workspace");
 }

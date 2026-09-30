@@ -111,42 +111,8 @@ mod common;
 
 use common::cli::identified_git_project;
 use common::cli::run_stream_identity;
+use common::fixtures::start_kurrentdb;
 use common::repo::production_main_rs;
-
-/// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
-/// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as the
-/// backend-agnostic contract suite and the sibling wiring tests do.
-fn start_kurrentdb(
-    rt: &tokio::runtime::Runtime,
-) -> Option<(
-    testcontainers::ContainerAsync<testcontainers::GenericImage>,
-    String,
-)> {
-    use testcontainers::core::{IntoContainerPort, WaitFor};
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::{GenericImage, ImageExt};
-
-    let image = GenericImage::new("kurrentplatform/kurrentdb", "latest")
-        .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))
-        .with_mapped_port(21135, 2113.tcp())
-        .with_env_var("KURRENTDB_INSECURE", "true")
-        .with_env_var("KURRENTDB_MEM_DB", "true")
-        .with_env_var("KURRENTDB_RUN_PROJECTIONS", "None")
-        .with_env_var("KURRENTDB_NODE_PORT", "2113");
-    let container = match rt.block_on(image.start()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("skipping projection-boundary runtime test (no container runtime?): {e}");
-            return None;
-        }
-    };
-    // The server needs a moment past the readiness log line before it accepts gRPC.
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    Some((
-        container,
-        "kurrentdb://localhost:21135?tls=false".to_string(),
-    ))
-}
 
 #[test]
 fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server() {

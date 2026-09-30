@@ -183,11 +183,11 @@ jobs:
 
   # The KurrentDB EventStore adapter is compiled into every build now (spec 47: its
   # build-time feature flag is retired), so this job carries no `--features kurrentdb`.
-  # It runs the adapter's contract test in isolation - it spins up a real KurrentDB
-  # via testcontainers (the runner provides Docker) and runs the same suite the SQLite
-  # store passes (proxy fidelity). The two build-test lanes also compile the adapter
-  # and run its graceful-skip contract test; this job keeps it single-threaded so the
-  # one container-backed test owns its fixed port.
+  # The adapter and its tests live in crates/rigger-store-sqlite, which the build-test
+  # lanes' root-package `cargo test` never runs, so this job lints and tests that crate
+  # alone: the adapter's unit tests and its contract test, which spins up a real
+  # KurrentDB via testcontainers (the runner's Docker, found at its default socket) and
+  # runs the same suite the SQLite store passes (proxy fidelity).
   kurrentdb:
     runs-on: ubuntu-latest
     steps:
@@ -195,15 +195,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-          # Spec 93 criterion 3: this job's clippy/test both run --no-default-features
-          # (still includes dash.rs, since `core` is off), so build.rs's nested
-          # wasm32-unknown-unknown cross-compile of crates/console-core runs here too.
-          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      # Drop the default features so this DB-adapter job does not pull turbovec's
-      # ONNX runtime (and OpenBLAS) just to exercise the KurrentDB contract test;
-      # it stays focused and light.
+      # One crate on its lightest features: nothing here builds the root package, its
+      # turbovec/ONNX stack or its wasm32 cross-compile.
       - name: clippy
-        run: cargo clippy --no-default-features --lib --tests -- -D warnings
+        run: cargo clippy -p rigger-store-sqlite --no-default-features --lib --tests -- -D warnings
+      # The contract needs more address space than the test runner's default 4 GiB cap
+      # (.cargo/pidns-runner.sh) allows, so the cap is raised to 16 GiB for this step,
+      # spelled in bytes because prlimit reads "16G" as 16 bytes.
       - name: contract test (KurrentDB via testcontainers)
-        run: cargo test --no-default-features eventstore::kurrentdb -- --test-threads=1
+        env:
+          RIGGER_TEST_AS_BYTES: "17179869184"
+        run: cargo test -p rigger-store-sqlite --no-default-features eventstore::kurrentdb

@@ -1212,9 +1212,6 @@ mod typed_filter {
 mod tests {
     use super::*;
     use std::time::Instant;
-    use testcontainers::core::{IntoContainerPort, WaitFor};
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::{GenericImage, ImageExt};
 
     fn wait_ready(store: &Store) {
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -1235,32 +1232,11 @@ mod tests {
     #[test]
     fn passes_the_contract() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let image = GenericImage::new("kurrentplatform/kurrentdb", "latest")
-            .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))
-            .with_mapped_port(21133, 2113.tcp())
-            .with_env_var("KURRENTDB_INSECURE", "true")
-            .with_env_var("KURRENTDB_MEM_DB", "true")
-            .with_env_var("KURRENTDB_RUN_PROJECTIONS", "None")
-            .with_env_var("KURRENTDB_NODE_PORT", "2113");
-        let container = match rt.block_on(image.start()) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("skipping KurrentDB contract test (no container runtime?): {e}");
-                return;
-            }
+        let Some((container, conn)) = crate::test_support::start_kurrentdb(&rt) else {
+            return; // no container runtime: gracefully skipped
         };
-        // Wait for readiness before Store::open (which now connects eagerly).
-        std::thread::sleep(Duration::from_secs(2));
-        let conn = "kurrentdb://localhost:21133?tls=false".to_string();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // open retries via the readiness loop using a short-lived raw client check
-            let mut store = Store::open(&conn);
-            let deadline = Instant::now() + Duration::from_secs(60);
-            while store.is_err() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(500));
-                store = Store::open(&conn);
-            }
-            let store = store.expect("KurrentDB never became ready");
+            let store = Store::open(&conn).expect("open the ready server");
             wait_ready(&store);
             crate::eventstore::contract::assert_contract(&store);
             the_server_hands_a_typed_read_only_the_selected_types(&store);

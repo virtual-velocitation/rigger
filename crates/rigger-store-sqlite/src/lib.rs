@@ -48,6 +48,10 @@ extern crate self as rigger;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/kurrentdb.rs"]
+mod kurrentdb_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
@@ -59,6 +63,8 @@ mod sqlite_fixtures;
 #[cfg(test)]
 mod test_support {
     pub use crate::event_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::kurrentdb_fixtures::*;
     pub use crate::spawn_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::sqlite_fixtures::*;

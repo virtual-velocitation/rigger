@@ -97,8 +97,9 @@ struct ScaffoldReport {
     minted_id: Option<String>,
     /// True when this run newly wrote `.rigger/instructions/README.md` (it was absent).
     wrote_instructions_readme: bool,
-    /// True when this run newly wrote `.rigger/gates/mutation.sh` (it was absent).
-    wrote_mutation_gate: bool,
+    /// Gate scripts this run newly wrote under `.rigger/gates/` (empty when each already
+    /// existed).
+    new_gate_files: Vec<String>,
 }
 
 impl ScaffoldReport {
@@ -112,7 +113,7 @@ impl ScaffoldReport {
             || !self.gitignore_added.is_empty()
             || self.minted_id.is_some()
             || self.wrote_instructions_readme
-            || self.wrote_mutation_gate
+            || !self.new_gate_files.is_empty()
     }
 }
 
@@ -133,8 +134,12 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     )?;
     let gates_dir = rigger_dir.join("gates");
     std::fs::create_dir_all(&gates_dir)?;
-    let wrote_mutation_gate =
-        write_if_absent(&gates_dir.join("mutation.sh"), SCAFFOLD_MUTATION_GATE)?;
+    let mut new_gate_files = Vec::new();
+    for (file, content) in SCAFFOLD_GATE_FILES {
+        if write_if_absent(&gates_dir.join(file), content)? {
+            new_gate_files.push(file.to_string());
+        }
+    }
 
     // 1b. Mint the durable project identity when absent (spec 09, Gap 20): a tracked
     // `.rigger/project.id` line so the identity survives directory renames and machine
@@ -258,7 +263,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         gitignore_added,
         minted_id,
         wrote_instructions_readme,
-        wrote_mutation_gate,
+        new_gate_files,
     })
 }
 
@@ -423,8 +428,8 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
     if report.wrote_instructions_readme {
         lines.push("scaffolded .rigger/instructions/README.md".to_string());
     }
-    if report.wrote_mutation_gate {
-        lines.push("scaffolded .rigger/gates/mutation.sh".to_string());
+    for file in &report.new_gate_files {
+        lines.push(format!("scaffolded .rigger/gates/{file}"));
     }
     if !report.new_agents.is_empty() {
         lines.push(format!(
@@ -1449,10 +1454,20 @@ gates: [build, audit, test, lint, boundary, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n";
 
-/// The check-in mutation gate `rigger init` writes to `.rigger/gates/mutation.sh`: this
-/// repository's own gate script, included verbatim so the sweep a consumer runs is the one this
-/// repository runs (one home - `tests/principle_gates_wiring.rs` pins the two identical).
-const SCAFFOLD_MUTATION_GATE: &str = include_str!("../../.rigger/gates/mutation.sh");
+/// The gate scripts `rigger init` writes into `.rigger/gates/`: this repository's own files,
+/// included verbatim so the gates a consumer runs are the ones this repository runs (one home -
+/// `tests/principle_gates_wiring.rs` pins each identical). The check-in mutation sweep sources
+/// the container runtime snippet from beside itself, so the two ship together.
+const SCAFFOLD_GATE_FILES: &[(&str, &str)] = &[
+    (
+        "mutation.sh",
+        include_str!("../../.rigger/gates/mutation.sh"),
+    ),
+    (
+        "container-env.sh",
+        include_str!("../../.rigger/gates/container-env.sh"),
+    ),
+];
 
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
 /// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
