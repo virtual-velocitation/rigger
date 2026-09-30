@@ -613,7 +613,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-47889cd9ed07",
+    "id": "dup-3b158bbf0c07",
     "classification": "semantic",
     "sites": [
       {
@@ -670,11 +670,6 @@
         "file": "crates/rigger-process/src/budget.rs",
         "name": "Command::new",
         "content_hash": "f8f2847ad0299c84"
-      },
-      {
-        "file": "crates/rigger-process/src/holders.rs",
-        "name": "Command::new",
-        "content_hash": "da3ee123d4540dd7"
       },
       {
         "file": "crates/rigger-process/src/subprocess.rs",
@@ -1058,7 +1053,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 88 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 87 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

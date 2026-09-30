@@ -1422,11 +1422,11 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-201 clusters (1362 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+201 clusters (1361 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
-- **Command::new call sites**: 88 site(s) - `dup-47889cd9ed07`
+- **Command::new call sites**: 87 site(s) - `dup-3b158bbf0c07`
 - **/proc-path string literals**: 51 site(s) - `dup-d8db45435fa3`
 - **sqlite Connection::open call sites**: 67 site(s) - `dup-59006467437a`
 - **.rigger-path string literals**: 557 site(s) - `dup-d77a1affc812`
@@ -1645,11 +1645,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:14620-14626` `spawned`
 - `crates/rigger-domain/src/eventstore.rs:495-497` `covers`
 
-#### `dup-47889cd9ed07` (semantic, 88 sites)
+#### `dup-3b158bbf0c07` (semantic, 87 sites)
 
 Proposed home: `a single injected process-spawn port every Command::new site routes through instead of constructing its own Command`
 
-mandatory sweep: Command::new call sites - 88 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: Command::new call sites - 87 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-conductor/src/conductor.rs:14728-14728` `Command::new`
 - `crates/rigger-conductor/src/conductor.rs:14733-14733` `Command::new`
@@ -1662,7 +1662,6 @@ mandatory sweep: Command::new call sites - 88 site(s), collected mechanically re
 - `crates/rigger-process/src/budget.rs:198-198` `Command::new`
 - `crates/rigger-process/src/budget.rs:236-236` `Command::new`
 - `crates/rigger-process/src/budget.rs:247-247` `Command::new`
-- `crates/rigger-process/src/holders.rs:83-83` `Command::new`
 - `crates/rigger-process/src/subprocess.rs:18-18` `Command::new`
 - `crates/rigger-worktree-git/src/worktree.rs:3551-3551` `Command::new`
 - `src/cli/mod.rs:5207-5207` `Command::new`
@@ -1697,7 +1696,7 @@ mandatory sweep: Command::new call sites - 88 site(s), collected mechanically re
 - `tests/common/fixtures/host.rs:10-10` `Command::new`
 - `tests/common/fixtures/host.rs:55-55` `Command::new`
 - `tests/common/fixtures/host.rs:66-66` `Command::new`
-- `tests/common/fixtures/host.rs:152-152` `Command::new`
+- `tests/common/fixtures/host.rs:153-153` `Command::new`
 - `tests/common/layer_cli.rs:71-71` `Command::new`
 - `tests/common/mod.rs:144-144` `Command::new`
 - `tests/common/repo.rs:227-227` `Command::new`
@@ -5237,10 +5236,10 @@ Each entry is one of section 2's five named mandatory sweeps - collected mechani
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 557 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
 
-#### 11. The 88 `Command::new` call sites (`dup-47889cd9ed07`) - production spawns already route through one process-spawn port
+#### 11. The 87 `Command::new` call sites (`dup-3b158bbf0c07`) - production spawns already route through one process-spawn port
 
-- Scope: every production spawn routes through `crates/rigger-process/src/subprocess.rs` (the cluster's own `proposed_home`), and the audit's `the_process_spawn_port_is_the_only_production_command_new_caller` gate refuses a new direct construction anywhere else in production code. The 1 site(s) in `crates/rigger-process/src/subprocess.rs` are the port itself; the other 87 are test code spawning git, shells and the product binary.
-- Files: `crates/rigger-process/src/subprocess.rs` plus test code in `src/` and `tests/` - full site list in `docs/audit/duplication-catalog.json` under `dup-47889cd9ed07`.
+- Scope: every production spawn routes through `crates/rigger-process/src/subprocess.rs` (the cluster's own `proposed_home`), and the audit's `the_process_spawn_port_is_the_only_production_command_new_caller` gate refuses a new direct construction anywhere else in production code. The 1 site(s) in `crates/rigger-process/src/subprocess.rs` are the port itself; the other 86 are test code spawning git, shells and the product binary.
+- Files: `crates/rigger-process/src/subprocess.rs` plus test code in `src/` and `tests/` - full site list in `docs/audit/duplication-catalog.json` under `dup-3b158bbf0c07`.
 - Expected line delta: none left in production; a test site that repeats a shared fixture's spawn routes through that fixture instead.
 - Risk: low - no production spawn is left to move, and the gate keeps it that way.
 - Unblocks: the next process-spawning concern added anywhere in the crate reuses the port instead of constructing its own `Command`.
@@ -5312,7 +5311,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 134 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 201 clusters, 60 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-47889cd9ed07`, `dup-d77a1affc812`, `dup-59006467437a`, `dup-d8db45435fa3`, `dup-cc7d493486f5`, `dup-28bd24c1f93d`, `dup-663145ccb151`); the remaining 134 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 201 clusters, 60 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-3b158bbf0c07`, `dup-d77a1affc812`, `dup-59006467437a`, `dup-d8db45435fa3`, `dup-cc7d493486f5`, `dup-28bd24c1f93d`, `dup-663145ccb151`); the remaining 134 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.

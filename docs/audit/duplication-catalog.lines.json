@@ -545,7 +545,7 @@
     ]
   },
   {
-    "id": "dup-47889cd9ed07",
+    "id": "dup-3b158bbf0c07",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -601,11 +601,6 @@
         "file": "crates/rigger-process/src/budget.rs",
         "start_line": 247,
         "end_line": 247
-      },
-      {
-        "file": "crates/rigger-process/src/holders.rs",
-        "start_line": 83,
-        "end_line": 83
       },
       {
         "file": "crates/rigger-process/src/subprocess.rs",
@@ -779,8 +774,8 @@
       },
       {
         "file": "tests/common/fixtures/host.rs",
-        "start_line": 152,
-        "end_line": 152
+        "start_line": 153,
+        "end_line": 153
       },
       {
         "file": "tests/common/layer_cli.rs",
