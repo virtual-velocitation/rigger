@@ -2807,11 +2807,11 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/reset_derived_compaction_periphery.rs:2963-2963` `"create .rigger"`
 - `tests/reset_derived_compaction_periphery.rs:2978-2978` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:3013-3013` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:39-39` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:48-48` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:124-124` `"{root}/.rigger/events.db"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:259-259` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:360-360` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:40-40` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:49-49` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:125-125` `"{root}/.rigger/events.db"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:260-260` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:361-361` `".rigger"`
 - `tests/review_round_lenses_only_log_derived_resume_periphery.rs:144-144` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_no_adjudicator_residue_periphery.rs:93-93` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs:119-119` `"{repo_path}/.rigger-test-scratch"`
@@ -3821,9 +3821,9 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/group_lookup_periphery.rs:145-145` `Connection::open`
 - `tests/heartbeat_write_read_agree_periphery.rs:137-137` `Connection::open`
 - `tests/one_shot_reads_periphery.rs:297-297` `Connection::open`
-- `tests/reset_derived_compaction.rs:73-73` `Connection::open`
-- `tests/reset_derived_compaction.rs:228-228` `Connection::open`
-- `tests/reset_derived_compaction.rs:494-494` `Connection::open`
+- `tests/reset_derived_compaction.rs:75-75` `Connection::open`
+- `tests/reset_derived_compaction.rs:230-230` `Connection::open`
+- `tests/reset_derived_compaction.rs:496-496` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:112-112` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:542-542` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:1279-1279` `Connection::open`
@@ -3831,7 +3831,7 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/reset_derived_compaction_periphery.rs:2735-2735` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:3523-3523` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:4163-4163` `Connection::open`
-- `tests/reset_derived_live_writer_guard_periphery.rs:39-39` `Connection::open`
+- `tests/reset_derived_live_writer_guard_periphery.rs:40-40` `Connection::open`
 - `tests/reset_menu.rs:60-60` `Connection::open`
 - `tests/reset_menu.rs:64-64` `Connection::open`
 - `tests/reset_menu_identity_migration_periphery.rs:98-98` `Connection::open`
@@ -4417,8 +4417,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:26722-26742` `init_scaffolds_the_instructions_readme_and_names_it`
 - `tests/reset_build_cache_periphery.rs:103-129` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
 - `tests/reset_build_cache_periphery.rs:167-177` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
-- `tests/reset_derived_live_writer_guard_periphery.rs:566-576` `reset_force_live_alone_is_refused_as_no_mode`
-- `tests/reset_derived_live_writer_guard_periphery.rs:582-597` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
+- `tests/reset_derived_live_writer_guard_periphery.rs:567-577` `reset_force_live_alone_is_refused_as_no_mode`
+- `tests/reset_derived_live_writer_guard_periphery.rs:583-598` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
 - `tests/reset_menu.rs:79-96` `bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable`
 - `tests/statusline_command_periphery.rs:90-100` `status_line_on_a_clean_run`
 - `tests/statusline_command_periphery.rs:137-147` `status_line_and_json_are_mutually_exclusive`
@@ -4842,7 +4842,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/reset_derived_com
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/reset_derived_compaction.rs:72-98` `rows`
+- `tests/reset_derived_compaction.rs:74-100` `rows`
 - `tests/reset_derived_compaction_periphery.rs:111-134` `raw_rows`
 
 #### `dup-6adbc1efd3a6` (near, 2 sites)

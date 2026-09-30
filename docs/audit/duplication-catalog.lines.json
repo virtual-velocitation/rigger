@@ -3454,28 +3454,28 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 39,
-        "end_line": 39
+        "start_line": 40,
+        "end_line": 40
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 48,
-        "end_line": 48
+        "start_line": 49,
+        "end_line": 49
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 124,
-        "end_line": 124
+        "start_line": 125,
+        "end_line": 125
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 259,
-        "end_line": 259
+        "start_line": 260,
+        "end_line": 260
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 360,
-        "end_line": 360
+        "start_line": 361,
+        "end_line": 361
       },
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -5564,18 +5564,18 @@
       },
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 73,
-        "end_line": 73
+        "start_line": 75,
+        "end_line": 75
       },
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 228,
-        "end_line": 228
+        "start_line": 230,
+        "end_line": 230
       },
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 494,
-        "end_line": 494
+        "start_line": 496,
+        "end_line": 496
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -5614,8 +5614,8 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 39,
-        "end_line": 39
+        "start_line": 40,
+        "end_line": 40
       },
       {
         "file": "tests/reset_menu.rs",
@@ -6804,13 +6804,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 566,
-        "end_line": 576
+        "start_line": 567,
+        "end_line": 577
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 582,
-        "end_line": 597
+        "start_line": 583,
+        "end_line": 598
       },
       {
         "file": "tests/reset_menu.rs",
@@ -7609,8 +7609,8 @@
     "sites": [
       {
         "file": "tests/reset_derived_compaction.rs",
-        "start_line": 72,
-        "end_line": 98
+        "start_line": 74,
+        "end_line": 100
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",

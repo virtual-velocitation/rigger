@@ -1,11 +1,12 @@
 //! Integration tests for spec 71, criterion 2 - COMPACTION REFUSES LIVE WRITERS.
 //!
 //! The recorded incident this guard exists to prevent: `rigger reset --derived` compacts the
-//! event log by keeping only the latest event per replay key, which leaves REVISION GAPS by
-//! design. A writer whose append cursor was built before that compaction ran can reissue one of
-//! those gap revisions; every later event then sorts BELOW the run boundary in revision order.
-//! `rigger reset --derived` must refuse to compact while run machinery looks live, naming what
-//! is live, unless the operator explicitly overrides with `--force-live`.
+//! event log by keeping only each file's latest generation of the derived index, at the latest
+//! event per replay key, which leaves REVISION GAPS by design. A writer whose append cursor was
+//! built before that compaction ran can reissue one of those gap revisions; every later event
+//! then sorts BELOW the run boundary in revision order. `rigger reset --derived` must refuse to
+//! compact while run machinery looks live, naming what is live, unless the operator explicitly
+//! overrides with `--force-live`.
 //!
 //! These tests drive the COMPILED binary against a real `.rigger/events.db`, because the
 //! criterion is an operator-facing refusal whose observable effects are the command's exit

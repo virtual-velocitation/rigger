@@ -1,10 +1,11 @@
 //! Periphery (CLI / store / fold) tests for spec 60, criterion 5 - SUPPORTED COMPACTION.
 //!
-//! `rigger reset --derived` prunes the duplication an already-bloated log accumulated before the
-//! project-scoped ingest dedup existed. For each of the four derived index types it keeps the
-//! LATEST event per distinct replay key, deletes the rest, and vacuums, so the file shrinks on
-//! disk. Every non-derived event survives byte-for-byte, the graph projection stays consistent,
-//! and the compacted store is still a working store.
+//! `rigger reset --derived` prunes what edits and the pre-dedup ingest accreted in the log's
+//! derived index. For each of the four derived index types it keeps only each file's LATEST
+//! generation, at the LATEST event per distinct replay key, deletes every superseded generation
+//! and re-recording, and vacuums, so the file shrinks on disk. Every non-derived event survives
+//! byte-for-byte, the graph projection stays consistent, and the compacted store is still a
+//! working store.
 //!
 //! These tests drive the COMPILED binary against a real `.rigger/events.db`, because the criterion
 //! is an operator-facing command whose observable effects are on-disk: which rows survive, what the
@@ -12,10 +13,11 @@
 //!
 //! What this file OWNS (criterion 5) and what it deliberately does not:
 //!
-//!   - OWNS: the `--derived` prune's selection rule (latest per distinct replay key, per derived
-//!     type), the non-derived preservation, the on-disk shrink, the printed report, the loud
-//!     refusal on a non-embedded backend, the composition with `--runs`, and the usability of the
-//!     compacted store (`rigger validate` reads it, and it still accepts appends).
+//!   - OWNS: the `--derived` prune's selection rule (each file's latest generation, then the
+//!     latest recording per distinct replay key, per derived type; spec 101, criterion 4 owns the
+//!     latest-generation rule), the non-derived preservation, the on-disk shrink, the printed
+//!     report, the loud refusal on a non-embedded backend, the composition with `--runs`, and the
+//!     usability of the compacted store (`rigger validate` reads it, and it still accepts appends).
 //!   - NOT OWNED: the run-path ingest dedup (criterion 1), the run-scoping boundary (criterion 2),
 //!     the revert proof (criterion 3), and the storage guard (criterion 4). Those are pinned by
 //!     their own units' tests and are not re-litigated here.
@@ -242,7 +244,7 @@ const REMOVED_DOC_LINKS: usize = ROUNDS - 1;
 // ---------------------------------------------------------------------------------------
 
 #[test]
-fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every_earlier_one() {
+fn reset_derived_keeps_only_the_latest_recording_of_the_latest_generation_of_each_file() {
     let dir = temp_rigger_project();
     let root = dir.path();
     seed_bloated_log(root);
