@@ -491,50 +491,70 @@ impl Store {
         )
     }
 
-    /// Read a stream forward from `from` (inclusive revision), stopping once `limit`
-    /// events have been collected. This is the ONE stream read this adapter drives: the
-    /// port's `read_stream` passes `usize::MAX` (no bound), and the append's position
-    /// read-back and a typed read's anchor pass the few events they need, so neither ever
-    /// walks a whole stream.
+    /// THE FORWARD READ: the ONE forward read of a stream this adapter drives - `stream`'s
+    /// records from revision `from` (inclusive) on, each pulled from the server only when the
+    /// consumer asks for it, so a consumer holds no more than it keeps: the events of the port's
+    /// `read_stream`, `read_stream_batched` and the few the append's position read-back and a
+    /// typed read's anchor need ([`Store::forward_events`]), and the positions of
+    /// `read_stream_positions`. A stream the server does not know, at the open or mid-stream,
+    /// reads as ending there; any other failure is the read's one error, its last item.
+    fn forward_records(
+        &self,
+        stream: &str,
+        from: Revision,
+    ) -> impl Iterator<Item = Result<ResolvedEvent, Error>> + '_ {
+        let failed = |e: kurrentdb::Error| Error::Backend(format!("kurrentdb: read stream: {e}"));
+        let opts = ReadStreamOptions::default()
+            .position(stream_position(from))
+            .forwards();
+        let mut read = match self.rt.block_on(self.client.read_stream(stream, &opts)) {
+            Ok(rs) => Some(Ok(rs)),
+            Err(kurrentdb::Error::ResourceNotFound) => None,
+            Err(e) => Some(Err(Some(failed(e)))),
+        };
+        std::iter::from_fn(move || match read.as_mut()? {
+            Ok(rs) => match self.rt.block_on(rs.next()) {
+                Ok(Some(ev)) => Some(Ok(ev)),
+                Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => None,
+                Err(e) => Some(Err(failed(e))),
+            },
+            Err(opened) => opened.take().map(Err),
+        })
+    }
+
+    /// The events of `stream` from revision `from` (inclusive) on, each built from its record as
+    /// the forward read ([`Store::forward_records`]) pulls it. `from` is an inclusive lower bound
+    /// on revision and a read's direction only controls order (matching the SQLite sibling and the
+    /// trait convention), so a backward read is this set reversed; KurrentDB's native
+    /// `.backwards()` from End would discard `from` entirely.
+    fn forward_events(
+        &self,
+        stream: &str,
+        from: Revision,
+    ) -> impl Iterator<Item = Result<Event, Error>> + '_ {
+        self.forward_records(stream, from)
+            .filter_map(move |pulled| {
+                pulled
+                    .map(|ev| {
+                        original(&ev)
+                            .and_then(|rec| to_event(rec, &Filter::default()))
+                            .filter(|e| e.revision >= from)
+                    })
+                    .transpose()
+            })
+    }
+
+    /// The first `limit` events of `stream` from revision `from` (inclusive), pulled no further
+    /// ([`Store::forward_events`]): the port's `read_stream` passes `usize::MAX` (no bound), and
+    /// the append's position read-back and a typed read's anchor pass the few events they need,
+    /// so neither ever walks a whole stream.
     fn read_forward(
         &self,
         stream: &str,
         from: Revision,
         limit: usize,
     ) -> Result<Vec<Event>, Error> {
-        // `from` is an inclusive lower bound on revision and the direction only
-        // controls order (matching the SQLite sibling and the trait convention),
-        // so a backward read is the forward set reversed. Reading forward from
-        // `from` and reversing honors `from` in both directions; KurrentDB's
-        // native `.backwards()` from End would discard `from` entirely.
-        let opts = ReadStreamOptions::default()
-            .position(stream_position(from))
-            .forwards();
-        self.rt.block_on(async {
-            let mut rs = match self.client.read_stream(stream, &opts).await {
-                Ok(rs) => rs,
-                Err(kurrentdb::Error::ResourceNotFound) => return Ok(Vec::new()),
-                Err(e) => return Err(Error::Backend(format!("kurrentdb: read stream: {e}"))),
-            };
-            let mut out = Vec::new();
-            while out.len() < limit {
-                match rs.next().await {
-                    Ok(Some(ev)) => {
-                        if let Some(rec) = original(&ev) {
-                            if let Some(e) = to_event(rec, &Filter::default()) {
-                                if e.revision >= from {
-                                    out.push(e);
-                                }
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(kurrentdb::Error::ResourceNotFound) => break,
-                    Err(e) => return Err(Error::Backend(format!("kurrentdb: read stream: {e}"))),
-                }
-            }
-            Ok::<_, Error>(out)
-        })
+        self.forward_events(stream, from).take(limit).collect()
     }
 
     /// The global positions the server issued for the `n` events a just-committed
@@ -915,38 +935,29 @@ impl EventStore for Store {
         })
     }
 
-    /// One forward read of the stream, each record pulled from the server only as the batch needs
-    /// it and reduced to the position the server issued for it: no event is built and no payload
-    /// or metadata is decoded or handed on. The server's read protocol has no positions-only form,
-    /// so each record's bytes still cross the wire; they are dropped as the record is read, never
-    /// held past it. A stream the server does not know hands nothing.
+    /// The forward read of the whole stream ([`Store::forward_records`]), each record reduced to
+    /// the position the server issued for it as it is pulled: no event is built and no payload or
+    /// metadata is decoded or handed on. The server's read protocol has no positions-only form, so
+    /// each record's bytes still cross the wire; they are dropped as the record is read, never held
+    /// past it. A stream the server does not know hands nothing.
     fn read_stream_positions(
         &self,
         stream: &str,
         batch: usize,
         sink: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        let opts = ReadStreamOptions::default()
-            .position(StreamPosition::Start)
-            .forwards();
-        let failed = |e| Error::Backend(format!("kurrentdb: read positions: {e}"));
-        let mut rs = match self.rt.block_on(self.client.read_stream(stream, &opts)) {
-            Ok(rs) => rs,
-            Err(kurrentdb::Error::ResourceNotFound) => return Ok(()),
-            Err(e) => return Err(failed(e)),
-        };
-        let positions = std::iter::from_fn(|| match self.rt.block_on(rs.next()) {
-            Ok(Some(ev)) => Some(Ok(original(&ev).map(|rec| rec.position.commit as Position))),
-            Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => None,
-            Err(e) => Some(Err(failed(e))),
-        })
-        .filter_map(Result::transpose);
+        let positions = self.forward_records(stream, 0).filter_map(|pulled| {
+            pulled
+                .map(|ev| original(&ev).map(|rec| rec.position.commit as Position))
+                .transpose()
+        });
         super::in_batches(positions, batch, sink)
     }
 
     /// The stream's head is its newest event's position, read newest-first and stopping at the
-    /// first; then one forward read from `from`, each record pulled from the server only as the
-    /// batch needs it, so no more than one batch of events is ever held.
+    /// first; then the forward read from `from` ([`Store::forward_events`]), each record pulled
+    /// from the server only as the batch needs it, so no more than one batch of events is ever
+    /// held.
     fn read_stream_batched(
         &self,
         stream: &str,
@@ -963,24 +974,9 @@ impl EventStore for Store {
         let Some(head) = head else {
             return Ok(());
         };
-        let opts = ReadStreamOptions::default()
-            .position(stream_position(from))
-            .forwards();
-        let failed = |e| Error::Backend(format!("kurrentdb: read stream: {e}"));
-        let mut rs = match self.rt.block_on(self.client.read_stream(stream, &opts)) {
-            Ok(rs) => rs,
-            Err(kurrentdb::Error::ResourceNotFound) => return Ok(()),
-            Err(e) => return Err(failed(e)),
-        };
-        let events = std::iter::from_fn(|| match self.rt.block_on(rs.next()) {
-            Ok(Some(ev)) => Some(Ok(original(&ev)
-                .and_then(|rec| to_event(rec, &Filter::default()))
-                .filter(|e| e.revision >= from))),
-            Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => None,
-            Err(e) => Some(Err(failed(e))),
+        super::in_batches(self.forward_events(stream, from), batch, &mut |events| {
+            sink(events, head as Position)
         })
-        .filter_map(Result::transpose);
-        super::in_batches(events, batch, &mut |events| sink(events, head as Position))
     }
     /// The newest-first read ([`Store::newest_first`]) of the identity's group stream, each link
     /// paired with the event its revision holds, ending at the newest link that holds the event

@@ -530,36 +530,64 @@ impl Store {
             plan.deletes.iter().map(|(_, position)| *position).collect();
         let carried: std::collections::HashMap<i64, i64> = plan.carries.into_iter().collect();
         let stream = format!("{stream_prefix}{stream}");
-        let head: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(position), 0) FROM events WHERE stream = ?1",
-                params![stream],
-                |r| r.get(0),
-            )
-            .map_err(be)?;
+        let Some(head) = stream_head(&tx, &stream)? else {
+            return Ok(());
+        };
         let mut stmt = tx
             .prepare(&format!(
                 "SELECT {cols} FROM events WHERE stream = ?1 AND position > ?2 ORDER BY position"
             ))
             .map_err(be)?;
-        let mut rows = stmt.query(params![stream, after as i64]).map_err(be)?;
-        let mut kept = Vec::with_capacity(batch);
-        while let Some(r) = rows.next().map_err(be)? {
-            let position: i64 = r.get(0).map_err(be)?;
-            if shed.contains(&position) {
-                continue;
-            }
-            kept.push(row(r, carried.get(&position).copied()).map_err(be)?);
-            if kept.len() == batch {
-                sink(&kept, head as Position)?;
-                kept.clear();
-            }
-        }
-        if !kept.is_empty() {
-            sink(&kept, head as Position)?;
-        }
-        Ok(())
+        let rows = stmt
+            .query_map(params![stream, after as i64], |r| {
+                let position: i64 = r.get(0)?;
+                if shed.contains(&position) {
+                    return Ok(None);
+                }
+                row(r, carried.get(&position).copied()).map(Some)
+            })
+            .map_err(be)?;
+        super::in_batches(
+            rows.filter_map(|kept| kept.map_err(be).transpose()),
+            batch,
+            &mut |kept| sink(kept, head),
+        )
     }
+}
+
+/// THE FORWARD READ: the ONE forward read of a stream this adapter drives - `stream`'s events from
+/// revision `from` (inclusive) on, in revision order, handed to `read` as the statement steps, so
+/// a caller collects them ([`EventStore::read_stream`]) or batches them
+/// ([`EventStore::read_stream_batched`]) and never spells the read a second time.
+fn read_forward<R>(
+    conn: &Connection,
+    stream: &str,
+    from: Revision,
+    read: impl FnOnce(&mut dyn Iterator<Item = Result<Event, Error>>) -> Result<R, Error>,
+) -> Result<R, Error> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {COLS} FROM events WHERE stream = ?1 AND revision >= ?2 ORDER BY revision"
+        ))
+        .map_err(be)?;
+    let mut events = stmt
+        .query_map(params![stream, from], row_to_event)
+        .map_err(be)?
+        .map(|e| e.map_err(be));
+    read(&mut events)
+}
+
+/// The position of `stream`'s last event - the head a batched read hands with each batch - or
+/// `None` for a stream the store does not hold, which a batched read hands nothing of. Read on the
+/// caller's connection, inside the read transaction its rows are read in.
+fn stream_head(conn: &Connection, stream: &str) -> Result<Option<Position>, Error> {
+    conn.query_row(
+        "SELECT MAX(position) FROM events WHERE stream = ?1",
+        params![stream],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .map(|head| head.map(|position| position as Position))
+    .map_err(be)
 }
 
 /// What [`Store::count_derived_duplicates`] previews a `rigger reset --derived` would remove,
@@ -1226,22 +1254,20 @@ impl EventStore for Store {
         Ok(Appended::from_placements(placements))
     }
 
+    /// The forward read ([`read_forward`]) collected, and reversed for a backward read: `from` is
+    /// an inclusive lower bound on revision in both directions, and the direction only orders.
     fn read_stream(
         &self,
         stream: &str,
         from: Revision,
         dir: Direction,
     ) -> Result<Vec<Event>, Error> {
-        let order = direction_sql(dir);
         let conn = self.conn.lock().unwrap();
-        let sql = format!(
-            "SELECT {COLS} FROM events WHERE stream = ?1 AND revision >= ?2 ORDER BY revision {order}"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(be)?;
-        let rows = stmt
-            .query_map(params![stream, from], row_to_event)
-            .map_err(be)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(be)
+        let mut events: Vec<Event> = read_forward(&conn, stream, from, |events| events.collect())?;
+        if matches!(dir, Direction::Backward) {
+            events.reverse();
+        }
+        Ok(events)
     }
 
     fn read_all(
@@ -1360,8 +1386,9 @@ impl EventStore for Store {
         )
     }
 
-    /// The stream's rows from `from`, streamed row by row in position order off the events table,
-    /// each batch handed with the stream's last position read by one seek of its index first.
+    /// The forward read ([`read_forward`]) streamed row by row off the events table in batches,
+    /// each handed with the stream's head ([`stream_head`]), read in the same read transaction as
+    /// the rows so the two describe one state of the log.
     fn read_stream_batched(
         &self,
         stream: &str,
@@ -1369,27 +1396,13 @@ impl EventStore for Store {
         batch: usize,
         sink: &mut EventBatchSink,
     ) -> Result<(), Error> {
-        let conn = self.conn.lock().unwrap();
-        let head: Option<i64> = conn
-            .query_row(
-                "SELECT MAX(position) FROM events WHERE stream = ?1",
-                params![stream],
-                |r| r.get(0),
-            )
-            .map_err(be)?;
-        let Some(head) = head else {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(be)?;
+        let Some(head) = stream_head(&tx, stream)? else {
             return Ok(());
         };
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {COLS} FROM events WHERE stream = ?1 AND revision >= ?2 ORDER BY position"
-            ))
-            .map_err(be)?;
-        let events = stmt
-            .query_map(params![stream, from], row_to_event)
-            .map_err(be)?;
-        super::in_batches(events.map(|e| e.map_err(be)), batch, &mut |events| {
-            sink(events, head as Position)
+        read_forward(&tx, stream, from, |events| {
+            super::in_batches(events, batch, &mut |events| sink(events, head))
         })
     }
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
