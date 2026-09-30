@@ -37,6 +37,7 @@ use common::cli::configure_workdir;
 use common::cli::hold_step_lock;
 use common::cli::liveness_fault_body;
 use common::cli::plant_marker;
+use common::cli::read_run_events;
 use common::cli::real_result_body;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
@@ -45,13 +46,16 @@ use common::cli::seed_registry;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::cli::temp_store_project;
+use common::cli::write_workflow_fixture;
+use common::cli::WorkflowFixture;
+use common::cli::UNISOLATED_WORKER;
 use common::git::git_out;
 use common::git::nested_worktree;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::normalize_ws;
 use rigger::config::RIGGER_DIR;
 use rigger::registry;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------------------
 // Harness
@@ -587,21 +591,38 @@ fn reset_derived_refuses_while_the_registry_heartbeat_is_a_minute_inside_the_idl
 }
 
 // ---------------------------------------------------------------------------------------
-// The spawn signal is read where the writer stamps it, with no scratch override in play
+// The spawn signal is read where the writer stamps it
 // ---------------------------------------------------------------------------------------
 
-/// `rigger reset --derived` run from `cwd` with NO scratch override - `RIGGER_TMPDIR` blank,
-/// which the scratch-root resolver reads as unset whatever the ambient environment carries - so
-/// the binary resolves the scratch root exactly as the run that stamped the marker did, over
-/// [`one_unanswered_spawn`] (bound 300 s) in `root`'s store, whose worker touched its marker just
-/// now under `scratch_root`.
-fn reset_from_with_a_fresh_marker_under(root: &Path, cwd: &Path, scratch_root: &str) -> Outcome {
+/// `rigger reset --derived` run from `cwd` with `RIGGER_TMPDIR` set to `rigger_tmpdir` - blank
+/// for no override, which the scratch-root resolver reads as unset whatever the ambient
+/// environment carries - so the binary resolves the scratch root exactly as the run that stamped
+/// the marker did, over [`one_unanswered_spawn`] (bound 300 s) in `root`'s store, whose worker
+/// touched its marker just now under `scratch_root`.
+fn reset_from_with_a_fresh_marker_under(
+    root: &Path,
+    cwd: &Path,
+    rigger_tmpdir: &str,
+    scratch_root: &str,
+) -> Outcome {
     seed_owned(root, &one_unanswered_spawn("r1", Some(300)));
     plant_marker(
         &rigger::liveness::marker_path(scratch_root, "r1", SPAWN).unwrap(),
         0,
     );
-    counted(root, cwd, &["reset", "--derived"], &[("RIGGER_TMPDIR", "")])
+    counted(
+        root,
+        cwd,
+        &["reset", "--derived"],
+        &[("RIGGER_TMPDIR", rigger_tmpdir)],
+    )
+}
+
+/// `root`'s subdirectory `sub`, created, for a command run from below the store's owning root.
+fn subdirectory_of(root: &Path) -> PathBuf {
+    let sub = root.join("sub");
+    std::fs::create_dir_all(&sub).expect("create the subdirectory the command runs from");
+    sub
 }
 
 /// With no `defaults.workdir` configured, a run stamps its markers under the store owner's
@@ -612,7 +633,7 @@ fn reset_derived_reads_a_marker_stamped_under_the_default_scratch_root() {
     let root = dir.path();
     let scratch_root = common::default_scratch_root(root);
     assert_refused_naming_the_spawn(
-        reset_from_with_a_fresh_marker_under(root, root, scratch_root.to_str().unwrap()),
+        reset_from_with_a_fresh_marker_under(root, root, "", scratch_root.to_str().unwrap()),
         0..300,
         "s ago, bound 300s)",
     );
@@ -626,7 +647,7 @@ fn reset_derived_reads_a_marker_stamped_under_a_configured_workdir() {
     let root = dir.path();
     let (_workdir, scratch_root) = configure_workdir(root, "");
     assert_refused_naming_the_spawn(
-        reset_from_with_a_fresh_marker_under(root, root, &scratch_root),
+        reset_from_with_a_fresh_marker_under(root, root, "", &scratch_root),
         0..300,
         "s ago, bound 300s)",
     );
@@ -641,7 +662,7 @@ fn reset_derived_fails_closed_on_an_unparsable_defaults_block_beside_a_configure
     let dir = temp_store_project();
     let root = dir.path();
     let (_workdir, scratch_root) = configure_workdir(root, "  max_retries: three\n");
-    let o = reset_from_with_a_fresh_marker_under(root, root, &scratch_root);
+    let o = reset_from_with_a_fresh_marker_under(root, root, "", &scratch_root);
     assert!(
         !o.ok,
         "an unparsable defaults block must fail the command, never compact; stdout: {:?}",
@@ -714,7 +735,7 @@ fn reset_derived_from_a_nested_worktree_reads_the_marker_under_the_owning_roots_
         "fixture bug: the cwd's own scratch root must differ from the owning root's"
     );
     assert_refused_naming_the_spawn(
-        reset_from_with_a_fresh_marker_under(root, &nested, scratch_root.to_str().unwrap()),
+        reset_from_with_a_fresh_marker_under(root, &nested, "", scratch_root.to_str().unwrap()),
         0..300,
         "s ago, bound 300s)",
     );
@@ -733,11 +754,93 @@ fn reset_derived_from_a_subdirectory_reads_the_marker_under_a_relative_workdir_o
         "defaults:\n  workdir: rel-scratch\n",
     )
     .expect("configure a relative defaults.workdir");
-    let sub = root.join("sub");
-    std::fs::create_dir_all(&sub).expect("create the subdirectory reset runs from");
     let scratch_root = root.join("rel-scratch");
     assert_refused_naming_the_spawn(
-        reset_from_with_a_fresh_marker_under(root, &sub, scratch_root.to_str().unwrap()),
+        reset_from_with_a_fresh_marker_under(
+            root,
+            &subdirectory_of(root),
+            "",
+            scratch_root.to_str().unwrap(),
+        ),
+        0..300,
+        "s ago, bound 300s)",
+    );
+}
+
+/// A relative `RIGGER_TMPDIR` is anchored on the store's owning root the same way: with the
+/// override `rel-override` and no workdir configured, the guard run from a subdirectory reads the
+/// fresh marker under `<root>/rel-override` - where a run stamps it - and refuses.
+#[test]
+fn reset_derived_from_a_subdirectory_reads_the_marker_under_a_relative_rigger_tmpdir_on_the_owning_root(
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let scratch_root = root.join("rel-override");
+    assert_refused_naming_the_spawn(
+        reset_from_with_a_fresh_marker_under(
+            root,
+            &subdirectory_of(root),
+            "rel-override",
+            scratch_root.to_str().unwrap(),
+        ),
+        0..300,
+        "s ago, bound 300s)",
+    );
+}
+
+/// The workflow a real `rigger step` parks [`SPAWN`] under: one stage `a` whose worker runs in the
+/// checkout (no worktree), every spawn bounded at 300 s, and the scratch root placed by the
+/// RELATIVE `defaults.workdir` `rel-scratch`.
+const RELATIVE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body:
+        "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 300\n  workdir: rel-scratch\n\
+           stages:\n  a:\n    agent: worker\n    on_pass: none\n",
+};
+
+/// Given a store whose `defaults.workdir` is relative, when a real `rigger step` at the repository
+/// root parks [`SPAWN`], then the liveness marker path it hands the worker is the ABSOLUTE path
+/// under `<root>/rel-scratch` - a relative one would land under whatever directory the worker
+/// runs in - and when the worker touches exactly that path, `reset --derived` run from a
+/// subdirectory reads it there and refuses naming the spawn: the path the run writes is the path
+/// the guard reads.
+#[test]
+fn the_marker_rigger_step_stamps_under_a_relative_workdir_is_the_one_the_guard_reads_from_a_subdirectory(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &RELATIVE_WORKDIR_WORKFLOW);
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", "")]);
+    assert!(ok, "rigger step must park the spawn; stderr: {err}");
+    let step: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("rigger step prints one JSON line: {e}; got {out:?}"));
+    let stamped = step["wave"]
+        .as_array()
+        .and_then(|wave| wave.iter().find(|item| item["id"] == SPAWN))
+        .and_then(|item| item["marker_path"].as_str())
+        .unwrap_or_else(|| panic!("the wave must carry {SPAWN} with its marker path; got {out:?}"))
+        .to_string();
+    let run_id =
+        rigger::run::current_run_id(&read_run_events(root)).expect("the step started a run");
+    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
+    let expected =
+        rigger::liveness::marker_path(&format!("{toplevel}/rel-scratch"), &run_id, SPAWN)
+            .expect("a real spawn id resolves a marker path");
+    assert_eq!(
+        Path::new(&stamped),
+        expected,
+        "the marker path handed to the worker must be the absolute one under the relative \
+         workdir anchored on the repository root"
+    );
+
+    plant_marker(&expected, 0);
+    assert_refused_naming_the_spawn(
+        counted(
+            root,
+            &subdirectory_of(root),
+            &["reset", "--derived"],
+            &[("RIGGER_TMPDIR", "")],
+        ),
         0..300,
         "s ago, bound 300s)",
     );
@@ -1023,6 +1126,34 @@ fn reset_derived_fails_the_cli_on_a_malformed_current_run_spawn_event_and_prunes
     assert_eq!(
         row_count(root),
         before,
+        "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
+    );
+}
+
+/// A spawn result the log cannot decode, recorded against a spawn whose worker touched its marker
+/// a minute ago - inside its 300 s bound - leaves unknown whether that result ended the spawn, so
+/// the guard cannot read the run as dead: `reset --derived` exits non-zero naming the undecodable
+/// result and prunes nothing, rather than reading it as the spawn's end and compacting.
+#[test]
+fn reset_derived_fails_on_a_malformed_result_for_a_spawn_whose_marker_is_inside_its_bound() {
+    let o = reset_derived_around(
+        &one_spawn_answered_by(&["{}".to_string()]),
+        &[("r1", 60)],
+        None,
+    );
+    assert!(
+        !o.ok,
+        "a malformed result a live marker needs read must fail the CLI, never compact; stdout: \
+         {:?}",
+        o.out
+    );
+    assert!(
+        o.err.contains("missing field `id`"),
+        "the failure must name the undecodable result; stderr: {:?}",
+        o.err
+    );
+    assert_eq!(
+        o.rows_after, o.rows_before,
         "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
     );
 }
