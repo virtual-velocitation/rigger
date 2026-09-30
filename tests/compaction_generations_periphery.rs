@@ -5552,16 +5552,18 @@ fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool
 /// events before setup runs again - a decision the active run records with `rigger emit`, which
 /// the owed graph does not fold, a run another writer of the log starts, closing the run that was
 /// active, or a closed run's decision id the active run records again about another file - or a
-/// swap cut short left its private pruned copy behind, then the rerun resumes its unpruned shadow,
-/// folding only what the log gained past it - its one progress line counts exactly those events,
-/// and a rerun the log gained nothing for folds none - and prunes a fresh copy of it from the whole
-/// run attribution it gathered, the first pass's included, never reading a stale copy and leaving
-/// none behind: it keeps the active run's decision, prunes the run that closed, keeps the id the
-/// active run re-recorded governing both files its two recordings name, folds every event the log
-/// gained, keeps no rebuild state and leaves `rigger reset --runs` nothing to prune; and a cold
-/// rebuild of the same log yields the same graph, every node and edge, and the same report - the
-/// one prune of the whole log, never the sum of two: when the run that closed is the one that was
-/// active, `shared` is dropped with the retired edge it owns, 5 nodes and no edge left to reclaim.
+/// swap cut short left its private pruned copy behind, then the rerun names no cause - the shadow
+/// is the rebuild's own unfinished work, which the swapped-in ledger owes nothing for - and resumes
+/// its unpruned shadow, folding only what the log gained past it - its one progress line counts
+/// exactly those events, and a rerun the log gained nothing for folds none - and prunes a fresh
+/// copy of it from the whole run attribution it gathered, the first pass's included, never reading
+/// a stale copy and leaving none behind: it keeps the active run's decision, prunes the run that
+/// closed, keeps the id the active run re-recorded governing both files its two recordings name,
+/// folds every event the log gained, keeps no rebuild state and leaves `rigger reset --runs`
+/// nothing to prune; and a cold rebuild of the same log yields the same graph, every node and edge,
+/// and the same report - the one prune of the whole log, never the sum of two: when the run that
+/// closed is the one that was active, `shared` is dropped with the retired edge it owns, 5 nodes
+/// and no edge left to reclaim.
 #[test]
 fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run_that_closed() {
     let active_run_decides: fn(&Path) = |root| {
@@ -5651,6 +5653,10 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
         let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
         let resumed = (
             ok,
+            out.lines()
+                .filter(|l| l.starts_with("rebuilding graph.db"))
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
             rebuild_progress(&out),
             after_rebuilt(&out),
             provenance_nodes(root),
@@ -5684,6 +5690,7 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
                 vec![false; gains],
                 (
                     true,
+                    Vec::<String>::new(),
                     (gains > 0)
                         .then(|| {
                             format!("rebuilt {gains} events, through position {head} of {head} (100%)")
