@@ -863,12 +863,17 @@ pub(crate) fn pruned_line(stats: &PruneStats) -> String {
 }
 
 /// Close the current run's hand-landed units: when nothing drives the run
-/// ([`LiveWriterFacts::driver_dead`]), record the `UnitIntegrated` the conductor never minted for
-/// every unit whose branch work is landed on the run branch
-/// ([`rigger::worktree::landed_branch_tip`]). A run the operator finished by hand otherwise
-/// stays "working" forever, because only the conductor mints that event and `rigger emit`
-/// refuses it. Appends only - no event is deleted or rewritten - and a live run is never
+/// ([`LiveWriterFacts::driver_dead`]) and no spawn of the run awaits its result, record the
+/// `UnitIntegrated` the conductor never minted for every unit whose branch work is landed on the
+/// run branch ([`rigger::worktree::landed_branch_tip`]). A run the operator finished by hand
+/// otherwise stays "working" forever, because only the conductor mints that event and `rigger
+/// emit` refuses it. Appends only - no event is deleted or rewritten - and a live run is never
 /// touched.
+///
+/// A spawn that awaits its result stays in the step's wave ([`spawn::step_result`]) whatever its
+/// marker says, so a relaunched driver resumes it: closing its unit would hand that driver a
+/// spawn of an integrated unit. The wave is read before the liveness test, so a spawn event the
+/// log cannot decode fails the command rather than reading as "nothing awaits".
 fn close_landed_units(
     loc: &StoreLocation,
     store: &dyn EventStore,
@@ -876,10 +881,12 @@ fn close_landed_units(
     events: &[Event],
     facts: &LiveWriterFacts,
 ) -> Res {
-    if !facts.driver_dead() {
+    let current = runscope::current_run(events);
+    let awaiting = !spawn::step_result(current)?.wave.is_empty();
+    if awaiting || !facts.driver_dead() {
         return Ok(());
     }
-    let run = ledger::project(runscope::current_run(events))?;
+    let run = ledger::project(current)?;
     let repo = loc.repo_root();
     let landed = landed_units(&run, |branch| {
         rigger::worktree::landed_branch_tip(&repo, branch, RUN_BRANCH)

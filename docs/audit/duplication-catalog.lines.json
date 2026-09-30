@@ -1104,18 +1104,18 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 739,
-        "end_line": 739
+        "start_line": 740,
+        "end_line": 740
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 749,
-        "end_line": 749
+        "start_line": 750,
+        "end_line": 750
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 773,
-        "end_line": 773
+        "start_line": 774,
+        "end_line": 774
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
@@ -1314,8 +1314,8 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1532,
-        "end_line": 1532
+        "start_line": 1539,
+        "end_line": 1539
       },
       {
         "file": "src/cli/mod.rs",
@@ -3469,13 +3469,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 940,
-        "end_line": 940
+        "start_line": 948,
+        "end_line": 948
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1019,
-        "end_line": 1019
+        "start_line": 1027,
+        "end_line": 1027
       },
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -4729,23 +4729,23 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 731,
-        "end_line": 759
+        "start_line": 732,
+        "end_line": 760
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 764,
-        "end_line": 791
+        "start_line": 765,
+        "end_line": 792
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 796,
-        "end_line": 830
+        "start_line": 797,
+        "end_line": 831
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 959,
-        "end_line": 1009
+        "start_line": 960,
+        "end_line": 1010
       }
     ]
   },
@@ -4754,13 +4754,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 837,
-        "end_line": 872
+        "start_line": 838,
+        "end_line": 873
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 1018,
-        "end_line": 1067
+        "start_line": 1019,
+        "end_line": 1068
       }
     ]
   },
@@ -6354,13 +6354,13 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1733,
-        "end_line": 1753
+        "start_line": 1740,
+        "end_line": 1760
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1785,
-        "end_line": 1806
+        "start_line": 1792,
+        "end_line": 1813
       }
     ]
   },
@@ -6499,8 +6499,8 @@
       },
       {
         "file": "src/main.rs",
-        "start_line": 367,
-        "end_line": 369
+        "start_line": 368,
+        "end_line": 370
       }
     ]
   },
@@ -6804,13 +6804,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1215,
-        "end_line": 1225
+        "start_line": 1223,
+        "end_line": 1233
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1231,
-        "end_line": 1246
+        "start_line": 1239,
+        "end_line": 1254
       },
       {
         "file": "tests/reset_menu.rs",

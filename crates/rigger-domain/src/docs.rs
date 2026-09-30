@@ -694,10 +694,11 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              file); rerun it any time, especially before a large run. When no driver is alive \
              (no `rigger step` holds the lock, no in-flight spawn's liveness marker is younger \
              than its wall-clock bound, no registration for the store has a heartbeat inside the \
-             idle window), it also closes the current run's units whose branch work is already \
-             landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the \
-             conductor mints, so `rigger status` stops reporting the finished run as working. \
-             It only appends; a live run is left untouched.",
+             idle window) and no spawn of the run awaits its result, it also closes the current \
+             run's units whose branch work is already landed on `rigger-run`: a unit landed by \
+             hand gets the `UnitIntegrated` only the conductor mints, so `rigger status` stops \
+             reporting the finished run as working. It only appends; a live run is left \
+             untouched.",
             "- `rigger reset --derived` compacts `events.db`: it keeps only each file's latest \
              generation of the derived index, at the latest event per replay key, deletes the \
              superseded generations and re-recordings, and vacuums so the file shrinks on disk. \
