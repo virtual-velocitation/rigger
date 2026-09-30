@@ -4364,18 +4364,6 @@ mod tests {
             decision_at("d-live", "b.rs", 8),
             decision_at("shared", "s.rs", 9),
         ];
-        let provenance = |p: &Projector| -> Vec<String> {
-            let mut ids: Vec<String> = p
-                .whole()
-                .unwrap()
-                .nodes
-                .into_iter()
-                .filter(|n| [KIND_DECISION, KIND_FINDING, KIND_LESSON].contains(&n.kind.as_str()))
-                .map(|n| n.id)
-                .collect();
-            ids.sort();
-            ids
-        };
         let live = Projector::open(":memory:", "test").unwrap();
         crate::test_support::folds(&live, &log);
         live.prune(
@@ -4421,6 +4409,167 @@ mod tests {
                 serde_json::to_string(&live.whole().unwrap()).unwrap(),
             ),
             "the rebuilt graph, whole or resumed, holds what reset --runs leaves, node and edge"
+        );
+    }
+
+    /// The decision, finding and lesson node ids `p` holds, sorted.
+    fn provenance(p: &Projector) -> Vec<String> {
+        let mut ids: Vec<String> = p
+            .whole()
+            .unwrap()
+            .nodes
+            .into_iter()
+            .filter(|n| [KIND_DECISION, KIND_FINDING, KIND_LESSON].contains(&n.kind.as_str()))
+            .map(|n| n.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// The graph `rigger reset --runs` leaves over `log`, every node and edge as JSON: the whole
+    /// log folded, then pruned by the drop set and the edge boundary the one rule derives from it.
+    fn reset_runs_leaves(log: &[Event]) -> String {
+        use rigger_domain::run::{superseded_edge_boundary, superseded_graph_nodes};
+        let live = Projector::open(":memory:", "test").unwrap();
+        crate::test_support::folds(&live, log);
+        live.prune(&superseded_graph_nodes(log), superseded_edge_boundary(log))
+            .unwrap();
+        serde_json::to_string(&live.whole().unwrap()).unwrap()
+    }
+
+    /// Whether the graph file at `path` holds the rebuild's cursor and the run attribution the
+    /// rebuild gathered.
+    fn rebuild_state(path: &str) -> (bool, bool) {
+        let conn = Connection::open(path).unwrap();
+        (
+            has_table(&conn, "rebuild_cursor").unwrap(),
+            has_table(&conn, "rebuild_run_closure").unwrap(),
+        )
+    }
+
+    /// A rebuild whose swap stops after its prune committed - the owed mark it must drop is a
+    /// directory it cannot remove - keeps the run attribution it gathered with its cursor, in the
+    /// shadow and in the live file the swap copied it into. The rebuild that resumes it gathers
+    /// onto that attribution and re-derives the prune from the whole of it: a decision the active
+    /// run records meanwhile is kept, and a run started meanwhile closes the run that was active,
+    /// whose nodes are pruned - either way the graph `rigger reset --runs` leaves over the whole
+    /// log - and the finished rebuild drops the attribution with its cursor.
+    #[test]
+    fn a_rebuild_resumed_past_its_prune_re_derives_it_from_the_whole_gathered_attribution() {
+        let log = [
+            run_started_at("r1", 1),
+            decision_at("d-dead", "a.rs", 2),
+            run_started_at("r2", 3),
+            decision_at("d-live", "b.rs", 4),
+        ];
+        let windows = [
+            (
+                vec![decision_at("d-window", "c.rs", 5)],
+                vec!["d-live", "d-window"],
+                vec![4, 5],
+            ),
+            (
+                vec![run_started_at("r3", 5), decision_at("d-r3", "c.rs", 6)],
+                vec!["d-r3"],
+                vec![4, 6],
+            ),
+        ];
+        for (window, kept, reads) in windows {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db");
+            let path = path.to_str().unwrap();
+            drop(Projector::open(path, "test").unwrap());
+            let mark = dir.path().join("graph.db.owed");
+            std::fs::create_dir(&mark).unwrap();
+            let stopped =
+                rebuild_in_batches(path, &log, 10, &mut Vec::new()).map_err(|e| e.to_string());
+            let through_the_swap = (
+                rebuild_state(&format!("{path}.rebuild")),
+                rebuild_state(path),
+            );
+            std::fs::remove_dir(&mark).unwrap();
+
+            let whole: Vec<Event> = log.iter().cloned().chain(window).collect();
+            let mut reads_from = Vec::new();
+            rebuild_in_batches(path, &whole, 10, &mut reads_from).unwrap();
+            let p = Projector::open(path, "test").unwrap();
+            assert_eq!(
+                (
+                    stopped,
+                    through_the_swap,
+                    reads_from,
+                    provenance(&p),
+                    rebuild_state(path),
+                    serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                ),
+                (
+                    Err("graph: Is a directory (os error 21)".to_string()),
+                    ((true, true), (true, true)),
+                    reads,
+                    kept.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                    (false, false),
+                    reset_runs_leaves(&whole),
+                ),
+                "the attribution outlives the stopped swap, the resume re-derives the prune from \
+                 all of it, and the finished rebuild drops it with its cursor"
+            );
+        }
+    }
+
+    /// A shadow holding a rebuild's cursor without the run attribution it gathered cannot
+    /// re-derive the prune from the whole of it, so it is never resumed: the rebuild discards it
+    /// and folds the log again from its start, to the graph `rigger reset --runs` leaves.
+    #[test]
+    fn a_shadow_holding_its_cursor_without_its_gathered_attribution_is_rebuilt_from_the_start() {
+        let log = [
+            run_started_at("r1", 1),
+            decision_at("d-dead", "a.rs", 2),
+            run_started_at("r2", 3),
+            decision_at("d-live", "b.rs", 4),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let mut batches = 0;
+        let interrupted = Projector::rebuild(
+            path,
+            "test",
+            true,
+            &mut |after, sink| {
+                stream_past(&log, after, 2, &mut |events, head| {
+                    batches += 1;
+                    if batches > 1 {
+                        return Err(Error("interrupted after the first batch".to_string()));
+                    }
+                    sink(events, head)
+                })
+            },
+            &mut |_| {},
+        );
+        Connection::open(format!("{path}.rebuild"))
+            .unwrap()
+            .execute_batch("DROP TABLE rebuild_run_closure;")
+            .unwrap();
+
+        let mut reads_from = Vec::new();
+        rebuild_in_batches(path, &log, 2, &mut reads_from).unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (
+                interrupted.map_err(|e| e.to_string()),
+                reads_from,
+                provenance(&p),
+                serde_json::to_string(&p.whole().unwrap()).unwrap(),
+            ),
+            (
+                Err("graph: interrupted after the first batch".to_string()),
+                vec![0, 4],
+                vec!["d-live".to_string()],
+                reset_runs_leaves(&log),
+            ),
+            "the shadow without its attribution is folded again from the start and pruned by the \
+             whole log's attribution"
         );
     }
 
