@@ -324,5 +324,5 @@ mod redact_tests {
 }
 
 /// The append-only double the store halves' tests share, defined once with the fixtures.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 pub(crate) use crate::test_support::SilentStore;

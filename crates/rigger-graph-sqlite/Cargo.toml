@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # root forwards both features, so every lane compiles exactly the surface it did before.
 default = ["store"]
 store = ["rigger-domain/store", "rigger-store-sqlite/store"]
-core = ["rigger-domain/core", "rigger-store-sqlite/core"]
+core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-root/core"]
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
@@ -42,7 +42,8 @@ rigger-process = { path = "../rigger-process", default-features = false }
 # (recorded in tests/boundary_audit.rs ADAPTER_VIOLATIONS). A test is its own composition root,
 # so it reaches them through the root package as a dev-dependency, renamed because the shared
 # fixtures already call this crate `rigger`. No default features, so the dev-dependency never
-# widens the root's lane when both crates are tested in one invocation.
+# widens the root's lane when both crates are tested in one invocation; `core` above forwards to
+# it, so this crate's core-lane tests build the root in the same lane as every other dependency.
 rigger-root = { package = "rigger", path = "../..", default-features = false }
 
 [lints]

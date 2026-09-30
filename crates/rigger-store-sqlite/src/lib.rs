@@ -28,10 +28,10 @@ pub mod sqlite;
 use rigger_domain::ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::{contextgraph, progress, run};
-#[cfg(any(test, feature = "store", not(feature = "core")))]
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod spawn {
-    /// The minimal request the tests build, defined once with the shared fixtures.
-    #[cfg(test)]
+    /// The minimal request the spawn store's tests build, defined once with the shared fixtures.
+    #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
     pub(crate) use crate::test_support::test_request;
     pub use rigger_domain::spawn::*;
 }
@@ -41,10 +41,11 @@ use rigger_domain::test_cases;
 /// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests, compiled
 /// here from the same files. They name the crate as `rigger::...`, which
 /// `extern crate self as rigger` makes resolve to this crate, whose modules sit at the same
-/// paths the root facade re-exports them under.
-#[cfg(test)]
+/// paths the root facade re-exports them under. Only the store-gated modules' tests use them, so
+/// they compile where those modules do.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 extern crate self as rigger;
-#[cfg(test)]
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
@@ -52,7 +53,7 @@ mod event_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/kurrentdb.rs"]
 mod kurrentdb_fixtures;
-#[cfg(test)]
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
@@ -60,12 +61,10 @@ mod spawn_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/sqlite.rs"]
 mod sqlite_fixtures;
-#[cfg(test)]
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::event_fixtures::*;
-    #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::kurrentdb_fixtures::*;
     pub use crate::spawn_fixtures::*;
-    #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::sqlite_fixtures::*;
 }

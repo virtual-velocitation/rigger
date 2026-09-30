@@ -23,7 +23,7 @@ mod common;
 use common::is_running;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 /// The shipped runner script, resolved the same CWD-independent way every other committed-file
@@ -158,9 +158,9 @@ fn shell_quote(s: impl AsRef<str>) -> String {
     format!("'{}'", s.as_ref().replace('\'', r"'\''"))
 }
 
-/// The address-space cap (in bytes) the shipped runner applies to the process it wraps, read
-/// back from that process's own `/proc/self/limits`, with the runner's environment `envs`.
-fn applied_address_space_cap(envs: &[(&str, &str)]) -> String {
+/// Run the shipped runner around `cat /proc/self/limits` with the runner's environment `envs` (on
+/// a clean slate for the two variables this suite drives), returning what it did and printed.
+fn run_the_runner_reading_limits(envs: &[(&str, &str)]) -> Output {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut cmd = Command::new(pidns_runner_path());
     cmd.arg("/bin/sh")
@@ -172,43 +172,78 @@ fn applied_address_space_cap(envs: &[(&str, &str)]) -> String {
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("run the shipped runner");
-    let limits = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(
-        out.status.success(),
-        "the runner must run its wrapped command; stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    limits
-        .lines()
-        .find(|l| l.starts_with("Max address space"))
-        .and_then(|l| l.split_whitespace().nth(3))
-        .unwrap_or_else(|| panic!("no address-space line in {limits}"))
-        .to_string()
+    cmd.output().expect("run the shipped runner")
 }
 
 /// Gap 92: the per-test cap is sized for a mutation sweep's CONCURRENCY, not for one runaway.
 /// At the old 24 GiB default, eight concurrent children of one loop mutant grew to ~5.5 GiB each
 /// and the global OOM killer took the check-in step instead; at 4 GiB each such child fails its
-/// own allocation first, and the whole suite still passes under it. Both the namespace path and
-/// the plain path apply the same cap, and an explicit `RIGGER_TEST_AS_BYTES` still wins.
+/// own allocation first, and the whole suite still passes under it.
+///
+/// Every assertion runs on every host, with or without unprivileged user namespaces:
+/// - the plain path (`RIGGER_PIDNS=off`, a throwaway CI host) caps the wrapped process at 4 GiB,
+///   and an explicit `RIGGER_TEST_AS_BYTES` overrides that cap. The runner computes the cap once
+///   (`as_bytes`, one home for both paths), so the override proven here is the value the
+///   namespace path applies too.
+/// - the namespace path (the default) either runs the wrapped process under the same 4 GiB cap,
+///   on a host that can create a user+pid namespace (a workstation), or fails CLOSED on a host
+///   that cannot (a hosted CI runner): it exits non-zero with its refusal and runs nothing
+///   unsandboxed. Both outcomes are runner guarantees. The runner's own outcome is the host's
+///   capability probe, so this test never probes the host a second way.
 #[test]
-fn the_runner_caps_each_test_process_address_space_at_4_gib_on_both_paths() {
+fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_runs() {
     const FOUR_GIB: &str = "4294967296";
+    // The cap (in bytes) the wrapped process read from its own `/proc/self/limits`, for a runner
+    // invocation that ran it; one that did not run it fails the test with the runner's stderr.
+    let applied_cap = |out: &Output| -> String {
+        assert!(
+            out.status.success(),
+            "the runner must run its wrapped command; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let limits = String::from_utf8_lossy(&out.stdout);
+        limits
+            .lines()
+            .find(|l| l.starts_with("Max address space"))
+            .and_then(|l| l.split_whitespace().nth(3))
+            .unwrap_or_else(|| panic!("no address-space line in {limits}"))
+            .to_string()
+    };
     assert_eq!(
-        applied_address_space_cap(&[]),
+        applied_cap(&run_the_runner_reading_limits(&[("RIGGER_PIDNS", "off")])),
         FOUR_GIB,
-        "the namespace path"
+        "the plain path (a CI host) caps each test process at 4 GiB"
     );
     assert_eq!(
-        applied_address_space_cap(&[("RIGGER_PIDNS", "off")]),
-        FOUR_GIB,
-        "the plain path (a CI container) caps each test process the same way"
-    );
-    assert_eq!(
-        applied_address_space_cap(&[("RIGGER_TEST_AS_BYTES", "2147483648")]),
+        applied_cap(&run_the_runner_reading_limits(&[
+            ("RIGGER_PIDNS", "off"),
+            ("RIGGER_TEST_AS_BYTES", "2147483648"),
+        ])),
         "2147483648",
         "an explicit cap still overrides the default (lower here: this test process already \
          runs under the 4 GiB hard limit, which no child can raise)"
     );
+    let namespaced = run_the_runner_reading_limits(&[]);
+    if namespaced.status.success() {
+        assert_eq!(
+            applied_cap(&namespaced),
+            FOUR_GIB,
+            "the namespace path caps each test process the same way"
+        );
+    } else {
+        let stderr = String::from_utf8_lossy(&namespaced.stderr);
+        assert!(
+            stderr.contains(
+                "cannot create a user+pid namespace on this host; \
+                 REFUSING to run the test binary unsandboxed"
+            ),
+            "a runner that cannot create its namespace must fail closed with its refusal, and \
+             fail no other way; stderr: {stderr}"
+        );
+        assert!(
+            namespaced.stdout.is_empty(),
+            "a refusing runner must run nothing unsandboxed; stdout: {}",
+            String::from_utf8_lossy(&namespaced.stdout)
+        );
+    }
 }
