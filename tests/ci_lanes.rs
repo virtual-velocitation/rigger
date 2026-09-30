@@ -295,8 +295,10 @@ fn install_nolock_job_runs_a_fresh_unlocked_install_and_executes_the_binary() {
 /// reject the command as an unknown feature and break CI. The job must still run the
 /// adapter's contract test (`eventstore::kurrentdb`) against a real KurrentDB - that
 /// container-backed proxy-fidelity check is the reason the job exists, so a change that
-/// drops the feature flag must not also gut the test it guards. Like the rest of this
-/// file it parses the committed workflow, so an inconsistency fails at `cargo test` time.
+/// drops the feature flag must not also gut the test it guards - and it must run it in the
+/// crate that holds the adapter, `rigger-store-sqlite`: in the root package the same filter
+/// matches no test and the job passes having run nothing. Like the rest of this file it
+/// parses the committed workflow, so an inconsistency fails at `cargo test` time.
 #[test]
 fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_test() {
     let wf = workflow_yaml();
@@ -314,6 +316,17 @@ fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_tes
          against a real KurrentDB - the container-backed proxy-fidelity check the job exists for.\n\
          Script was:\n{script}"
     );
+    assert_lane_command(
+        &script,
+        &[
+            "cargo test",
+            "-p rigger-store-sqlite",
+            "eventstore::kurrentdb",
+        ],
+        None,
+        "the adapter's tests in the crate that holds them (in the root package the filter \
+         matches no test)",
+    );
 }
 
 /// Spec 93 criterion 3, THE BUILD EMBEDS IT: "a workflow-level install in
@@ -321,14 +334,14 @@ fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_tes
 /// `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer build compiles
 /// `crates/rigger-dash/src/dash.rs` - which is every cargo invocation in THIS workflow (none of them build the
 /// pure `--features core` lane exclusively): `build-test`'s default AND
-/// `--no-default-features` lanes, `install-nolock`'s default-feature install, and
-/// `kurrentdb`'s `--no-default-features` clippy/test. Each of those three jobs' own
-/// `dtolnay/rust-toolchain@*` step must therefore declare the target - a job whose toolchain
-/// step lacks it would fail on a runner with no target preinstalled.
+/// `--no-default-features` lanes and `install-nolock`'s default-feature install. Each of
+/// those two jobs' own `dtolnay/rust-toolchain@*` step must therefore declare the target - a
+/// job whose toolchain step lacks it would fail on a runner with no target preinstalled. The
+/// `kurrentdb` job builds `rigger-store-sqlite` alone, which never compiles dash.rs.
 #[test]
 fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
     let wf = workflow_yaml();
-    for job in ["build-test", "install-nolock", "kurrentdb"] {
+    for job in ["build-test", "install-nolock"] {
         let targets = job_toolchain_targets(&wf, job);
         assert!(
             targets.contains("wasm32-unknown-unknown"),
