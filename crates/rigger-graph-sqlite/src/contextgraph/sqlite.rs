@@ -414,7 +414,7 @@ impl Projector {
         } else if !rebuild_tail_owed(&live)? {
             return Ok(None);
         }
-        passed_over += fold_source(&mut live, project, source, &mut |_| {}, false)?;
+        passed_over += fold_source(&mut live, project, source, progress, false)?;
         let pruned = live
             .query_row(
                 "SELECT pruned_nodes, reclaimed_edges FROM rebuild_cursor",
