@@ -345,7 +345,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-893b821ebc5e",
+    "id": "dup-663145ccb151",
     "classification": "semantic",
     "sites": [
       {
@@ -371,7 +371,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it",
-        "content_hash": "6c93305ceb8e1e15"
+        "content_hash": "42988f6041c63d74"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -3002,7 +3002,7 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "name": "\"graph build: ingested {ingested} code-ingest event(s) into .rigger/graph.db; \\\n                 not folded into the context graph: graph: database is locked\\n\"",
+        "name": "\"graph build: ingested {ingested} code-ingest event(s) into .rigger/graph.db; \\\n                 not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -5632,13 +5632,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b71b82f84693",
+    "id": "dup-8b82a275eb94",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "b65be6c1c7285083"
+        "content_hash": "fd7ee6cf1afd2aa1"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5649,6 +5649,16 @@
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "a53e241130fed625"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "1953385dcb5ae89a"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "1103d16a349001ad"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5937,7 +5947,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 62 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6123,7 +6133,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-243e06cfa6ec",
+    "id": "dup-3cee929a82ba",
     "classification": "near",
     "sites": [
       {
@@ -6135,6 +6145,11 @@
         "file": "src/cli/hygiene.rs",
         "name": "runs_menu_line",
         "content_hash": "84eec79883799081"
+      },
+      {
+        "file": "src/cli/hygiene.rs",
+        "name": "pruned_line",
+        "content_hash": "12543182a9994a40"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, src/cli/hygiene.rs)",
@@ -6541,6 +6556,25 @@
     ],
     "proposed_home": "contract::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-f2deb48cf554",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
+        "name": "read_forward",
+        "content_hash": "aacd867c3469f53f"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "read_forward",
+        "content_hash": "05da9761d7a6f114"
+      }
+    ],
+    "proposed_home": "one shared `read_forward` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

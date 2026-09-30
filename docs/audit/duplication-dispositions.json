@@ -545,9 +545,14 @@
     "reason": "Two projector tests with different seeded event orders and different assertions (inferred-tier order independence versus no demotion of an extracted reference)."
   },
   {
-    "id": "dup-243e06cfa6ec",
+    "id": "dup-3cee929a82ba",
     "disposition": "not-a-duplicate",
-    "reason": "`edge_desc` renders a graph edge while `runs_menu_line` renders a run-menu row; they format different fields into different lines."
+    "reason": "`edge_desc` renders a graph edge; `pruned_line` renders what a run-closure prune removed, the one report `rigger reset --runs` and `rigger setup` both print; `runs_menu_line` renders the reset menu's preview of what a prune would remove and the command that reclaims it. Three different sentences over different states."
+  },
+  {
+    "id": "dup-f2deb48cf554",
+    "disposition": "not-a-duplicate",
+    "reason": "Each store adapter's one forward read of a stream over its own backend: the sqlite `read_forward` steps one SQL statement over the events table, the kurrentdb `read_forward` takes the first events of the gRPC forward read `forward_records` pulls. One per adapter is the design (spec 101); neither can serve the other's backend."
   },
   {
     "id": "dup-a2973e00918e",
