@@ -5304,13 +5304,13 @@
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/mod.rs",
-        "start_line": 76,
-        "end_line": 107
+        "start_line": 83,
+        "end_line": 114
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/mod.rs",
-        "start_line": 79,
-        "end_line": 90
+        "start_line": 86,
+        "end_line": 97
       }
     ]
   },

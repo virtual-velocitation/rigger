@@ -3763,8 +3763,8 @@ Proposed home: `mod::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/mod.rs:76-107` `check_fold_payload`
-- `crates/rigger-graph-sqlite/src/contextgraph/mod.rs:79-90` `shape`
+- `crates/rigger-graph-sqlite/src/contextgraph/mod.rs:83-114` `check_fold_payload`
+- `crates/rigger-graph-sqlite/src/contextgraph/mod.rs:86-97` `shape`
 
 #### `dup-59006467437a` (semantic, 67 sites)
 
