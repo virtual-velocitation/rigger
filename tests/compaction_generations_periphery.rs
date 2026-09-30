@@ -40,7 +40,7 @@ use common::cli::write_workflow_fixture;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::fixtures::meta_replay_key;
 use common::git::temp_git_project_with_commit;
-use rigger::contextgraph::sqlite::RebuildSink;
+use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt};
 use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
@@ -2294,11 +2294,11 @@ fn live_selection_of<'a>(
 }
 
 /// Rebuild the `graph.db` at `db` from `source`, reporting nothing: whether there was one to pay,
-/// and how many events it passed over.
+/// and what it did.
 fn rebuild(
     db: &Path,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
-) -> Result<Option<usize>, rigger::contextgraph::Error> {
+) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
     rigger::contextgraph::sqlite::Projector::rebuild(
         db.to_str().unwrap(),
         PROJECT,
@@ -2345,7 +2345,7 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
         &mut |at| reported.push(at),
     )
     .unwrap();
-    assert_eq!(ran, Some(0), "the owed rebuild runs");
+    assert_eq!(ran, Some(Rebuilt::default()), "the owed rebuild runs");
     let (p, head) = (|i: usize| log[i].position, log[4].position);
     let at = |through, folded| RebuildProgress {
         start: 0,
@@ -2442,7 +2442,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
         (owed, rebuilt, counting.reads()),
         (
             vec![rigger::contextgraph::OWED_LOST_FOLD],
-            Some(0),
+            Some(Rebuilt::default()),
             vec![
                 CountedRead::StreamPositions {
                     stream: run(),
@@ -2513,7 +2513,10 @@ fn a_rebuild_skips_an_event_whose_fold_fails() {
     let ran = rebuild(&rebuilt, &mut source_over(&log, 10, &afters)).unwrap();
     assert_eq!(
         ran,
-        Some(1),
+        Some(Rebuilt {
+            passed_over: 1,
+            pruned: PruneStats::default()
+        }),
         "the owed rebuild runs, passing over the malformed event"
     );
     let without: Vec<Event> = log
@@ -2563,7 +2566,7 @@ fn a_rebuild_folds_what_the_log_gained_while_it_ran() {
     .unwrap();
     assert_eq!(
         (ran, before.borrow().clone(), afters.borrow().clone()),
-        (Some(0), vec![0], vec![log[2].position]),
+        (Some(Rebuilt::default()), vec![0], vec![log[2].position]),
         "the tail is read once, past the last position the shadow folded"
     );
     fold_in_batches(&fresh, PROJECT, std::slice::from_ref(&log));
@@ -2629,7 +2632,7 @@ fn an_interrupted_rebuild_leaves_graph_db_untouched_and_resumes_from_its_last_co
     assert_eq!(
         (ran, afters.borrow().clone(), handed.borrow().clone()),
         (
-            Some(0),
+            Some(Rebuilt::default()),
             vec![log[1].position, log[4].position],
             vec![log[2].position, log[3].position, log[4].position]
         ),
@@ -2675,7 +2678,7 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
     let ran = rebuild(&db, &mut source_over(&log, 2, &afters)).unwrap();
     assert_eq!(
         (ran, afters.borrow().clone()),
-        (Some(0), vec![log[2].position]),
+        (Some(Rebuilt::default()), vec![log[2].position]),
         "the next rebuild folds only the tail"
     );
     let again = rebuild(&db, &mut |_, _| panic!("a finished rebuild reads nothing")).unwrap();
@@ -2733,7 +2736,7 @@ fn the_live_selection_is_exactly_what_the_compaction_keeps_and_rebuilds_the_whol
     a_pre_rule_graph_db(&selected_db, &log[..1], "");
     assert_eq!(
         rebuild(&selected_db, &mut live_selection_of(&backend, PROJECT, 2)).unwrap(),
-        Some(0)
+        Some(Rebuilt::default())
     );
 
     backend
@@ -3438,7 +3441,11 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     );
 
     resume.send(()).unwrap();
-    assert_eq!(rebuilder.join().unwrap(), Some(0), "the rebuild ran");
+    assert_eq!(
+        rebuilder.join().unwrap(),
+        Some(Rebuilt::default()),
+        "the rebuild ran"
+    );
     assert_eq!(
         user_version(&store.graph_db),
         1,
@@ -3852,7 +3859,7 @@ fn a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(gained:
         .unwrap();
     assert_eq!(
         rebuild(&db, &mut live_selection_of(&backend, PROJECT, 2)).unwrap(),
-        Some(0)
+        Some(Rebuilt::default())
     );
     assert!(
         !dir.path().join("graph.db.rebuild").exists(),
@@ -3994,7 +4001,11 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
     );
 
     resume.send(()).unwrap();
-    assert_eq!(rebuilder.join().unwrap(), Some(0), "the rebuild ran");
+    assert_eq!(
+        rebuilder.join().unwrap(),
+        Some(Rebuilt::default()),
+        "the rebuild ran"
+    );
     assert!(
         !holds_table(&store.graph_db, "rebuild_cursor"),
         "the tail is folded and its cursor dropped"

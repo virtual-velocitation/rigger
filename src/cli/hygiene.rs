@@ -782,16 +782,27 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Opt
     // the rebuildable projection and the event log is untouched.
     let reclaimed_bytes = graph.compact()?;
     println!(
-        "reset --runs: pruned {} dead-run node(s) and reclaimed {} superseded edge(s) from the \
-         context graph, then compacted the graph file (reclaimed {} byte(s) on disk) - every \
+        "reset --runs: {} from the context graph, then compacted the graph file (reclaimed {} \
+         byte(s) on disk) - every \
          lesson, the active run, and every live edge are preserved; this prune deletes no event \
          from the log. The one thing `rigger reset` writes there is the one-time identity \
          migration it runs first: on a store still under the legacy basename namespace that \
          renames its streams and records one DecisionMade, and it prints its own line when it \
          does",
-        removed.nodes, removed.superseded_edges, reclaimed_bytes
+        pruned_line(&removed),
+        reclaimed_bytes
     );
     Ok(())
+}
+
+/// What a run-closure prune removed, in the one set of words both of its reports use: `rigger
+/// reset --runs` for its prune of the live graph, and `rigger setup` for the prune its rebuild
+/// makes of the rebuilt one (spec 101).
+pub(crate) fn pruned_line(stats: &PruneStats) -> String {
+    format!(
+        "pruned {} dead-run node(s) and reclaimed {} superseded edge(s)",
+        stats.nodes, stats.superseded_edges
+    )
 }
 
 /// Close the current run's hand-landed units: when nothing drives the run

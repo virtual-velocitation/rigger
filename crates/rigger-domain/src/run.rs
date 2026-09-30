@@ -220,8 +220,9 @@ pub enum RunOf {
     /// A decision or finding that falls inside a run's window: it belongs to this run id.
     Run(String),
     /// A decision or finding recorded BEFORE the first [`TYPE_RUN_STARTED`]. It belongs to
-    /// no run (pre-boundary) - it is neither the active run nor a lesson, so it is dead-run
-    /// noise that `reset --runs` drops and `rigger peers` labels historical.
+    /// no run (pre-boundary) - it is neither the active run nor a lesson, so once a run has
+    /// started it is dead-run noise that `reset --runs` drops, and `rigger peers` labels it
+    /// historical.
     PreBoundary,
     /// A [`TYPE_LESSON_LEARNED`]: durable cross-run value, EXEMPT from attribution. A lesson
     /// is never placed in a run and so is never pruned as dead-run noise, regardless of its
@@ -381,7 +382,10 @@ pub fn superseded_edge_boundary(events: &[Event]) -> Option<i64> {
 
 /// The decision and finding graph-node ids `rigger reset --runs` drops (spec 21, unit 2):
 /// every provenance node that is NEITHER the active run's NOR a lesson - a superseded run's
-/// decision/finding, or a pre-boundary one recorded before the first `RunStarted`. Pure over
+/// decision/finding, or a pre-boundary one recorded before the first `RunStarted`. A decision or
+/// finding is dead only against an active run: a log with no `RunStarted` has no closed run, so
+/// nothing in it is dead and the drop set is empty (spec 101), exactly as
+/// [`superseded_edge_boundary`] reclaims no edge from it. Pure over
 /// the whole run stream, reusing the SINGLE run-attribution authority
 /// (`run::run_attribution` + `run::current_run_id`) - never a second inline boundary scan.
 ///
@@ -402,8 +406,10 @@ pub fn superseded_edge_boundary(events: &[Event]) -> Option<i64> {
 /// `LessonLearned` (exempt) and every active-run node out of the drop set.
 pub fn superseded_graph_nodes(events: &[Event]) -> Vec<String> {
     use std::collections::BTreeSet;
+    let Some(active) = current_run_id(events) else {
+        return Vec::new();
+    };
     let attribution = run_attribution(events);
-    let active = current_run_id(events);
     let mut drop_candidates: BTreeSet<String> = BTreeSet::new();
     let mut keep: BTreeSet<String> = BTreeSet::new();
     for (&i, run_of) in &attribution {
@@ -419,7 +425,7 @@ pub fn superseded_graph_nodes(events: &[Event]) -> Vec<String> {
         // The active run's node ids are live and must be KEPT; everything else - a superseded
         // run's node, or a pre-boundary one - is a drop CANDIDATE. A single id can land in both
         // sets when it is reused across a dead run and the active run.
-        if run_of.is_live(active.as_deref()) {
+        if run_of.is_live(Some(active.as_str())) {
             keep.insert(id);
         } else {
             drop_candidates.insert(id);

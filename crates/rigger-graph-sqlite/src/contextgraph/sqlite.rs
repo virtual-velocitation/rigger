@@ -118,14 +118,20 @@ DROP TABLE IF EXISTS proofs;
 /// The state a rebuild ([`Projector::rebuild`]) keeps in the shadow file it folds and, from the
 /// swap until the tail it owes is folded, in the live one, born together in one transaction and
 /// dropped together in one ([`DROP_REBUILD_STATE`]) once the tail is folded - never apart:
-/// - `rebuild_cursor`: the last position the rebuild folded.
+/// - `rebuild_cursor`: the last position the rebuild folded, and what its run-closure prune removed
+///   ([`prune_run_closure`]), committed with that prune, so a rebuild resumed past its prune still
+///   reports what it removed ([`Rebuilt::pruned`]).
 /// - `rebuild_run_closure`: the run attribution it gathers as it folds (spec 101) - every folded
 ///   event of the [`rigger_domain::run::RUN_CLOSURE_TYPES`], committed with the batch that folded
 ///   it - so every pass that reaches the swap, a resumed one included, re-derives the run-closure
 ///   prune from the whole of it ([`prune_run_closure`]).
 const REBUILD_STATE: &str = "
 BEGIN;
-CREATE TABLE IF NOT EXISTS rebuild_cursor (position INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS rebuild_cursor (
+    position INTEGER NOT NULL,
+    pruned_nodes INTEGER NOT NULL DEFAULT 0,
+    reclaimed_edges INTEGER NOT NULL DEFAULT 0
+);
 INSERT INTO rebuild_cursor (position) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM rebuild_cursor);
 CREATE TABLE IF NOT EXISTS rebuild_run_closure (
     position INTEGER PRIMARY KEY,
@@ -287,6 +293,17 @@ pub struct PruneStats {
     pub superseded_edges: usize,
 }
 
+/// What a [`Projector::rebuild`] that ran did (spec 101): how many events it passed over because
+/// the fold rejects their payload, and what its run-closure prune removed from the rebuilt graph -
+/// the counts `rigger reset --runs` reports for its own prune.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Rebuilt {
+    /// Events passed over because the fold rejects their payload, recorded as folded.
+    pub passed_over: usize,
+    /// What the run-closure prune removed, however many passes it took to get there.
+    pub pruned: PruneStats,
+}
+
 // `Located`, `EntitySite` and `Candidate` (the `rigger graph --show <entity>` resolution, spec 58)
 // are PORT-owned types defined in `super` (spec 92's fix round): every sibling `Projection` method
 // returns a port-owned type, so `Projector::locate` and its `Projection::locate` override do too,
@@ -315,8 +332,9 @@ impl Projector {
     }
 
     /// Pay the rebuild the `graph.db` at `path` owes (spec 101), and report whether there was one
-    /// to pay - `None` when there was not, else how many events it passed over because the fold
-    /// rejects their payload (see `fold_source`) - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
+    /// to pay - `None` when there was not, else what it did ([`Rebuilt`]): how many events it passed
+    /// over because the fold rejects their payload (see `fold_source`) and what its run-closure
+    /// prune removed - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
     /// read of its ledger against the log), or because the file itself records an older fold rule
     /// or carries the [`owed_mark`] a failed fold left, both read again here; the mark is dropped
     /// once the rebuilt file is in place. The rebuild folds `source` - the log's live selection, whose cost is bounded by the
@@ -331,7 +349,10 @@ impl Projector {
     /// backup rather than a rename of the file: a process holding the live file open (an agent's
     /// MCP session, the dashboard) keeps a valid connection and reads the rebuilt file from its
     /// next query, where a file renamed over one it holds would leave it reading the old file
-    /// through a write-ahead log the new one shares.
+    /// through a write-ahead log the new one shares. Before the swap the shadow is pruned as
+    /// `rigger reset --runs` prunes the live graph ([`prune_run_closure`]), and what that prune
+    /// removed is reported: read from the rebuild state, where it was committed with the prune, so
+    /// a rebuild resumed past its prune reports what the prune removed, never zero.
     ///
     /// The shadow is held under an exclusive lock for the whole fold, so a second rebuild racing
     /// this one is refused as busy rather than interleaved. An interrupted rebuild leaves the live
@@ -352,7 +373,7 @@ impl Projector {
         owed: bool,
         source: &mut RebuildSource,
         progress: &mut dyn FnMut(RebuildProgress),
-    ) -> Result<Option<usize>, Error> {
+    ) -> Result<Option<Rebuilt>, Error> {
         let mut live = open_connection(path).map_err(be)?;
         let mut passed_over = 0;
         let shadow_path = format!("{path}.rebuild");
@@ -387,8 +408,23 @@ impl Projector {
             std::fs::remove_file(&shadow_path).map_err(be)?;
         }
         passed_over += fold_source(&mut live, project, source, &mut |_| {}, false)?;
+        let pruned = live
+            .query_row(
+                "SELECT pruned_nodes, reclaimed_edges FROM rebuild_cursor",
+                [],
+                |r| {
+                    Ok(PruneStats {
+                        nodes: r.get::<_, i64>(0)? as usize,
+                        superseded_edges: r.get::<_, i64>(1)? as usize,
+                    })
+                },
+            )
+            .map_err(be)?;
         live.execute_batch(DROP_REBUILD_STATE).map_err(be)?;
-        Ok(Some(passed_over))
+        Ok(Some(Rebuilt {
+            passed_over,
+            pruned,
+        }))
     }
 
     /// Why this file says it owes its rebuild (spec 101), each cause it carries in order - it
@@ -1087,7 +1123,9 @@ fn prune_in(
 /// The gathered rows are kept: they share the cursor's lifecycle, so a rebuild resumed past this
 /// prune - its swap stopped - gathers onto them and prunes again from all of them, which prunes
 /// nothing twice (the prune is a function of the gathered set, and a node or edge it dropped
-/// before is simply gone) and prunes whatever a run started since has closed.
+/// before is simply gone) and prunes whatever a run started since has closed. What each pass
+/// removed is added, in its transaction, to what the rebuild state records the rebuild's prune
+/// removed, so the rebuild reports the whole of it however many passes it took.
 fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> {
     let tx = conn.transaction().map_err(be)?;
     let gathered = tx
@@ -1104,12 +1142,18 @@ fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> 
         .map_err(be)?
         .collect::<Result<Vec<Event>, _>>()
         .map_err(be)?;
-    prune_in(
+    let pruned = prune_in(
         &tx,
         project,
         &rigger_domain::run::superseded_graph_nodes(&gathered),
         rigger_domain::run::superseded_edge_boundary(&gathered),
     )?;
+    tx.execute(
+        "UPDATE rebuild_cursor SET pruned_nodes = pruned_nodes + ?1,
+                                   reclaimed_edges = reclaimed_edges + ?2",
+        params![pruned.nodes as i64, pruned.superseded_edges as i64],
+    )
+    .map_err(be)?;
     tx.commit().map_err(be)
 }
 
@@ -4652,12 +4696,13 @@ mod tests {
             )
             .unwrap()
         };
+        let pruned = PruneStats {
+            nodes: 2,
+            superseded_edges: 1,
+        };
         let report = Some(Rebuilt {
             passed_over: 0,
-            pruned: PruneStats {
-                nodes: 2,
-                superseded_edges: 1,
-            },
+            pruned,
         });
         let dir = tempfile::tempdir().unwrap();
         let fresh = |name: &str| {
@@ -4713,7 +4758,7 @@ mod tests {
                 resumed_in_the_tail,
             ),
             (
-                report.unwrap().pruned,
+                pruned,
                 report,
                 Err("graph: Is a directory (os error 21)".to_string()),
                 report,
