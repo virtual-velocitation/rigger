@@ -4530,8 +4530,10 @@ mod tests {
     /// A rebuild whose swap stops after it put the pruned copy in place - the owed mark it must
     /// drop is a directory it cannot remove - leaves its shadow unpruned, holding its cursor and the
     /// run attribution it gathered, and no copy behind. When the log gains a window meanwhile, the
-    /// rebuild that reruns resumes that shadow without refolding a committed batch - it reads only
-    /// the window's positions - and prunes a fresh copy of it from the whole gathered attribution:
+    /// rebuild that reruns as `rigger setup` reruns it - owed whatever the ledger says, since the
+    /// window lies past the cursor the swap carried in - resumes that shadow, its swap unfinished,
+    /// without refolding a committed batch - it reads only the window's positions - and prunes a
+    /// fresh copy of it from the whole gathered attribution:
     /// a closed run's decision the active run records again governs both files, as its two
     /// recordings say; a decision the active run records is kept; a run started meanwhile closes
     /// the run that was active. Each is the graph a cold rebuild of the whole log yields and the
@@ -4581,10 +4583,11 @@ mod tests {
             let whole: Vec<Event> = log.iter().cloned().chain(window.iter().cloned()).collect();
             let mut reads_from = Vec::new();
             let mut read = Vec::new();
+            let owed = owed_against_the_log(&Projector::open(&path, "test").unwrap(), &whole);
             let resumed = Projector::rebuild(
                 &path,
                 "test",
-                true,
+                !owed.is_empty(),
                 &mut |after, sink| {
                     reads_from.push(after);
                     stream_past(&whole, after, 10, &mut |events, head| {
@@ -4612,6 +4615,7 @@ mod tests {
                 (
                     stopped,
                     through_the_swap,
+                    owed,
                     reads_from,
                     read,
                     provenance(&p),
@@ -4624,6 +4628,7 @@ mod tests {
                 (
                     Err("graph: Is a directory (os error 21)".to_string()),
                     ((true, true), (true, true), false),
+                    Vec::<&str>::new(),
                     reads,
                     window.iter().map(|e| e.position).collect::<Vec<_>>(),
                     kept.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
