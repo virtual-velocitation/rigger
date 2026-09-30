@@ -6585,7 +6585,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f2deb48cf554",
+    "id": "dup-4a57ceb2e317",
     "classification": "semantic",
     "sites": [
       {
@@ -6596,7 +6596,7 @@
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "read_forward",
-        "content_hash": "05da9761d7a6f114"
+        "content_hash": "7139f24194a996d4"
       }
     ],
     "proposed_home": "one shared `read_forward` helper (e.g. relocated into `tests/common`) rather than each file defining its own",

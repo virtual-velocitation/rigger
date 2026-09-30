@@ -550,9 +550,9 @@
     "reason": "`edge_desc` renders a graph edge; `pruned_line` renders what a run-closure prune removed, the one report `rigger reset --runs` and `rigger setup` both print; `runs_menu_line` renders the reset menu's preview of what a prune would remove and the command that reclaims it. Three different sentences over different states."
   },
   {
-    "id": "dup-f2deb48cf554",
+    "id": "dup-4a57ceb2e317",
     "disposition": "not-a-duplicate",
-    "reason": "Each store adapter's one forward read of a stream over its own backend: the sqlite `read_forward` steps one SQL statement over the events table, the kurrentdb `read_forward` takes the first events of the gRPC forward read `forward_records` pulls. One per adapter is the design (spec 101); neither can serve the other's backend."
+    "reason": "Each store adapter's one forward read of a stream over its own backend: the sqlite `read_forward` steps one SQL statement over the events table, spelling a failure as its caller asks, the kurrentdb `read_forward` takes the first events of the gRPC forward read `forward_records` pulls. One per adapter is the design (spec 101); neither can serve the other's backend."
   },
   {
     "id": "dup-a2973e00918e",
