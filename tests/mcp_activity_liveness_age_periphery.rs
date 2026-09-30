@@ -50,10 +50,9 @@
 
 mod common;
 
+use common::cli::plant_marker;
 use rigger::spawn::SpawnEvent;
 use std::io::Cursor;
-use std::path::Path;
-use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
 
@@ -61,21 +60,6 @@ use rigger::driver::workflow::Driver;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::mcpserver::Server;
-
-/// Plant a real marker file at `path`, backdated by `secs_ago` seconds - mirrors `tests/cli.rs`'s
-/// `plant_stale_marker`, generalized to an arbitrary (non-stale) age so the test can assert the
-/// consolidated view reports roughly that age rather than merely "present".
-fn plant_marker(path: &Path, secs_ago: u64) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, b"heartbeat").unwrap();
-    let when = SystemTime::now() - Duration::from_secs(secs_ago);
-    std::fs::File::options()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_modified(when)
-        .unwrap();
-}
 
 /// The `Some(path)` arm of `tool_activity`'s liveness-age loop (`mcpserver.rs`, changed by this
 /// unit's round-7 diff to skip a `None` from the now-`Option`-returning `marker_path`): a real

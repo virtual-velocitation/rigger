@@ -276,14 +276,20 @@ pub fn ingested_count(stdout: &str) -> usize {
 
 /// Write a heartbeat marker at `marker` whose mtime is an hour old - a stale liveness mark.
 pub fn plant_stale_marker(marker: &Path) {
+    plant_marker(marker, 3600);
+}
+
+/// Write a heartbeat marker at `marker` last touched `secs_ago` seconds ago, so a liveness
+/// reader judges a known age against its bound (0 is a marker touched right now).
+pub fn plant_marker(marker: &Path, secs_ago: u64) {
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(marker, b"heartbeat").unwrap();
-    let stale = SystemTime::now() - Duration::from_secs(3600);
+    let touched = SystemTime::now() - Duration::from_secs(secs_ago);
     std::fs::File::options()
         .write(true)
         .open(marker)
         .unwrap()
-        .set_modified(stale)
+        .set_modified(touched)
         .unwrap();
 }
 

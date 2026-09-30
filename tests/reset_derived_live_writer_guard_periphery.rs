@@ -1,21 +1,27 @@
-//! Integration tests for spec 71, criterion 2 - COMPACTION REFUSES LIVE WRITERS.
+//! Integration tests for the live-writer guard in front of `rigger reset --derived` (spec 71,
+//! criterion 2, whose definition of "live" spec 101, criterion 5 now owns).
 //!
 //! The recorded incident this guard exists to prevent: `rigger reset --derived` compacts the
 //! event log by keeping only each file's latest generation of the derived index, at the latest
 //! event per replay key, which leaves REVISION GAPS by design. A writer whose append cursor was
 //! built before that compaction ran can reissue one of those gap revisions; every later event
 //! then sorts BELOW the run boundary in revision order. `rigger reset --derived` must refuse to
-//! compact while run machinery looks live, naming what is live, unless the operator explicitly
+//! compact while run machinery is live, naming what is live, unless the operator explicitly
 //! overrides with `--force-live`.
+//!
+//! THE GUARD READS LIVENESS (spec 101): a run is live when a `rigger step` holds the step lock,
+//! when an in-flight spawn's liveness marker is younger than that spawn's wall-clock bound, or
+//! when a registry heartbeat for this store is younger than the idle window. Unit terminality is
+//! not a liveness signal: a run whose driver died leaves its units non-terminal forever, and that
+//! run - the one whose bloat most needs the compaction - must not need `--force-live` to get it.
 //!
 //! These tests drive the COMPILED binary against a real `.rigger/events.db`, because the
 //! criterion is an operator-facing refusal whose observable effects are the command's exit
 //! status, its message, and (for the guard's own writes) that the store is untouched.
 //!
-//! What this file OWNS (spec 71, criterion 2) and what it deliberately does not:
-//!   - OWNS: the four live signals (held step lock, a non-terminal unit between spawn rounds, an
-//!     in-flight spawn in the current run's slice, a live driver registration), the
-//!     quiet-machinery baseline, and `--force-live`.
+//! What this file OWNS and what it deliberately does not:
+//!   - OWNS: the three live signals and the definition they make up, the dead-driver run that
+//!     proceeds, the quiet-machinery baseline, and `--force-live`.
 //!   - NOT OWNED: the `--derived` prune's own selection/report/reclamation mechanics (spec 60,
 //!     criterion 5 - `tests/reset_derived_compaction*.rs`), the append-time assertion (spec 71,
 //!     criterion 1), and the validate advisory (spec 71, criterion 3).
@@ -23,6 +29,7 @@
 mod common;
 use common::git::run_git;
 
+use common::cli::plant_marker;
 use common::cli::run_rigger_envs;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
@@ -79,33 +86,6 @@ fn assert_seeded_reset_prunes(events: &[(&str, &str)], args: &[&str], why: &str)
         seed_run_events(root, events);
     }
     assert_prunes(root, args, &[], why);
-}
-
-/// Seeds `events` into a fresh project and asserts `reset --derived` refuses with a message
-/// naming every one of `names`, pruning NOTHING - the guard may only refuse, never partially act.
-fn assert_seeded_derived_refused(events: &[(&str, &str)], names: &[&str], why: &str) {
-    let dir = temp_store_project();
-    let root = dir.path();
-    seed_run_events(root, events);
-    let before = row_count(root);
-
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
-    assert!(!ok, "{why}; stdout: {out:?}");
-    assert!(
-        !err.is_empty(),
-        "the CLI failure must carry a message an operator can act on"
-    );
-    for name in names {
-        assert!(
-            err.contains(name),
-            "the refusal must name {name:?}; stderr: {err:?}"
-        );
-    }
-    assert_eq!(
-        row_count(root),
-        before,
-        "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
-    );
 }
 
 /// A machine-global registry under a fresh `XDG_STATE_HOME` holding one entry for `project` at
@@ -179,17 +159,182 @@ rigger::test_cases! {
         &["reset", "--derived"],
         "a PRIOR run's unanswered spawn/non-terminal unit must not block THIS run's compaction",
     );
-    /// `--force-live` also skips the guard while a spawn is in flight, pruning as normal.
-    reset_derived_force_live_compacts_despite_an_in_flight_spawn: assert_seeded_reset_prunes(
+}
+
+// ---------------------------------------------------------------------------------------
+// The definition (spec 101, criterion 5): the guard reads liveness, never unit terminality
+// ---------------------------------------------------------------------------------------
+
+/// The run a dead driver leaves behind: every unit non-terminal. `a` is mid-spawn (requested,
+/// never answered) with a 300 s wall-clock bound, `b` sits between spawn rounds (its spawn
+/// answered, a marker it touched moments before answering still on disk), and `c` was parked
+/// but no worker ever touched its marker.
+const DEAD_DRIVER_RUN: &[(&str, &str)] = &[
+    ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
+    ("UnitStarted", r#"{"id":"a","branch":"rigger/u/a"}"#),
+    ("UnitStarted", r#"{"id":"b","branch":"rigger/u/b"}"#),
+    ("UnitStarted", r#"{"id":"c","branch":"rigger/u/c"}"#),
+    (
+        "SpawnRequested",
+        r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go","max_wall_clock":300}"#,
+    ),
+    (
+        "SpawnRequested",
+        r#"{"id":"b/implementer#0","unit":"b","stage":"implement","prompt":"go","max_wall_clock":300}"#,
+    ),
+    ("SpawnResult", r#"{"id":"b/implementer#0","output":"done"}"#),
+    (
+        "SpawnRequested",
+        r#"{"id":"c/implementer#0","unit":"c","stage":"implement","prompt":"go","max_wall_clock":300}"#,
+    ),
+];
+
+/// One of the three signals that make a run live (spec 101), by what a refusal names it with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Signal(&'static str);
+
+/// A `rigger step` holds the step lock.
+const STEP_LOCK: Signal = Signal("step.lock");
+/// In-flight spawn `a/implementer#0`'s liveness marker is younger than its 300 s bound.
+const SPAWN_MARKER: Signal = Signal("a/implementer#0");
+/// This store's registry entry has a heartbeat younger than `registry::DEFAULT_IDLE_MS`.
+const HEARTBEAT: Signal = Signal("registration");
+const ALL_SIGNALS: [Signal; 3] = [STEP_LOCK, SPAWN_MARKER, HEARTBEAT];
+
+/// What one `rigger` invocation did: its stdout, stderr and success, and the event log's row
+/// count before and after it.
+struct Outcome {
+    out: String,
+    err: String,
+    ok: bool,
+    rows_before: i64,
+    rows_after: i64,
+}
+
+/// Runs `rigger <args>` over [`DEAD_DRIVER_RUN`] with exactly the `fresh` signals live and every
+/// other one stale or free: the step lock free, `a`'s marker touched 301 s ago (just past its
+/// 300 s bound), the registry heartbeat a minute past the idle window. `b`'s marker is always
+/// touched just now - an answered spawn has ended whatever its marker says - and `c` has none.
+fn reset_over_a_dead_drivers_run(fresh: &[Signal], args: &[&str]) -> Outcome {
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_run_events(root, DEAD_DRIVER_RUN);
+
+    let scratch = tempfile::tempdir().expect("create the scratch root the markers live under");
+    let scratch_root = scratch.path().to_str().unwrap();
+    let marker = |id: &str| rigger::liveness::marker_path(scratch_root, "r1", id).unwrap();
+    let a_age = if fresh.contains(&SPAWN_MARKER) {
+        0
+    } else {
+        301
+    };
+    plant_marker(&marker("a/implementer#0"), a_age);
+    plant_marker(&marker("b/implementer#0"), 0);
+
+    let now_ms = registry::now_ms();
+    let heartbeat_ms = if fresh.contains(&HEARTBEAT) {
+        now_ms
+    } else {
+        now_ms - registry::DEFAULT_IDLE_MS - 60_000
+    };
+    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
+    let (state_home, _entry) = seed_registry("proj", &toplevel, heartbeat_ms);
+
+    let lock = fresh.contains(&STEP_LOCK).then(|| hold_step_lock(root));
+
+    let rows_before = row_count(root);
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        args,
         &[
-            ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
-            (
-                "SpawnRequested",
-                r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go"}"#,
-            ),
+            ("RIGGER_TMPDIR", scratch_root),
+            ("XDG_STATE_HOME", state_home.path().to_str().unwrap()),
         ],
-        &["reset", "--derived", "--force-live"],
-        "--force-live must skip the guard even with an in-flight spawn",
+    );
+    drop(lock);
+    Outcome {
+        out,
+        err,
+        ok,
+        rows_before,
+        rows_after: row_count(root),
+    }
+}
+
+/// `reset --derived` over the dead driver's run refuses while `live` alone is fresh, naming it
+/// and nothing else - not the stale signals, not the answered or marker-less spawns, never a
+/// non-terminal unit - and prunes NOTHING.
+fn assert_refused_naming_only(live: Signal) {
+    let o = reset_over_a_dead_drivers_run(&[live], &["reset", "--derived"]);
+    let err = &o.err;
+    assert!(!o.ok, "a fresh {live:?} must refuse; stdout: {:?}", o.out);
+    assert!(
+        err.contains(live.0),
+        "the refusal must name the live {live:?}; stderr: {err:?}"
+    );
+    for quiet in ALL_SIGNALS.into_iter().filter(|s| *s != live) {
+        assert!(
+            !err.contains(quiet.0),
+            "a stale or free {quiet:?} is not live and must not be named; stderr: {err:?}"
+        );
+    }
+    for not_live in ["b/implementer#0", "c/implementer#0", "not yet terminal"] {
+        assert!(
+            !err.contains(not_live),
+            "{not_live:?} is not a liveness signal and must not be named; stderr: {err:?}"
+        );
+    }
+    assert!(
+        err.contains("--force-live"),
+        "the refusal must name the override; stderr: {err:?}"
+    );
+    assert_eq!(
+        o.rows_after, o.rows_before,
+        "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
+    );
+}
+
+/// Every unit non-terminal, yet the step lock is free, every in-flight marker is older than its
+/// bound and the registry heartbeat is older than the idle window: nothing is driving the run, so
+/// `reset --derived` compacts without `--force-live`.
+#[test]
+fn reset_derived_proceeds_over_a_dead_drivers_non_terminal_run_without_force_live() {
+    let o = reset_over_a_dead_drivers_run(&[], &["reset", "--derived"]);
+    assert!(
+        o.ok,
+        "a run whose driver is dead must compact without --force-live; stderr: {}",
+        o.err
+    );
+    assert!(
+        o.out.contains("reset --derived: pruned"),
+        "must print the usual prune report; got {:?}",
+        o.out
+    );
+}
+
+rigger::test_cases! {
+    /// A held step lock alone makes the run live.
+    reset_derived_refuses_the_dead_drivers_run_while_a_step_holds_the_lock:
+        assert_refused_naming_only(STEP_LOCK);
+    /// An in-flight spawn whose marker is younger than its wall-clock bound alone makes the run
+    /// live.
+    reset_derived_refuses_the_dead_drivers_run_while_an_in_flight_spawns_marker_is_fresh:
+        assert_refused_naming_only(SPAWN_MARKER);
+    /// A registry heartbeat for this store younger than the idle window alone makes the run live.
+    reset_derived_refuses_the_dead_drivers_run_while_its_registry_heartbeat_is_fresh:
+        assert_refused_naming_only(HEARTBEAT);
+}
+
+/// `--force-live` skips the check entirely: with all three signals live it still compacts and
+/// prints the ordinary prune report.
+#[test]
+fn reset_derived_force_live_compacts_while_every_signal_is_live() {
+    let o = reset_over_a_dead_drivers_run(&ALL_SIGNALS, &["reset", "--derived", "--force-live"]);
+    assert!(o.ok, "--force-live must skip the guard; stderr: {}", o.err);
+    assert!(
+        o.out.contains("reset --derived: pruned"),
+        "must print the usual prune report; got {:?}",
+        o.out
     );
 }
 
@@ -279,64 +424,42 @@ fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_l
 }
 
 // ---------------------------------------------------------------------------------------
-// Signal 2: a non-terminal unit in the current run - live BETWEEN spawn rounds
+// Fail-safe: an unreadable signal must refuse, never read as quiet
 // ---------------------------------------------------------------------------------------
 
-rigger::test_cases! {
-    /// A unit that has STARTED and had its only spawn ANSWERED, but has neither integrated nor
-    /// escalated, is live BETWEEN rounds (its next spawn - e.g. a reviewer - has not been parked
-    /// yet). An in-flight-spawn check alone would miss this; `reset --derived` must still refuse,
-    /// naming the unit, and prune nothing.
-    reset_derived_refuses_a_non_terminal_unit_between_spawn_rounds_and_prunes_nothing: assert_seeded_derived_refused(
-        &[
-            ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
-            ("UnitStarted", r#"{"id":"a","branch":"rigger/u/a"}"#),
-            (
-                "SpawnRequested",
-                r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go"}"#,
-            ),
-            ("SpawnResult", r#"{"id":"a/implementer#0","output":"done"}"#),
-        ],
-        &["a", "not yet terminal"],
-        "reset --derived must refuse a non-terminal unit between spawn rounds",
-    );
-    /// A recorded spawn request with no result yet, in the CURRENT run, refuses compaction naming
-    /// the spawn id - and PRUNES NOTHING (the refusal is total, never partial).
-    reset_derived_refuses_an_in_flight_spawn_naming_its_id_and_prunes_nothing: assert_seeded_derived_refused(
-        &[
-            ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
-            (
-                "SpawnRequested",
-                r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go"}"#,
-            ),
-        ],
-        &["a/implementer#0"],
-        "reset --derived must refuse while a spawn is in flight",
-    );
-    /// A malformed `SpawnRequested` body in the current run's slice makes the in-flight-spawn read
-    /// fail to decode. The pure-composition unit test already proves the internal function returns
-    /// `Err`; this periphery test proves the FULL wire end to end - that `cmd_reset`'s own error
-    /// propagation actually surfaces that as a failed compiled-binary invocation (a non-zero exit and
-    /// a non-empty message on stderr), not a swallowed error read as "nothing in flight" by some
-    /// layer between the guard and the process exit code. The refusal must be TOTAL: the malformed
-    /// event, and everything else in the log, survives untouched.
+/// A malformed `SpawnRequested` body in the current run's slice makes the in-flight-spawn read
+/// fail to decode. The pure-composition unit test already proves the internal function returns
+/// `Err`; this periphery test proves the FULL wire end to end - that `cmd_reset`'s own error
+/// propagation actually surfaces that as a failed compiled-binary invocation (a non-zero exit and
+/// a non-empty message on stderr), not a swallowed error read as "nothing in flight" by some
+/// layer between the guard and the process exit code. The refusal must be TOTAL: the malformed
+/// event, and everything else in the log, survives untouched.
+#[test]
+fn reset_derived_fails_the_cli_on_a_malformed_current_run_spawn_event_and_prunes_nothing() {
+    let dir = temp_store_project();
+    let root = dir.path();
     // A `SpawnRequested` body missing every field `spawn::recorded` needs to decode it - valid
     // JSON, but not a valid request, so the current-run in-flight-spawn read fails outright
     // rather than seeing "no spawns in flight".
-    reset_derived_fails_the_cli_on_a_malformed_current_run_spawn_event_and_prunes_nothing: assert_seeded_derived_refused(
-        &[("SpawnRequested", "{}")],
-        &[],
-        "a malformed current-run spawn event must fail the CLI, never read as quiet",
+    seed_run_events(root, &[("SpawnRequested", "{}")]);
+    let before = row_count(root);
+
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
+    assert!(
+        !ok,
+        "a malformed current-run spawn event must fail the CLI, never read as quiet; stdout: \
+         {out:?}"
+    );
+    assert!(
+        !err.is_empty(),
+        "the CLI failure must carry a message an operator can act on"
+    );
+    assert_eq!(
+        row_count(root),
+        before,
+        "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
     );
 }
-
-// ---------------------------------------------------------------------------------------
-// Signal 3: in-flight spawns in the current run's slice
-// ---------------------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------------------
-// Fail-safe: an unreadable signal must refuse, never read as quiet
-// ---------------------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------------------
 // Fail-safe: a step-lock probe fault (not a genuinely held lock) must refuse, never proceed
@@ -479,27 +602,6 @@ fn reset_derived_never_deletes_a_stale_foreign_registry_entrys_file() {
 // The override: --force-live
 // ---------------------------------------------------------------------------------------
 
-/// `--force-live` skips the guard entirely: it compacts even while a step lock is held, and
-/// prints the ordinary prune report exactly as the quiet path does.
-#[test]
-fn reset_derived_force_live_compacts_despite_a_held_step_lock() {
-    use fs2::FileExt;
-    let dir = temp_store_project();
-    let root = dir.path();
-
-    let lock_file = hold_step_lock(root);
-
-    assert_prunes(
-        root,
-        &["reset", "--derived", "--force-live"],
-        &[],
-        "--force-live must skip the guard even while a step lock is held",
-    );
-
-    FileExt::unlock(&lock_file).unwrap();
-    drop(lock_file);
-}
-
 /// `--force-live` composed with `--runs` alone (no `--derived`) is inert - there is nothing for
 /// it to override, so `reset --runs --force-live` behaves byte-identically to plain
 /// `reset --runs`.
@@ -535,12 +637,23 @@ fn runs_composed_with_a_refused_derived_still_completes_its_own_prune() {
             ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
             (
                 "SpawnRequested",
-                r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go"}"#,
+                r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go","max_wall_clock":300}"#,
             ),
         ],
     );
+    // The spawn's worker touched its marker just now: the run is live.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_root = scratch.path().to_str().unwrap();
+    plant_marker(
+        &rigger::liveness::marker_path(scratch_root, "r1", "a/implementer#0").unwrap(),
+        0,
+    );
 
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--runs", "--derived"], &[]);
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["reset", "--runs", "--derived"],
+        &[("RIGGER_TMPDIR", scratch_root)],
+    );
     assert!(
         !ok,
         "the composed command must still fail overall (the --derived guard refuses); \
