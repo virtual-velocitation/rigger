@@ -383,7 +383,7 @@ impl Projector {
     ) -> Result<Option<Rebuilt>, Error> {
         let mut live = open_connection(path).map_err(be)?;
         let mut passed_over = 0;
-        let shadow_path = format!("{path}.rebuild");
+        let shadow_path = shadow_of(path);
         let mark = owed_mark(path);
         let swap_unfinished = Path::new(&shadow_path).exists();
         if owed || swap_unfinished || !owed_by_file(&live, &mark)?.is_empty() {
@@ -496,6 +496,38 @@ impl Projector {
             Some(mark) => std::fs::remove_file(mark).map_err(be),
             None => Ok(()),
         }
+    }
+
+    /// Remove the stale pruned copy ([`pruned_copy`]) of the graph file at `path` that a rebuild's
+    /// stopped swap left, and answer whether there was one - unless a rebuild holds its shadow, in
+    /// which case the copy is that rebuild's own and is kept. A rebuild holds its shadow's exclusive
+    /// lock from before it writes a copy until after it removes it, so the lock this takes on the
+    /// shadow, without waiting, is free exactly when no rebuild is in its fold or its swap; the copy
+    /// is removed under that lock, and the shadow itself is never removed here, since a rebuild
+    /// resumes from it.
+    pub fn forget_stale_copy(path: &str) -> Result<bool, Error> {
+        let copy = pruned_copy(path);
+        if !Path::new(&copy).exists() {
+            return Ok(false);
+        }
+        let shadow = shadow_of(path);
+        if !Path::new(&shadow).exists() {
+            remove_copy(&copy)?;
+            return Ok(true);
+        }
+        let conn =
+            Connection::open_with_flags(&shadow, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+                .map_err(be)?;
+        conn.busy_timeout(std::time::Duration::ZERO).map_err(be)?;
+        let held = match Transaction::new_unchecked(&conn, TransactionBehavior::Exclusive) {
+            Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => {
+                return Ok(false)
+            }
+            held => held.map_err(be)?,
+        };
+        remove_copy(&copy)?;
+        drop(held);
+        Ok(true)
     }
 
     /// Fold `events` in ONE transaction, rolled back whole on any failure.
@@ -1167,8 +1199,13 @@ fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> 
 /// exists only between the start and the end of one swap, and one an interrupted swap left is
 /// stale - removed by the next rebuild ([`prune_a_copy`]) and by `rigger reset`
 /// ([`Projector::forget_stale_copy`]), never resumed or read.
-fn pruned_copy(path: &str) -> String {
+pub fn pruned_copy(path: &str) -> String {
     format!("{path}.pruned")
+}
+
+/// The shadow file a [`Projector::rebuild`] of the graph file at `path` folds into and resumes.
+fn shadow_of(path: &str) -> String {
+    format!("{path}.rebuild")
 }
 
 /// Remove the pruned copy at `copy`, if there is one.

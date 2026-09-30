@@ -760,6 +760,16 @@ fn live_writer_facts(
 /// node-id lookup (the index-keying contract `run_attribution` documents - a filtered slice
 /// would misattribute); the derived node ids are then handed to the prune.
 fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Option<&Path>) -> Res {
+    // The private pruned copy a rebuild's stopped swap left is a graph file with no other reaper
+    // but the next rebuild: removed first, whether or not the graph goes on to refuse the prune,
+    // and kept while a rebuild holds its shadow (spec 101).
+    let graph_db = loc.file("graph.db");
+    if Projector::forget_stale_copy(&graph_db)? {
+        println!(
+            "reset --runs: removed {}, the pruned copy a rebuild's stopped swap left beside graph.db",
+            contextgraph::sqlite::pruned_copy("graph.db")
+        );
+    }
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
@@ -771,7 +781,7 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Opt
     // run) reclaims no edge, so LIVE and recent history are both untouched.
     let boundary = superseded_edge_boundary(&events);
 
-    let graph = open_graph(&loc.file("graph.db"), &loc.identity(), "reset --runs")?;
+    let graph = open_graph(&graph_db, &loc.identity(), "reset --runs")?;
     let facts = live_writer_facts(loc, selection, registry_dir, &events)?;
     close_landed_units(loc, &store, &graph, &events, &facts)?;
     let removed = graph.prune(&drop, boundary)?;
