@@ -16,6 +16,9 @@
 .rigger/grounding/
 # The `rigger step` serialization lock (fs2 flock target): runtime-only, per-machine.
 .rigger/step.lock
+# The graph rebuild lock beside graph.db (spec 101, an OS file-lock target that stands for as
+# long as graph.db does): runtime-only, per-machine.
+.rigger/graph.db.lock
 # The always-on dash's discoverability breadcrumbs (spec 39): the serving URL and the
 # port+pid marker, rewritten on every run. Runtime-only, per-machine, never committed -
 # left tracked they get swept into unit commits and collide with the live dash's rewrites

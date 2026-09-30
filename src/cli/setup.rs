@@ -906,13 +906,13 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     }
 }
 
-/// Read why the `graph.db` whose rebuild lock is `held` owes its rebuild - its own records, and its ledger
-/// against the positions `live` streams ([`Projector::owed_against`]) - say so naming each cause,
-/// and pay it by rebuilding from `source`, which also finishes a rebuild's own unfinished work (a
-/// standing shadow, or a swapped-in cursor's tail) with no cause to name, since the ledger owes
-/// none of it; print how far along the rebuild is, what its run-closure prune removed from the
-/// rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own) and how many events it
-/// passed over because the fold rejects their payload; report whether it rebuilt.
+/// Read why the `graph.db` whose rebuild lock is `held` owes its rebuild - its own records, and
+/// its ledger against the positions `live` streams ([`Projector::owed_against`]) - say so naming
+/// each cause, and pay it by rebuilding from `source`, which also finishes a rebuild's own
+/// unfinished work (a standing shadow, or a swapped-in cursor's tail) with no cause to name, since
+/// the ledger owes none of it; print how far along the rebuild is, what its run-closure prune
+/// removed from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own) and how
+/// many events it passed over because the fold rejects their payload; report whether it rebuilt.
 fn pay_owed_rebuild(
     held: &contextgraph::sqlite::RebuildLock,
     project: &str,
