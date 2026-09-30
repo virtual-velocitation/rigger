@@ -5335,15 +5335,6 @@ fn after_rebuilt(out: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The line `rigger setup` prints for the prune its rebuild made: `nodes` dead-run nodes and
-/// `edges` superseded edges.
-fn rebuild_pruned(nodes: usize, edges: usize) -> String {
-    format!(
-        "pruned {nodes} dead-run node(s) and reclaimed {edges} superseded edge(s) from the rebuilt \
-         graph"
-    )
-}
-
 /// The opening of the report `rigger reset --runs` prints in `out`: what it pruned, up to where it
 /// names the graph it pruned.
 fn reset_runs_pruned(out: &str) -> Option<String> {
@@ -5374,7 +5365,10 @@ fn setup_reports_the_prune_its_rebuild_made_as_reset_runs_reports_it() {
                 "reset --runs: pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s)"
                     .to_string()
             ),
-            Some(rebuild_pruned(3, 1)),
+            Some(
+                "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph"
+                    .to_string()
+            ),
         ),
         "setup reports the prune reset --runs reports, in its words; stdout: {out} stderr: {err}"
     );
@@ -5407,7 +5401,10 @@ fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_count
             false,
             None,
             true,
-            Some(rebuild_pruned(3, 1)),
+            Some(
+                "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph"
+                    .to_string()
+            ),
             vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
         ),
         "the stopped setup fails before its rebuilt line, and the rerun reports the prune it \
@@ -5466,7 +5463,10 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
         ),
         (
             true,
-            Some(rebuild_pruned(0, 0)),
+            Some(
+                "pruned 0 dead-run node(s) and reclaimed 0 superseded edge(s) from the rebuilt graph"
+                    .to_string()
+            ),
             vec![
                 "d-new".to_string(),
                 "d-old".to_string(),
