@@ -171,17 +171,20 @@ impl Store {
         Ok(renamed as usize)
     }
 
-    /// Prune the DUPLICATION an already-bloated log accumulated in its derived index, and reclaim
-    /// the disk it held: for each type `identity` covers, keep the LATEST event per distinct
-    /// content key within each stream under `stream_prefix`, carry that key's earliest valid-time
-    /// onto the recording it keeps, delete every earlier recording, then `VACUUM` so the file
-    /// actually shrinks.
+    /// Prune the superseded recordings a log's derived index accreted, and reclaim the disk they
+    /// held: for each type `identity` covers, within each stream under `stream_prefix`, keep only
+    /// each batch identity's LATEST generation and, of that generation, the latest recording per
+    /// content key (property 1); carry each re-asserted fact's earliest valid-time onto the
+    /// recording that keeps it (property 2); delete every other recording; then `VACUUM` so the
+    /// file actually shrinks.
     ///
-    /// This is the COMPACTION half of spec 60 - the supported way to shed duplication a store
-    /// accreted BEFORE the ingest dedup existed. The dedup above the port stops new duplication;
-    /// this removes the pile already on disk. Deleting rows and reclaiming a file is a mechanic of
-    /// the embedded store, so it lives here rather than on the port: a backend that cannot do it
-    /// says so to the operator instead of silently reporting a prune that did not happen.
+    /// This is the COMPACTION half of spec 60 - the supported way to shed what edits and the
+    /// pre-dedup ingest accreted: every generation a later edit of its file superseded, and the
+    /// duplicates a store recorded BEFORE the ingest dedup existed. The dedup above the port stops
+    /// new duplicates; this removes both piles already on disk. Deleting rows and reclaiming a
+    /// file is a mechanic of the embedded store, so it lives here rather than on the port: a
+    /// backend that cannot do it says so to the operator instead of silently reporting a prune
+    /// that did not happen.
     ///
     /// It takes the [`ContentIdentity`] policy value, rather than a metadata-key string plus a type list plus a carry list: the policy already
     /// exists as one injected value, and re-spelling its fields as positional parameters is a
