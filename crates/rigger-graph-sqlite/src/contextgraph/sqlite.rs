@@ -119,11 +119,12 @@ DROP TABLE IF EXISTS proofs;
 /// swap until the tail it owes is folded, in the live one, born together in one transaction and
 /// dropped together in one ([`DROP_REBUILD_STATE`]) once the tail is folded - never apart:
 /// - `rebuild_cursor`: the last position the rebuild folded, and what its run-closure prune removed
-///   ([`prune_run_closure`]), committed with that prune, so a rebuild resumed past its prune still
-///   reports what it removed ([`Rebuilt::pruned`]).
+///   ([`prune_run_closure`]) - zero in the shadow, which is never pruned, and the one prune's counts
+///   in the pruned copy the swap puts in place of the live file, so a rebuild interrupted in its
+///   tail still reports what that prune removed ([`Rebuilt::pruned`]).
 /// - `rebuild_run_closure`: the run attribution it gathers as it folds (spec 101) - every folded
 ///   event of the [`rigger_domain::run::RUN_CLOSURE_TYPES`], committed with the batch that folded
-///   it - so every pass that reaches the swap, a resumed one included, re-derives the run-closure
+///   it - so every pass that reaches the swap, a resumed one included, derives the run-closure
 ///   prune from the whole of it ([`prune_run_closure`]).
 const REBUILD_STATE: &str = "
 BEGIN;
@@ -336,8 +337,9 @@ impl Projector {
     /// over because the fold rejects their payload (see `fold_source`) and what its run-closure
     /// prune removed - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
     /// read of its ledger against the log), or because the file itself records an older fold rule
-    /// or carries the [`owed_mark`] a failed fold left, both read again here; the mark is dropped
-    /// once the rebuilt file is in place. The rebuild folds `source` - the log's live selection, whose cost is bounded by the
+    /// or carries the [`owed_mark`] a failed fold left, both read again here, or because the
+    /// shadow a rebuild whose swap stopped left still stands, whose swap it finishes before any
+    /// tail; the mark is dropped once the rebuilt file is in place. The rebuild folds `source` - the log's live selection, whose cost is bounded by the
     /// live projection rather than the log's age - into a fresh SHADOW file beside `path`, in the
     /// batches `source` hands it, each committed with the last position it folded and the run
     /// attribution it gathered ([`REBUILD_STATE`]) and reported to `progress`; the live file is only
@@ -349,24 +351,29 @@ impl Projector {
     /// backup rather than a rename of the file: a process holding the live file open (an agent's
     /// MCP session, the dashboard) keeps a valid connection and reads the rebuilt file from its
     /// next query, where a file renamed over one it holds would leave it reading the old file
-    /// through a write-ahead log the new one shares. Before the swap the shadow is pruned as
-    /// `rigger reset --runs` prunes the live graph ([`prune_run_closure`]), and what that prune
-    /// removed is reported: read from the rebuild state, where it was committed with the prune, so
-    /// a rebuild resumed past its prune reports what the prune removed, never zero.
+    /// through a write-ahead log the new one shares. What is copied in is not the shadow itself
+    /// but a private copy of it pruned as `rigger reset --runs` prunes the live graph
+    /// ([`prune_a_copy`]), and what that prune removed is reported: read from the rebuild state,
+    /// where it was stamped on the copy with the prune.
     ///
-    /// The shadow is held under an exclusive lock for the whole fold, so a second rebuild racing
-    /// this one is refused as busy rather than interleaved. An interrupted rebuild leaves the live
-    /// file untouched, and the next one resumes from the shadow's last committed batch without
-    /// refolding it - with the run attribution the shadow gathered, which lives as long as its
-    /// cursor, so the resumed pass re-derives the prune from the whole of it however far the one
-    /// before it got, its prune and its swap included ([`open_shadow`]).
+    /// The shadow is never pruned, because the drop set is not monotone in the log: an id a closed
+    /// run recorded moves from drop to keep when the active run records it again, and a prune
+    /// cannot be undone. So the shadow stays a pure fold of the live selection, held under an
+    /// exclusive lock for the whole fold and swap, so a second rebuild racing this one is refused
+    /// as busy rather than interleaved. An interrupted rebuild leaves the live file untouched, or
+    /// swapped whole, and the next one resumes from the shadow's last committed batch without
+    /// refolding it ([`open_shadow`]) and prunes a fresh copy from the whole run attribution the
+    /// shadow gathered - the same graph and the same counts a cold rebuild reaches, however far the
+    /// pass before it got.
     ///
     /// An emit that found the old file owing appended without folding, and did so before the
     /// copy: so after it `source` is read once more from the cursor alone, into the live file,
     /// and only then is the cursor dropped - the per-position guard makes that tail meet an emit
-    /// that folded its own event exactly once. A rebuild interrupted in that tail finishes it on
-    /// the next call. Only then is the rebuild state dropped, the cursor and the attribution
-    /// together.
+    /// that folded its own event exactly once. A rebuild interrupted in that tail finishes exactly
+    /// the tail on the next call, which `rigger setup` makes because the ledger owes the tail to
+    /// the swapped-in cursor rather than to a lost fold ([`Projector::owed_against`]), and reports
+    /// the counts stamped with the swap. Only then is the rebuild state dropped, the cursor and the
+    /// attribution together.
     pub fn rebuild(
         path: &str,
         project: &str,
@@ -378,34 +385,34 @@ impl Projector {
         let mut passed_over = 0;
         let shadow_path = format!("{path}.rebuild");
         let mark = owed_mark(path);
-        if owed || !owed_by_file(&live, &mark)?.is_empty() {
+        let swap_unfinished = Path::new(&shadow_path).exists();
+        if owed || swap_unfinished || !owed_by_file(&live, &mark)?.is_empty() {
             let mut shadow = open_shadow(&shadow_path)?;
             schema(&shadow, project)?;
             shadow.execute_batch(REBUILD_STATE).map_err(be)?;
             passed_over += fold_source(&mut shadow, project, source, progress, true)?;
             // The graph the live one would hold, never a larger one: the prune `rigger reset
-            // --runs` applies, re-derived from what the fold gathered, before anything is swapped.
-            prune_run_closure(&mut shadow, project)?;
-            shadow
-                .pragma_update(None, "user_version", PROJECTION_VERSION)
-                .map_err(be)?;
+            // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
+            let copy = pruned_copy(path);
+            let pruned = prune_a_copy(&shadow, &copy, project)?;
             // Every page in one step: one write transaction on the live file.
-            rusqlite::backup::Backup::new(&shadow, &mut live)
+            rusqlite::backup::Backup::new(&pruned, &mut live)
                 .map_err(be)?
                 .run_to_completion(i32::MAX, std::time::Duration::from_millis(50), None)
                 .map_err(be)?;
+            drop(pruned);
+            remove_copy(&copy)?;
             // Paid: the swapped-in file holds every event the source held. Dropped before the
             // tail, so a fold lost while the tail runs marks the file owed again.
             if let Some(mark) = mark.filter(|m| m.exists()) {
                 std::fs::remove_file(mark).map_err(be)?;
             }
+            // The swap ends with its shadow, closed first so its journal goes with it: until the
+            // shadow is gone a rerun resumes it, and from then on only the tail is owed.
+            drop(shadow);
+            std::fs::remove_file(&shadow_path).map_err(be)?;
         } else if !rebuild_tail_owed(&live)? {
             return Ok(None);
-        }
-        // Closed above, so its journal is gone with it; after a crash past the copy it is the
-        // leftover the tail's rerun clears.
-        if Path::new(&shadow_path).exists() {
-            std::fs::remove_file(&shadow_path).map_err(be)?;
         }
         passed_over += fold_source(&mut live, project, source, &mut |_| {}, false)?;
         let pruned = live
@@ -450,15 +457,18 @@ impl Projector {
         Ok(causes)
     }
 
-    /// Whether a position `live` streams is missing from this file's `applied` ledger.
+    /// Whether a position `live` streams is missing from this file's `applied` ledger - one past
+    /// the cursor a [`Projector::rebuild`] swapped in is that rebuild's tail, which it owes and
+    /// finishes, never a lost fold.
     fn misses_any(&self, live: &mut PositionSource) -> Result<bool, Error> {
         let conn = self.conn.lock().unwrap();
+        let owed_through = rebuild_tail_from(&conn)?.unwrap_or(Position::MAX);
         let mut folded = conn
             .prepare("SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)")
             .map_err(be)?;
         let mut missing = false;
         live(&mut |positions| {
-            for &position in positions {
+            for &position in positions.iter().filter(|&&p| p <= owed_through) {
                 missing = missing
                     || !folded
                         .query_row([position as i64], |r| r.get::<_, bool>(0))
@@ -1056,7 +1066,7 @@ fn layered_call_walk(
 }
 
 /// The run-closure prune [`Projector::prune`] applies, inside the caller's transaction `tx` on the
-/// graph of `project`: the one body `rigger reset --runs` and a cold rebuild's shadow both prune
+/// graph of `project`: the one body `rigger reset --runs` and a rebuild's pruned copy both prune
 /// through.
 fn prune_in(
     tx: &Transaction,
@@ -1115,17 +1125,14 @@ fn prune_in(
     })
 }
 
-/// Apply to the rebuilt shadow behind `conn` the run-closure prune `rigger reset --runs` applies
-/// (spec 21, spec 101): the drop set and the superseded-edge boundary re-derived, through the one
+/// Apply to the pruned copy behind `conn` the run-closure prune `rigger reset --runs` applies
+/// (spec 21, spec 101): the drop set and the superseded-edge boundary derived, through the one
 /// rule ([`rigger_domain::run::superseded_graph_nodes`], [`rigger_domain::run::superseded_edge_boundary`]),
 /// from the WHOLE run attribution the shadow fold gathered ([`REBUILD_STATE`]), pruned through the
 /// one prune body ([`prune_in`]) - so the rebuilt graph never resurrects a node a prune dropped.
-/// The gathered rows are kept: they share the cursor's lifecycle, so a rebuild resumed past this
-/// prune - its swap stopped - gathers onto them and prunes again from all of them, which prunes
-/// nothing twice (the prune is a function of the gathered set, and a node or edge it dropped
-/// before is simply gone) and prunes whatever a run started since has closed. What each pass
-/// removed is added, in its transaction, to what the rebuild state records the rebuild's prune
-/// removed, so the rebuild reports the whole of it however many passes it took.
+/// The copy is always of an unpruned shadow, so this is the one prune of the whole live selection
+/// however many passes the rebuild took, and what it removed is stamped, in its transaction, as
+/// the counts the rebuild state records - the cold rebuild's counts, never a sum.
 fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> {
     let tx = conn.transaction().map_err(be)?;
     let gathered = tx
@@ -1149,18 +1156,52 @@ fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> 
         rigger_domain::run::superseded_edge_boundary(&gathered),
     )?;
     tx.execute(
-        "UPDATE rebuild_cursor SET pruned_nodes = pruned_nodes + ?1,
-                                   reclaimed_edges = reclaimed_edges + ?2",
+        "UPDATE rebuild_cursor SET pruned_nodes = ?1, reclaimed_edges = ?2",
         params![pruned.nodes as i64, pruned.superseded_edges as i64],
     )
     .map_err(be)?;
     tx.commit().map_err(be)
 }
 
-/// Open the rebuild's shadow file at `path`, held under an exclusive lock for the whole fold so a
-/// second rebuild racing this one is refused as busy rather than interleaved. A shadow is resumed
-/// only together with the run attribution it gathered: one holding a cursor without it could
-/// re-derive the prune from part of that attribution alone, so it is removed and opened again
+/// The private copy a [`Projector::rebuild`] of the graph file at `path` prunes and swaps in: it
+/// exists only between the start and the end of one swap, and one an interrupted swap left is
+/// stale - removed by the next rebuild ([`prune_a_copy`]) and by `rigger reset`
+/// ([`Projector::forget_stale_copy`]), never resumed or read.
+fn pruned_copy(path: &str) -> String {
+    format!("{path}.pruned")
+}
+
+/// Remove the pruned copy at `copy`, if there is one.
+fn remove_copy(copy: &str) -> Result<(), Error> {
+    match std::fs::remove_file(copy) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(be(e)),
+        _ => Ok(()),
+    }
+}
+
+/// Derive the graph a rebuild swaps in from the shadow behind `shadow`, which stays unpruned: a
+/// stale copy at `copy` is removed, the shadow is written to a fresh one there (`VACUUM INTO`),
+/// that copy is pruned from the whole gathered attribution ([`prune_run_closure`]) and stamped
+/// with the current [`PROJECTION_VERSION`], and the open copy is handed back for the swap. The
+/// caller holds the shadow's exclusive lock throughout, so no other rebuild meets the copy; the
+/// copy is opened without being created, so one removed under it is an error, never an empty
+/// graph.
+fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connection, Error> {
+    remove_copy(copy)?;
+    shadow.execute("VACUUM INTO ?1", [copy]).map_err(be)?;
+    let mut pruned = Connection::open_with_flags(copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(be)?;
+    prune_run_closure(&mut pruned, project)?;
+    pruned
+        .pragma_update(None, "user_version", PROJECTION_VERSION)
+        .map_err(be)?;
+    Ok(pruned)
+}
+
+/// Open the rebuild's shadow file at `path`, held under an exclusive lock for the whole fold and
+/// swap so a second rebuild racing this one is refused as busy rather than interleaved. A shadow
+/// is resumed only together with the run attribution it gathered: one holding a cursor without it
+/// could derive the prune from part of that attribution alone, so it is removed and opened again
 /// empty, to be folded from the start.
 fn open_shadow(path: &str) -> Result<Connection, Error> {
     let lock = || -> Result<Connection, Error> {
@@ -1201,12 +1242,10 @@ fn fold_source(
     progress: &mut dyn FnMut(RebuildProgress),
     gather_run_closure: bool,
 ) -> Result<usize, Error> {
-    let start: i64 = conn
-        .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
-        .map_err(be)?;
+    let start = rebuild_cursor(conn)?;
     let mut folded = 0;
     let mut passed_over = 0;
-    source(start as Position, &mut |events, head| {
+    source(start, &mut |events, head| {
         let tx = conn.transaction().map_err(be)?;
         for e in events {
             tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
@@ -1230,13 +1269,13 @@ fn fold_source(
                 .map_err(be)?;
             }
         }
-        let through = events.last().map_or(start as Position, |e| e.position);
+        let through = events.last().map_or(start, |e| e.position);
         tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
             .map_err(be)?;
         tx.commit().map_err(be)?;
         folded += events.len();
         progress(RebuildProgress {
-            start: start as Position,
+            start,
             through,
             head,
             folded,
@@ -1250,6 +1289,24 @@ fn fold_source(
 /// folded the tail the log gained while it ran: it still holds the rebuild's cursor.
 fn rebuild_tail_owed(conn: &Connection) -> Result<bool, Error> {
     has_table(conn, "rebuild_cursor")
+}
+
+/// The cursor a [`Projector::rebuild`] swapped into the file behind `conn` - the last position it
+/// folded, past which the file owes that rebuild's tail - or `None` for a file that owes no tail.
+fn rebuild_tail_from(conn: &Connection) -> Result<Option<Position>, Error> {
+    if !rebuild_tail_owed(conn)? {
+        return Ok(None);
+    }
+    rebuild_cursor(conn).map(Some)
+}
+
+/// The last position the rebuild whose [`REBUILD_STATE`] the file behind `conn` holds folded.
+fn rebuild_cursor(conn: &Connection) -> Result<Position, Error> {
+    conn.query_row("SELECT position FROM rebuild_cursor", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|position| position as Position)
+    .map_err(be)
 }
 
 /// Whether the file behind `conn` holds a table named `name`.
@@ -4421,8 +4478,8 @@ mod tests {
             .unwrap()
     }
 
-    /// A cold rebuild yields the graph `rigger reset --runs` leaves, never a larger one: before its
-    /// swap it applies the run-closure prune to the shadow, re-deriving the drop set and the edge
+    /// A cold rebuild yields the graph `rigger reset --runs` leaves, never a larger one: at its swap
+    /// it applies the run-closure prune to a copy of the shadow, deriving the drop set and the edge
     /// boundary from the run attribution it gathered in the same ordered pass - a closed run's and
     /// a pre-boundary decision or finding is dropped, a lesson and an id the active run reuses are
     /// kept - and a rebuild interrupted after its first batch resumes to the very same graph.

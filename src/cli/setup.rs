@@ -827,9 +827,10 @@ const REBUILD_BATCH: usize = 10_000;
 /// report whether it did. A `graph.db` that owes nothing is left untouched; with no `graph.db`
 /// there is nothing to rebuild, and the owed mark a removed one left behind is dropped, so the
 /// file a later command makes in its place starts owing nothing it recorded. The rebuild folds the
-/// log's live selection - the rows `rigger reset --derived` keeps - into a shadow file that
-/// replaces `graph.db` in one step ([`Projector::rebuild`]), streaming the log once and resuming
-/// an interrupted rebuild from its last committed batch.
+/// log's live selection - the rows `rigger reset --derived` keeps - into a shadow file whose pruned
+/// copy replaces `graph.db` in one step ([`Projector::rebuild`]), streaming the log once, resuming
+/// an interrupted rebuild from its last committed batch and finishing exactly the tail of one
+/// interrupted after its swap.
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     if !Path::new(&graph_db).exists() {
