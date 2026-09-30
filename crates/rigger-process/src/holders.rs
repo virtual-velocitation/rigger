@@ -11,7 +11,7 @@
 //! the mark inside `execve` before it closes those descriptors, so the flag is read first;
 //! whatever the child still holds once it has exec'd counts from then on.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Every process other than this one whose working directory or any open file descriptor
 /// resolves to `dir` itself or to a path inside it, as pids. Empty when `dir` cannot be
@@ -46,16 +46,29 @@ fn is_unexeced_fork_of(pid: u32, self_pid: u32) -> bool {
             .is_some_and(|flags| flags & PF_FORKNOEXEC != 0)
 }
 
-/// Whether process `pid`'s cwd or one of its open file descriptors resolves inside `base`
+/// Whether process `pid`'s cwd or one of its open files ([`open_files`]) resolves inside `base`
 /// (already canonical). A link that cannot be read - the process exited, or belongs to
 /// another user - holds nothing.
 fn holds(pid: u32, base: &Path) -> bool {
-    let proc = Path::new("/proc").join(pid.to_string());
-    let inside =
-        |link: &Path| std::fs::read_link(link).is_ok_and(|target| target.starts_with(base));
-    inside(&proc.join("cwd"))
-        || std::fs::read_dir(proc.join("fd"))
-            .is_ok_and(|fds| fds.flatten().any(|fd| inside(&fd.path())))
+    std::fs::read_link(proc_of(pid).join("cwd")).is_ok_and(|cwd| cwd.starts_with(base))
+        || open_files(pid).any(|file| file.starts_with(base))
+}
+
+/// The files process `pid` holds open, one per open file descriptor, each named as its
+/// `/proc/<pid>/fd` link names it: the one reader of a process's open files. Nothing when that
+/// directory cannot be read - the process is gone, or belongs to another user - and a descriptor
+/// whose link cannot be read names nothing.
+pub fn open_files(pid: u32) -> impl Iterator<Item = PathBuf> {
+    std::fs::read_dir(proc_of(pid).join("fd"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+}
+
+/// The `/proc` directory of process `pid`.
+fn proc_of(pid: u32) -> PathBuf {
+    Path::new("/proc").join(pid.to_string())
 }
 
 #[cfg(test)]
