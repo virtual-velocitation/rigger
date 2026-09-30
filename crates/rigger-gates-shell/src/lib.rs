@@ -14,9 +14,10 @@ use rigger_domain::test_cases;
 use rigger_process::{budget, subprocess};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::registry;
-// The reaper the shared host fixtures name as `rigger::reap`.
+// The reaper and the open-files reader the shared host fixtures name as `rigger::reap` and
+// `rigger::holders`.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_process::reap;
+use rigger_process::{holders, reap};
 
 /// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests, compiled
 /// here from the same file. They name the crate as `rigger::...`, which

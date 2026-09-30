@@ -23,6 +23,9 @@ use rigger_domain::{ledger, run, test_cases};
 use rigger_driver::{driver, liveness};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_process::{reap, subprocess};
+// The open-files reader the shared host fixtures name as `rigger::holders`.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_process::holders;
 // The root-crate vocabulary the tests and the shared fixtures name (see the manifest's
 // `rigger-root` dev-dependency).
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]

@@ -163,6 +163,25 @@ mod tests {
     }
 
     #[test]
+    fn a_processes_open_files_name_each_file_it_holds_and_a_gone_process_holds_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().canonicalize().unwrap().join("f");
+        std::fs::write(&file, b"x").unwrap();
+        let child = holder(
+            &format!("exec 3< '{}' 4< '{}'", file.display(), file.display()),
+            dir.path(),
+        );
+        let pid = child.id();
+        let held = open_files(pid).filter(|named| *named == file).count();
+        release(child);
+        assert_eq!(
+            (held, open_files(pid).count()),
+            (2, 0),
+            "each descriptor on the file names it, and a process that is gone holds nothing"
+        );
+    }
+
+    #[test]
     fn nothing_holds_a_dir_no_process_uses_and_this_process_never_counts() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("f");

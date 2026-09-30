@@ -135,14 +135,13 @@ pub fn wait_until(pred: impl FnMut() -> bool) -> bool {
     wait_until_for(200, pred)
 }
 
-/// How many of the open files of process `pid` name the file at `path`: a connection that opened
-/// the file holds one. A process that is gone holds none.
+/// How many of the open files of process `pid` ([`rigger::holders::open_files`]) name the file at
+/// `path`: a connection that opened the file holds one. A process that is gone holds none.
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub fn files_open_by(pid: u32, path: &Path) -> usize {
-    std::fs::read_dir(format!("/proc/{pid}/fd")).map_or(0, |open| {
-        open.filter_map(|fd| std::fs::read_link(fd.ok()?.path()).ok())
-            .filter(|named| named == path)
-            .count()
-    })
+    rigger::holders::open_files(pid)
+        .filter(|named| named == path)
+        .count()
 }
 
 /// End and reap a fixture child unconditionally, ignoring errors - through the `Child` handle it
