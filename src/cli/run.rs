@@ -2686,8 +2686,10 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // AFTER the durable append, as `emit_event` does: the record already landed in the log, so a
     // fold that cannot happen (a graph that owes its rebuild, or one locked past its busy
     // timeout) never fails a result the log holds - but it is SAID, with the reason, because a
-    // current graph that missed the fold is re-derived by no rebuild, and a silently lost
-    // adjudicator verdict would keep its discarded findings in grounding. A `--if-absent` no-op
+    // current graph that missed the fold keeps the result out of grounding until the next `rigger
+    // setup` rebuilds it (the result's position is a hole in the graph's applied ledger, and a
+    // `SpawnResult` is in the live selection that rebuild folds), and until then a lost
+    // adjudicator verdict keeps its discarded findings in grounding. A `--if-absent` no-op
     // appended nothing, so there is nothing new to fold (the prior record already did).
     if let Some(pos) = recorded {
         if let contextgraph::Fold::NotFolded(why) = fold_recorded_result(&loc, &res, pos) {
@@ -2811,8 +2813,10 @@ fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: 
 /// The result is already on the log, so nothing here fails it: a graph that owes its rebuild,
 /// one locked past its busy timeout, or a result that will not serialize (unreachable for one
 /// that just serialized to append) is answered as [`contextgraph::Fold::NotFolded`], with the
-/// reason, for the caller to report. A graph that owes its rebuild re-derives the result from
-/// the log when `rigger setup` rebuilds it; a current graph that missed it never does.
+/// reason, for the caller to report. Either way the fold is a debt `rigger setup` pays: a graph
+/// that owes its rebuild re-derives the result from the log when setup rebuilds it, and a current
+/// graph that missed it is left with a hole in its applied ledger at the result's position, which
+/// the next setup reads against the log and rebuilds (a `SpawnResult` is in the live selection).
 fn fold_recorded_result(
     loc: &StoreLocation,
     res: &spawn::SpawnResult,

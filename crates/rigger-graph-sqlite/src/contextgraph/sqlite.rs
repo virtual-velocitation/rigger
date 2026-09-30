@@ -1452,7 +1452,9 @@ impl Projection for Projector {
     /// ([`Projector::owed_against`]). The failure also marks the file ([`owed_mark`]), so from
     /// then on it refuses every fold and every answer that depends on the fold with
     /// [`REBUILD_OWED`] without reading the log; a mark that cannot be written is named beside the
-    /// fold's error and nothing else is recorded - the ledger still carries the debt.
+    /// fold's error and nothing else is recorded - the ledger still carries the debt. Either way the
+    /// error ends by naming the one command that pays it, so every surface that reports the lost
+    /// fold says who does.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
         if self.rebuild_owed()? {
             return Err(Error(REBUILD_OWED.to_string()));
@@ -1461,14 +1463,17 @@ impl Projection for Projector {
             Err(lost) => lost,
             folded => return folded,
         };
-        self.mark_lost_fold().map_err(|unmarked| {
-            Error(format!(
-                "{}; the mark that graph.db owes its rebuild was not written ({unmarked}) - the \
-                 next `rigger setup` still finds the event missing from graph.db and rebuilds it",
-                lost.0
-            ))
-        })?;
-        Err(lost)
+        let unmarked = match self.mark_lost_fold() {
+            Ok(()) => String::new(),
+            Err(unmarked) => {
+                format!("; the mark that graph.db owes its rebuild was not written ({unmarked})")
+            }
+        };
+        Err(Error(format!(
+            "{}{unmarked} - the next `rigger setup` finds the event missing from graph.db and \
+             rebuilds it",
+            lost.0
+        )))
     }
 
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {

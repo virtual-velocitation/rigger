@@ -124,11 +124,14 @@ where
     /// swallows the genuine event recorded there. A suppressed event needs no fold: it folded when
     /// its content was first recorded.
     ///
-    /// Every append-then-fold in the codebase is this body - the run's keyed emit and every other
-    /// run event through [`EventStore::append`] below, a cold `rigger graph build`, the offline
-    /// graph passes and `rigger reset --runs` through this method - so the batching and the fold
-    /// can never diverge between them. It is deliberately NOT `symbols`-gated: it only moves events
-    /// through the store and graph ports, which both feature lanes compile.
+    /// Every batched append-then-fold is this body - the run's keyed emit and every other run
+    /// event through [`EventStore::append`] below, a cold `rigger graph build`, the offline graph
+    /// passes and `rigger reset --runs` through this method - so the batching and the fold can
+    /// never diverge between them. Two single-event folds are not: `rigger emit`
+    /// (`mcpserver::emit_event`) and `rigger result` (`fold_recorded_result`) each append their one
+    /// event through the store and fold it through [`Fold::of`]. It is deliberately NOT
+    /// `symbols`-gated: it only moves events through the store and graph ports, which both feature
+    /// lanes compile.
     pub fn append_and_fold(
         &self,
         stream: &str,
