@@ -4855,7 +4855,7 @@ mod tests {
                 Fold::NotFolded(format!(
                     "graph: database is locked; the mark that graph.db owes its rebuild was not \
                      written ({}: Permission denied (os error 13)) - the next `rigger setup` \
-                     still finds the event missing from graph.db and rebuilds it",
+                     finds the event missing from graph.db and rebuilds it",
                     mark.display()
                 )),
                 Vec::<&str>::new(),

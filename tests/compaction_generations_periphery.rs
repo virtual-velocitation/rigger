@@ -4060,7 +4060,7 @@ fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
             true,
             format!(
                 "emitted DecisionMade (position {}); not folded into the context graph: \
-                 graph: database is locked\n",
+                 graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n",
                 last.position
             )
         ),
@@ -4121,7 +4121,7 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
         serde_json::json!({
             "position": last.position,
             "folded": false,
-            "reason": "graph: database is locked",
+            "reason": "graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it",
         }),
         "the tool answers the position and the fold it could not make, with the reason; got: {locked}"
     );
@@ -4329,7 +4329,7 @@ fn a_result_whose_fold_fails_says_it_was_not_folded() {
             true,
             format!(
                 "recorded result for v/implementer#0 (position {})\n\
-                 not folded into the context graph: graph: database is locked\n",
+                 not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n",
                 last.position
             )
         ),
@@ -4418,7 +4418,7 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
     let graph_db = rigger_file(root, "graph.db");
     let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
     assert!(
-        out.ends_with("; not folded into the context graph: graph: database is locked\n"),
+        out.ends_with("; not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n"),
         "the locked emit's fold is lost; stdout: {out} stderr: {err}"
     );
     let lost = read_run_events(root).last().unwrap().position;
@@ -4616,8 +4616,8 @@ fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_t
         "emitted DecisionMade (position {lost}); not folded into the context graph: graph: \
          database is locked; the mark that graph.db owes its rebuild was not written ("
     );
-    let suffix = "graph.db.owed: Permission denied (os error 13)) - the next `rigger setup` still \
-                  finds the event missing from graph.db and rebuilds it\n";
+    let suffix = "graph.db.owed: Permission denied (os error 13)) - the next `rigger setup` finds \
+                  the event missing from graph.db and rebuilds it\n";
     assert_eq!(
         (
             ok,
@@ -4900,7 +4900,7 @@ fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
     let graph_db = rigger_file(root, "graph.db");
     let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
     assert!(
-        out.ends_with("; not folded into the context graph: graph: database is locked\n"),
+        out.ends_with("; not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n"),
         "the locked emit's fold is lost, so the graph owes its rebuild; stdout: {out} stderr: {err}"
     );
     let (log, graph) = (run_log(root), std::fs::read(&graph_db).unwrap());
@@ -5003,7 +5003,7 @@ fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses
             true,
             format!(
                 "graph build: ingested {ingested} code-ingest event(s) into .rigger/graph.db; \
-                 not folded into the context graph: graph: database is locked\n"
+                 not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n"
             )
         ),
         "the build names the first fold it lost - the lock - never the owed refusal every later \
@@ -5061,7 +5061,7 @@ fn a_step_whose_fold_is_lost_to_a_lock_says_so_and_the_next_step_refuses() {
         "the step replays the result and finishes the run; stderr: {err}"
     );
     assert!(
-        err.contains("; not folded into the context graph: graph: database is locked\n"),
+        err.contains("; not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n"),
         "the step says the events it recorded were not folded; stderr: {err}"
     );
 
@@ -5147,7 +5147,7 @@ fn reset_runs_says_whether_the_integration_it_recorded_for_a_landed_unit_was_fol
     assert_eq!(
         out.lines().next().unwrap_or_default(),
         format!(
-            "{}; not folded into the context graph: graph: database is locked",
+            "{}; not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it",
             closed_unit_line("u2", &tip)
         ),
         "the lost integration's line says it was not folded, with the reason; stderr: {err}"

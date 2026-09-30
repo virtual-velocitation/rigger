@@ -308,7 +308,7 @@ impl LayerCli {
             (
                 true,
                 format!(
-                    "{}; not folded into the context graph: graph: database is locked\n",
+                    "{}; not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n",
                     folded_line.trim_end_matches('\n')
                 )
             ),
