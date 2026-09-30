@@ -4249,7 +4249,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-905571fec389",
+    "id": "dup-b9272dc625da",
     "classification": "semantic",
     "sites": [
       {
@@ -4403,6 +4403,11 @@
         "content_hash": "6856f69bec49452d"
       },
       {
+        "file": "tests/common/fixtures/host.rs",
+        "name": "\"/proc/{pid}/fd\"",
+        "content_hash": "69adefd97c5bd7c1"
+      },
+      {
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "name": "\"/proc-path string literals\"",
         "content_hash": "e24c26c0d9d4cbdb"
@@ -4514,7 +4519,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 52 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 53 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5648,7 +5653,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2b765ddf0cca",
+    "id": "dup-a800e0038baa",
     "classification": "semantic",
     "sites": [
       {
@@ -5859,7 +5864,7 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
+        "content_hash": "e7e57a0fdf78bcfe"
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
