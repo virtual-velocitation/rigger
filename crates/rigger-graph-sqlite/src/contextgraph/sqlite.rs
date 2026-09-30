@@ -5539,6 +5539,29 @@ mod tests {
         );
     }
 
+    /// A dropped rebuild lock is free even while another descriptor still shares its lock file's
+    /// open description - the copy a child process forked by any thread of this process holds
+    /// until it execs, modelled here by a dup of the holder's descriptor: the next lock is taken,
+    /// never refused as if a rebuild were still in progress.
+    #[test]
+    fn a_dropped_rebuild_lock_is_free_while_a_dup_of_its_descriptor_stays_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let held = Projector::lock_rebuild(path).unwrap();
+        let forked_copy = held._locked.try_clone().unwrap();
+        drop(held);
+        let next = Projector::lock_rebuild(path)
+            .map(drop)
+            .map_err(|e| e.to_string());
+        drop(forked_copy);
+        assert_eq!(
+            next,
+            Ok(()),
+            "the dropped lock is released, whatever other descriptor shares its description"
+        );
+    }
+
     /// A rebuild lock file that cannot be opened - a directory stands at its path - fails the lock
     /// naming it, and fails forgetting a stale copy the same way, which then keeps the copy.
     #[test]
