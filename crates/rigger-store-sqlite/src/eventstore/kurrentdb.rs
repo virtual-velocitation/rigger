@@ -1231,21 +1231,13 @@ mod tests {
     // container. Skips if no container runtime is available.
     #[test]
     fn passes_the_contract() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let Some((container, conn)) = crate::test_support::start_kurrentdb(&rt) else {
-            return; // no container runtime: gracefully skipped
-        };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let store = Store::open(&conn).expect("open the ready server");
+        crate::test_support::with_kurrentdb(|conn| {
+            let store = Store::open(conn).expect("open the ready server");
             wait_ready(&store);
             crate::eventstore::contract::assert_contract(&store);
             the_server_hands_a_typed_read_only_the_selected_types(&store);
             a_link_whose_revision_holds_another_event_is_skipped(&store);
-        }));
-        let _ = rt.block_on(container.rm());
-        if let Err(e) = result {
-            std::panic::resume_unwind(e);
-        }
+        });
     }
 
     /// WHAT THE BACKEND HANDS OVER (spec 101): the `$all` read a typed read drives is filtered by

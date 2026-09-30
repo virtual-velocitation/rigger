@@ -124,7 +124,7 @@ mod common;
 use common::git::run_git;
 
 use common::cli::run_stream_identity;
-use common::fixtures::start_kurrentdb;
+use common::fixtures::with_kurrentdb;
 use common::repo::production_main_rs;
 
 /// Open the server store as a namespaced port, retrying briefly while it finishes coming up
@@ -145,12 +145,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
     use rigger::eventstore::namespace::Namespaced;
     use rigger::eventstore::{Direction, EventStore};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let Some((container, conn)) = start_kurrentdb(&rt) else {
-        return; // no container runtime: gracefully skipped
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    with_kurrentdb(|conn| {
         // A throwaway project, its own git repo (so the identity is stable), configured for the
         // server-backed store purely by the KURRENTDB_CONN environment - no per-command flag.
         let project = tempfile::tempdir().unwrap();
@@ -176,7 +171,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
                 r#"{"id":"d-server-wire","summary":"resolved through the server","governs":["src/lib.rs"],"supersedes":""}"#,
             ])
             .current_dir(root)
-            .env("KURRENTDB_CONN", &conn)
+            .env("KURRENTDB_CONN", conn)
             .env("RIGGER_NO_DASH", "1")
             .env("XDG_STATE_HOME", state.path())
             .output()
@@ -197,7 +192,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
         );
 
         // And the decision is readable back FROM the server, in the project's own stream.
-        let backend = open_server(&conn);
+        let backend = open_server(conn);
         let store = Namespaced::new(&backend, &run_stream_identity(root));
         let events = store
             .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
@@ -210,12 +205,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
              store (found {} event(s))",
             events.len()
         );
-    }));
-
-    let _ = rt.block_on(container.rm());
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    });
 }
 
 #[test]
@@ -223,12 +213,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
     use rigger::eventstore::namespace::Namespaced;
     use rigger::eventstore::{Direction, EventStore};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let Some((container, conn)) = start_kurrentdb(&rt) else {
-        return; // no container runtime: gracefully skipped
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    with_kurrentdb(|conn| {
         // A main repo with one commit (so `git worktree add` has a base), configured for the
         // server-backed store purely by the KURRENTDB_CONN environment - no per-command flag.
         let project = tempfile::tempdir().unwrap();
@@ -274,7 +259,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
                 r#"{"id":"d-nested-wt","summary":"filed under the owning root","governs":["src/lib.rs"],"supersedes":""}"#,
             ])
             .current_dir(&nested)
-            .env("KURRENTDB_CONN", &conn)
+            .env("KURRENTDB_CONN", conn)
             .env("RIGGER_NO_DASH", "1")
             .env("XDG_STATE_HOME", state.path())
             .output()
@@ -296,7 +281,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
             "a server-configured courier must not create a local events.db in the worktree"
         );
 
-        let backend = open_server(&conn);
+        let backend = open_server(conn);
 
         // The event landed in the OWNING ROOT's run stream - the identity the conductor reads.
         let root_id = run_stream_identity(root);
@@ -333,10 +318,5 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
             "the courier must NOT misfile under the worktree identity {wt_id:?} - landing there is \
              the `proj-<worktree>-run` state-fracture the owning-root binding closes"
         );
-    }));
-
-    let _ = rt.block_on(container.rm());
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    });
 }

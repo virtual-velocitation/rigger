@@ -19,15 +19,15 @@
 //!      either lane again.
 //!
 //!   2. GRACEFULLY SKIPS WITH NO CONTAINER RUNTIME. The contract test needs a container
-//!      runtime; a CI box without one (the common case) must stay GREEN. The test starts
-//!      its container through the shared fixture `start_kurrentdb`
-//!      (tests/common/fixtures/kurrentdb.rs), which on a failed start PRINTS a skip notice
-//!      and returns `None` - it never force-unwraps the start or panics - and the test
-//!      RETURNS on that `None`. This is the load-bearing promise of the
-//!      criterion's parenthetical, and its regression is SILENT: a change from `return`
-//!      to `panic!` on the start-failure arm stays green on every box that HAS a runtime
-//!      and reds only on the boxes that lack one - exactly where no author would notice.
-//!      This guard fails at `cargo test` time instead.
+//!      runtime; a CI box without one (the common case) must stay GREEN. The test runs
+//!      through the shared fixture `with_kurrentdb` (tests/common/fixtures/kurrentdb.rs),
+//!      which starts its container through `start_kurrentdb`: on a failed start that PRINTS
+//!      a skip notice and returns `None` - it never force-unwraps the start or panics - and
+//!      `with_kurrentdb` RETURNS on that `None` without running the test's body. This is the
+//!      load-bearing promise of the criterion's parenthetical, and its regression is SILENT:
+//!      a change from `return` to `panic!` on the start-failure arm stays green on every box
+//!      that HAS a runtime and reds only on the boxes that lack one - exactly where no author
+//!      would notice. This guard fails at `cargo test` time instead.
 //!
 //! Deliberately NOT feature-gated and it touches no backend symbol: it reads the adapter
 //! source as text (resolved from `CARGO_MANIFEST_DIR`, so it is CWD-independent) and runs
@@ -94,10 +94,11 @@ fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
 }
 
 /// CRITERION 3, part two - the contract test GRACEFULLY SKIPS with no container runtime.
-/// Every KurrentDB-backed test boots its server through the one shared fixture
-/// `start_kurrentdb` (tests/common/fixtures/kurrentdb.rs): its failed start prints a skip
-/// notice and returns `None`, never force-unwrapping the start or panicking, and
-/// `passes_the_contract` returns on that `None`. A regression in either is SILENT (green
+/// Every KurrentDB-backed test runs through the one shared fixture `with_kurrentdb`, which boots
+/// its server through `start_kurrentdb` (tests/common/fixtures/kurrentdb.rs): the failed start
+/// prints a skip notice and returns `None`, never force-unwrapping the start or panicking,
+/// `with_kurrentdb` returns on that `None`, and `passes_the_contract` runs through
+/// `with_kurrentdb`. A regression in any of them is SILENT (green
 /// wherever a runtime exists, red only where it does not - the CI boxes without one), so it is
 /// pinned here at `cargo test` time rather than left to surface as a lane failure on a
 /// runtime-less box.
@@ -143,17 +144,27 @@ fn the_contract_test_gracefully_skips_without_a_container_runtime() {
         );
     }
 
-    // The contract test boots through that fixture and returns on its `None`.
-    let contract: String = fn_body(
-        &repo_text("crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs"),
-        "passes_the_contract",
-    )
-    .chars()
-    .filter(|c| !c.is_whitespace())
-    .collect();
+    // The shared lifecycle boots through that start and returns on its `None`, and the contract
+    // test runs through that lifecycle.
+    let squeezed = |src: &str, name: &str| -> String {
+        fn_body(&repo_text(src), name)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let lifecycle = squeezed("tests/common/fixtures/kurrentdb.rs", "with_kurrentdb");
     assert!(
-        contract.contains("start_kurrentdb(&rt)else{return;"),
-        "`passes_the_contract` must boot its server through the shared `start_kurrentdb` fixture \
-         and return when it yields no container (spec 47 criterion 3); its body is:\n{contract}"
+        lifecycle.contains("start_kurrentdb(&rt)else{return;"),
+        "`with_kurrentdb` must boot its server through `start_kurrentdb` and return when it yields \
+         no container (spec 47 criterion 3); its body is:\n{lifecycle}"
+    );
+    let contract = squeezed(
+        "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
+        "passes_the_contract",
+    );
+    assert!(
+        contract.contains("with_kurrentdb(|"),
+        "`passes_the_contract` must run through the shared `with_kurrentdb` fixture, which skips \
+         when no container starts (spec 47 criterion 3); its body is:\n{contract}"
     );
 }

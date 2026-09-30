@@ -13,17 +13,30 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 /// The server's gRPC port inside its container.
 const KURRENTDB_PORT: u16 = 2113;
 
+/// Run `body` against a throwaway KurrentDB server ([`start_kurrentdb`]), handed its connection
+/// string, then remove the server's container whatever `body` did - on the runtime that started
+/// it, since a container handle dropped outside its runtime aborts the test binary and leaves the
+/// container running - and re-raise a panic `body` raised, so a failed assertion still fails the
+/// test. When no container runtime is reachable `body` never runs and the test passes as skipped.
+pub fn with_kurrentdb(body: impl FnOnce(&str)) {
+    let rt = tokio::runtime::Runtime::new().expect("a runtime to drive the container");
+    let Some((container, conn)) = start_kurrentdb(&rt) else {
+        return; // no container runtime: gracefully skipped
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&conn)));
+    let _ = rt.block_on(container.rm());
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
 /// Boot a single-node, insecure, in-memory KurrentDB and return it with a connection string
 /// the adapter already accepts. The host side of the port is whichever one the container
 /// runtime picks, read back from the container, so runs that overlap (a mutation sweep's
 /// parallel copies, two units testing at once, two tests of one binary) never compete for
 /// one. Returns `None` - after saying why on stderr, so the caller skips cleanly - when no
-/// container runtime is reachable. The caller removes the container with
-/// `rt.block_on(container.rm())`: dropping the handle outside the runtime aborts the test
-/// binary and leaves the container running.
-pub fn start_kurrentdb(
-    rt: &tokio::runtime::Runtime,
-) -> Option<(ContainerAsync<GenericImage>, String)> {
+/// container runtime is reachable.
+fn start_kurrentdb(rt: &tokio::runtime::Runtime) -> Option<(ContainerAsync<GenericImage>, String)> {
     let image = GenericImage::new("kurrentplatform/kurrentdb", "latest")
         .with_exposed_port(KURRENTDB_PORT.tcp())
         .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))

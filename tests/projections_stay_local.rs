@@ -111,19 +111,14 @@ mod common;
 
 use common::cli::identified_git_project;
 use common::cli::run_stream_identity;
-use common::fixtures::start_kurrentdb;
+use common::fixtures::with_kurrentdb;
 use common::repo::production_main_rs;
 
 #[test]
 fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server() {
     use rigger::contextgraph::sqlite::Projector;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let Some((container, conn)) = start_kurrentdb(&rt) else {
-        return; // no container runtime: gracefully skipped
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    with_kurrentdb(|conn| {
         let project = identified_git_project();
         let root = project.path();
         // A small source file so the default lane has something to parse; the light lane ingests
@@ -138,7 +133,7 @@ fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server
         let out = common::rigger_courier()
             .args(["graph", "build"])
             .current_dir(root)
-            .env("KURRENTDB_CONN", &conn)
+            .env("KURRENTDB_CONN", conn)
             .env("RIGGER_NO_DASH", "1")
             .output()
             .expect("spawn rigger graph build");
@@ -166,12 +161,7 @@ fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server
             "a server-configured `graph build` must NOT create a local .rigger/events.db - the \
              event log is the server's; only the projection is local"
         );
-    }));
-
-    let _ = rt.block_on(container.rm());
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    });
 }
 
 #[test]
@@ -180,12 +170,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
     use rigger::eventstore::sqlite::Store;
     use rigger::eventstore::{Direction, EventStore};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let Some((container, conn)) = start_kurrentdb(&rt) else {
-        return; // no container runtime: gracefully skipped
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    with_kurrentdb(|conn| {
         let project = identified_git_project();
         let root = project.path();
 
@@ -204,7 +189,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
                 "folded a fixture into the local projection",
             ])
             .current_dir(root)
-            .env("KURRENTDB_CONN", &conn)
+            .env("KURRENTDB_CONN", conn)
             .env("RIGGER_NO_DASH", "1")
             .env("XDG_STATE_HOME", state.path())
             .output()
@@ -246,10 +231,5 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
             "a server-configured `rigger progress` must NOT create a local .rigger/events.db - the \
              run log is the server's; only the progress projection is local"
         );
-    }));
-
-    let _ = rt.block_on(container.rm());
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    });
 }
