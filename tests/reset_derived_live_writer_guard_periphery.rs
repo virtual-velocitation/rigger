@@ -720,6 +720,29 @@ fn reset_derived_from_a_nested_worktree_reads_the_marker_under_the_owning_roots_
     );
 }
 
+/// A relative `defaults.workdir` names a directory under the store's owning root - where a run
+/// stamps its markers - never under the directory `reset` runs from: run from a subdirectory,
+/// the guard still reads the fresh marker under `<root>/<workdir>` and refuses.
+#[test]
+fn reset_derived_from_a_subdirectory_reads_the_marker_under_a_relative_workdir_on_the_owning_root()
+{
+    let dir = temp_store_project();
+    let root = dir.path();
+    std::fs::write(
+        rigger_file(root, "workflow.yml"),
+        "defaults:\n  workdir: rel-scratch\n",
+    )
+    .expect("configure a relative defaults.workdir");
+    let sub = root.join("sub");
+    std::fs::create_dir_all(&sub).expect("create the subdirectory reset runs from");
+    let scratch_root = root.join("rel-scratch");
+    assert_refused_naming_the_spawn(
+        reset_from_with_a_fresh_marker_under(root, &sub, scratch_root.to_str().unwrap()),
+        0..300,
+        "s ago, bound 300s)",
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // The operator's way past an unbounded spawn
 // ---------------------------------------------------------------------------------------

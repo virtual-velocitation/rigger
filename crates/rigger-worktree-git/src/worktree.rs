@@ -5011,6 +5011,56 @@ mod tests {
         }
     }
 
+    // ---- scratch_root_path_with: a root the operator chose resolves against the repository,
+    // never against the directory the caller happens to run from ----
+
+    /// The root [`scratch_root_path_with`] resolves for `repo` from the configured
+    /// `defaults.workdir` and the `RIGGER_TMPDIR` override, under a cache home that never
+    /// decides it (an operator-chosen root outranks the cache-home rung).
+    fn operator_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
+        scratch_root_path_with(
+            repo,
+            configured,
+            env_override,
+            Some(std::ffi::OsString::from("/xdg-cache")),
+            None,
+        )
+    }
+
+    crate::test_cases! {
+        /// A relative `defaults.workdir` names a directory under the repository.
+        scratch_root_path_with_anchors_a_relative_configured_root_on_the_repo: assert_eq!(
+            operator_root("/home/dev/acme", "rel-scratch", None),
+            "/home/dev/acme/rel-scratch"
+        );
+        /// A relative `RIGGER_TMPDIR` is anchored on the repository the same way.
+        scratch_root_path_with_anchors_a_relative_override_on_the_repo: assert_eq!(
+            operator_root("/home/dev/acme", "/configured", Some("rel-override")),
+            "/home/dev/acme/rel-override"
+        );
+        /// An absolute root is taken exactly as given.
+        scratch_root_path_with_keeps_an_absolute_root_as_given: assert_eq!(
+            operator_root("/home/dev/acme", "/abs/scratch", None),
+            "/abs/scratch"
+        );
+        /// With no repository to anchor on, a relative root is left as given.
+        scratch_root_path_with_leaves_a_relative_root_as_given_without_a_repo: assert_eq!(
+            operator_root("", "rel-scratch", None),
+            "rel-scratch"
+        );
+    }
+
+    /// A `~/` root expands under `$HOME` and is never anchored on the repository.
+    #[test]
+    fn scratch_root_path_with_expands_a_tilde_root_under_home_and_never_anchors_it() {
+        if let Ok(home) = std::env::var("HOME") {
+            assert_eq!(
+                operator_root("/home/dev/acme", "~/scratch", None),
+                format!("{home}/scratch")
+            );
+        }
+    }
+
     // ---- cache_scratch_root_from: PURE, so every case is driven with explicit params,
     // never the real process environment (spec 89, criterion 2) ----
 
