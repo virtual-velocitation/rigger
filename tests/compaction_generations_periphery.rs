@@ -5871,6 +5871,75 @@ fn reset_runs_on_a_graph_that_owes_its_rebuild_removes_a_stale_pruned_copy_befor
     );
 }
 
+/// Given a project that recorded a decision with `rigger emit` before any run started, when an
+/// agent asks `rigger_peers` in a live `rigger mcp` session and the operator runs `rigger peers`,
+/// then both label it LIVE - with no run there is no closed run for it to belong to; when another
+/// writer of the log then starts a run and that run records a decision, then the same session's
+/// next `rigger_peers` and `rigger peers` both label the earlier decision HISTORICAL and the run's
+/// own LIVE: one rule, one answer on both surfaces.
+#[test]
+fn a_decision_recorded_before_any_run_is_live_on_both_peers_surfaces_until_a_run_starts() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok,
+        "setup mints the project identity; stdout: {out} stderr: {err}"
+    );
+    let (out, err, ok) = emit_decision(root, "d-early");
+    assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
+    let mut mcp = common::mcp::McpSession::start(root);
+    // `(id, live)` of each decision a `rigger_peers` reply holds, and the decision lines of a
+    // `rigger peers` read, in order.
+    let mut both_surfaces = || {
+        let reply = mcp.peers();
+        let tool: Vec<(String, bool)> = reply["result"]["structuredContent"]["decisions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a decisions array: {reply}"))
+            .iter()
+            .map(|d| {
+                (
+                    d["id"].as_str().unwrap().to_string(),
+                    d["live"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        let (out, err, ok) = run_rigger(root, &["peers", "src/f.rs"]);
+        assert!(ok, "rigger peers answers; stdout: {out} stderr: {err}");
+        let cli: Vec<String> = out
+            .lines()
+            .filter(|l| l.starts_with("decision "))
+            .map(str::to_string)
+            .collect();
+        (tool, cli)
+    };
+    let before_any_run = both_surfaces();
+    common::cli::seed_run_events(root, &[("RunStarted", r#"{"run":"r1","spec":"s.md"}"#)]);
+    let (out, err, ok) = emit_decision(root, "d-run");
+    assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
+    let once_a_run_started = both_surfaces();
+    let exit = mcp.finish();
+    assert_eq!(
+        (before_any_run, once_a_run_started, exit.status.success()),
+        (
+            (
+                vec![("d-early".to_string(), true)],
+                vec!["decision d-early | LIVE | s | governs: src/f.rs".to_string()],
+            ),
+            (
+                vec![("d-early".to_string(), false), ("d-run".to_string(), true)],
+                vec![
+                    "decision d-early | HISTORICAL | s | governs: src/f.rs".to_string(),
+                    "decision d-run | LIVE | s | governs: src/f.rs".to_string(),
+                ],
+            ),
+            true,
+        ),
+        "both surfaces label a decision recorded before any run live, and historical once a run \
+         started"
+    );
+}
+
 /// Given a project that recorded decisions, a finding and a lesson with `rigger emit` before it
 /// ever started a run, when its `graph.db` is lost and `rigger setup` rebuilds it, then setup
 /// reports it pruned nothing and the rebuilt graph is the live one, every node and edge; and
