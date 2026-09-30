@@ -489,7 +489,7 @@ impl Projector {
     /// at once. An in-memory graph, which no rebuild outlives, is never marked.
     fn mark_lost_fold(&self) -> Result<(), String> {
         match &self.owed_mark {
-            Some(mark) => std::fs::write(mark, b"").map_err(|e| format!("{}: {e}", mark.display())),
+            Some(mark) => std::fs::write(mark, b"").map_err(|e| failed_at(mark, e)),
             None => Ok(()),
         }
     }
@@ -1215,12 +1215,17 @@ fn shadow_of(path: &str) -> String {
 }
 
 /// Remove the file at `path`, if there is one: a file already gone is what removing it asks for,
-/// and any other failure is reported as it stands.
+/// and any other failure is reported naming the file ([`failed_at`]).
 fn remove_if_present(path: impl AsRef<Path>) -> Result<(), Error> {
-    match std::fs::remove_file(path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(be(e)),
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(Error(failed_at(path, e))),
         _ => Ok(()),
     }
+}
+
+/// The one spelling of a filesystem failure on the file at `path`: `<path>: <io error>`.
+fn failed_at(path: impl AsRef<Path>, e: std::io::Error) -> String {
+    format!("{}: {e}", path.as_ref().display())
 }
 
 /// Derive the graph a rebuild swaps in from the shadow behind `shadow`, which stays unpruned: a
