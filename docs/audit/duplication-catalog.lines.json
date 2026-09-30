@@ -929,8 +929,8 @@
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 193,
-        "end_line": 193
+        "start_line": 158,
+        "end_line": 158
       },
       {
         "file": "tests/turbovec_retired_cargo_boundary.rs",
@@ -3244,43 +3244,43 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 186,
-        "end_line": 186
+        "start_line": 152,
+        "end_line": 152
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 189,
-        "end_line": 189
+        "start_line": 155,
+        "end_line": 155
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 199,
-        "end_line": 199
+        "start_line": 165,
+        "end_line": 165
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 200,
-        "end_line": 200
+        "start_line": 166,
+        "end_line": 166
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 253,
-        "end_line": 253
+        "start_line": 219,
+        "end_line": 219
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 256,
-        "end_line": 256
+        "start_line": 222,
+        "end_line": 222
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 279,
-        "end_line": 279
+        "start_line": 245,
+        "end_line": 245
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 280,
-        "end_line": 280
+        "start_line": 246,
+        "end_line": 246
       },
       {
         "file": "tests/published_content_key_split_periphery.rs",
@@ -3569,33 +3569,33 @@
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 197,
-        "end_line": 197
+        "start_line": 162,
+        "end_line": 162
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 229,
-        "end_line": 229
+        "start_line": 194,
+        "end_line": 194
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 230,
-        "end_line": 230
+        "start_line": 195,
+        "end_line": 195
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 293,
-        "end_line": 293
+        "start_line": 258,
+        "end_line": 258
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 326,
-        "end_line": 326
+        "start_line": 291,
+        "end_line": 291
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 330,
-        "end_line": 330
+        "start_line": 295,
+        "end_line": 295
       },
       {
         "file": "tests/store_resolution_cli.rs",
@@ -7225,32 +7225,17 @@
     ]
   },
   {
-    "id": "dup-b39b9c66964a",
-    "sites": [
-      {
-        "file": "tests/projections_stay_local.rs",
-        "start_line": 119,
-        "end_line": 149
-      },
-      {
-        "file": "tests/store_resolution.rs",
-        "start_line": 132,
-        "end_line": 163
-      }
-    ]
-  },
-  {
     "id": "dup-398370d93ff5",
     "sites": [
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 212,
-        "end_line": 289
+        "start_line": 178,
+        "end_line": 255
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 179,
-        "end_line": 254
+        "start_line": 144,
+        "end_line": 219
       }
     ]
   },

@@ -7945,25 +7945,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b39b9c66964a",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "tests/projections_stay_local.rs",
-        "name": "start_kurrentdb",
-        "content_hash": "1987cd19fcf327ab"
-      },
-      {
-        "file": "tests/store_resolution.rs",
-        "name": "start_kurrentdb",
-        "content_hash": "fedc48517a692de3"
-      }
-    ],
-    "proposed_home": "one shared `start_kurrentdb` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-398370d93ff5",
     "classification": "near",
     "sites": [

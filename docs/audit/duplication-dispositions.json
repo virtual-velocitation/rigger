@@ -735,11 +735,6 @@
     "reason": "`graph show` face tests over different degraded states that call the already-shared helpers with different arguments and assert different notes."
   },
   {
-    "id": "dup-b39b9c66964a",
-    "disposition": "not-a-duplicate",
-    "reason": "The two `start_kurrentdb` helpers use different ports and readiness strategies for their suites."
-  },
-  {
     "id": "dup-398370d93ff5",
     "disposition": "not-a-duplicate",
     "reason": "Server-container tests asserting different properties (progress stays local versus the courier resolving the server store)."

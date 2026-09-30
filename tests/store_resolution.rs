@@ -124,43 +124,8 @@ mod common;
 use common::git::run_git;
 
 use common::cli::run_stream_identity;
+use common::fixtures::start_kurrentdb;
 use common::repo::production_main_rs;
-
-/// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
-/// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as
-/// the backend-agnostic contract suite does.
-fn start_kurrentdb(
-    rt: &tokio::runtime::Runtime,
-) -> Option<(
-    testcontainers::ContainerAsync<testcontainers::GenericImage>,
-    String,
-)> {
-    use testcontainers::core::{IntoContainerPort, WaitFor};
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::{GenericImage, ImageExt};
-
-    let image = GenericImage::new("kurrentplatform/kurrentdb", "latest")
-        .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))
-        .with_mapped_port(21134, 2113.tcp())
-        .with_env_var("KURRENTDB_INSECURE", "true")
-        .with_env_var("KURRENTDB_MEM_DB", "true")
-        .with_env_var("KURRENTDB_RUN_PROJECTIONS", "None")
-        .with_env_var("KURRENTDB_NODE_PORT", "2113");
-    let container = match rt.block_on(image.start()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("skipping server-wiring test (no container runtime?): {e}");
-            return None;
-        }
-    };
-    // The readiness log line precedes gRPC accept, and the couriers these tests spawn
-    // connect eagerly with no retry - so poll the adapter's own connect until it succeeds
-    // instead of trusting a fixed grace (PR #27's CI caught a courier connecting into the
-    // gap a 2s sleep left on a slow VM). open_server carries the 60s deadline.
-    let conn = "kurrentdb://localhost:21134?tls=false".to_string();
-    drop(open_server(&conn));
-    Some((container, conn))
-}
 
 /// Open the server store as a namespaced port, retrying briefly while it finishes coming up
 /// (the adapter connects eagerly). Panics only after the deadline, matching the contract test.

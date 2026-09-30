@@ -1410,7 +1410,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-194 clusters (1303 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+193 clusters (1301 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1420,7 +1420,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 - **.rigger-path string literals**: 549 site(s) - `dup-ebca87df825d`
 - **error-shaping helper functions**: 11 site(s) - `dup-2ee5d6ccf964`
 
-### Clusters (41 exact, 127 near, 26 semantic)
+### Clusters (41 exact, 127 near, 25 semantic)
 
 #### `dup-49d4d9f335fc` (near, 2 sites)
 
@@ -1715,7 +1715,7 @@ mandatory sweep: Command::new call sites - 85 site(s), collected mechanically re
 - `tests/scaffold_grounder_resolves.rs:96-96` `Command::new`
 - `tests/step_attention_periphery.rs:526-526` `Command::new`
 - `tests/store_flag_precedence.rs:78-78` `Command::new`
-- `tests/store_resolution.rs:193-193` `Command::new`
+- `tests/store_resolution.rs:158-158` `Command::new`
 - `tests/turbovec_retired_cargo_boundary.rs:50-50` `Command::new`
 - `tests/validate_behind_the_tree_periphery.rs:128-128` `Command::new`
 
@@ -2729,17 +2729,17 @@ project identity so one backend can hold many projects without their data mixing
          (`Projector::open(&db_path(\"graph.db\") ...)`); the canonical local construction is gone"`
 - `tests/projections_stay_local.rs:97-97` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
          (`Store::open(&db_path(\"progress.db\") ...)`); the canonical local construction is gone"`
-- `tests/projections_stay_local.rs:186-186` `".rigger"`
-- `tests/projections_stay_local.rs:189-189` `"graph.db must be created under the LOCAL .rigger/ even when the event store is the \
+- `tests/projections_stay_local.rs:152-152` `".rigger"`
+- `tests/projections_stay_local.rs:155-155` `"graph.db must be created under the LOCAL .rigger/ even when the event store is the \
              server - projections are per-machine and stay local"`
-- `tests/projections_stay_local.rs:199-199` `".rigger"`
-- `tests/projections_stay_local.rs:200-200` `"a server-configured `graph build` must NOT create a local .rigger/events.db - the \
+- `tests/projections_stay_local.rs:165-165` `".rigger"`
+- `tests/projections_stay_local.rs:166-166` `"a server-configured `graph build` must NOT create a local .rigger/events.db - the \
              event log is the server's; only the projection is local"`
-- `tests/projections_stay_local.rs:253-253` `".rigger"`
-- `tests/projections_stay_local.rs:256-256` `"progress.db must be created under the LOCAL .rigger/ even when the event store is the \
+- `tests/projections_stay_local.rs:219-219` `".rigger"`
+- `tests/projections_stay_local.rs:222-222` `"progress.db must be created under the LOCAL .rigger/ even when the event store is the \
              server - the progress store is a local projection, not the shared log"`
-- `tests/projections_stay_local.rs:279-279` `".rigger"`
-- `tests/projections_stay_local.rs:280-280` `"a server-configured `rigger progress` must NOT create a local .rigger/events.db - the \
+- `tests/projections_stay_local.rs:245-245` `".rigger"`
+- `tests/projections_stay_local.rs:246-246` `"a server-configured `rigger progress` must NOT create a local .rigger/events.db - the \
              run log is the server's; only the progress projection is local"`
 - `tests/published_content_key_split_periphery.rs:259-259` `".rigger"`
 - `tests/registry_periphery.rs:54-54` `r#"{
@@ -2858,13 +2858,13 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/store_precedence.rs:179-179` `"a loud failure for {what} must leave no fabricated local .rigger/events.db behind"`
 - `tests/store_precedence.rs:212-212` `".rigger"`
 - `tests/store_precedence.rs:229-229` `".rigger"`
-- `tests/store_resolution.rs:197-197` `".rigger"`
-- `tests/store_resolution.rs:229-229` `".rigger"`
-- `tests/store_resolution.rs:230-230` `"a server-configured courier must NOT create a local .rigger/events.db - that is the \
+- `tests/store_resolution.rs:162-162` `".rigger"`
+- `tests/store_resolution.rs:194-194` `".rigger"`
+- `tests/store_resolution.rs:195-195` `"a server-configured courier must NOT create a local .rigger/events.db - that is the \
              state-fracture this criterion closes"`
-- `tests/store_resolution.rs:293-293` `".rigger"`
-- `tests/store_resolution.rs:326-326` `".rigger"`
-- `tests/store_resolution.rs:330-330` `".rigger"`
+- `tests/store_resolution.rs:258-258` `".rigger"`
+- `tests/store_resolution.rs:291-291` `".rigger"`
+- `tests/store_resolution.rs:295-295` `".rigger"`
 - `tests/store_resolution_cli.rs:87-87` `"a server-configured courier must NOT create a local .rigger/events.db - that is the \
          state-fracture this criterion closes, and it must hold even when the server is down"`
 - `tests/store_secrets.rs:55-55` `".rigger"`
@@ -4676,23 +4676,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:374-377` `never_flagged`
 - `tests/simplification_audit.rs:9091-9097` `assert_no_same_named_helper_cluster`
 
-#### `dup-b39b9c66964a` (semantic, 2 sites)
-
-Proposed home: `one shared `start_kurrentdb` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
-
-mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
-
-- `tests/projections_stay_local.rs:119-149` `start_kurrentdb`
-- `tests/store_resolution.rs:132-163` `start_kurrentdb`
-
 #### `dup-398370d93ff5` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/projections_stay_local.rs, tests/store_resolution.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/projections_stay_local.rs:212-289` `progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server`
-- `tests/store_resolution.rs:179-254` `a_courier_in_a_project_configured_for_the_server_resolves_the_server_store`
+- `tests/projections_stay_local.rs:178-255` `progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server`
+- `tests/store_resolution.rs:144-219` `a_courier_in_a_project_configured_for_the_server_resolves_the_server_store`
 
 #### `dup-d558d72a9443` (near, 4 sites)
 
@@ -4929,7 +4920,7 @@ STALE DOC CLAIMS. Scanned every `docs/*.md`, `README.md`, and `CONTRIBUTING.md` 
 
 ## 5. Test-Suite Shape
 
-Instrument: subsystem grouping is a hand-derived, ordered filename-keyword rule table (mirrors criterion 1's own per-file classification convention: first-match-wins, narrowest first, an explicit residual named rather than silently dropped). The consolidation notes below cross-reference the ALREADY-COMMITTED `docs/audit/duplication-catalog.json` (criterion 2's own generator output, not re-scanned here) filtered to the 58 clusters whose every site sits under `tests/`; every count in them is read from the catalog at render time.
+Instrument: subsystem grouping is a hand-derived, ordered filename-keyword rule table (mirrors criterion 1's own per-file classification convention: first-match-wins, narrowest first, an explicit residual named rather than silently dropped). The consolidation notes below cross-reference the ALREADY-COMMITTED `docs/audit/duplication-catalog.json` (criterion 2's own generator output, not re-scanned here) filtered to the 57 clusters whose every site sits under `tests/`; every count in them is read from the catalog at render time.
 
 ### 5.1 Subsystem grouping and consolidation map
 
@@ -4952,7 +4943,7 @@ Instrument: subsystem grouping is a hand-derived, ordered filename-keyword rule 
 
 ### 5.2 Shared fixtures to extract into `tests/common`
 
-`tests/common/mod.rs` and `tests/common/fixtures/` already hold the shared fixtures - the gap is everything still duplicated OUTSIDE them. The catalog's all-helper-function test-only clusters (32 of the 58 test-only clusters) are the evidence; the 4 widest, by distinct files, are the headline case for extraction:
+`tests/common/mod.rs` and `tests/common/fixtures/` already hold the shared fixtures - the gap is everything still duplicated OUTSIDE them. The catalog's all-helper-function test-only clusters (31 of the 57 test-only clusters) are the evidence; the 4 widest, by distinct files, are the headline case for extraction:
 
 - `live_contains` / `live_memberships_of` / `live_node_ids` - 3 sites across 3 files (`dup-9c3b5c80063e`, near).
 - `fixture_graph` - 3 sites across 3 files (`dup-c49b09543e58`, semantic).
@@ -4967,7 +4958,7 @@ Proposed home for each: `tests/common` (the catalog's own `proposed_home` field 
 
 ### 5.4 Duplicated helpers across test files (beyond 5.2's headline cases)
 
-32 test-only clusters in the committed catalog have every site as an ordinary (non-`#[test]`) helper function - the shared-fixture-extraction candidate class. Beyond the 4 in 5.2, the widest are:
+31 test-only clusters in the committed catalog have every site as an ordinary (non-`#[test]`) helper function - the shared-fixture-extraction candidate class. Beyond the 4 in 5.2, the widest are:
 
 - `assert_selected_server` / `assert_selected_sqlite` / `assert_server_reached_and_credentials_redacted` - 3 sites across 2 files (`dup-b58b0ff72b22`, near).
 - `community_over_concepts_graph` / `full_in_budget_graph` - 2 sites across 2 files (`dup-06ffd3c67857`, near).
@@ -4976,7 +4967,7 @@ Proposed home for each: `tests/common` (the catalog's own `proposed_home` field 
 - `spawn` - 2 sites across 2 files (`dup-6adbc1efd3a6`, near).
 - `write_workflow` - 2 sites across 2 files (`dup-8dd44d643a5c`, semantic).
 
-Every one of these 32 clusters, with its full site list and the catalog's own `proposed_home`, is already machine-readable in the committed `docs/audit/duplication-catalog.json` for a follow-up consolidation spec to consume directly - not re-enumerated exhaustively here to keep this section a report, not a second copy of the catalog.
+Every one of these 31 clusters, with its full site list and the catalog's own `proposed_home`, is already machine-readable in the committed `docs/audit/duplication-catalog.json` for a follow-up consolidation spec to consume directly - not re-enumerated exhaustively here to keep this section a report, not a second copy of the catalog.
 
 ### 5.5 Table-driven test families
 
@@ -5158,11 +5149,11 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 - Risk: low - test-only, and each family already shares one body shape (section 5.5's own finding).
 - Unblocks: the largest remaining reduction in raw `#[test]` body count.
 
-#### 17. Sweep the remaining 28 test-only helper-duplication clusters (section 5.4, beyond item 14's headline fixtures)
+#### 17. Sweep the remaining 27 test-only helper-duplication clusters (section 5.4, beyond item 14's headline fixtures)
 
-- Scope: the 32 test-only, all-helper-function clusters section 5.4 names, minus the ones item 14 already covers - consumed directly from `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own stated approach).
+- Scope: the 31 test-only, all-helper-function clusters section 5.4 names, minus the ones item 14 already covers - consumed directly from `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own stated approach).
 - Files: per-cluster, from the committed catalog.
-- Expected line delta: negative, cumulative across 28 clusters.
+- Expected line delta: negative, cumulative across 27 clusters.
 - Risk: low - test-only.
 - Unblocks: closes out the helper-duplication half of the test suite's own strict-DRY exposure.
 
@@ -5172,7 +5163,7 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative.
 - Risk: low - test-only.
-- Unblocks: closes out the table-driven-test half of the test suite's own strict-DRY exposure; combined with items 14 and 16-17, retires all 58 test-only clusters section 2 found.
+- Unblocks: closes out the table-driven-test half of the test suite's own strict-DRY exposure; combined with items 14 and 16-17, retires all 57 test-only clusters section 2 found.
 
 ### 6.7 Tier 6: remaining catalog sweep
 
@@ -5180,11 +5171,11 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 129 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 194 clusters, 58 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-a74a72df63e6`, `dup-ebca87df825d`, `dup-577db88b9691`, `dup-478ddc23181e`, `dup-cc7d493486f5`, `dup-28bd24c1f93d`, `dup-2ee5d6ccf964`); the remaining 129 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 193 clusters, 57 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-a74a72df63e6`, `dup-ebca87df825d`, `dup-577db88b9691`, `dup-478ddc23181e`, `dup-cc7d493486f5`, `dup-28bd24c1f93d`, `dup-2ee5d6ccf964`); the remaining 129 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
-- Unblocks: the last of the catalog's 194 clusters; after items 1-3 and 10-19 all land, a future spec can state and check that the duplication catalog's own drift guard finds zero live clusters left unaddressed.
+- Unblocks: the last of the catalog's 193 clusters; after items 1-3 and 10-19 all land, a future spec can state and check that the duplication catalog's own drift guard finds zero live clusters left unaddressed.
 
 ### 6.8 Dead and vestigial code beyond item 0: no further follow-up
 
