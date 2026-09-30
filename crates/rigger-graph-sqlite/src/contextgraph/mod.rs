@@ -9,11 +9,14 @@
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sqlite;
 
+#[cfg(any(feature = "store", not(feature = "core")))]
 use serde::de::DeserializeOwned;
+#[cfg(any(feature = "store", not(feature = "core")))]
 use serde::Deserialize;
 
 pub use rigger_domain::contextgraph::*;
 
+#[cfg(any(feature = "store", not(feature = "core")))]
 #[derive(Deserialize)]
 struct DecisionMade {
     id: String,
@@ -28,8 +31,8 @@ struct DecisionMade {
 // arms project only harness machinery (agent/unit/gate nodes and TOUCHES/ASSIGNED_TO/BLOCKS/
 // GATED_BY edges), which the graph no longer models - so those arms are now graph no-ops that
 // deserialize nothing. The events themselves stay in the log, read by metrics and the run-tree.
+#[cfg(any(feature = "store", not(feature = "core")))]
 #[derive(Deserialize)]
-#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct UnitIntegrated {
     // The conductor emits UNIT_INTEGRATED with an `id` key (`{"id": <unit>, "commit": ...}`),
     // unlike UNIT_STARTED which redundantly carries both `id` and `unit`. Accept `id` as an
@@ -39,11 +42,12 @@ struct UnitIntegrated {
     #[serde(alias = "id")]
     unit: String,
 }
+#[cfg(any(feature = "store", not(feature = "core")))]
 #[derive(Deserialize)]
-#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct AliasUnresolved {
     mention: String,
 }
+#[cfg(any(feature = "store", not(feature = "core")))]
 #[derive(Deserialize)]
 struct LessonLearned {
     id: String,
@@ -52,6 +56,7 @@ struct LessonLearned {
     #[serde(default)]
     about: Vec<String>,
 }
+#[cfg(any(feature = "store", not(feature = "core")))]
 #[derive(Deserialize)]
 struct ReviewFinding {
     id: String,
@@ -72,7 +77,9 @@ struct ReviewFinding {
 /// BEFORE appending, so such an event never reaches the log through it, and a rebuild passes over
 /// exactly the events it rejects - any other fold failure is the store's, not the payload's. The
 /// error names the offending field and the shape expected; a type whose payload the fold does not
-/// read passes unchecked.
+/// read passes unchecked. Only the store-gated emit surfaces call it, so it compiles where they
+/// and the fold do.
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
     // The fold parses with `serde_json::from_slice`, which also refuses bytes trailing the value,
     // so the judge ends the same parse the same way.
@@ -106,7 +113,7 @@ pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod tests {
     use super::*;
 
