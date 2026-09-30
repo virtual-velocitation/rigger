@@ -557,8 +557,9 @@ impl Store {
 
 /// THE FORWARD READ: the ONE forward read of a stream this adapter drives - `stream`'s events from
 /// revision `from` (inclusive) on, in revision order, handed to `read` as the statement steps, so
-/// a caller collects them ([`EventStore::read_stream`]) or batches them
-/// ([`EventStore::read_stream_batched`]) and never spells the read a second time.
+/// a caller collects them ([`EventStore::read_stream`]), batches them
+/// ([`EventStore::read_stream_batched`]) or polls past a revision a stream subscription has
+/// delivered ([`poll_stream`]) and never spells the read a second time.
 fn read_forward<R>(
     conn: &Connection,
     stream: &str,
@@ -1428,9 +1429,10 @@ struct Watermark {
 
 /// Spawn a polling subscription: `poll` returns the next batch given the current
 /// watermark; the thread advances the watermark from each delivered event.
-fn spawn_subscription<F>(poll: F, start: Watermark) -> Subscription
+fn spawn_subscription<F, E>(poll: F, start: Watermark) -> Subscription
 where
-    F: Fn(&mut Watermark) -> rusqlite::Result<Vec<Event>> + Send + 'static,
+    F: Fn(&mut Watermark) -> Result<Vec<Event>, E> + Send + 'static,
+    E: std::fmt::Display,
 {
     let (tx, rx) = channel();
     let err = Arc::new(Mutex::new(None));
@@ -1469,12 +1471,10 @@ fn poll_all(conn: &Connection, after: Position, like: &str) -> rusqlite::Result<
     rows.collect()
 }
 
-fn poll_stream(conn: &Connection, stream: &str, after: Revision) -> rusqlite::Result<Vec<Event>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM events WHERE stream = ?1 AND revision > ?2 ORDER BY revision ASC"
-    ))?;
-    let rows = stmt.query_map(params![stream, after], row_to_event)?;
-    rows.collect()
+/// The events of `stream` past revision `after`, read through the one forward read
+/// ([`read_forward`]).
+fn poll_stream(conn: &Connection, stream: &str, after: Revision) -> Result<Vec<Event>, Error> {
+    read_forward(conn, stream, after + 1, |events| events.collect())
 }
 
 fn direction_sql(dir: Direction) -> &'static str {

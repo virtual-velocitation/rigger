@@ -460,18 +460,16 @@ fn newest_revision(
 }
 
 impl Store {
-    /// THE NEWEST-FIRST READ: `stream` read backward from its end with links resolved (a stream
-    /// holding none reads as it is), each record pulled from the server only when the consumer
-    /// asks for it, so a scan that stops at its first match reads nothing past it. A failure to
-    /// open the read is its one item.
-    fn newest_first(
+    /// THE PULLER: the ONE read of a stream this adapter drives - `stream` read as `opts` say,
+    /// each record pulled from the server only when the consumer asks for it, so a consumer that
+    /// stops early reads nothing past where it stopped. A failure to open the read is its one
+    /// item; a failure mid-stream is the item it met. The newest-first read and the forward read
+    /// are this one pull with their own options ([`Store::newest_first`], [`Store::forward_records`]).
+    fn pull(
         &self,
         stream: &str,
+        opts: ReadStreamOptions,
     ) -> impl Iterator<Item = Result<ResolvedEvent, kurrentdb::Error>> + '_ {
-        let opts = ReadStreamOptions::default()
-            .position(StreamPosition::End)
-            .backwards()
-            .resolve_link_tos();
         let mut read = self
             .rt
             .block_on(self.client.read_stream(stream, &opts))
@@ -480,6 +478,22 @@ impl Store {
             Ok(rs) => self.rt.block_on(rs.next()).transpose(),
             Err(opened) => opened.take().map(Err),
         })
+    }
+
+    /// THE NEWEST-FIRST READ: `stream` read backward from its end with links resolved (a stream
+    /// holding none reads as it is), through the one puller ([`Store::pull`]), so a scan that
+    /// stops at its first match reads nothing past it.
+    fn newest_first(
+        &self,
+        stream: &str,
+    ) -> impl Iterator<Item = Result<ResolvedEvent, kurrentdb::Error>> + '_ {
+        self.pull(
+            stream,
+            ReadStreamOptions::default()
+                .position(StreamPosition::End)
+                .backwards()
+                .resolve_link_tos(),
+        )
     }
 
     /// The revision of `stream`'s last event ([`newest_revision`] over the newest-first read), or
@@ -492,33 +506,28 @@ impl Store {
     }
 
     /// THE FORWARD READ: the ONE forward read of a stream this adapter drives - `stream`'s
-    /// records from revision `from` (inclusive) on, each pulled from the server only when the
-    /// consumer asks for it, so a consumer holds no more than it keeps: the events of the port's
-    /// `read_stream`, `read_stream_batched` and the few the append's position read-back and a
-    /// typed read's anchor need ([`Store::forward_events`]), and the positions of
-    /// `read_stream_positions`. A stream the server does not know, at the open or mid-stream,
-    /// reads as ending there; any other failure is the read's one error, its last item.
+    /// records from revision `from` (inclusive) on, through the one puller ([`Store::pull`]), so a
+    /// consumer holds no more than it keeps: the events of the port's `read_stream`,
+    /// `read_stream_batched` and the few the append's position read-back and a typed read's anchor
+    /// need ([`Store::forward_events`]), and the positions of `read_stream_positions`. A stream the
+    /// server does not know, at the open or mid-stream, reads as ending there; any other failure is
+    /// the read's error.
     fn forward_records(
         &self,
         stream: &str,
         from: Revision,
     ) -> impl Iterator<Item = Result<ResolvedEvent, Error>> + '_ {
-        let failed = |e: kurrentdb::Error| Error::Backend(format!("kurrentdb: read stream: {e}"));
-        let opts = ReadStreamOptions::default()
-            .position(stream_position(from))
-            .forwards();
-        let mut read = match self.rt.block_on(self.client.read_stream(stream, &opts)) {
-            Ok(rs) => Some(Ok(rs)),
+        self.pull(
+            stream,
+            ReadStreamOptions::default()
+                .position(stream_position(from))
+                .forwards(),
+        )
+        .map_while(|pulled| match pulled {
             Err(kurrentdb::Error::ResourceNotFound) => None,
-            Err(e) => Some(Err(Some(failed(e)))),
-        };
-        std::iter::from_fn(move || match read.as_mut()? {
-            Ok(rs) => match self.rt.block_on(rs.next()) {
-                Ok(Some(ev)) => Some(Ok(ev)),
-                Ok(None) | Err(kurrentdb::Error::ResourceNotFound) => None,
-                Err(e) => Some(Err(failed(e))),
-            },
-            Err(opened) => opened.take().map(Err),
+            pulled => {
+                Some(pulled.map_err(|e| Error::Backend(format!("kurrentdb: read stream: {e}"))))
+            }
         })
     }
 
