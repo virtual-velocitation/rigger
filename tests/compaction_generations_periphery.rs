@@ -5547,14 +5547,13 @@ fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool
 /// Given a `rigger setup` whose rebuild stopped past its prune and its swap, when the log gains
 /// events before setup runs again - a decision the active run records with `rigger emit`, which
 /// the owed graph does not fold, or a run another writer of the log starts, closing the run that
-/// was active - then the rerun resumes the rebuild over the whole run attribution it gathered, the
-/// first pass's included: it keeps the active run's decision, prunes the run that closed, folds
-/// every event the log gained, keeps no rebuild state, reports the whole of what its prunes
-/// removed, and leaves `rigger reset --runs` nothing to prune; and a cold rebuild of the same log
-/// yields the same graph, every node and edge. The two reports differ only where the prunes did:
-/// the resumed rebuild's first prune reclaimed the retired edge of `shared` while `shared` was the
-/// active run's, and its second dropped `shared`, 3 nodes and 1 edge then 2 nodes; the cold
-/// rebuild drops `shared` with that edge at once, 5 nodes and no edge left to reclaim.
+/// was active - then the rerun resumes its unpruned shadow and prunes a fresh copy of it from the
+/// whole run attribution it gathered, the first pass's included: it keeps the active run's
+/// decision, prunes the run that closed, folds every event the log gained, keeps no rebuild state
+/// and leaves `rigger reset --runs` nothing to prune; and a cold rebuild of the same log yields the
+/// same graph, every node and edge, and the same report - the one prune of the whole log, never
+/// the sum of two: when the run that closed is the one that was active, `shared` is dropped with
+/// the retired edge it owns, 5 nodes and no edge left to reclaim.
 #[test]
 fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run_that_closed() {
     let active_run_decides: fn(&Path) = |root| {
@@ -5579,19 +5578,17 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
                 .unwrap();
         });
     };
-    for (meanwhile, gains, kept, report, cold_report) in [
+    for (meanwhile, gains, kept, report) in [
         (
             active_run_decides,
             1,
             vec!["d-live", "d-window", "l1", "shared"],
-            "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
             "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
         ),
         (
             another_writer_starts_a_run,
             2,
             vec!["d-r3", "l1"],
-            "pruned 5 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
             "pruned 5 dead-run node(s) and reclaimed 0 superseded edge(s) from the rebuilt graph",
         ),
     ] {
@@ -5649,11 +5646,11 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
                     [false, false, false],
                     runs_prunable(0, 0),
                 ),
-                (true, Some(cold_report.to_string()), resumed_graph),
+                (true, Some(report.to_string()), resumed_graph),
             ),
             "the rerun keeps what the active run gained and prunes what closed, from the whole \
-             gathered attribution, as a cold rebuild does; rerun stdout: {out} stderr: {err}; cold \
-             stdout: {cold} stderr: {cold_err}"
+             gathered attribution, with the report a cold rebuild makes; rerun stdout: {out} \
+             stderr: {err}; cold stdout: {cold} stderr: {cold_err}"
         );
     }
 }

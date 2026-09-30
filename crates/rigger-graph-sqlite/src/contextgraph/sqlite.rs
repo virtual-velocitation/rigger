@@ -4527,15 +4527,19 @@ mod tests {
         )
     }
 
-    /// A rebuild whose swap stops after its prune committed - the owed mark it must drop is a
-    /// directory it cannot remove - keeps the run attribution it gathered with its cursor, in the
-    /// shadow and in the live file the swap copied it into. The rebuild that resumes it gathers
-    /// onto that attribution and re-derives the prune from the whole of it: a decision the active
-    /// run records meanwhile is kept, and a run started meanwhile closes the run that was active,
-    /// whose nodes are pruned - either way the graph `rigger reset --runs` leaves over the whole
-    /// log - and the finished rebuild drops the attribution with its cursor.
+    /// A rebuild whose swap stops after it put the pruned copy in place - the owed mark it must
+    /// drop is a directory it cannot remove - leaves its shadow unpruned, holding its cursor and the
+    /// run attribution it gathered, and no copy behind. When the log gains a window meanwhile, the
+    /// rebuild that reruns resumes that shadow without refolding a committed batch - it reads only
+    /// the window's positions - and prunes a fresh copy of it from the whole gathered attribution:
+    /// a closed run's decision the active run records again governs both files, as its two
+    /// recordings say; a decision the active run records is kept; a run started meanwhile closes
+    /// the run that was active. Each is the graph a cold rebuild of the whole log yields and the
+    /// graph `rigger reset --runs` leaves over it, reporting the cold rebuild's counts, and the
+    /// finished rebuild drops its state with its cursor.
     #[test]
-    fn a_rebuild_resumed_past_its_prune_re_derives_it_from_the_whole_gathered_attribution() {
+    fn a_rebuild_interrupted_in_its_swap_resumes_its_unpruned_shadow_to_the_cold_graph() {
+        use rigger_domain::run::{superseded_edge_boundary, superseded_graph_nodes};
         let log = [
             run_started_at("r1", 1),
             decision_at("d-dead", "a.rs", 2),
@@ -4543,6 +4547,11 @@ mod tests {
             decision_at("d-live", "b.rs", 4),
         ];
         let windows = [
+            (
+                vec![decision_at("d-dead", "c.rs", 5)],
+                vec!["d-dead", "d-live"],
+                vec![4, 5],
+            ),
             (
                 vec![decision_at("d-window", "c.rs", 5)],
                 vec!["d-live", "d-window"],
@@ -4556,44 +4565,258 @@ mod tests {
         ];
         for (window, kept, reads) in windows {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("graph.db");
-            let path = path.to_str().unwrap();
-            drop(Projector::open(path, "test").unwrap());
-            let mark = dir.path().join("graph.db.owed");
-            std::fs::create_dir(&mark).unwrap();
-            let stopped =
-                rebuild_in_batches(path, &log, 10, &mut Vec::new()).map_err(|e| e.to_string());
+            let fresh = |name: &str| {
+                let path = dir.path().join(name).to_str().unwrap().to_string();
+                drop(Projector::open(&path, "test").unwrap());
+                path
+            };
+            let path = fresh("graph.db");
+            let stopped = rebuild_stopped_in_its_swap(&path, &log);
             let through_the_swap = (
                 rebuild_state(&format!("{path}.rebuild")),
-                rebuild_state(path),
+                rebuild_state(&path),
+                Path::new(&format!("{path}.pruned")).exists(),
             );
-            std::fs::remove_dir(&mark).unwrap();
 
-            let whole: Vec<Event> = log.iter().cloned().chain(window).collect();
+            let whole: Vec<Event> = log.iter().cloned().chain(window.iter().cloned()).collect();
             let mut reads_from = Vec::new();
-            rebuild_in_batches(path, &whole, 10, &mut reads_from).unwrap();
-            let p = Projector::open(path, "test").unwrap();
+            let mut read = Vec::new();
+            let resumed = Projector::rebuild(
+                &path,
+                "test",
+                true,
+                &mut |after, sink| {
+                    reads_from.push(after);
+                    stream_past(&whole, after, 10, &mut |events, head| {
+                        read.extend(events.iter().map(|e| e.position));
+                        sink(events, head)
+                    })
+                },
+                &mut |_| {},
+            )
+            .unwrap();
+            let p = Projector::open(&path, "test").unwrap();
+            let cold = fresh("cold.db");
+            let cold_report = rebuild_in_batches(&cold, &whole, 10, &mut Vec::new()).unwrap();
+            let reset_runs = {
+                let folded = Projector::open(":memory:", "test").unwrap();
+                crate::test_support::folds(&folded, &whole);
+                folded
+                    .prune(
+                        &superseded_graph_nodes(&whole),
+                        superseded_edge_boundary(&whole),
+                    )
+                    .unwrap()
+            };
             assert_eq!(
                 (
                     stopped,
                     through_the_swap,
                     reads_from,
+                    read,
                     provenance(&p),
-                    rebuild_state(path),
+                    rebuild_state(&path),
                     serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                    serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                    resumed,
+                    resumed.map(|r| r.pruned),
                 ),
                 (
                     Err("graph: Is a directory (os error 21)".to_string()),
-                    ((true, true), (true, true)),
+                    ((true, true), (true, true), false),
                     reads,
+                    window.iter().map(|e| e.position).collect::<Vec<_>>(),
                     kept.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                     (false, false),
+                    serde_json::to_string(
+                        &Projector::open(&cold, "test").unwrap().whole().unwrap()
+                    )
+                    .unwrap(),
                     reset_runs_leaves(&whole),
+                    cold_report,
+                    Some(reset_runs),
                 ),
-                "the attribution outlives the stopped swap, the resume re-derives the prune from \
-                 all of it, and the finished rebuild drops it with its cursor"
+                "the rerun resumes the unpruned shadow, reads only the window, and prunes a copy \
+                 to the cold rebuild's graph and counts, the graph reset --runs leaves"
             );
         }
+        let d_dead_governs = |log: &[Event]| -> Vec<String> {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db");
+            let path = path.to_str().unwrap();
+            drop(Projector::open(path, "test").unwrap());
+            rebuild_in_batches(path, log, 10, &mut Vec::new()).unwrap();
+            live_governs(&Projector::open(path, "test").unwrap())
+                .into_iter()
+                .filter(|g| g.0 == "d-dead")
+                .map(|g| g.1)
+                .collect()
+        };
+        let reused: Vec<Event> = log
+            .iter()
+            .cloned()
+            .chain([decision_at("d-dead", "c.rs", 5)])
+            .collect();
+        assert_eq!(
+            d_dead_governs(&reused),
+            vec!["a.rs".to_string(), "c.rs".to_string()],
+            "the id the active run records again governs what both of its recordings govern"
+        );
+    }
+
+    /// A rebuild of the graph file at `path` from `log` whose swap stops once its pruned copy is in
+    /// place - the owed mark it must then drop is a directory it cannot remove - and what it
+    /// answered.
+    fn rebuild_stopped_in_its_swap(path: &str, log: &[Event]) -> Result<Option<Rebuilt>, String> {
+        let mark = format!("{path}.owed");
+        std::fs::create_dir(&mark).unwrap();
+        let stopped = rebuild_in_batches(path, log, 10, &mut Vec::new()).map_err(|e| e.to_string());
+        std::fs::remove_dir(&mark).unwrap();
+        stopped
+    }
+
+    /// A stale copy an interrupted swap left - a file that is not even a graph - is never read: the
+    /// next rebuild removes it before it derives its own, reaches the graph a rebuild without it
+    /// reaches, and leaves no copy behind.
+    #[test]
+    fn a_stale_pruned_copy_is_removed_by_the_next_rebuild_and_never_read() {
+        let log = [
+            run_started_at("r1", 1),
+            decision_at("d-dead", "a.rs", 2),
+            run_started_at("r2", 3),
+            decision_at("d-live", "b.rs", 4),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let copy = format!("{path}.pruned");
+        std::fs::write(&copy, b"left by a swap that stopped").unwrap();
+
+        let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new());
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (
+                rebuilt.map_err(|e| e.to_string()),
+                Path::new(&copy).exists(),
+                serde_json::to_string(&p.whole().unwrap()).unwrap(),
+            ),
+            (
+                Ok(Some(Rebuilt {
+                    passed_over: 0,
+                    pruned: PruneStats {
+                        nodes: 1,
+                        superseded_edges: 0
+                    }
+                })),
+                false,
+                reset_runs_leaves(&log),
+            ),
+            "the stale copy is removed, never read, and the rebuild reaches the graph reset --runs \
+             leaves"
+        );
+    }
+
+    /// A rebuild interrupted in its tail leaves the live file owing only that tail: read against
+    /// the log as `rigger setup` reads it, a position past the swapped-in cursor is the tail's debt,
+    /// never a lost fold - so setup finishes exactly the tail, reading only its positions, and
+    /// reports the counts stamped with the swap. A position at or before the cursor the ledger
+    /// misses is still a lost fold.
+    #[test]
+    fn a_rebuild_interrupted_in_its_tail_is_finished_by_setup_reading_only_the_tail() {
+        let log = [
+            run_started_at("r1", 1),
+            decision_at("d-dead", "a.rs", 2),
+            run_started_at("r2", 3),
+            decision_at("d-live", "b.rs", 4),
+        ];
+        let tail = [
+            decision_at("d-tail", "c.rs", 5),
+            decision_at("d-more", "d.rs", 6),
+        ];
+        let whole: Vec<Event> = log.iter().cloned().chain(tail.iter().cloned()).collect();
+        // A rebuild of a fresh graph file whose swap takes `log` and whose tail is interrupted:
+        // the file it leaves.
+        let stopped_in_its_tail = |dir: &tempfile::TempDir| {
+            let path = dir.path().join("graph.db").to_str().unwrap().to_string();
+            drop(Projector::open(&path, "test").unwrap());
+            let mut reads = 0;
+            let stopped = Projector::rebuild(
+                &path,
+                "test",
+                true,
+                &mut |after, sink| {
+                    reads += 1;
+                    match reads {
+                        1 => stream_past(&log, after, 10, sink),
+                        _ => Err(Error("interrupted in its tail".to_string())),
+                    }
+                },
+                &mut |_| {},
+            )
+            .map_err(|e| e.to_string());
+            (path, stopped)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (path, stopped) = stopped_in_its_tail(&dir);
+        let path = path.as_str();
+        let owed_tail_only = owed_against_the_log(&Projector::open(path, "test").unwrap(), &whole);
+
+        let mut read = Vec::new();
+        let owed = !owed_tail_only.is_empty();
+        let finished = Projector::rebuild(
+            path,
+            "test",
+            owed,
+            &mut |after, sink| {
+                stream_past(&whole, after, 10, &mut |events, head| {
+                    read.extend(events.iter().map(|e| e.position));
+                    sink(events, head)
+                })
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (
+                stopped,
+                owed_tail_only,
+                read,
+                finished,
+                owed_against_the_log(&p, &whole),
+                rebuild_state(path),
+            ),
+            (
+                Err("graph: interrupted in its tail".to_string()),
+                Vec::<&str>::new(),
+                vec![5, 6],
+                Some(Rebuilt {
+                    passed_over: 0,
+                    pruned: PruneStats {
+                        nodes: 1,
+                        superseded_edges: 0
+                    }
+                }),
+                Vec::<&str>::new(),
+                (false, false),
+            ),
+            "the tail is the swap's debt, setup folds exactly it, and reports the swap's prune"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = stopped_in_its_tail(&dir);
+        let p = Projector::open(&path, "test").unwrap();
+        p.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM applied WHERE position = 4", [])
+            .unwrap();
+        assert_eq!(
+            owed_against_the_log(&p, &whole),
+            vec![OWED_LOST_FOLD],
+            "the cursor's own position missing from the ledger is a lost fold, not the tail"
+        );
     }
 
     /// A shadow holding a rebuild's cursor without the run attribution it gathered cannot
@@ -4654,9 +4877,10 @@ mod tests {
     }
 
     /// A rebuild reports the prune it made - the dead-run nodes and superseded edges the one prune
-    /// body removed from its shadow, the counts `rigger reset --runs` reports over the whole log's
-    /// graph - and a rebuild resumed past that prune reports the very same counts, never zero:
-    /// one whose swap stopped, and one interrupted in its tail.
+    /// body removed from its pruned copy, the counts `rigger reset --runs` reports over the whole
+    /// log's graph - and a rebuild resumed past that prune reports the very same counts, never
+    /// zero: one whose swap stopped, and one interrupted in its tail. One resumed over a window the
+    /// log gained reports the one prune of the whole log, the cold rebuild's counts.
     #[test]
     fn a_rebuild_reports_its_prune_and_a_rebuild_resumed_past_it_reports_the_same_counts() {
         use rigger_domain::run::{superseded_edge_boundary, superseded_graph_nodes};
@@ -4720,13 +4944,24 @@ mod tests {
         let rebuilt = rebuild_in_batches(&whole, &log, 10, &mut Vec::new()).unwrap();
 
         let stopped = fresh("stopped.db");
-        let mark = format!("{stopped}.owed");
-        std::fs::create_dir(&mark).unwrap();
-        let swap_stopped =
-            rebuild_in_batches(&stopped, &log, 10, &mut Vec::new()).map_err(|e| e.to_string());
-        std::fs::remove_dir(&mark).unwrap();
+        let swap_stopped = rebuild_stopped_in_its_swap(&stopped, &log);
         let resumed_past_the_swap =
             rebuild_in_batches(&stopped, &log, 10, &mut Vec::new()).unwrap();
+
+        // A run started while the swap stood stopped closes the run that was active: the rerun
+        // reports its one prune of the whole log, the cold rebuild's counts - `shared` dropped with
+        // the retired edge it owns, which no prune reclaimed first - never the sum of two prunes.
+        let window: Vec<Event> = log
+            .iter()
+            .cloned()
+            .chain([at(run_started_at("r3", 7), 7)])
+            .collect();
+        let windowed = fresh("windowed.db");
+        let window_stopped = rebuild_stopped_in_its_swap(&windowed, &log);
+        let resumed_over_the_window =
+            rebuild_in_batches(&windowed, &window, 10, &mut Vec::new()).unwrap();
+        let cold_over_the_window =
+            rebuild_in_batches(&fresh("cold.db"), &window, 10, &mut Vec::new()).unwrap();
 
         let tail = fresh("tail.db");
         let mut reads = 0;
@@ -4761,6 +4996,9 @@ mod tests {
                 resumed_past_the_swap,
                 tail_stopped,
                 resumed_in_the_tail,
+                window_stopped,
+                resumed_over_the_window,
+                cold_over_the_window,
             ),
             (
                 pruned,
@@ -4769,9 +5007,25 @@ mod tests {
                 report,
                 Err("graph: interrupted in its tail".to_string()),
                 report,
+                Err("graph: Is a directory (os error 21)".to_string()),
+                Some(Rebuilt {
+                    passed_over: 0,
+                    pruned: PruneStats {
+                        nodes: 3,
+                        superseded_edges: 0
+                    }
+                }),
+                Some(Rebuilt {
+                    passed_over: 0,
+                    pruned: PruneStats {
+                        nodes: 3,
+                        superseded_edges: 0
+                    }
+                }),
             ),
-            "the rebuild reports what reset --runs prunes, and a rebuild resumed past its prune \
-             reports the same"
+            "the rebuild reports what reset --runs prunes, a rebuild resumed past its swap or in its \
+             tail reports the same, and one resumed over a window reports the cold rebuild's one \
+             prune"
         );
     }
 
