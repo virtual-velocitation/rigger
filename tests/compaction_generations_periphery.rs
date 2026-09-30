@@ -4865,8 +4865,8 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
         )
         .unwrap(),
     );
-    // Opened per statement and closed at once: an open connection to the shadow would hold it
-    // against the rebuild's exclusive lock.
+    // Opened per statement and closed at once: a rebuild owns its shadow alone, so the test holds
+    // no connection to it while `rigger setup` rebuilds.
     let on_shadow = |sql: &str| {
         rusqlite::Connection::open(&shadow)
             .unwrap()
@@ -6183,7 +6183,9 @@ fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_graph_db_lock()
 enum RebuildPhase {
     /// It holds `graph.db.lock` and has written nothing yet.
     Locked,
-    /// It folds its shadow, which it holds open under its write lock.
+    /// It folds its shadow, open mid-batch: the fixture's EXCLUSIVE connection ([`hold_shadow`])
+    /// stands in for it, the test's detector for a setup that reads the shadow - not a lock a
+    /// rebuild holds through its fold: a rebuild holds only `graph.db.lock`.
     Folding,
     /// It swaps: its shadow is open and its private pruned copy stands beside it.
     Swapping,
@@ -6250,7 +6252,8 @@ fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_tou
             .spawn()
             .unwrap();
         // How many descriptors the second setup ever held on the shadow while it ran: a setup
-        // that opened the held shadow would wait on its write lock, long enough to be seen.
+        // that read the held shadow would wait on the fixture's exclusive lock, long enough to be
+        // seen.
         let pid = second.id();
         let mut shadow_opened = 0;
         let ended = wait_until_for(4800, || {
@@ -6662,8 +6665,10 @@ fn hold_the_rebuild(root: &Path) -> rigger::contextgraph::sqlite::RebuildLock {
     .unwrap()
 }
 
-/// A rebuild in its fold, holding the shadow of the `graph.db` of `root` - the exclusive lock its
-/// first write took - until the connection is dropped.
+/// The shadow of the `graph.db` of `root`, held open mid-batch as a rebuild in its fold holds it,
+/// until the connection is dropped. The connection is EXCLUSIVE as the test's detector for a setup
+/// that reads the shadow - that setup would wait on it - not as a lock a rebuild holds through its
+/// fold: a second setup is refused at `graph.db.lock` ([`hold_the_rebuild`]).
 fn hold_shadow(root: &Path) -> rusqlite::Connection {
     let rebuilding = rusqlite::Connection::open(rigger_file(root, "graph.db.rebuild")).unwrap();
     rebuilding
