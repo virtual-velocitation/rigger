@@ -20,8 +20,10 @@
 //!
 //!   2. GRACEFULLY SKIPS WITH NO CONTAINER RUNTIME. The contract test needs a container
 //!      runtime; a CI box without one (the common case) must stay GREEN. The test starts
-//!      a container and, on failure, PRINTS a skip notice and RETURNS - it never
-//!      force-unwraps the start or panics. This is the load-bearing promise of the
+//!      its container through the shared fixture `start_kurrentdb`
+//!      (tests/common/fixtures/kurrentdb.rs), which on a failed start PRINTS a skip notice
+//!      and returns `None` - it never force-unwraps the start or panics - and the test
+//!      RETURNS on that `None`. This is the load-bearing promise of the
 //!      criterion's parenthetical, and its regression is SILENT: a change from `return`
 //!      to `panic!` on the start-failure arm stays green on every box that HAS a runtime
 //!      and reds only on the boxes that lack one - exactly where no author would notice.
@@ -92,44 +94,46 @@ fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
 }
 
 /// CRITERION 3, part two - the contract test GRACEFULLY SKIPS with no container runtime.
-/// It starts a container and, on failure, prints a skip notice and RETURNS; it must never
-/// force-unwrap the start or panic. A regression here is SILENT (green wherever a runtime
-/// exists, red only where it does not - the CI boxes without one), so it is pinned here at
-/// `cargo test` time rather than left to surface as a lane failure on a runtime-less box.
+/// Every KurrentDB-backed test boots its server through the one shared fixture
+/// `start_kurrentdb` (tests/common/fixtures/kurrentdb.rs): its failed start prints a skip
+/// notice and returns `None`, never force-unwrapping the start or panicking, and
+/// `passes_the_contract` returns on that `None`. A regression in either is SILENT (green
+/// wherever a runtime exists, red only where it does not - the CI boxes without one), so it is
+/// pinned here at `cargo test` time rather than left to surface as a lane failure on a
+/// runtime-less box.
 #[test]
 fn the_contract_test_gracefully_skips_without_a_container_runtime() {
-    let body = fn_body(
-        &repo_text("crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs"),
-        "passes_the_contract",
+    let fixture = fn_body(
+        &repo_text("tests/common/fixtures/kurrentdb.rs"),
+        "start_kurrentdb",
     );
-
-    let start_at = body.find("image.start()").unwrap_or_else(|| {
+    let start_at = fixture.find("image.start()").unwrap_or_else(|| {
         panic!(
-            "`passes_the_contract` must attempt to start a container (`image.start()`) - it is the \
+            "`start_kurrentdb` must attempt to start a container (`image.start()`) - it is the \
              step that can be absent, and the skip is its failure path; found neither"
         )
     });
 
     // The start result must be handled, never force-unwrapped: `.expect(` / `.unwrap(`
     // applied to the start would PANIC a runtime-less box instead of skipping it.
-    let squeezed_body: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    let squeezed_fixture: String = fixture.chars().filter(|c| !c.is_whitespace()).collect();
     for forced in ["image.start()).unwrap", "image.start()).expect"] {
         assert!(
-            !squeezed_body.contains(forced),
-            "`passes_the_contract` must not force-unwrap the container start ({forced}...): a box \
+            !squeezed_fixture.contains(forced),
+            "`start_kurrentdb` must not force-unwrap the container start ({forced}...): a box \
              with no container runtime must SKIP (spec 47 criterion 3), not panic"
         );
     }
 
-    // The start-failure arm skips: within the container-start handling it prints a notice
-    // and RETURNS, and does not panic. Scan the window from the start call through the end
-    // of its match (a bounded slice covers the arms without reaching the rest of the test).
-    let window_end = (start_at + 400).min(body.len());
-    let window = &body[start_at..window_end];
+    // The start-failure arm skips: within the start's `match`, from the call to the `};` that
+    // closes it, an `Err` arm prints a notice and returns `None`, and nothing panics.
+    let rest = &fixture[start_at..];
+    let window = &rest[..rest.find("};").unwrap_or(rest.len())];
     assert!(
-        window.contains("Err") && window.contains("return"),
-        "the container-start failure must be a graceful skip - an `Err` arm that `return`s (spec 47 \
-         criterion 3: 'gracefully skips without a container runtime'); the start handling is:\n{window}"
+        window.contains("Err") && window.contains("return None"),
+        "the container-start failure must be a graceful skip - an `Err` arm that returns `None` \
+         (spec 47 criterion 3: 'gracefully skips without a container runtime'); the start \
+         handling is:\n{window}"
     );
     for panicky in ["panic!", ".unwrap(", ".expect("] {
         assert!(
@@ -138,4 +142,18 @@ fn the_contract_test_gracefully_skips_without_a_container_runtime() {
              stay green (spec 47 criterion 3); the start handling is:\n{window}"
         );
     }
+
+    // The contract test boots through that fixture and returns on its `None`.
+    let contract: String = fn_body(
+        &repo_text("crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs"),
+        "passes_the_contract",
+    )
+    .chars()
+    .filter(|c| !c.is_whitespace())
+    .collect();
+    assert!(
+        contract.contains("start_kurrentdb(&rt)else{return;"),
+        "`passes_the_contract` must boot its server through the shared `start_kurrentdb` fixture \
+         and return when it yields no container (spec 47 criterion 3); its body is:\n{contract}"
+    );
 }
