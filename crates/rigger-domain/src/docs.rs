@@ -273,11 +273,9 @@ fn discipline_body(ctx: &DocsContext) -> String {
          what it found. A run whose driver died is not live: units it left non-terminal never \
          block the compaction, a spawn with no marker never does, and an in-flight spawn stops \
          blocking once its marker outlives the spawn's bound or a real result is recorded for \
-         it. An unbounded spawn's marker never outlives its bound, so it blocks only under a \
-         host that keeps a marker for it - the blessed workflow driver frames no heartbeat for \
-         an unbounded spawn, so under that driver it has none - and recording its result ends \
-         it. `--force-live` overrides the refusal for an operator certain no writer is using \
-         the store; it checks nothing.\n"
+         it. An unbounded spawn's marker never outlives its bound, so record that spawn's \
+         result to end it. `--force-live` overrides the refusal for an operator certain no \
+         writer is using the store; it checks nothing.\n"
     );
 
     let _ = writeln!(s, "## Spec shape\n");
