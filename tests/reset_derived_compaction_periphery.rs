@@ -1114,7 +1114,10 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
         for (fact, needle) in [
             ("name the prune", "rigger reset --derived"),
             ("say which store it compacts", "EVENT LOG"),
-            ("say what it KEEPS", "LATEST event per replay key"),
+            (
+                "say what it KEEPS",
+                "only the recordings of its LATEST generation",
+            ),
             ("say what it costs everything else", "byte-for-byte"),
             ("say the file actually shrinks", "shrinks on disk"),
             ("say what it CANNOT reclaim", "WHAT IT CANNOT RECLAIM"),

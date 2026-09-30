@@ -1391,7 +1391,9 @@ mod tests {
     /// decisions, findings and the run history `stats` and replay read are untouched), that the
     /// FILE actually shrinks, and that the two flags COMPOSE rather than one superseding the
     /// other. Both shipped outputs render from `discipline_body`, so the skill and the handbook
-    /// chapter cannot disagree and a drift here would drift for every consumer at once.
+    /// chapter cannot disagree and a drift here would drift for every consumer at once. The
+    /// `rigger-reset-store` skill renders its own `--derived` bullet, so it is held to the same
+    /// keep rule here.
     #[test]
     fn discipline_names_reset_derived_as_the_event_logs_own_prune() {
         let ctx = sentinel_ctx();
@@ -1409,7 +1411,7 @@ mod tests {
                  the graph"
             );
             assert!(
-                out.contains("LATEST event per replay key"),
+                out.contains("only the recordings of its LATEST generation"),
                 "{label} must state what the derived prune KEEPS, so an operator can predict it"
             );
             assert!(
@@ -1479,6 +1481,12 @@ mod tests {
                  this run's deletes - or a re-run after a failed reclamation reads as pointless"
             );
         }
+        assert!(
+            render_reset_store_skill(&ctx)
+                .contains("keeps only each file's latest generation of the derived index"),
+            "the reset-store skill must state what the derived prune KEEPS, so an operator can \
+             predict it"
+        );
     }
 
     /// Spec 58, criterion 3 (the habit half): the shared discipline body carries the same
