@@ -3,6 +3,7 @@
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -407,10 +408,9 @@ impl Projector {
             if let Some(mark) = mark.filter(|m| m.exists()) {
                 std::fs::remove_file(mark).map_err(be)?;
             }
-            // The swap ends with its shadow, closed first so its journal goes with it: until the
-            // shadow is gone a rerun resumes it, and from then on only the tail is owed.
-            drop(shadow);
-            std::fs::remove_file(&shadow_path).map_err(be)?;
+            // The swap ends with its shadow: until it is gone a rerun resumes it, and from then on
+            // only the tail is owed.
+            remove_shadow(shadow, &shadow_path)?;
         } else if !rebuild_tail_owed(&live)? {
             return Ok(None);
         }
@@ -1235,26 +1235,54 @@ fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connec
     Ok(pruned)
 }
 
-/// Open the rebuild's shadow file at `path`, held under an exclusive lock for the whole fold and
-/// swap so a second rebuild racing this one is refused as busy rather than interleaved. A shadow
-/// is resumed only together with the run attribution it gathered: one holding a cursor without it
-/// could derive the prune from part of that attribution alone, so it is removed and opened again
-/// empty, to be folded from the start.
+/// Open the rebuild's shadow file at `path` under its lock ([`lock_shadow`]), held for the whole
+/// fold and swap so a second rebuild racing this one is refused as busy rather than interleaved. A
+/// shadow is resumed only together with the run attribution it gathered: one holding a cursor
+/// without it could derive the prune from part of that attribution alone, so it is removed and
+/// opened again empty, to be folded from the start.
 fn open_shadow(path: &str) -> Result<Connection, Error> {
-    let lock = || -> Result<Connection, Error> {
-        let shadow = Connection::open(path).map_err(be)?;
-        shadow
-            .execute_batch("PRAGMA locking_mode = EXCLUSIVE;")
-            .map_err(be)?;
-        Ok(shadow)
-    };
-    let shadow = lock()?;
+    let shadow = lock_shadow(path)?;
     if has_table(&shadow, "rebuild_cursor")? && !has_table(&shadow, "rebuild_run_closure")? {
-        drop(shadow);
-        std::fs::remove_file(path).map_err(be)?;
-        return lock();
+        remove_shadow(shadow, path)?;
+        return lock_shadow(path);
     }
     Ok(shadow)
+}
+
+/// Open the shadow file at `path` and take its lock, which the connection holds until it closes:
+/// refused as busy while another rebuild holds it, and refused the same way once taken when `path`
+/// no longer names the file opened - the rebuild that held the lock removed its shadow before it
+/// let go ([`remove_shadow`]) - so no rebuild resumes, prunes or swaps from a removed shadow.
+fn lock_shadow(path: &str) -> Result<Connection, Error> {
+    let shadow = Connection::open(path).map_err(be)?;
+    let opened = file_at(path);
+    shadow
+        .execute_batch("PRAGMA locking_mode = EXCLUSIVE;")
+        .map_err(be)?;
+    // The first read takes the lock.
+    shadow
+        .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+        .map_err(be)?;
+    match opened {
+        Some(opened) if file_at(path) == Some(opened) => Ok(shadow),
+        // SQLite's own words for a lock another connection holds.
+        _ => Err(be("database is locked")),
+    }
+}
+
+/// The device and inode of the file at `path`, or `None` when nothing is there.
+fn file_at(path: &str) -> Option<(u64, u64)> {
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// End the shadow at `path` that `shadow` holds: the file is removed while `shadow` still holds its
+/// lock, and only then is the connection closed, its journal with it - so a rebuild waiting on that
+/// lock takes it only once `path` no longer names the file, and is refused as busy
+/// ([`lock_shadow`]).
+fn remove_shadow(shadow: Connection, path: &str) -> Result<(), Error> {
+    std::fs::remove_file(path).map_err(be)?;
+    drop(shadow);
+    Ok(())
 }
 
 /// Fold what `source` hands after the cursor of `conn`'s [`REBUILD_STATE`], one committed transaction per
