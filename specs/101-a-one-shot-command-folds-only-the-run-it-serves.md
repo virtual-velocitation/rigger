@@ -405,10 +405,18 @@ a fact, not only when it adds or moves one.
 **THE LIVE-WRITER GUARD READS LIVENESS.** `refuse_derived_reset_if_live` (`src/cli/hygiene.rs:610`) treats a
 non-terminal unit as a live writer; a run whose driver died leaves units non-terminal
 forever and the only way past is `--force-live`, so the run whose bloat most needs the
-compaction is the one that refuses it. A run is live when a step lock is held, when a spawn's
-liveness marker is younger than the spawn wall-clock bound, or when a registry instance
-heartbeat is younger than `registry::DEFAULT_IDLE_MS` (`crates/rigger-store-sqlite/src/registry.rs:32`). Unit terminality is not a liveness
-signal. `--force-live` keeps its meaning (skip the check entirely).
+compaction is the one that refuses it. A run is live when a step lock is held; when a spawn
+of the current run is live; or when a registry instance heartbeat is younger than
+`registry::DEFAULT_IDLE_MS` (`crates/rigger-store-sqlite/src/registry.rs:32`). A spawn is live
+when it was requested, its latest result is absent or a step-synthesized liveness fault, and
+its liveness marker is not stale against its own wall-clock bound: an unbounded spawn's marker
+is never stale, a spawn with no marker is not live, and a real result (ok, or a worker's or
+operator's `--error`) ends the spawn whatever its marker says. That predicate is spelled once,
+in `crates/rigger-driver/src/liveness.rs`, and both the step sweep's hung-spawn rule and the
+guard read it. Every spawn, bounded or not, carries a liveness marker under every host (the
+thin workflow driver and the in-process headless host alike), so the guard sees a worker
+through its marker and never through a courier's discovery refresh. Unit terminality is not a
+liveness signal. `--force-live` keeps its meaning (skip the check entirely).
 
 **CROSS-RUN COMMANDS ARE OUT OF SCOPE.** `rigger reset --runs`, `rigger stats`,
 `rigger replay` and `rigger canary` are cross-run by contract and keep their whole-stream
