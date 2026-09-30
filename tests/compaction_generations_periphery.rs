@@ -2197,14 +2197,6 @@ fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
 
 /// `src/f.rs` drops `gone` and `docs/f.md` drops its link to `src/old.rs` between h1 and h2: the
 /// facts a graph folded before the generation rule keeps and a rebuild does not.
-/// The `RunStarted` of run `run`.
-fn run_started(run: &str) -> Event {
-    Event::new(
-        "RunStarted",
-        format!(r#"{{"run":"{run}","spec":"s.md"}}"#).into_bytes(),
-    )
-}
-
 fn two_generations_dropping_facts() -> Vec<Event> {
     vec![
         keyed(
@@ -2700,9 +2692,7 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
 fn the_live_selection_is_exactly_what_the_compaction_keeps_and_rebuilds_the_whole_logs_graph() {
     let dir = tempfile::tempdir().unwrap();
     let mut events = two_generations_dropping_facts();
-    // The decision is the active run's, so the rebuild's run-closure prune keeps it.
-    events.insert(2, run_started("r1"));
-    events.insert(3, governs("src/f.rs::alpha", 15));
+    events.insert(2, governs("src/f.rs::alpha", 15));
     events.push(keyed(
         TYPE_DOC_LINK_EXTRACTED,
         link("src/a.rs"),
@@ -3034,10 +3024,7 @@ impl ReleaseEraStore {
             std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
         }
         let project = run_stream_identity(root);
-        // The history opens a run, so a decision this store's tests emit is the active run's and
-        // a cold rebuild's run-closure prune keeps it, as `rigger reset --runs` would.
-        let mut log = vec![run_started("r1")];
-        log.extend(two_generations_dropping_facts());
+        let mut log = two_generations_dropping_facts();
         log.push(keyed(
             TYPE_EDGE_INFERRED,
             proof("alpha", 3),
@@ -3159,7 +3146,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
             "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
              the log's live selection is refolded once"
                 .to_string(),
-            format!("rebuilt 4 events, through position {head} of {head} (100%)"),
+            format!("rebuilt 3 events, through position {head} of {head} (100%)"),
             "rebuilt graph.db from the event log".to_string(),
         ],
         "setup says it is rebuilding and how far along it is, folding only the live selection - \
@@ -3302,7 +3289,7 @@ fn an_emit_at_the_old_rule_appends_says_it_skipped_the_fold_and_leaves_graph_db_
     let last = log.last().unwrap();
     assert_eq!(
         (log.len(), last.type_.as_str()),
-        (8, "DecisionMade"),
+        (7, "DecisionMade"),
         "the decision is appended to the log"
     );
     assert_eq!(
@@ -3574,7 +3561,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
     let log = store.log();
     assert_eq!(
         (log.len(), log.last().unwrap().type_.as_str()),
-        (8, "DecisionMade"),
+        (7, "DecisionMade"),
         "the emit appended to the log"
     );
     assert_eq!(
@@ -4265,7 +4252,7 @@ fn a_result_at_the_old_rule_is_on_the_log_and_says_it_skipped_the_fold() {
     let last = log.last().unwrap();
     assert_eq!(
         (ok, log.len(), last.type_.as_str()),
-        (true, 8, "SpawnResult"),
+        (true, 7, "SpawnResult"),
         "the result is appended to the log and the courier succeeds; stderr: {err}"
     );
     assert_eq!(
@@ -4370,7 +4357,7 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
         ),
         (
             true,
-            8,
+            7,
             "DecisionMade",
             serde_json::json!(format!("identity-migration-{minted}"))
         ),
@@ -5225,6 +5212,55 @@ fn provenance_nodes(root: &Path) -> Vec<String> {
 fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graph() {
     let dir = temp_store_project();
     let root = dir.path();
+    closed_run_store(root);
+    let before = menus_runs_prune(root);
+    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert!(
+        ok,
+        "reset --runs prunes the closed run; stdout: {out} stderr: {err}"
+    );
+    let live = provenance_nodes(root);
+    let live_whole = whole_graph(root);
+    let pruned = menus_runs_prune(root);
+
+    lose_graph(root);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok,
+        "setup rebuilds the lost graph; stdout: {out} stderr: {err}"
+    );
+    assert_eq!(
+        (live, provenance_nodes(root)),
+        (
+            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
+            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
+        ),
+        "the rebuilt graph holds the live graph's decision, finding and lesson nodes, never the \
+         pruned ones; stdout: {out}"
+    );
+    assert_eq!(
+        (before, pruned, menus_runs_prune(root)),
+        (
+            runs_prunable(3, 1),
+            runs_prunable(0, 0),
+            runs_prunable(0, 0)
+        ),
+        "the closed run left nodes and a superseded edge to prune; once pruned, and once rebuilt, \
+         nothing is left - the rebuild dropped the superseded edge reset --runs dropped"
+    );
+    assert_eq!(
+        whole_graph(root),
+        live_whole,
+        "the rebuilt graph is the live pruned graph, every node and edge"
+    );
+}
+
+/// Set up the project at `root` and record, as a run records it and folded into its live graph as
+/// it lands, a lesson, a closed run `r1` (a decision, a finding, and a decision `d-sup` that
+/// supersedes `shared`, retiring its governing edge before the active run began) and the active run
+/// `r2`, which records `d-live` and reuses the id `shared`: `rigger reset --runs` prunes 3 dead-run
+/// nodes (`d-dead`, `f-dead`, `d-sup`) and 1 superseded edge from it.
+fn closed_run_store(root: &Path) {
     let decision = |id: &str| {
         format!(r#"{{"id":"{id}","summary":"s","governs":["src/f.rs"],"supersedes":""}}"#)
     };
@@ -5265,16 +5301,10 @@ fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graph()
             ),
         ],
     );
-    let before = menus_runs_prune(root);
-    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
-    assert!(
-        ok,
-        "reset --runs prunes the closed run; stdout: {out} stderr: {err}"
-    );
-    let live = provenance_nodes(root);
-    let live_whole = whole_graph(root);
-    let pruned = menus_runs_prune(root);
+}
 
+/// Replace the `graph.db` of `root` with an empty one, which owes its rebuild from the log.
+fn lose_graph(root: &Path) {
     let graph_db = rigger_file(root, "graph.db");
     std::fs::remove_file(&graph_db).unwrap();
     drop(
@@ -5284,34 +5314,164 @@ fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graph()
         )
         .unwrap(),
     );
+}
+
+/// What `rigger setup` printed of `out` right after it said it rebuilt `graph.db`, if it did.
+fn after_rebuilt(out: &str) -> Option<String> {
+    out.lines()
+        .skip_while(|l| *l != "rebuilt graph.db from the event log")
+        .nth(1)
+        .map(str::to_string)
+}
+
+/// The line `rigger setup` prints for the prune its rebuild made: `nodes` dead-run nodes and
+/// `edges` superseded edges.
+fn rebuild_pruned(nodes: usize, edges: usize) -> String {
+    format!(
+        "pruned {nodes} dead-run node(s) and reclaimed {edges} superseded edge(s) from the rebuilt \
+         graph"
+    )
+}
+
+/// The opening of the report `rigger reset --runs` prints in `out`: what it pruned, up to where it
+/// names the graph it pruned.
+fn reset_runs_pruned(out: &str) -> Option<String> {
+    out.lines()
+        .find(|l| l.starts_with("reset --runs: "))
+        .and_then(|l| l.split(" from the context graph").next())
+        .map(str::to_string)
+}
+
+/// Given a log whose closed run the live graph still holds, when `rigger reset --runs` prunes it
+/// and then `graph.db` is lost and `rigger setup` rebuilds it from the same log, then setup reports,
+/// right after its rebuilt line, the prune its rebuild made in the words `reset --runs` reports its
+/// own - the same dead-run node and superseded edge counts.
+#[test]
+fn setup_reports_the_prune_its_rebuild_made_as_reset_runs_reports_it() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    closed_run_store(root);
+    let (reset, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert!(ok, "reset --runs prunes; stdout: {reset} stderr: {err}");
+    lose_graph(root);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (ok, reset_runs_pruned(&reset), after_rebuilt(&out)),
+        (
+            true,
+            Some(
+                "reset --runs: pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s)"
+                    .to_string()
+            ),
+            Some(rebuild_pruned(3, 1)),
+        ),
+        "setup reports the prune reset --runs reports, in its words; stdout: {out} stderr: {err}"
+    );
+}
+
+/// Given a `rigger setup` whose rebuild stopped after its prune and its swap - the owed mark it
+/// must then drop is a directory it cannot remove - when that is cleared and setup runs again,
+/// then the rerun finishes the rebuild and reports the counts that prune made, never zero, and the
+/// graph holds what `reset --runs` leaves.
+#[test]
+fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_counts() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    closed_run_store(root);
+    lose_graph(root);
+    let mark = rigger_file(root, "graph.db.owed");
+    std::fs::create_dir(&mark).unwrap();
+    let (stopped, _, stopped_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    std::fs::remove_dir(&mark).unwrap();
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            stopped_ok,
+            after_rebuilt(&stopped),
+            ok,
+            after_rebuilt(&out),
+            provenance_nodes(root),
+        ),
+        (
+            false,
+            None,
+            true,
+            Some(rebuild_pruned(3, 1)),
+            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
+        ),
+        "the stopped setup fails before its rebuilt line, and the rerun reports the prune it \
+         made; stdout: {out} stderr: {err}"
+    );
+}
+
+/// Given a project that recorded decisions, a finding and a lesson with `rigger emit` before it
+/// ever started a run, when its `graph.db` is lost and `rigger setup` rebuilds it, then setup
+/// reports it pruned nothing and the rebuilt graph is the live one, every node and edge; and
+/// `rigger reset --runs` over that log prunes nothing either.
+#[test]
+fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything() {
+    let dir = temp_store_project();
+    let root = dir.path();
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(
         ok,
-        "setup rebuilds the lost graph; stdout: {out} stderr: {err}"
+        "setup mints the project identity; stdout: {out} stderr: {err}"
     );
-    assert_eq!(
-        (live, provenance_nodes(root)),
+    for (ty, body) in [
         (
-            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
-            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
+            "LessonLearned",
+            r#"{"id":"l1","summary":"s","about":["src/f.rs"]}"#,
         ),
-        "the rebuilt graph holds the live graph's decision, finding and lesson nodes, never the \
-         pruned ones; stdout: {out}"
-    );
-    assert_eq!(
-        (before, pruned, menus_runs_prune(root)),
         (
-            runs_prunable(3, 1),
-            runs_prunable(0, 0),
-            runs_prunable(0, 0)
+            "DecisionMade",
+            r#"{"id":"d-old","summary":"s","governs":["src/f.rs"],"supersedes":""}"#,
         ),
-        "the closed run left nodes and a superseded edge to prune; once pruned, and once rebuilt, \
-         nothing is left - the rebuild dropped the superseded edge reset --runs dropped"
-    );
+        (
+            "DecisionMade",
+            r#"{"id":"d-new","summary":"s","governs":["src/f.rs"],"supersedes":"d-old"}"#,
+        ),
+        (
+            "ReviewFinding",
+            r#"{"id":"f1","by":"lens","summary":"s","about":["src/f.rs"]}"#,
+        ),
+    ] {
+        let (out, err, ok) = run_rigger(root, &["emit", ty, body]);
+        assert!(ok, "emit {ty}; stdout: {out} stderr: {err}");
+    }
+    let live = whole_graph(root);
+    lose_graph(root);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let rebuilt = whole_graph(root);
+    let (reset, reset_err, reset_ok) = run_rigger(root, &["reset", "--runs"]);
     assert_eq!(
-        whole_graph(root),
-        live_whole,
-        "the rebuilt graph is the live pruned graph, every node and edge"
+        (
+            ok,
+            after_rebuilt(&out),
+            provenance_nodes(root),
+            rebuilt,
+            reset_ok,
+            reset_runs_pruned(&reset),
+            whole_graph(root),
+        ),
+        (
+            true,
+            Some(rebuild_pruned(0, 0)),
+            vec![
+                "d-new".to_string(),
+                "d-old".to_string(),
+                "f1".to_string(),
+                "l1".to_string()
+            ],
+            live.clone(),
+            true,
+            Some(
+                "reset --runs: pruned 0 dead-run node(s) and reclaimed 0 superseded edge(s)"
+                    .to_string()
+            ),
+            live,
+        ),
+        "nothing is dead before a run starts; setup stdout: {out} stderr: {err}; reset stderr: \
+         {reset_err}"
     );
 }
 

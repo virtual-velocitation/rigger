@@ -4048,20 +4048,15 @@ mod tests {
             e
         };
         let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
-        poison.position = 3;
-        let log = [
-            run_started_at("r1", 1),
-            decision("d1", "a.rs", 2),
-            poison,
-            decision("d3", "b.rs", 4),
-        ];
+        poison.position = 2;
+        let log = [decision("d1", "a.rs", 1), poison, decision("d3", "b.rs", 3)];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         let mark = dir.path().join("graph.db.owed");
 
         let p = Projector::open(path, "test").unwrap();
-        crate::test_support::folds(&p, &log[..2]);
+        crate::test_support::folds(&p, &log[..1]);
         assert_eq!(
             (p.rebuild_owed().unwrap(), mark.exists()),
             (false, false),
@@ -4070,7 +4065,7 @@ mod tests {
         assert!(matches!(
             crate::contextgraph::Fold::of_batch(
                 || crate::contextgraph::wired(Some(&p)),
-                &log[2..3]
+                &log[1..2]
             ),
             Fold::NotFolded(_)
         ));
@@ -4080,7 +4075,7 @@ mod tests {
             "the failed fold marks the file owed"
         );
         assert_eq!(
-            crate::contextgraph::Fold::of_batch(|| crate::contextgraph::wired(Some(&p)), &log[3..]),
+            crate::contextgraph::Fold::of_batch(|| crate::contextgraph::wired(Some(&p)), &log[2..]),
             Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
             "a marked file refuses every later fold"
         );
@@ -4123,8 +4118,7 @@ mod tests {
         assert_eq!(again, None, "a paid rebuild does not run again");
     }
 
-    /// The `RunStarted` of run `run` at `position`: a rebuild keeps only the active run's decisions
-    /// and findings, so a fixture whose decisions must survive a rebuild opens its run with this.
+    /// The `RunStarted` of run `run` at `position`.
     fn run_started_at(run: &str, position: u64) -> Event {
         event_at(
             rigger_domain::run::TYPE_RUN_STARTED,
@@ -4147,7 +4141,7 @@ mod tests {
         log: &[Event],
         batch: usize,
         reads_from: &mut Vec<u64>,
-    ) -> Result<Option<usize>, Error> {
+    ) -> Result<Option<Rebuilt>, Error> {
         Projector::rebuild(
             path,
             "test",
@@ -4166,16 +4160,15 @@ mod tests {
     #[test]
     fn a_rebuild_passes_over_only_a_payload_the_fold_rejects_and_says_how_many() {
         let log = [
-            run_started_at("r1", 1),
-            decision_at("d1", "a.rs", 2),
-            event_at(TYPE_DECISION_MADE, b"{ not valid json", 3),
-            event_at(TYPE_UNIT_INTEGRATED, br#"{"unit": 5}"#, 4),
+            decision_at("d1", "a.rs", 1),
+            event_at(TYPE_DECISION_MADE, b"{ not valid json", 2),
+            event_at(TYPE_UNIT_INTEGRATED, br#"{"unit": 5}"#, 3),
             event_at(
                 TYPE_DECISION_MADE,
                 br#"{"id":"d-trailing","governs":["t.rs"]} x"#,
-                5,
+                4,
             ),
-            decision_at("d6", "b.rs", 6),
+            decision_at("d5", "b.rs", 5),
         ];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
@@ -4187,15 +4180,18 @@ mod tests {
         assert_eq!(
             (
                 rebuilt,
-                (1..=6).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                (1..=5).map(|at| applied(&p, at)).collect::<Vec<_>>(),
                 live_governs(&p)
                     .into_iter()
                     .map(|g| g.1)
                     .collect::<Vec<_>>(),
             ),
             (
-                Some(3),
-                vec![true; 6],
+                Some(Rebuilt {
+                    passed_over: 3,
+                    pruned: PruneStats::default()
+                }),
+                vec![true; 5],
                 vec!["a.rs".to_string(), "b.rs".to_string()]
             ),
             "the three rejected payloads (malformed, mistyped, trailing bytes) are passed over and \
@@ -4203,8 +4199,8 @@ mod tests {
         );
         drop(p);
         assert_eq!(
-            rebuild_in_batches(path, &[decision_at("d7", "c.rs", 7)], 10, &mut Vec::new()).unwrap(),
-            Some(0),
+            rebuild_in_batches(path, &[decision_at("d6", "c.rs", 6)], 10, &mut Vec::new()).unwrap(),
+            Some(Rebuilt::default()),
             "a rebuild that rejects nothing passed over nothing"
         );
     }
@@ -4243,7 +4239,13 @@ mod tests {
                 rebuilt,
                 (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>()
             ),
-            (Some(3), vec![true; 4]),
+            (
+                Some(Rebuilt {
+                    passed_over: 3,
+                    pruned: PruneStats::default()
+                }),
+                vec![true; 4]
+            ),
             "two passed over by the fold and one by the tail, each recorded as folded"
         );
     }
@@ -4254,10 +4256,9 @@ mod tests {
     #[test]
     fn a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it() {
         let log = [
-            run_started_at("r1", 1),
-            decision_at("d1", "a.rs", 2),
-            decision_at("d-boom", "b.rs", 3),
-            decision_at("d3", "c.rs", 4),
+            decision_at("d1", "a.rs", 1),
+            decision_at("d-boom", "b.rs", 2),
+            decision_at("d3", "c.rs", 3),
         ];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
@@ -4278,7 +4279,7 @@ mod tests {
         assert_eq!(
             (
                 failed.map_err(|e| e.to_string()),
-                applied(&Projector::open(path, "test").unwrap(), 2),
+                applied(&Projector::open(path, "test").unwrap(), 1),
             ),
             (Err("graph: disk gave out".to_string()), false),
             "the storage error propagates and the live file is untouched"
@@ -4299,8 +4300,8 @@ mod tests {
                     .collect::<Vec<_>>(),
             ),
             (
-                Some(0),
-                vec![0, 2, 4],
+                Some(Rebuilt::default()),
+                vec![0, 1, 3],
                 vec!["b.rs".to_string(), "a.rs".to_string(), "c.rs".to_string()]
             ),
             "the next rebuild resumes past the committed batch and folds the event the error lost \
@@ -4600,6 +4601,167 @@ mod tests {
             ),
             "the shadow without its attribution is folded again from the start and pruned by the \
              whole log's attribution"
+        );
+    }
+
+    /// A rebuild reports the prune it made - the dead-run nodes and superseded edges the one prune
+    /// body removed from its shadow, the counts `rigger reset --runs` reports over the whole log's
+    /// graph - and a rebuild resumed past that prune reports the very same counts, never zero:
+    /// one whose swap stopped, and one interrupted in its tail.
+    #[test]
+    fn a_rebuild_reports_its_prune_and_a_rebuild_resumed_past_it_reports_the_same_counts() {
+        use rigger_domain::run::{superseded_edge_boundary, superseded_graph_nodes};
+        let at = |mut e: Event, secs: u64| {
+            e.valid_from = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+            e
+        };
+        let decision = |id: &str, file: &str, supersedes: &str, position: u64| {
+            let payload = serde_json::json!({
+                "id": id, "summary": "x", "governs": [file], "supersedes": supersedes
+            });
+            at(
+                event_at(
+                    TYPE_DECISION_MADE,
+                    &serde_json::to_vec(&payload).unwrap(),
+                    position,
+                ),
+                position,
+            )
+        };
+        let log = [
+            at(run_started_at("r1", 1), 1),
+            decision("shared", "f.rs", "", 2),
+            decision("d-sup", "f.rs", "shared", 3),
+            at(
+                event_at(
+                    TYPE_REVIEW_FINDING,
+                    br#"{"id":"f-dead","about":["f.rs"]}"#,
+                    4,
+                ),
+                4,
+            ),
+            at(run_started_at("r2", 5), 5),
+            decision("shared", "g.rs", "", 6),
+        ];
+        let reset_runs = {
+            let live = Projector::open(":memory:", "test").unwrap();
+            crate::test_support::folds(&live, &log);
+            live.prune(
+                &superseded_graph_nodes(&log),
+                superseded_edge_boundary(&log),
+            )
+            .unwrap()
+        };
+        let report = Some(Rebuilt {
+            passed_over: 0,
+            pruned: PruneStats {
+                nodes: 2,
+                superseded_edges: 1,
+            },
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = |name: &str| {
+            let path = dir.path().join(name).to_str().unwrap().to_string();
+            drop(Projector::open(&path, "test").unwrap());
+            path
+        };
+
+        let whole = fresh("whole.db");
+        let rebuilt = rebuild_in_batches(&whole, &log, 10, &mut Vec::new()).unwrap();
+
+        let stopped = fresh("stopped.db");
+        let mark = format!("{stopped}.owed");
+        std::fs::create_dir(&mark).unwrap();
+        let swap_stopped =
+            rebuild_in_batches(&stopped, &log, 10, &mut Vec::new()).map_err(|e| e.to_string());
+        std::fs::remove_dir(&mark).unwrap();
+        let resumed_past_the_swap =
+            rebuild_in_batches(&stopped, &log, 10, &mut Vec::new()).unwrap();
+
+        let tail = fresh("tail.db");
+        let mut reads = 0;
+        let tail_stopped = Projector::rebuild(
+            &tail,
+            "test",
+            true,
+            &mut |after, sink| {
+                reads += 1;
+                if reads == 2 {
+                    return Err(Error("interrupted in its tail".to_string()));
+                }
+                stream_past(&log, after, 10, sink)
+            },
+            &mut |_| {},
+        )
+        .map_err(|e| e.to_string());
+        let resumed_in_the_tail = Projector::rebuild(
+            &tail,
+            "test",
+            false,
+            &mut |after, sink| stream_past(&log, after, 10, sink),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            (
+                reset_runs,
+                rebuilt,
+                swap_stopped,
+                resumed_past_the_swap,
+                tail_stopped,
+                resumed_in_the_tail,
+            ),
+            (
+                report.unwrap().pruned,
+                report,
+                Err("graph: Is a directory (os error 21)".to_string()),
+                report,
+                Err("graph: interrupted in its tail".to_string()),
+                report,
+            ),
+            "the rebuild reports what reset --runs prunes, and a rebuild resumed past its prune \
+             reports the same"
+        );
+    }
+
+    /// A log that never started a run has no closed run, so nothing in it is dead: its rebuild
+    /// prunes nothing and says so, keeping every decision, finding and lesson node and every edge
+    /// its fold holds.
+    #[test]
+    fn a_rebuild_of_a_log_without_a_run_boundary_prunes_nothing() {
+        let log = [
+            decision_at("d1", "a.rs", 1),
+            event_at(TYPE_REVIEW_FINDING, br#"{"id":"f1","about":["a.rs"]}"#, 2),
+            event_at(TYPE_LESSON_LEARNED, br#"{"id":"l1","about":["a.rs"]}"#, 3),
+            decision_at("d4", "b.rs", 4),
+        ];
+        let folded = Projector::open(":memory:", "test").unwrap();
+        crate::test_support::folds(&folded, &log);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+
+        let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new()).unwrap();
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (
+                rebuilt,
+                provenance(&p),
+                serde_json::to_string(&p.whole().unwrap()).unwrap(),
+            ),
+            (
+                Some(Rebuilt::default()),
+                vec![
+                    "d1".to_string(),
+                    "d4".to_string(),
+                    "f1".to_string(),
+                    "l1".to_string()
+                ],
+                serde_json::to_string(&folded.whole().unwrap()).unwrap(),
+            ),
+            "nothing is dead before a run starts: the rebuild prunes nothing and keeps the fold whole"
         );
     }
 

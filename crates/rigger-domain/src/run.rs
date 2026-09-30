@@ -659,4 +659,27 @@ mod tests {
         assert_eq!(current_run_id(&events).as_deref(), Some("r2"));
         assert!(String::from_utf8_lossy(&slice[1].data).contains("r2-unit"));
     }
+
+    /// A log with no `RunStarted` has no closed run, so nothing in it is dead: the run-closure
+    /// rule drops no decision or finding and reclaims no edge. Once a run starts, what was
+    /// recorded before it is pre-boundary and drops, and the lesson never does.
+    #[test]
+    fn a_log_without_a_run_boundary_has_nothing_dead() {
+        let before_any_run = vec![decision("d1"), finding("f1"), lesson("l1")];
+        let mut started = before_any_run.clone();
+        started.push(run_started("r1", &["crit"]));
+        assert_eq!(
+            (
+                superseded_graph_nodes(&before_any_run),
+                superseded_edge_boundary(&before_any_run),
+                superseded_graph_nodes(&started),
+            ),
+            (
+                Vec::<String>::new(),
+                None,
+                vec!["d1".to_string(), "f1".to_string()]
+            ),
+            "no run, nothing dead; a run started, the pre-boundary decision and finding drop"
+        );
+    }
 }
