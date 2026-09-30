@@ -4496,25 +4496,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6997565e3dc0",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-dash/src/dash.rs",
-        "name": "cells_fit_or_wrap_and_wide_cells_scroll_in_their_own_container",
-        "content_hash": "af8054f9bda7dfb0"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_test",
-        "content_hash": "f9c858df5a0c586e"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-dash/src/dash.rs, tests/ci_lanes.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-9904088ec60d",
     "classification": "near",
     "sites": [

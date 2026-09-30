@@ -4340,21 +4340,6 @@
     ]
   },
   {
-    "id": "dup-6997565e3dc0",
-    "sites": [
-      {
-        "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 4923,
-        "end_line": 4957
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "start_line": 301,
-        "end_line": 317
-      }
-    ]
-  },
-  {
     "id": "dup-9904088ec60d",
     "sites": [
       {

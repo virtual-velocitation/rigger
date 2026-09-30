@@ -805,11 +805,6 @@
     "reason": "Unrelated tests sharing only a short arrange-assert shape: the dash serving the embedded wasm artifact, and two scanner cases about where a cfg(test) attribute sits."
   },
   {
-    "id": "dup-6997565e3dc0",
-    "disposition": "not-a-duplicate",
-    "reason": "Unrelated tests sharing only the read-then-assert-contains shape: a dash CSS layout rule and a CI workflow job script."
-  },
-  {
     "id": "dup-9904088ec60d",
     "disposition": "not-a-duplicate",
     "reason": "Lookups over two different read models: a dash Neighborhood node's optional layer, and a call-graph node's layer in the shared graph fixtures."
