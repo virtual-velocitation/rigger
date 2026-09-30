@@ -103,10 +103,10 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     Ok(())
 }
 
-/// What `rigger reset`'s modes read from outside the store, resolved ONCE by [`cmd_reset`] - the
-/// composition root - before the first prune runs, and handed to every mode that reads it, so no
-/// mode reads the configuration, the environment or the clock of its own and one command judges
-/// one scratch root at one instant.
+/// What `rigger reset`'s modes read from outside the store: resolved ONCE by [`cmd_reset`], the
+/// composition root, and handed to the live-writer probe (`--derived` and `--runs`) and to
+/// `--build-cache`'s shared-cache reclaim, so the probe reads no configuration, environment or
+/// clock of its own and judges every signal at one instant under one scratch root.
 struct ResetEnv {
     /// The store's configured `defaults.workdir` (empty when unset).
     workdir: String,
