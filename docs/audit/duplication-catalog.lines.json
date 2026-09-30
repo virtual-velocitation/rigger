@@ -515,7 +515,7 @@
     ]
   },
   {
-    "id": "dup-a74a72df63e6",
+    "id": "dup-22db86e3c2e3",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -883,6 +883,11 @@
         "end_line": 216
       },
       {
+        "file": "tests/principle_gates_wiring.rs",
+        "start_line": 405,
+        "end_line": 405
+      },
+      {
         "file": "tests/product_binary_authority_periphery.rs",
         "start_line": 155,
         "end_line": 155
@@ -945,7 +950,7 @@
     ]
   },
   {
-    "id": "dup-84051484757a",
+    "id": "dup-34e1f9aa1f93",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3229,8 +3234,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 388,
-        "end_line": 388
+        "start_line": 382,
+        "end_line": 382
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "start_line": 385,
+        "end_line": 385
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "start_line": 445,
+        "end_line": 445
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "start_line": 446,
+        "end_line": 446
       },
       {
         "file": "tests/projections_stay_local.rs",

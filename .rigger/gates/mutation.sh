@@ -159,9 +159,10 @@ test -n "$RIGGER_RUN_BASE" || {
     exit 1
 }
 
-# The container runtime for the container-backed tests (see THE CONTAINER-BACKED TESTS RUN).
+# The container runtime for the container-backed tests (see THE CONTAINER-BACKED TESTS RUN): a
+# missing snippet is skipped, one that fails to source fails the gate.
 container_env="$(dirname "$0")/container-env.sh"
-test ! -f "$container_env" || . "$container_env"
+test ! -f "$container_env" || . "$container_env" || exit 1
 
 last="${MUTANTS:-/nonexistent}"
 last="${last%/*}/mutation-anchor"

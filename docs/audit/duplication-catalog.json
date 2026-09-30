@@ -583,7 +583,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a74a72df63e6",
+    "id": "dup-22db86e3c2e3",
     "classification": "semantic",
     "sites": [
       {
@@ -952,6 +952,11 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "Command::new",
+        "content_hash": "583982587bb6b9ca"
+      },
+      {
         "file": "tests/product_binary_authority_periphery.rs",
         "name": "Command::new",
         "content_hash": "cc3302c6f9ec4dd2"
@@ -1013,11 +1018,11 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 85 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 86 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-84051484757a",
+    "id": "dup-34e1f9aa1f93",
     "classification": "semantic",
     "sites": [
       {
@@ -3302,8 +3307,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
+        "name": "\"if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \\\n         exit 1; fi; cargo test --workspace\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/gates/container-env.sh\"",
-        "content_hash": "fe918358e1ecea10"
+        "content_hash": "6ac41bb36eef330a"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/gates\"",
+        "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/gates/container-env.sh\"",
+        "content_hash": "69179fb3070fab20"
       },
       {
         "file": "tests/projections_stay_local.rs",
@@ -3767,7 +3787,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 549 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 552 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

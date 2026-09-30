@@ -146,8 +146,13 @@ gates:                      # the project's verification library, referenced by 
   # The test gate runs every workspace crate's tests (a bare `cargo test` here tests the root
   # package alone, so no crate's own unit tests would run under any unit). It first sources
   # .rigger/gates/container-env.sh, which points the container-backed tests at the local
-  # rootless podman when no DOCKER_HOST is set, so they run instead of skipping.
-  test:   { run: ". .rigger/gates/container-env.sh && cargo test --workspace", kind: core }
+  # rootless podman when no DOCKER_HOST is set, so they run instead of skipping. This string
+  # is read from the operator's workflow but runs inside the unit's worktree, whose tree may
+  # predate the snippet: a missing snippet runs the tests without it, and a snippet that fails
+  # to source fails the gate.
+  test:
+    run: "if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || exit 1; fi; cargo test --workspace"
+    kind: core
   # The style gate (Gap 4a): a mechanically-checkable style constraint becomes a
   # gate rather than relying on ambient reviewer attention. It FAILS when the
   # unit's OWN diff against the run base introduces an em dash (U+2014) in any
