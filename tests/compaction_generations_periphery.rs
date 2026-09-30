@@ -4656,6 +4656,128 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
     the_next_setup_pays_the_missing_event(root, lost);
 }
 
+/// Given a project whose event log is a KurrentDB server, and a `graph.db` on this machine that
+/// misses an event another writer of that server appended - a second machine sharing the log -
+/// when the operator runs `rigger setup`, then setup reads the server's positions against the
+/// graph's ledger, names the missing event as the cause, rebuilds `graph.db` from the server's
+/// whole run stream (a server-backed log has no compaction plan, so its live selection is the
+/// stream as it stands), reports its progress and its prune, and leaves the graph a fold of that
+/// stream. Before the other writer's append, the emit's own fold owes nothing; after the rebuild, a
+/// second setup owes nothing. Gracefully skipped when no container runtime is reachable.
+#[test]
+fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_server_log() {
+    common::fixtures::with_kurrentdb(|conn| {
+        let dir = common::cli::temp_project();
+        let root = dir.path();
+        let server = [("KURRENTDB_CONN", conn), ("RIGGER_NPM", "true")];
+        let setup = || run_rigger_envs(root, &["setup"], &server);
+        let decision = |id: &str| {
+            format!(r#"{{"id":"{id}","summary":"s","governs":["src/f.rs"],"supersedes":""}}"#)
+        };
+        let rebuild_lines = |out: &str| -> Vec<String> {
+            out.lines()
+                .filter(|l| {
+                    ["rebuil", "pruned ", "passed over "]
+                        .iter()
+                        .any(|p| l.starts_with(p))
+                })
+                .map(str::to_string)
+                .collect()
+        };
+        let (out, err, ok) = setup();
+        assert_eq!(
+            (ok, rebuild_lines(&out)),
+            (true, Vec::<String>::new()),
+            "setup mints the identity and, with no graph.db, rebuilds nothing; stdout: {out} \
+             stderr: {err}"
+        );
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["emit", "DecisionMade", &decision("d-first")],
+            &server,
+        );
+        assert!(
+            ok && out.ends_with(" and folded it into the context graph\n"),
+            "the emit appends to the server and folds into the local graph.db; stdout: {out} \
+             stderr: {err}"
+        );
+        let (out, err, ok) = setup();
+        assert_eq!(
+            (ok, out.contains("graph.db"), rebuild_lines(&out)),
+            (true, false, Vec::<String>::new()),
+            "the emit's fold recorded the position the server's positions read hands, so setup \
+             owes nothing; stdout: {out} stderr: {err}"
+        );
+
+        let project = run_stream_identity(root);
+        let backend = rigger::eventstore::kurrentdb::Store::open(conn).unwrap();
+        let log = Namespaced::new(&backend, &project);
+        let lost = log
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new("DecisionMade", decision("d-other").into_bytes())],
+            )
+            .unwrap()
+            .one("the other writer's decision")
+            .unwrap();
+        let graph_db = rigger_file(root, "graph.db");
+        assert!(
+            !applied(&graph_db, lost),
+            "the other writer's event is on the server and not in this machine's graph"
+        );
+
+        let (out, err, ok) = setup();
+        let stream = log
+            .read_stream(
+                rigger::conductor::STREAM,
+                0,
+                rigger::eventstore::Direction::Forward,
+            )
+            .unwrap();
+        let head = stream.last().unwrap().position;
+        let scratch = tempfile::tempdir().unwrap();
+        let folded = fold_in_batches(
+            &scratch.path().join("graph.db"),
+            &project,
+            std::slice::from_ref(&stream),
+        );
+        assert_eq!(
+            (
+                ok,
+                rebuild_lines(&out),
+                stream.len(),
+                applied(&graph_db, lost),
+                whole_graph(root)
+            ),
+            (
+                true,
+                vec![
+                    LOST_FOLD_REBUILD_LINE.to_string(),
+                    format!("rebuilt 2 events, through position {head} of {head} (100%)"),
+                    "rebuilt graph.db from the event log".to_string(),
+                    "pruned 0 dead-run node(s) and reclaimed 0 superseded edge(s) from the \
+                     rebuilt graph"
+                        .to_string(),
+                ],
+                2,
+                true,
+                folded
+            ),
+            "setup finds the other writer's event missing from the ledger, rebuilds from the \
+             server's whole run stream in one batch, prunes nothing before a run starts, and the \
+             graph is the fold of that stream; stdout: {out} stderr: {err}"
+        );
+        let (out, err, ok) = setup();
+        assert_eq!(
+            (ok, out.contains("graph.db"), rebuild_lines(&out)),
+            (true, false, Vec::<String>::new()),
+            "the rebuilt ledger holds every position the server hands, so the rebuild is paid; \
+             stdout: {out} stderr: {err}"
+        );
+    });
+}
+
 /// Given an event on the log whose payload the fold rejects - appended without the emit surface's
 /// shape check - when the operator runs `rigger setup`, then setup finds it missing from the
 /// graph's ledger, rebuilds, and says it passed that one event over, recording it as folded so the
