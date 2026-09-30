@@ -146,9 +146,10 @@ const FRESH = !!A.fresh
 // TOTAL-RUNTIME ceiling past which even an UNBOUNDED-config spawn is abandoned-and-surfaced,
 // so a hung agent surfaces within a bounded time rather than being awaited forever. It applies
 // ONLY to a spawn that carries NO per-spawn `max_wall_clock` (an unbounded config: defaults.
-// max_wall_clock is 0 and the agent set none). Such a spawn is told NO liveness heartbeat and
-// `rigger step`'s sweep - which times out only a POSITIVE bound - never reaches it, so this
-// coarse total-runtime cap is the only backstop that keeps it from stalling the run silently.
+// max_wall_clock is 0 and the agent set none). Such a spawn still heartbeats its marker (spec
+// 101: the live-writer guard reads it), but `rigger step`'s sweep - which times out only a
+// POSITIVE bound - never reaches it, so this coarse total-runtime cap is the only backstop
+// that keeps it from stalling the run silently.
 // A BOUNDED spawn is left to the precise, marker-staleness watchdog (raceMarkerStaleness) that
 // deliberately leaves a slow-but-ALIVE, marker-fresh worker in-flight; the outer cap does not
 // touch it. The coarse default is intentionally generous (a legitimately long unbounded spawn
@@ -551,11 +552,11 @@ async function raceMarkerStaleness(ran, boundSec, ph, id) {
 // resolves first - the worker's {kind:'done'|'error'} if it finishes, or {kind:'outer'} once
 // boundSec of WALL TIME has elapsed with the worker still running. Unlike raceMarkerStaleness
 // (which polls marker IDLE time and so leaves a marker-fresh worker in-flight forever), this is a
-// hard total-runtime CEILING: it is the backstop for a spawn that carries no per-spawn bound and
-// heartbeats nothing, so no liveness signal exists to poll and only elapsed wall time can bound
-// it. Its caller abandons-and-SURFACES the {kind:'outer'} spawn (records a liveness fault on its
-// behalf, below), so a hung agent under an unbounded config surfaces within a bounded time
-// instead of being awaited forever.
+// hard total-runtime CEILING: it is the backstop for a spawn that carries no per-spawn bound -
+// its marker has no staleness bound to be judged against, so no timeout signal exists to poll
+// and only elapsed wall time can bound it. Its caller abandons-and-SURFACES the {kind:'outer'}
+// spawn (records a liveness fault on its behalf, below), so a hung agent under an unbounded
+// config surfaces within a bounded time instead of being awaited forever.
 async function raceOuterWallClock(ran, boundSec) {
   let timer = null
   const deadline = new Promise((resolve) => {
@@ -616,20 +617,26 @@ async function runWorker(req, fatal) {
   const workdir = req.dir
     ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
     : `Work in ${REPO}.`
-  // The driver-framed liveness heartbeat (spec 10, unit 3), same mechanism family as the
-  // SCRATCH POLICY: only when this spawn carries a wall-clock bound AND `rigger step` resolved
-  // a marker path for it. The worker keeps THAT EXACT per-spawn marker fresh - the path the
-  // step stamped on the wire from the single `liveness::marker_path` authority, so the
-  // worker-write path is identical to the sweep-read path under any scratch config (never a
-  // re-hardcoded root). A HUNG agent (one that stops touching it) is then caught by `rigger
-  // step`'s liveness sweep as an infrastructure fault - never charging the unit.
+  // The driver-framed liveness heartbeat (spec 10, unit 3; spec 101), same mechanism family as
+  // the SCRATCH POLICY: whenever `rigger step` resolved a marker path for this spawn, which it
+  // does for EVERY spawn, bounded or not. The worker keeps THAT EXACT per-spawn marker fresh -
+  // the path the step stamped on the wire from the single `liveness::marker_path` authority, so
+  // the worker-write path is identical to every reader's path under any scratch config (never a
+  // re-hardcoded root). For a BOUNDED spawn a HUNG agent (one that stops touching it) is caught
+  // by `rigger step`'s liveness sweep as an infrastructure fault - never charging the unit. An
+  // UNBOUNDED spawn's marker is never timed out; it is how the live-writer guard (`rigger reset
+  // --derived`) sees the worker, so a silent worker is never invisible to it.
   const marker = req.marker_path
-  const heartbeat =
-    req.max_wall_clock && marker
+  const touchMarker = `  mkdir -p "$(dirname "${marker}")" && touch "${marker}"\n`
+  const heartbeat = !marker
+    ? ''
+    : req.max_wall_clock
       ? `LIVENESS HEARTBEAT (spec 10): your spawn carries a ${req.max_wall_clock}s wall-clock bound. Prove you are alive by TOUCHING your per-spawn marker at the START of your work and again after each significant step (a tool call, a build, a commit), using Bash:\n` +
-        `  mkdir -p "$(dirname "${marker}")" && touch "${marker}"\n` +
+        touchMarker +
         `\`rigger step\` treats this marker going stale (left untouched) beyond your ${req.max_wall_clock}s bound as a HUNG agent - an infrastructure fault that charges you NO remediation attempt - so keep it fresh while you work. It stops mattering the instant you self-report your result.\n`
-      : ''
+      : `LIVENESS HEARTBEAT (spec 101): your spawn carries no wall-clock bound. TOUCH your per-spawn marker anyway, at the START of your work and again after each significant step (a tool call, a build, a commit), using Bash:\n` +
+        touchMarker +
+        `\`rigger step\` never declares an unbounded spawn hung, and the live-writer guard (\`rigger reset --derived\`) reads a fresh or unbounded marker as a live worker until your result is recorded - so keep it fresh while you work. It stops mattering the instant you self-report your result.\n`
   // Live progress (spec 14): every worker reports one short line after each significant step,
   // additive to the marker heartbeat above. This is what turns a 26-minute silent stretch of
   // real work into a visible stream an observer (and `rigger status` / the dash) can follow.
@@ -683,10 +690,10 @@ async function runWorker(req, fatal) {
   //    precise MARKER-STALENESS watchdog: it abandons only a genuinely stale (idle-since-last-
   //    touch) marker and deliberately leaves a slow-but-ALIVE, marker-fresh worker in-flight
   //    (spec 10, unit 3) - NOT a total-runtime cap.
-  //  - an UNBOUNDED-config spawn (no per-spawn bound, so it is told no heartbeat and carries no
-  //    marker the sweep could ever time out) rides the OUTER total-runtime wall-clock (spec 19c,
-  //    unit 2): a coarse ceiling that abandons-and-surfaces it after OUTER_WALL_CLOCK_SEC so it
-  //    is never awaited forever, the only backstop available when no liveness signal exists.
+  //  - an UNBOUNDED-config spawn (no per-spawn bound, so the marker it heartbeats is one the
+  //    sweep never times out) rides the OUTER total-runtime wall-clock (spec 19c, unit 2): a
+  //    coarse ceiling that abandons-and-surfaces it after OUTER_WALL_CLOCK_SEC so it is never
+  //    awaited forever, the only backstop available when no staleness bound applies.
   // Both are opt-in on setTimeout existing; without it we await plainly (unchanged).
   let outcome
   if (typeof setTimeout !== 'function') {

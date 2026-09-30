@@ -1003,5 +1003,10 @@
     "id": "dup-57c1e8124510",
     "disposition": "not-a-duplicate",
     "reason": "Two one-line accessors on two different types reading two different fields (the content-identity policy's metadata key versus the graph file a rebuild lock excludes)."
+  },
+  {
+    "id": "dup-903206b6dfc3",
+    "disposition": "not-a-duplicate",
+    "reason": "Three runtime driver tests, each running a different scripted harness (per-unit pipelining, a worker settling during the courier step, the heartbeat instruction every marked spawn gets) through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
   }
 ]

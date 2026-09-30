@@ -335,6 +335,22 @@ fn run_driver_harness(harness: &str) -> (bool, String, String) {
     (status.success(), stdout, stderr)
 }
 
+/// Run `harness` against the real driver body and assert it exited cleanly and printed
+/// `ok_token`, failing with `what` and both output streams otherwise. A missing `node` runtime
+/// (present on dev machines and on ubuntu-latest CI) skips `test` with a notice rather than
+/// failing it - an environment fact, never a test failure.
+fn assert_driver_harness_holds(test: &str, harness: &str, ok_token: &str, what: &str) {
+    if !tool_available("node", "--version") {
+        eprintln!("SKIP {test}: no `node` runtime on PATH; install node to run it.");
+        return;
+    }
+    let (ok, stdout, stderr) = run_driver_harness(harness);
+    assert!(
+        ok && stdout.contains(ok_token),
+        "{what}:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
 /// RUNTIME guard (spec 89, criterion 5): with two units landing in one wave, the driver reviews
 /// the unit whose result lands first while its sibling is still building, never spawns a
 /// still-running item a second time, never falls back to a monolithic `parallel()` wave-await,
@@ -344,23 +360,12 @@ fn run_driver_harness(harness: &str) -> (bool, String, String) {
 /// pattern-matching its source text.
 #[test]
 fn fast_units_review_runs_while_the_slow_sibling_still_builds() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP fast_units_review_runs_while_the_slow_sibling_still_builds: no `node` runtime \
-             on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    let (ok, stdout, stderr) = run_driver_harness(HARNESS);
-    assert!(
-        ok,
+    assert_driver_harness_holds(
+        "fast_units_review_runs_while_the_slow_sibling_still_builds",
+        HARNESS,
+        "OK per-unit-pipelining-reviews-the-fast-unit-while-the-slow-one-still-builds",
         "the pipelining behavior harness must drive the real driver body to the expected \
-         fixpoint:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK per-unit-pipelining-reviews-the-fast-unit-while-the-slow-one-still-builds"),
-        "the harness must confirm the criterion held:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+         fixpoint and confirm the criterion held",
     );
 }
 
@@ -513,17 +518,108 @@ function at(run, what) {
 /// yet is not done" stop.
 #[test]
 fn a_worker_settling_during_the_courier_step_wakes_the_loop_and_never_reads_as_a_false_stop() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP a_worker_settling_during_the_courier_step_wakes_the_loop_and_never_reads_as_a_false_stop: \
-             no `node` runtime on PATH; install node to run it."
-        );
-        return;
+    assert_driver_harness_holds(
+        "a_worker_settling_during_the_courier_step_wakes_the_loop_and_never_reads_as_a_false_stop",
+        SETTLE_DURING_STEP_HARNESS,
+        "OK a-settle-during-the-courier-step-steps-again-at-once",
+        "a settle during the courier step must step again at once and never stop the run",
+    );
+}
+
+/// Node harness for the worker's LIVENESS HEARTBEAT instruction (spec 101: every spawn carries a
+/// liveness marker, so the live-writer guard sees every worker). One wave parks a BOUNDED spawn,
+/// an UNBOUNDED spawn and a spawn whose step resolved no marker path; the harness records the
+/// prompt the real driver body hands each worker and asserts the bounded one keeps its bounded
+/// heartbeat, the unbounded one is told to keep its marker fresh anyway (never hung, read as live
+/// until its result), and the unmarked one is told no heartbeat at all.
+const HEARTBEAT_HARNESS: &str = r#"
+"use strict";
+const vm = require("vm");
+const fs = require("fs");
+
+const driverBody = fs.readFileSync(process.argv[2], "utf8");
+
+const BOUNDED_MARKER = "/scratch/agent-live/r1/b_2fimplementer_231";
+const UNBOUNDED_MARKER = "/scratch/agent-live/r1/u_2fimplementer_231";
+const WAVE = [
+  { id: "b/implementer#1", unit: "b", stage: "build", max_wall_clock: 60, marker_path: BOUNDED_MARKER },
+  { id: "u/implementer#1", unit: "u", stage: "build", max_wall_clock: null, marker_path: UNBOUNDED_MARKER },
+  { id: "n/implementer#1", unit: "n", stage: "build", max_wall_clock: null, marker_path: null },
+];
+const prompts = {};
+let steps = 0;
+
+function fail(msg) {
+  console.error(msg);
+  process.exit(1);
+}
+
+async function agent(prompt, opts) {
+  const label = (opts && opts.label) || "";
+  if (label === "resolve-repo") return { path: "/repo" };
+  if (label.indexOf("step#") === 0) {
+    steps += 1;
+    if (steps > 10) throw new Error("the driver kept stepping past its fixpoint");
+    return steps === 1 ? { wave: WAVE, done: false } : { wave: [], done: true };
+  }
+  const m = /^You are the rigger worker for spawn (\S+) \(unit /.exec(prompt);
+  if (m) {
+    prompts[m[1]] = prompt;
+    await new Promise(function (resolve) { setTimeout(resolve, 20); });
+    return {};
+  }
+  throw new Error("unexpected agent() call - opts=" + JSON.stringify(opts) + " prompt=" + prompt.slice(0, 160));
+}
+
+const sandbox = {
+  args: { repo: "/repo", spec: "spec.md", outer_wall_clock: 5 },
+  agent: agent,
+  parallel: async function () { throw new Error("parallel() must never be invoked"); },
+  log: function () {},
+  setTimeout: setTimeout,
+  clearTimeout: clearTimeout,
+};
+vm.createContext(sandbox);
+
+vm.runInContext("(async () => {\n" + driverBody + "\n})()", sandbox, { filename: "rigger-driver-heartbeat-harness.js" })
+  .then(function () {
+    const touch = function (marker) { return 'mkdir -p "$(dirname "' + marker + '")" && touch "' + marker + '"'; };
+    const bounded = prompts["b/implementer#1"];
+    const unbounded = prompts["u/implementer#1"];
+    const unmarked = prompts["n/implementer#1"];
+    if (!bounded || !unbounded || !unmarked) fail("every wave item must reach a worker; got prompts for " + Object.keys(prompts));
+    if (!bounded.includes("LIVENESS HEARTBEAT (spec 10): your spawn carries a 60s wall-clock bound.") || !bounded.includes(touch(BOUNDED_MARKER))) {
+      fail("the BOUNDED spawn keeps its bounded heartbeat over its own marker:\n" + bounded);
     }
-    let (ok, stdout, stderr) = run_driver_harness(SETTLE_DURING_STEP_HARNESS);
-    assert!(
-        ok && stdout.contains("OK a-settle-during-the-courier-step-steps-again-at-once"),
-        "a settle during the courier step must step again at once and never stop the run:\n\
-         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    if (!unbounded.includes("LIVENESS HEARTBEAT") || !unbounded.includes(touch(UNBOUNDED_MARKER))) {
+      fail("the UNBOUNDED spawn must be told to touch its own marker too:\n" + unbounded);
+    }
+    if (!unbounded.includes("carries no wall-clock bound") || !unbounded.includes("never declares an unbounded spawn hung") || !unbounded.includes("live-writer guard") || !unbounded.includes("until your result is recorded")) {
+      fail("the UNBOUNDED spawn's heartbeat must say it has no bound, is never declared hung, and reads as a live worker to the live-writer guard until its result is recorded:\n" + unbounded);
+    }
+    if (unbounded.includes("wall-clock bound. Prove you are alive")) {
+      fail("the UNBOUNDED spawn must not be handed the bounded wording:\n" + unbounded);
+    }
+    if (unmarked.includes("LIVENESS HEARTBEAT")) {
+      fail("a spawn with no resolved marker path has nothing to touch and gets no heartbeat:\n" + unmarked);
+    }
+    console.log("OK every-marked-spawn-is-told-to-heartbeat");
+  })
+  .catch(function (err) {
+    fail("the driver body rejected: " + String((err && err.stack) || err));
+  });
+"#;
+
+/// RUNTIME guard (spec 101): the driver hands every spawn that carries a marker path the
+/// heartbeat instruction - a bounded one its bounded wording, an unbounded one the no-bound
+/// wording that still keeps its marker fresh for the live-writer guard - and a spawn with no
+/// marker path none.
+#[test]
+fn every_spawn_with_a_marker_path_is_told_to_keep_it_fresh() {
+    assert_driver_harness_holds(
+        "every_spawn_with_a_marker_path_is_told_to_keep_it_fresh",
+        HEARTBEAT_HARNESS,
+        "OK every-marked-spawn-is-told-to-heartbeat",
+        "every spawn carrying a marker path must be told to keep it fresh",
     );
 }
