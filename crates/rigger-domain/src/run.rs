@@ -688,4 +688,26 @@ mod tests {
             "no run, nothing dead; a run started, the pre-boundary decision and finding drop"
         );
     }
+
+    /// The no-run rule lives in the one attribution every consumer shares: with no active run a
+    /// pre-boundary decision or finding is live - there is no closed run for it to belong to -
+    /// and once a run is active it is historical; a run's own node is live only while that run is
+    /// the active one, and a lesson is never live, whatever runs.
+    #[test]
+    fn a_pre_boundary_node_is_live_exactly_while_no_run_is_active() {
+        let run = RunOf::Run("r1".to_string());
+        assert_eq!(
+            [
+                RunOf::PreBoundary.is_live(None),
+                RunOf::PreBoundary.is_live(Some("r1")),
+                run.is_live(Some("r1")),
+                run.is_live(Some("r2")),
+                run.is_live(None),
+                RunOf::Lesson.is_live(None),
+                RunOf::Lesson.is_live(Some("r1")),
+            ],
+            [true, false, true, false, false, false, false],
+            "live before any run, historical once one is active"
+        );
+    }
 }

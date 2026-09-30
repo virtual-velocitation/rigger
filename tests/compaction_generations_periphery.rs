@@ -5659,7 +5659,8 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
 /// ever started a run, when its `graph.db` is lost and `rigger setup` rebuilds it, then setup
 /// reports it pruned nothing and the rebuilt graph is the live one, every node and edge; and
 /// `rigger reset --runs` over that log prunes nothing either, as the bare `rigger reset` menu
-/// previews it over the live graph that holds every one of those nodes.
+/// previews it over the live graph that holds every one of those nodes; and `rigger peers` labels
+/// each of those decisions live, the one answer the prune gives.
 #[test]
 fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything() {
     let dir = temp_store_project();
@@ -5696,6 +5697,7 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let rebuilt = whole_graph(root);
     let (reset, reset_err, reset_ok) = run_rigger(root, &["reset", "--runs"]);
+    let (peers, peers_err, peers_ok) = run_rigger(root, &["peers", "src/f.rs"]);
     assert_eq!(
         (
             ok,
@@ -5706,6 +5708,11 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
             reset_ok,
             reset_runs_pruned(&reset),
             whole_graph(root),
+            peers_ok,
+            peers
+                .lines()
+                .filter(|l| l.starts_with("decision "))
+                .collect::<Vec<_>>(),
         ),
         (
             true,
@@ -5727,9 +5734,14 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
                     .to_string()
             ),
             live,
+            true,
+            vec![
+                "decision d-old | LIVE | s | governs: src/f.rs",
+                "decision d-new | LIVE | s | governs: src/f.rs",
+            ],
         ),
         "nothing is dead before a run starts; setup stdout: {out} stderr: {err}; reset stderr: \
-         {reset_err}"
+         {reset_err}; peers stderr: {peers_err}"
     );
 }
 
