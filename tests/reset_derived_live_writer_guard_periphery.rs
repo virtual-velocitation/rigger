@@ -33,8 +33,11 @@
 
 mod common;
 
+use common::cli::configure_workdir;
 use common::cli::hold_step_lock;
+use common::cli::liveness_fault_body;
 use common::cli::plant_marker;
+use common::cli::real_result_body;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
@@ -46,6 +49,7 @@ use common::git::git_out;
 use common::git::nested_worktree;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::normalize_ws;
+use rigger::config::RIGGER_DIR;
 use rigger::registry;
 use std::path::Path;
 
@@ -473,20 +477,13 @@ rigger::test_cases! {
 // A liveness fault is not the spawn's end; a real result is
 // ---------------------------------------------------------------------------------------
 
-/// The liveness fault `rigger step`'s sweep records on [`SPAWN`] once its marker went stale: a
-/// diagnosis of a silent worker, not its end - the replay driver re-parks the spawn, and a worker
-/// that resumes touches its marker again.
-const LIVENESS_FAULT: &str =
-    r#"{"id":"a/implementer#0","error":"hung","meta":{"liveness_class":"infra"}}"#;
-/// A real result on [`SPAWN`]: the worker's own (or the operator's) `rigger result`, which ends
-/// the spawn.
-const REAL_RESULT: &str = r#"{"id":"a/implementer#0","output":"done"}"#;
-
 /// [`one_unanswered_spawn`] in run `r1`, bounded at 300 s, then each of `results` recorded on
-/// [`SPAWN`] in order.
-fn one_spawn_answered_by(results: &[&str]) -> Vec<(&'static str, String)> {
+/// [`SPAWN`] in order: the step's liveness fault ([`liveness_fault_body`]) - a diagnosis of a
+/// silent worker, not its end: the replay driver re-parks the spawn, and a worker that resumes
+/// touches its marker again - or a real result ([`real_result_body`]), which ends the spawn.
+fn one_spawn_answered_by(results: &[String]) -> Vec<(&'static str, String)> {
     let mut events = one_unanswered_spawn("r1", Some(300));
-    events.extend(results.iter().map(|r| ("SpawnResult", r.to_string())));
+    events.extend(results.iter().map(|r| ("SpawnResult", r.clone())));
     events
 }
 
@@ -496,7 +493,11 @@ rigger::test_cases! {
     /// is live - the refusal names it with its marker's age and bound, and prunes nothing.
     reset_derived_refuses_while_a_liveness_faulted_spawns_marker_is_inside_its_bound:
         assert_refused_naming_the_spawn(
-            reset_derived_around(&one_spawn_answered_by(&[LIVENESS_FAULT]), &[("r1", 60)], None),
+            reset_derived_around(
+                &one_spawn_answered_by(&[liveness_fault_body(SPAWN)]),
+                &[("r1", 60)],
+                None,
+            ),
             60..300,
             "s ago, bound 300s)",
         );
@@ -504,8 +505,12 @@ rigger::test_cases! {
     /// drives the run, and it compacts without `--force-live`.
     reset_derived_proceeds_once_a_liveness_faulted_spawns_marker_outlives_its_bound:
         assert_compacted(
-            reset_derived_around(&one_spawn_answered_by(&[LIVENESS_FAULT]), &[("r1", 301)], None)
-                .said(),
+            reset_derived_around(
+                &one_spawn_answered_by(&[liveness_fault_body(SPAWN)]),
+                &[("r1", 301)],
+                None,
+            )
+            .said(),
             "a liveness-faulted spawn whose marker outlived its bound is not live",
         );
     /// The fault, then a real result, with the marker touched just now: the real result ended
@@ -513,7 +518,7 @@ rigger::test_cases! {
     reset_derived_proceeds_once_a_real_result_follows_the_liveness_fault_despite_a_fresh_marker:
         assert_compacted(
             reset_derived_around(
-                &one_spawn_answered_by(&[LIVENESS_FAULT, REAL_RESULT]),
+                &one_spawn_answered_by(&[liveness_fault_body(SPAWN), real_result_body(SPAWN)]),
                 &[("r1", 0)],
                 None,
             )
@@ -613,26 +618,6 @@ fn reset_derived_reads_a_marker_stamped_under_the_default_scratch_root() {
     );
 }
 
-/// Writes `defaults` as the store's `workflow.yml` defaults block with `workdir` set to a fresh
-/// directory, and returns that directory with the scratch root a run stamps its markers under
-/// there.
-fn configure_workdir(root: &Path, defaults: &str) -> (tempfile::TempDir, String) {
-    let relocated = tempfile::tempdir().expect("create the configured workdir");
-    let workdir = relocated.path().to_str().unwrap().to_string();
-    std::fs::write(
-        rigger_file(root, "workflow.yml"),
-        format!("defaults:\n  workdir: \"{workdir}\"\n{defaults}"),
-    )
-    .expect("configure defaults.workdir");
-    let scratch_root = rigger::worktree::scratch_root(root.to_str().unwrap(), &workdir, None);
-    assert_ne!(
-        Path::new(&scratch_root),
-        common::default_scratch_root(root),
-        "fixture bug: the configured workdir must move the scratch root off the default"
-    );
-    (relocated, scratch_root)
-}
-
 /// With `defaults.workdir` configured in the store's `workflow.yml`, a run stamps its markers
 /// under that workdir - not the default cache root - and the guard reads them there.
 #[test]
@@ -673,6 +658,47 @@ fn reset_derived_fails_closed_on_an_unparsable_defaults_block_beside_a_configure
     );
 }
 
+/// A store whose OWNING root has no UTF-8 path resolves no scratch root to read its spawns'
+/// markers under, and both reset modes that read liveness refuse it rather than reading the
+/// unresolved root as "no spawn marker, so nothing is live": `reset --derived` and `reset --runs`
+/// each exit non-zero naming why, and neither so much as opens the store first - its `events.db`
+/// is still the empty file it was seeded as, never given a schema, migrated or pruned.
+#[cfg(unix)]
+#[test]
+fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = tempfile::tempdir().expect("create the parent of the non-UTF-8 root");
+    let root = parent
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"owning-\xff-root"));
+    seed_store(&root);
+    let events_db = rigger_file(&root, "events.db");
+    for mode in ["--derived", "--runs"] {
+        let (out, err, ok) = run_rigger_envs(&root, &["reset", mode], &[]);
+        assert!(
+            !ok,
+            "reset {mode} must refuse a store whose scratch root it cannot resolve; stdout: \
+             {out:?}"
+        );
+        assert!(
+            err.contains(&format!(
+                "reset: the store at {} has no UTF-8 owning root, so the scratch root its runs \
+                 write their liveness markers and build caches under cannot be resolved; \
+                 refusing rather than reading that as no live spawn",
+                root.join(RIGGER_DIR).display()
+            )),
+            "reset {mode} must name the unresolvable owning root; stderr: {err:?}"
+        );
+        assert_eq!(
+            std::fs::metadata(&events_db)
+                .expect("the seeded store is still there")
+                .len(),
+            0,
+            "reset {mode} must refuse before it opens the store"
+        );
+    }
+}
+
 /// Run from a nested unit worktree, the guard still reads the marker the run stamped under the
 /// store OWNER's scratch root, never one derived from the process cwd.
 #[test]
@@ -698,10 +724,9 @@ fn reset_derived_from_a_nested_worktree_reads_the_marker_under_the_owning_roots_
 // The operator's way past an unbounded spawn
 // ---------------------------------------------------------------------------------------
 
-/// Given a host that keeps a liveness marker for an UNBOUNDED spawn (the blessed workflow driver
-/// frames no heartbeat for one, so under it such a spawn has no marker and never blocks), and a
-/// dead driver's run whose one in-flight spawn is that unbounded spawn: when the operator runs
-/// `reset --derived`, then it refuses naming the `rigger result` that ends the spawn; when the
+/// Given a dead driver's run whose one in-flight spawn is UNBOUNDED, its worker having touched
+/// the liveness marker every host keeps for every spawn a day before it died: when the operator
+/// runs `reset --derived`, then it refuses naming the `rigger result` that ends the spawn; when the
 /// operator records that result as told, then the spawn no longer holds the run live and the one
 /// signal left is the registry heartbeat that `rigger result` courier itself just stamped for
 /// this store; and once that heartbeat is past the idle window the compaction runs - never
@@ -844,16 +869,20 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
              driver died is not live: units it left non-terminal never block the compaction, a \
              spawn with no marker never does, and an in-flight spawn stops blocking once its \
              marker outlives the spawn's bound or a real result is recorded for it. An unbounded \
-             spawn's marker never outlives its bound, so it blocks only under a host that keeps a \
-             marker for it - the blessed workflow driver frames no heartbeat for an unbounded \
-             spawn, so under that driver it has none - and recording its result ends it."
+             spawn's marker never outlives its bound, so record that spawn's result to end it."
         ),
         "the using-rigger skill must state the liveness `--derived` refuses on; got {using:?}"
     );
     assert!(
-        !using.contains("not yet terminal") && !using.contains("an unbounded spawn's never does"),
-        "neither unit terminality nor an unbounded spawn under every host is a live signal; got \
-         {using:?}"
+        !using.contains("not yet terminal"),
+        "unit terminality is not a live signal; got {using:?}"
+    );
+    // Every host keeps a liveness marker for every spawn, bounded or not - the thin workflow
+    // driver stamps one on each wave item and tells its worker to keep it fresh - so no host is
+    // one under which an unbounded spawn has no marker and never blocks.
+    assert!(
+        !using.contains("frames no heartbeat") && !using.contains("under that driver it has none"),
+        "no host leaves an unbounded spawn without a marker; got {using:?}"
     );
 }
 

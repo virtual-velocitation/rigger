@@ -293,6 +293,22 @@ pub fn plant_marker(marker: &Path, secs_ago: u64) {
         .unwrap();
 }
 
+/// The `SpawnResult` body `rigger step`'s sweep records on `spawn_id` once its liveness marker
+/// went stale - the step's liveness fault, built by the product's own constructor: a diagnosis
+/// of a silent worker, not the spawn's end.
+pub fn liveness_fault_body(spawn_id: &str) -> String {
+    serde_json::to_string(&rigger::spawn::SpawnResult::liveness_fault(
+        spawn_id, "hung", "infra",
+    ))
+    .unwrap()
+}
+
+/// A real `SpawnResult` body on `spawn_id` - its worker's (or the operator's) `rigger result` -
+/// which ends the spawn.
+pub fn real_result_body(spawn_id: &str) -> String {
+    serde_json::to_string(&rigger::spawn::SpawnResult::ok(spawn_id, "done")).unwrap()
+}
+
 /// Open, exclusively lock (non-blocking), and return `.rigger/step.lock` under `root` - standing
 /// in for a `rigger step` holding it for its whole duration. The lock lasts until the returned
 /// file is dropped.
@@ -308,6 +324,27 @@ pub fn hold_step_lock(root: &Path) -> std::fs::File {
         .try_lock_exclusive()
         .expect("the test must be able to take the lock first");
     lock_file
+}
+
+/// Configures `defaults.workdir` in the `workflow.yml` of the store under `root` - a fresh
+/// directory, followed by `extra` (further `defaults` keys, two-space indented, or empty) - and
+/// returns that directory with the scratch root a run of that store stamps its spawns' liveness
+/// markers under once the workdir moves it off the default cache root.
+pub fn configure_workdir(root: &Path, extra: &str) -> (tempfile::TempDir, String) {
+    let relocated = tempfile::tempdir().expect("create the configured workdir");
+    let workdir = relocated.path().to_str().unwrap().to_string();
+    std::fs::write(
+        rigger_file(root, "workflow.yml"),
+        format!("defaults:\n  workdir: \"{workdir}\"\n{extra}"),
+    )
+    .expect("configure defaults.workdir");
+    let scratch_root = rigger::worktree::scratch_root(root.to_str().unwrap(), &workdir, None);
+    assert_ne!(
+        Path::new(&scratch_root),
+        super::default_scratch_root(root),
+        "fixture bug: the configured workdir must move the scratch root off the default"
+    );
+    (relocated, scratch_root)
 }
 
 /// A machine-global instance registry under a fresh `XDG_STATE_HOME` holding one entry for

@@ -17,8 +17,9 @@
 mod common;
 
 use common::cli::{
-    hold_step_lock, init_event_log, plant_marker, read_run_events, run_rigger_envs, run_rigger_ok,
-    seed_registry, seed_run_events,
+    configure_workdir, hold_step_lock, init_event_log, liveness_fault_body, plant_marker,
+    read_run_events, real_result_body, rigger_file, run_rigger_envs, run_rigger_ok, seed_registry,
+    seed_run_events,
 };
 use common::fixtures::{git_ok, git_ok_with_identity, git_out, temp_git_project_with_commit};
 use rigger::registry;
@@ -36,6 +37,9 @@ const DEAD_RUN: &[(&str, &str)] = &[
     ),
     ("UnitFailed", r#"{"id":"checkin","attempts":1}"#),
 ];
+
+/// The spawn [`IN_FLIGHT_SPAWN`] requests.
+const SPAWN_ID: &str = "checkin/implementer#1";
 
 /// A spawn requested for `checkin` with a 300 s wall-clock bound and no result yet: live while
 /// its worker's liveness marker is younger than that bound, dead once it is older.
@@ -96,9 +100,10 @@ fn reset_runs_over(
     let scratch = tempfile::tempdir().unwrap();
     let scratch_root = scratch.path().to_str().unwrap();
     if let Some(age) = around.marker_secs_ago {
-        let marker =
-            rigger::liveness::marker_path(scratch_root, "r1", "checkin/implementer#1").unwrap();
-        plant_marker(&marker, age);
+        plant_marker(
+            &rigger::liveness::marker_path(scratch_root, "r1", SPAWN_ID).unwrap(),
+            age,
+        );
     }
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
     let seeded = around
@@ -108,18 +113,20 @@ fn reset_runs_over(
     if let Some(home) = &seeded {
         envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
     }
-    let types = |root: &Path| -> Vec<String> {
-        read_run_events(root)
-            .into_iter()
-            .map(|e| format!("{} {}", e.type_, String::from_utf8_lossy(&e.data)))
-            .collect()
-    };
-    let before = types(root);
+    let before = run_log(root);
     let lock = around.step_lock.then(|| hold_step_lock(root));
     let (_out, err, ok) = run_rigger_envs(root, &["reset", "--runs"], &envs);
     drop(lock);
     assert!(ok, "rigger reset --runs must exit 0; stderr:\n{err}");
-    (before, types(root))
+    (before, run_log(root))
+}
+
+/// Every event of `root`'s run stream, oldest first, as `<type> <body>`.
+fn run_log(root: &Path) -> Vec<String> {
+    read_run_events(root)
+        .into_iter()
+        .map(|e| format!("{} {}", e.type_, String::from_utf8_lossy(&e.data)))
+        .collect()
 }
 
 /// Asserts `after` still holds every event of `before`, in order, as its prefix - the reset
@@ -273,5 +280,120 @@ rigger::test_cases! {
         &[],
         QUIET,
         "a workless branch",
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// A liveness fault is not the spawn's end; a real result is
+// ---------------------------------------------------------------------------------------
+
+rigger::test_cases! {
+    /// The in-flight spawn's only result is the step's liveness fault, and a worker that resumed
+    /// touched its marker a minute ago, inside its 300 s bound: the spawn is still in flight and
+    /// drives the run, so even a landed branch stays open - the one live-spawn rule `reset
+    /// --derived` refuses on.
+    reset_runs_leaves_a_landed_run_open_while_a_liveness_faulted_spawns_marker_is_inside_its_bound: {
+        let fault = liveness_fault_body(SPAWN_ID);
+        assert_left_open(
+            true,
+            true,
+            &[IN_FLIGHT_SPAWN, ("SpawnResult", &fault)],
+            Around {
+                marker_secs_ago: Some(60),
+                ..QUIET
+            },
+            "a liveness-faulted spawn whose marker is inside its bound",
+        );
+    };
+    /// The same fault with the marker a second past its bound: the worker is gone, nothing drives
+    /// the run, and the landed unit is closed.
+    reset_runs_closes_a_dead_run_whose_liveness_faulted_spawns_marker_outlived_its_bound: {
+        let fault = liveness_fault_body(SPAWN_ID);
+        closes_the_landed_checkin(&[IN_FLIGHT_SPAWN, ("SpawnResult", &fault)], 301);
+    };
+    /// The fault, then a real result, with the marker touched just now: the real result ended
+    /// the spawn whatever its marker says, so nothing drives the run and the landed unit is
+    /// closed.
+    reset_runs_closes_a_dead_run_once_a_real_result_follows_the_liveness_fault_despite_a_fresh_marker: {
+        let (fault, real) = (liveness_fault_body(SPAWN_ID), real_result_body(SPAWN_ID));
+        closes_the_landed_checkin(
+            &[IN_FLIGHT_SPAWN, ("SpawnResult", &fault), ("SpawnResult", &real)],
+            0,
+        );
+    };
+}
+
+/// Asserts `reset --runs` over [`DEAD_RUN`] then `extra`, with the in-flight spawn's marker
+/// touched `marker_secs_ago` seconds back and no other signal, closes the landed `checkin` unit.
+fn closes_the_landed_checkin(extra: &[(&str, &str)], marker_secs_ago: u64) {
+    let dir = project(true, true);
+    let root = dir.path();
+    let events: Vec<(&str, &str)> = DEAD_RUN.iter().chain(extra).copied().collect();
+    let (before, after) = reset_runs_over(
+        root,
+        &events,
+        Around {
+            marker_secs_ago: Some(marker_secs_ago),
+            ..QUIET
+        },
+    );
+    assert_checkin_closed(root, &before, &after);
+}
+
+// ---------------------------------------------------------------------------------------
+// The scratch root is read fail-closed
+// ---------------------------------------------------------------------------------------
+
+/// Given a landed run whose in-flight spawn's worker touched its marker just now under the
+/// store's configured `defaults.workdir` - where a run stamps it - `reset --runs` reads it there
+/// and leaves the run open. When that `defaults` block turns unparsable (a `max_retries` that is
+/// not a number beside the same `workdir`), the scratch root is never degraded to the default
+/// root, where the marker would read as absent and the live worker's run would be closed out from
+/// under it: `reset --runs` exits non-zero naming the config, and the log is left exactly as it
+/// was.
+#[test]
+fn reset_runs_fails_closed_on_an_unparsable_defaults_block_and_closes_nothing() {
+    let dir = project(true, true);
+    let root = dir.path();
+    let events: Vec<(&str, &str)> = DEAD_RUN.iter().copied().chain([IN_FLIGHT_SPAWN]).collect();
+    seed_run_events(root, &events);
+    let (_workdir, scratch_root) = configure_workdir(root, "");
+    plant_marker(
+        &rigger::liveness::marker_path(&scratch_root, "r1", SPAWN_ID).unwrap(),
+        0,
+    );
+    let before = run_log(root);
+    let reset = || run_rigger_envs(root, &["reset", "--runs"], &[("RIGGER_TMPDIR", "")]);
+
+    let (_out, err, ok) = reset();
+    assert!(
+        ok,
+        "a parsable defaults block resolves the workdir's scratch root; stderr:\n{err}"
+    );
+    assert_eq!(
+        run_log(root),
+        before,
+        "the fresh marker under the configured workdir keeps the landed run open"
+    );
+
+    let workflow = rigger_file(root, "workflow.yml");
+    let mut defaults = std::fs::read_to_string(&workflow).unwrap();
+    defaults.push_str("  max_retries: three\n");
+    std::fs::write(&workflow, defaults).unwrap();
+
+    let (out, err, ok) = reset();
+    assert!(
+        !ok,
+        "an unparsable defaults block must fail reset --runs, never close the run; stdout: \
+         {out:?}"
+    );
+    assert!(
+        err.contains("parse workflow") && err.contains("max_retries"),
+        "the failure must name the unparsable config; stderr: {err:?}"
+    );
+    assert_eq!(
+        run_log(root),
+        before,
+        "a reset that cannot resolve the scratch root must record nothing"
     );
 }

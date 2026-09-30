@@ -2899,23 +2899,23 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 434,
-        "end_line": 434
+        "start_line": 471,
+        "end_line": 471
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 435,
-        "end_line": 435
+        "start_line": 472,
+        "end_line": 472
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 499,
-        "end_line": 499
+        "start_line": 536,
+        "end_line": 536
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 603,
-        "end_line": 603
+        "start_line": 640,
+        "end_line": 640
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -3464,18 +3464,18 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 59,
-        "end_line": 59
+        "start_line": 63,
+        "end_line": 63
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 911,
-        "end_line": 911
+        "start_line": 940,
+        "end_line": 940
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 990,
-        "end_line": 990
+        "start_line": 1019,
+        "end_line": 1019
       },
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -5434,8 +5434,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 614,
-        "end_line": 614
+        "start_line": 651,
+        "end_line": 651
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -5614,8 +5614,8 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 59,
-        "end_line": 59
+        "start_line": 63,
+        "end_line": 63
       },
       {
         "file": "tests/reset_menu.rs",
@@ -6804,13 +6804,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1186,
-        "end_line": 1196
+        "start_line": 1215,
+        "end_line": 1225
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1202,
-        "end_line": 1217
+        "start_line": 1231,
+        "end_line": 1246
       },
       {
         "file": "tests/reset_menu.rs",
@@ -7044,8 +7044,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 445,
-        "end_line": 452
+        "start_line": 482,
+        "end_line": 489
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7059,13 +7059,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 481,
-        "end_line": 501
+        "start_line": 518,
+        "end_line": 538
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 505,
-        "end_line": 521
+        "start_line": 542,
+        "end_line": 558
       },
       {
         "file": "tests/store_secrets.rs",
