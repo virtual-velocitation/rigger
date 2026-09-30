@@ -2443,7 +2443,8 @@ pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 /// `env_override` (the `RIGGER_TMPDIR` environment variable, machine-local placement) >
 /// `configured` (`defaults.workdir` from workflow.yml, versioned placement) > the
 /// cache-home default (spec 89, criterion 2 - see [`cache_scratch_root_from`]). A leading
-/// `~/` expands to $HOME. NEVER the OS temp dir: worktrees carry multi-gigabyte build
+/// `~/` expands to $HOME, and an override or configured root that is still relative resolves
+/// against `repo`. NEVER the OS temp dir: worktrees carry multi-gigabyte build
 /// dirs, and on the common small-root/large-home partition layout the OS disk is the one
 /// that cannot absorb them (design-intent Gap 14). The resolved dir is created if absent.
 pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
@@ -2564,21 +2565,40 @@ pub fn scratch_root_path_with(
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> String {
-    let chosen = match env_override {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ if !configured.trim().is_empty() => configured.trim().to_string(),
-        _ => cache_scratch_root_from(repo, xdg, home)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| {
-                format!(
-                    "{}/{RIGGER_DIR}/tmp",
-                    if repo.is_empty() { "." } else { repo }
-                )
-            }),
+    let operator_chosen = match env_override {
+        Some(v) if !v.trim().is_empty() => Some(v.trim()),
+        _ if !configured.trim().is_empty() => Some(configured.trim()),
+        _ => None,
     };
-    match (chosen.strip_prefix("~/"), std::env::var("HOME")) {
+    match operator_chosen {
+        // A root the operator chose that is still relative after its `~/` expansion resolves
+        // against the repository, never against whatever directory the caller runs from, so a
+        // `rigger step` at the repo root and a `rigger reset` in a subdirectory read one root.
+        // `Path::join` keeps an absolute root as given, and an empty repo leaves a relative one
+        // as given.
+        Some(root) => std::path::Path::new(repo)
+            .join(expand_home(root.to_string()))
+            .to_string_lossy()
+            .into_owned(),
+        None => expand_home(
+            cache_scratch_root_from(repo, xdg, home)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}/{RIGGER_DIR}/tmp",
+                        if repo.is_empty() { "." } else { repo }
+                    )
+                }),
+        ),
+    }
+}
+
+/// `path` with a leading `~/` expanded to `$HOME`, or as given when it has none or `HOME` is
+/// unset.
+fn expand_home(path: String) -> String {
+    match (path.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-        _ => chosen,
+        _ => path,
     }
 }
 
