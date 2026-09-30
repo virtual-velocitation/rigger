@@ -5381,6 +5381,62 @@ mod tests {
         );
     }
 
+    /// A pruned copy that cannot be removed - a directory stands at its path - is never taken for
+    /// gone: with no shadow beside it, forgetting it fails with the directory's own error and the
+    /// copy stands, and a rebuild over it fails with that same error rather than deriving its
+    /// graph through it.
+    #[test]
+    fn a_pruned_copy_that_cannot_be_removed_fails_its_forgetting_and_a_rebuild_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let copy = dir.path().join("graph.db.pruned");
+        std::fs::create_dir(&copy).unwrap();
+
+        let forgotten = Projector::forget_stale_copy(path).map_err(|e| e.to_string());
+        let stands = copy.is_dir();
+        let rebuilt =
+            rebuild_in_batches(path, &[decision_at("d1", "a.rs", 1)], 10, &mut Vec::new())
+                .map_err(|e| e.to_string());
+        assert_eq!(
+            (forgotten, stands, rebuilt, copy.is_dir()),
+            (
+                Err("graph: Is a directory (os error 21)".to_string()),
+                true,
+                Err("graph: Is a directory (os error 21)".to_string()),
+                true
+            ),
+            "forgetting the copy and a rebuild over it both fail on the directory, which stands"
+        );
+    }
+
+    /// Forgetting a stale copy reads a shadow beside it as held by a rebuild only when its lock is
+    /// refused as busy: a shadow that is not a database fails the forgetting with SQLite's own
+    /// error, and the copy is kept.
+    #[test]
+    fn a_stale_copy_beside_a_shadow_that_is_not_a_database_is_kept_and_its_failure_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let copy = dir.path().join("graph.db.pruned");
+        std::fs::write(&copy, b"left by a swap that stopped").unwrap();
+        std::fs::write(
+            dir.path().join("graph.db.rebuild"),
+            b"a shadow that is not a database",
+        )
+        .unwrap();
+
+        assert_eq!(
+            (
+                Projector::forget_stale_copy(path).map_err(|e| e.to_string()),
+                copy.exists()
+            ),
+            (Err("graph: file is not a database".to_string()), true),
+            "the shadow's failure is reported and the copy is kept"
+        );
+    }
+
     /// Every LIVE `GOVERNS` edge as `(from, to, source, valid_from)`, read straight from the
     /// table (not through the live `subgraph` filter), so a test can COUNT the rows and prove a
     /// re-assertion collapsed into the one existing live edge rather than accreting a row per fold.
