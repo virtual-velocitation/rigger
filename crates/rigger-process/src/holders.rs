@@ -55,9 +55,10 @@ fn holds(pid: u32, base: &Path) -> bool {
 }
 
 /// The files process `pid` holds open, one per open file descriptor, each named as its
-/// `/proc/<pid>/fd` link names it: the one reader of a process's open files. Nothing when that
-/// directory cannot be read - the process is gone, or belongs to another user - and a descriptor
-/// whose link cannot be read names nothing.
+/// `/proc/<pid>/fd` link names it: the process adapters' reader of a process's open files, which
+/// `holds` and the host test fixtures consume. Nothing when that directory cannot be read - the
+/// process is gone, or belongs to another user - and a descriptor whose link cannot be read names
+/// nothing.
 pub fn open_files(pid: u32) -> impl Iterator<Item = PathBuf> {
     std::fs::read_dir(proc_of(pid).join("fd"))
         .into_iter()
