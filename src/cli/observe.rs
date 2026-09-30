@@ -549,8 +549,9 @@ pub(crate) fn cmd_peers(args: &[String]) -> Res {
 }
 
 /// Render one `rigger peers` decision line, labeling its provenance LIVE (from the
-/// active run) or HISTORICAL (a superseded run, or pre-boundary) from the `live` flag the
-/// side-car derived via the single c1 run attribution (spec 21, unit 3). The label makes
+/// active run, or recorded before any run started) or HISTORICAL (a superseded run, or
+/// pre-boundary once a run has started) from the `live` flag the side-car derived via the
+/// single c1 run attribution (spec 21, unit 3; spec 101). The label makes
 /// a prior run's decision legible instead of alarming; grounding still surfaces cross-run
 /// decisions unchanged. A missing/false `live` flag renders HISTORICAL - the conservative
 /// default that matches the side-car's own default.

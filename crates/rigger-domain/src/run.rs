@@ -220,9 +220,9 @@ pub enum RunOf {
     /// A decision or finding that falls inside a run's window: it belongs to this run id.
     Run(String),
     /// A decision or finding recorded BEFORE the first [`TYPE_RUN_STARTED`]. It belongs to
-    /// no run (pre-boundary) - it is neither the active run nor a lesson, so once a run has
-    /// started it is dead-run noise that `reset --runs` drops, and `rigger peers` labels it
-    /// historical.
+    /// no run (pre-boundary): while no run has started there is no closed run and it is live,
+    /// and once a run has started it is neither the active run nor a lesson, so it is dead-run
+    /// noise that `reset --runs` drops and `rigger peers` labels historical ([`RunOf::is_live`]).
     PreBoundary,
     /// A [`TYPE_LESSON_LEARNED`]: durable cross-run value, EXEMPT from attribution. A lesson
     /// is never placed in a run and so is never pruned as dead-run noise, regardless of its
@@ -232,14 +232,20 @@ pub enum RunOf {
 }
 
 impl RunOf {
-    /// Whether this node belongs to the ACTIVE run `active` (the id from
-    /// [`current_run_id`]). This is the single `not-active => historical` rule both read
-    /// paths reuse: `rigger peers` labels a decision LIVE when this holds and HISTORICAL
-    /// otherwise, and `reset --runs` keeps a node when this holds OR it is a lesson. A
-    /// [`RunOf::Lesson`] is deliberately NOT "live" (it is exempt, kept by a different rule)
-    /// and a [`RunOf::PreBoundary`] never matches (it belongs to no run).
+    /// Whether this node is live against the ACTIVE run `active` (the id from
+    /// [`current_run_id`], `None` while no run has started). This is the single
+    /// `not-live => historical` rule both read paths reuse: `rigger peers` labels a decision LIVE
+    /// when this holds and HISTORICAL otherwise, and `reset --runs` keeps a node when this holds
+    /// OR it is a lesson - one rule, one answer. A run's node is live while its run is the active
+    /// one; a [`RunOf::PreBoundary`] node is live exactly while no run has started (a log with no
+    /// `RunStarted` has no closed run, so nothing in it is dead - spec 101) and historical once one
+    /// has; a [`RunOf::Lesson`] is deliberately NOT "live" (it is exempt, kept by a different rule).
     pub fn is_live(&self, active: Option<&str>) -> bool {
-        matches!((self, active), (RunOf::Run(run), Some(a)) if run == a)
+        match self {
+            RunOf::Run(run) => active == Some(run.as_str()),
+            RunOf::PreBoundary => active.is_none(),
+            RunOf::Lesson => false,
+        }
     }
 }
 
@@ -381,11 +387,11 @@ pub fn superseded_edge_boundary(events: &[Event]) -> Option<i64> {
 }
 
 /// The decision and finding graph-node ids `rigger reset --runs` drops (spec 21, unit 2):
-/// every provenance node that is NEITHER the active run's NOR a lesson - a superseded run's
-/// decision/finding, or a pre-boundary one recorded before the first `RunStarted`. A decision or
-/// finding is dead only against an active run: a log with no `RunStarted` has no closed run, so
-/// nothing in it is dead and the drop set is empty (spec 101), exactly as
-/// [`superseded_edge_boundary`] reclaims no edge from it. Pure over
+/// every provenance node that is NEITHER live ([`RunOf::is_live`]) NOR a lesson - a superseded
+/// run's decision/finding, or a pre-boundary one recorded before the first `RunStarted` once a run
+/// has started. A decision or finding is dead only against an active run: a log with no
+/// `RunStarted` has no closed run, so the shared rule calls every node in it live and the drop set
+/// is empty (spec 101), exactly as [`superseded_edge_boundary`] reclaims no edge from it. Pure over
 /// the whole run stream, reusing the SINGLE run-attribution authority
 /// (`run::run_attribution` + `run::current_run_id`) - never a second inline boundary scan.
 ///
@@ -406,9 +412,7 @@ pub fn superseded_edge_boundary(events: &[Event]) -> Option<i64> {
 /// `LessonLearned` (exempt) and every active-run node out of the drop set.
 pub fn superseded_graph_nodes(events: &[Event]) -> Vec<String> {
     use std::collections::BTreeSet;
-    let Some(active) = current_run_id(events) else {
-        return Vec::new();
-    };
+    let active = current_run_id(events);
     let attribution = run_attribution(events);
     let mut drop_candidates: BTreeSet<String> = BTreeSet::new();
     let mut keep: BTreeSet<String> = BTreeSet::new();
@@ -422,10 +426,11 @@ pub fn superseded_graph_nodes(events: &[Event]) -> Vec<String> {
         let Some(id) = graph_node_id(&events[i]) else {
             continue;
         };
-        // The active run's node ids are live and must be KEPT; everything else - a superseded
-        // run's node, or a pre-boundary one - is a drop CANDIDATE. A single id can land in both
-        // sets when it is reused across a dead run and the active run.
-        if run_of.is_live(Some(active.as_str())) {
+        // A live node id - the active run's, or any recorded before a run has started - must be
+        // KEPT; everything else - a superseded run's node, or a pre-boundary one once a run has
+        // started - is a drop CANDIDATE. A single id can land in both sets when it is reused
+        // across a dead run and the active run.
+        if run_of.is_live(active.as_deref()) {
             keep.insert(id);
         } else {
             drop_candidates.insert(id);
