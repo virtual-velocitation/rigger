@@ -4754,7 +4754,7 @@ mod tests {
                     resumed.map(|r| r.pruned),
                 ),
                 (
-                    Err("graph: Is a directory (os error 21)".to_string()),
+                    Err(format!("graph: {path}.owed: Is a directory (os error 21)")),
                     ((true, true), (true, true), false),
                     Vec::<&str>::new(),
                     reads,
@@ -5136,11 +5136,11 @@ mod tests {
             (
                 pruned,
                 report,
-                Err("graph: Is a directory (os error 21)".to_string()),
+                Err(format!("graph: {stopped}.owed: Is a directory (os error 21)")),
                 report,
                 Err("graph: interrupted in its tail".to_string()),
                 report,
-                Err("graph: Is a directory (os error 21)".to_string()),
+                Err(format!("graph: {windowed}.owed: Is a directory (os error 21)")),
                 Some(Rebuilt {
                     passed_over: 0,
                     pruned: PruneStats {
@@ -5370,6 +5370,30 @@ mod tests {
         Projector::forget_orphaned_mark(":memory:").unwrap();
     }
 
+    /// An owed mark that cannot be removed - a directory stands at its path - fails its forgetting
+    /// naming the mark, and stands.
+    #[test]
+    fn an_orphaned_mark_that_cannot_be_removed_fails_naming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let mark = dir.path().join("graph.db.owed");
+        std::fs::create_dir(&mark).unwrap();
+        assert_eq!(
+            (
+                Projector::forget_orphaned_mark(path.to_str().unwrap()).map_err(|e| e.to_string()),
+                mark.is_dir()
+            ),
+            (
+                Err(format!(
+                    "graph: {}: Is a directory (os error 21)",
+                    mark.display()
+                )),
+                true
+            ),
+            "the mark that cannot be removed is named, and stands"
+        );
+    }
+
     /// A stale pruned copy is forgotten - removed, answering that it was - when no shadow stands
     /// beside it and when the shadow beside it is held by no rebuild, which it keeps; while a
     /// rebuild holds its shadow the copy is its own and is kept; with no copy nothing is removed.
@@ -5530,12 +5554,12 @@ mod tests {
         assert_eq!(
             (forgotten, stands, rebuilt, copy.is_dir()),
             (
-                Err("graph: Is a directory (os error 21)".to_string()),
+                Err(format!("graph: {}: Is a directory (os error 21)", copy.display())),
                 true,
-                Err("graph: Is a directory (os error 21)".to_string()),
+                Err(format!("graph: {}: Is a directory (os error 21)", copy.display())),
                 true
             ),
-            "forgetting the copy and a rebuild over it both fail on the directory, which stands"
+            "forgetting the copy and a rebuild over it both fail naming the directory, which stands"
         );
     }
 

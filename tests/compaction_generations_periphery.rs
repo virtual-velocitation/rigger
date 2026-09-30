@@ -5536,13 +5536,24 @@ fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_count
 }
 
 /// Run a `rigger setup` in `root` whose rebuild stops right after its prune and its swap - the owed
-/// mark it must then drop is a directory it cannot remove - then `meanwhile`, while that mark still
-/// says `graph.db` owes its rebuild, and clear the mark: what the stopped setup printed, and
-/// whether it exited successfully.
+/// mark it must then drop is a directory it cannot remove, and its failure names that mark - then
+/// `meanwhile`, while that mark still says `graph.db` owes its rebuild, and clear the mark: what
+/// the stopped setup printed, and whether it exited successfully.
 fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool) {
     let mark = rigger_file(root, "graph.db.owed");
     std::fs::create_dir(&mark).unwrap();
-    let (stopped, _, stopped_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let (stopped, err, stopped_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        err.lines().last(),
+        Some(
+            format!(
+                "rigger: graph: {}: Is a directory (os error 21)",
+                Path::new(".rigger").join("graph.db.owed").display()
+            )
+            .as_str()
+        ),
+        "the stopped setup names the mark it could not remove; stdout: {stopped} stderr: {err}"
+    );
     meanwhile(root);
     std::fs::remove_dir(&mark).unwrap();
     (stopped, stopped_ok)
