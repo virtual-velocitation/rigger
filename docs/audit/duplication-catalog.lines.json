@@ -109,8 +109,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5090,
-        "end_line": 5095
+        "start_line": 5212,
+        "end_line": 5217
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -949,8 +949,8 @@
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 158,
-        "end_line": 158
+        "start_line": 153,
+        "end_line": 153
       },
       {
         "file": "tests/turbovec_retired_cargo_boundary.rs",
@@ -2934,8 +2934,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5005,
-        "end_line": 5005
+        "start_line": 5127,
+        "end_line": 5127
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -3289,43 +3289,43 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 152,
-        "end_line": 152
+        "start_line": 147,
+        "end_line": 147
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 155,
-        "end_line": 155
+        "start_line": 150,
+        "end_line": 150
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 165,
-        "end_line": 165
+        "start_line": 160,
+        "end_line": 160
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 166,
-        "end_line": 166
+        "start_line": 161,
+        "end_line": 161
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 219,
-        "end_line": 219
+        "start_line": 204,
+        "end_line": 204
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 222,
-        "end_line": 222
+        "start_line": 207,
+        "end_line": 207
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 245,
-        "end_line": 245
+        "start_line": 230,
+        "end_line": 230
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 246,
-        "end_line": 246
+        "start_line": 231,
+        "end_line": 231
       },
       {
         "file": "tests/published_content_key_split_periphery.rs",
@@ -3614,33 +3614,33 @@
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 162,
-        "end_line": 162
+        "start_line": 157,
+        "end_line": 157
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 194,
-        "end_line": 194
+        "start_line": 189,
+        "end_line": 189
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 195,
-        "end_line": 195
+        "start_line": 190,
+        "end_line": 190
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 258,
-        "end_line": 258
+        "start_line": 243,
+        "end_line": 243
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 291,
-        "end_line": 291
+        "start_line": 276,
+        "end_line": 276
       },
       {
         "file": "tests/store_resolution.rs",
-        "start_line": 295,
-        "end_line": 295
+        "start_line": 280,
+        "end_line": 280
       },
       {
         "file": "tests/store_resolution_cli.rs",
@@ -5454,8 +5454,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4740,
-        "end_line": 4740
+        "start_line": 4862,
+        "end_line": 4862
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -7501,21 +7501,6 @@
         "file": "tests/simplification_audit.rs",
         "start_line": 9091,
         "end_line": 9097
-      }
-    ]
-  },
-  {
-    "id": "dup-398370d93ff5",
-    "sites": [
-      {
-        "file": "tests/projections_stay_local.rs",
-        "start_line": 178,
-        "end_line": 255
-      },
-      {
-        "file": "tests/store_resolution.rs",
-        "start_line": 144,
-        "end_line": 219
       }
     ]
   },

@@ -8257,25 +8257,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-398370d93ff5",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/projections_stay_local.rs",
-        "name": "progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server",
-        "content_hash": "8e0fb7179dfbbbee"
-      },
-      {
-        "file": "tests/store_resolution.rs",
-        "name": "a_courier_in_a_project_configured_for_the_server_resolves_the_server_store",
-        "content_hash": "6b83389b531d7d98"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/projections_stay_local.rs, tests/store_resolution.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-d558d72a9443",
     "classification": "near",
     "sites": [

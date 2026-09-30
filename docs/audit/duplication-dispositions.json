@@ -700,11 +700,6 @@
     "reason": "`graph show` face tests over different degraded states that call the already-shared helpers with different arguments and assert different notes."
   },
   {
-    "id": "dup-398370d93ff5",
-    "disposition": "not-a-duplicate",
-    "reason": "Server-container tests asserting different properties (progress stays local versus the courier resolving the server store)."
-  },
-  {
     "id": "dup-d558d72a9443",
     "disposition": "not-a-duplicate",
     "reason": "Audit tests with different planted sources and different assertions (remove_dir_all, worktree remove, finding location, wrapped args)."
