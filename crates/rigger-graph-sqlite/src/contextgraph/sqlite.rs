@@ -5381,6 +5381,99 @@ mod tests {
         );
     }
 
+    /// How many of this process's open files name the file at `path` - a connection that opened it
+    /// holds one.
+    fn opened_here(path: &Path) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|fd| std::fs::read_link(fd.ok()?.path()).ok())
+            .filter(|named| named == path)
+            .count()
+    }
+
+    /// A second rebuild that opened the shadow while the first held it, and waits on its lock as
+    /// the first ends its swap, is refused as busy: it never resumes, prunes or swaps from the
+    /// shadow the first removed, so no write meets a removed file and no removal fails on a file
+    /// already gone. `graph.db` is left as the first rebuild made it - the graph `rigger reset
+    /// --runs` leaves - holding no rebuild state, with no shadow and no copy beside it.
+    #[test]
+    fn a_rebuild_waiting_on_the_shadow_as_another_ends_its_swap_is_refused_as_busy() {
+        let log = [
+            run_started_at("r1", 1),
+            decision_at("d-dead", "a.rs", 2),
+            run_started_at("r2", 3),
+            decision_at("d-live", "b.rs", 4),
+        ];
+        let log = &log;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let shadow = format!("{path}.rebuild");
+
+        let (first, second) = std::thread::scope(|s| {
+            let mut second = None;
+            let first = Projector::rebuild(
+                path,
+                "test",
+                true,
+                &mut |after, sink| {
+                    stream_past(log, after, 10, sink)?;
+                    if second.is_none() {
+                        // The first holds the shadow: the second opens it and waits on its lock,
+                        // and only then does the first go on to end its swap.
+                        let opened = std::fs::canonicalize(&shadow).unwrap();
+                        let waiting = s.spawn(move || {
+                            Projector::rebuild(
+                                path,
+                                "test",
+                                false,
+                                &mut |after, sink| stream_past(log, after, 10, sink),
+                                &mut |_| {},
+                            )
+                            .map_err(|e| e.to_string())
+                        });
+                        while opened_here(&opened) < 2 && !waiting.is_finished() {
+                            std::thread::yield_now();
+                        }
+                        second = Some(waiting);
+                    }
+                    Ok(())
+                },
+                &mut |_| {},
+            )
+            .map_err(|e| e.to_string());
+            (first, second.unwrap().join().unwrap())
+        });
+        let p = Projector::open(path, "test").unwrap();
+        assert_eq!(
+            (
+                first,
+                second,
+                serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                rebuild_state(path),
+                Path::new(&shadow).exists(),
+                Path::new(&format!("{path}.pruned")).exists(),
+            ),
+            (
+                Ok(Some(Rebuilt {
+                    passed_over: 0,
+                    pruned: PruneStats {
+                        nodes: 1,
+                        superseded_edges: 0
+                    }
+                })),
+                Err("graph: database is locked".to_string()),
+                reset_runs_leaves(log),
+                (false, false),
+                false,
+                false,
+            ),
+            "the second rebuild is refused as busy and graph.db is the first's, with no rebuild \
+             state, shadow or copy"
+        );
+    }
+
     /// A pruned copy that cannot be removed - a directory stands at its path - is never taken for
     /// gone: with no shadow beside it, forgetting it fails with the directory's own error and the
     /// copy stands, and a rebuild over it fails with that same error rather than deriving its
