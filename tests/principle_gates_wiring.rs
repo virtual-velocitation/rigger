@@ -371,6 +371,9 @@ fn the_fmt_clippy_and_build_gates_cover_the_workspace() {
     }
 }
 
+/// The container runtime snippet a gate that runs tests sources, relative to the worktree.
+const CONTAINER_SNIPPET: &str = ".rigger/gates/container-env.sh";
+
 /// The per-unit `test` gate runs every workspace crate's tests, never the root package's
 /// alone (a bare `cargo test` here tests only the root package, so no crate's own unit tests
 /// would run under any unit), and it first sources the container runtime snippet the
@@ -382,31 +385,49 @@ fn the_test_gate_covers_the_workspace_with_the_container_runtime() {
         "if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \
          exit 1; fi; cargo test --workspace"
     );
-    assert!(repo_root().join(".rigger/gates/container-env.sh").is_file());
+    assert!(repo_root().join(CONTAINER_SNIPPET).is_file());
+}
+
+/// A PATH that finds `tool` in a directory under `work`, as the fixture `stub` when one is
+/// given, ahead of the ambient PATH; with no stub the directory is empty and the whole PATH.
+fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
+    let bin = work.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let Some(stub) = stub else {
+        return bin.display().to_string();
+    };
+    std::os::unix::fs::symlink(
+        repo_root().join("tests/fixtures").join(stub),
+        bin.join(tool),
+    )
+    .unwrap();
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// A finished shell's success and its output, stdout then stderr.
+fn shell_outcome(out: &std::process::Output) -> (bool, String) {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
 }
 
 /// This repository's `test` gate command run under `sh -c` - as the conductor runs every gate -
 /// in the worktree `tree`, with a stand-in `cargo` that records its argv. Returns (passed,
 /// output, the argv line cargo recorded - empty when cargo never ran).
 fn run_test_gate(work: &Path, tree: &Path) -> (bool, String, String) {
-    let bin = work.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::os::unix::fs::symlink(
-        repo_root().join("tests/fixtures/recording-cargo.sh"),
-        bin.join("cargo"),
-    )
-    .unwrap();
     let dump = work.join("cargo.dump");
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
     let out = Command::new("sh")
         .arg("-c")
         .arg(repo_gate_command("test"))
         .current_dir(tree)
-        .env("PATH", path)
+        .env("PATH", stub_path(work, "cargo", Some("recording-cargo.sh")))
         .env("RECORDING_CARGO_DUMP_FILE", &dump)
         .output()
         .unwrap();
@@ -416,12 +437,8 @@ fn run_test_gate(work: &Path, tree: &Path) -> (bool, String, String) {
         .next()
         .unwrap_or_default()
         .to_string();
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    (out.status.success(), text, args)
+    let (passed, text) = shell_outcome(&out);
+    (passed, text, args)
 }
 
 /// The gate string comes from the operator's workflow but runs inside the unit's worktree, and
@@ -443,11 +460,91 @@ fn the_test_gate_fails_when_its_snippet_fails_to_source() {
     let work = tempfile::tempdir().unwrap();
     let tree = work.path().join("tree");
     std::fs::create_dir_all(tree.join(".rigger/gates")).unwrap();
-    std::fs::write(tree.join(".rigger/gates/container-env.sh"), "false\n").unwrap();
+    std::fs::write(tree.join(CONTAINER_SNIPPET), "false\n").unwrap();
     let (passed, out, args) = run_test_gate(work.path(), &tree);
     assert!(
         !passed,
         "a snippet that fails to source must fail the gate: {out}"
     );
     assert!(args.is_empty(), "cargo must not run: {args}");
+}
+
+/// The one listing the container runtime snippet asks for: every container carrying the test
+/// label, running or not, so a container without the label is never listed.
+const LABELLED_LISTING: &str = "ps -a --filter label=rigger.test --format {{.ID}} {{.CreatedAt}}";
+
+/// Sources the shipped container runtime snippet as a gate does, with a podman socket where
+/// the snippet looks for one when `runtime`, and, when `cli`, a stand-in `podman` on PATH whose
+/// labelled test containers are `fresh` (5 s old) and `old` (an hour old); without `cli` the
+/// PATH holds no container CLI at all. `max_age` sets RIGGER_TEST_CONTAINER_MAX_AGE_S. The
+/// snippet must source cleanly; returns its output and one line per `podman` call.
+fn source_container_snippet(
+    runtime: bool,
+    cli: bool,
+    max_age: Option<&str>,
+) -> (String, Vec<String>) {
+    let work = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(work.path().join("podman")).unwrap();
+    let _socket = runtime.then(|| {
+        std::os::unix::net::UnixListener::bind(work.path().join("podman/podman.sock")).unwrap()
+    });
+    let log = work.path().join("podman.log");
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(". \"$0\"")
+        .arg(repo_root().join(CONTAINER_SNIPPET))
+        .env(
+            "PATH",
+            stub_path(work.path(), "podman", cli.then_some("recording-podman.sh")),
+        )
+        .env("XDG_RUNTIME_DIR", work.path())
+        .env("RECORDING_PODMAN_LOG", &log)
+        .env("RECORDING_PODMAN_CONTAINERS", "fresh:5 old:3600")
+        .env_remove("DOCKER_HOST");
+    match max_age {
+        Some(age) => cmd.env("RIGGER_TEST_CONTAINER_MAX_AGE_S", age),
+        None => cmd.env_remove("RIGGER_TEST_CONTAINER_MAX_AGE_S"),
+    };
+    let (sourced, out) = shell_outcome(&cmd.output().unwrap());
+    assert!(sourced, "the snippet must source cleanly: {out}");
+    let calls = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    (out, calls)
+}
+
+/// Once it has found the runtime, the snippet removes the labelled test containers an earlier
+/// run left behind past the default max age of 600 s, and only those: a fresh one stays.
+#[test]
+fn the_container_snippet_removes_only_the_labelled_test_containers_past_their_age() {
+    let (out, calls) = source_container_snippet(true, true, None);
+    assert_eq!(calls, [LABELLED_LISTING, "rm -f old"], "{out}");
+}
+
+/// With RIGGER_TEST_CONTAINER_MAX_AGE_S=0 every labelled test container goes, the fresh one too.
+#[test]
+fn the_container_snippet_removes_every_labelled_test_container_at_a_zero_max_age() {
+    let (out, calls) = source_container_snippet(true, true, Some("0"));
+    assert_eq!(
+        calls,
+        [LABELLED_LISTING, "rm -f fresh", "rm -f old"],
+        "{out}"
+    );
+}
+
+/// With no runtime found the snippet lists and removes nothing.
+#[test]
+fn the_container_snippet_removes_nothing_when_it_finds_no_runtime() {
+    let (out, calls) = source_container_snippet(false, true, Some("0"));
+    assert!(calls.is_empty(), "{out}{calls:?}");
+}
+
+/// A runtime with neither a podman nor a docker CLI on PATH costs one line of output, never
+/// a failed gate.
+#[test]
+fn the_container_snippet_goes_on_without_a_container_cli() {
+    let (out, _) = source_container_snippet(true, false, Some("0"));
+    assert_eq!(out.lines().count(), 1, "{out}");
 }
