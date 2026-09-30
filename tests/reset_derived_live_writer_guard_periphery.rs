@@ -833,6 +833,13 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
         !help.contains("a non-terminal unit"),
         "the help must not name unit terminality as a live signal; got {help:?}"
     );
+    assert!(
+        help.contains(
+            "When no driver is alive and no spawn of the run awaits its result, it also closes \
+             the current run's units whose branch work is landed on rigger-run"
+        ),
+        "the --runs help must state that the close waits for every spawn's result; got {help:?}"
+    );
 
     let (out, err, ok) = run_rigger(root, &["docs"]);
     assert!(
@@ -849,10 +856,11 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
         reset_store.contains(
             "When no driver is alive (no `rigger step` holds the lock, no in-flight spawn's \
              liveness marker is younger than its wall-clock bound, no registration for the store \
-             has a heartbeat inside the idle window), it also closes the current run's units"
+             has a heartbeat inside the idle window) and no spawn of the run awaits its result, \
+             it also closes the current run's units"
         ),
-        "the reset-store skill must state the liveness `--runs` closes a dead run on; got \
-         {reset_store:?}"
+        "the reset-store skill must state the liveness `--runs` closes a dead run on, and that \
+         the close waits for every spawn's result; got {reset_store:?}"
     );
     assert!(
         !reset_store.contains("no spawn awaits a result"),

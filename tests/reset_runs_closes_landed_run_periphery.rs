@@ -7,9 +7,11 @@
 //! terminal event, so `rigger status` reports the run as still working forever and every later
 //! verb treats it as the active run. `reset --runs` records the missing `UnitIntegrated` for
 //! exactly such a unit: its branch carries work of its own, that work is an ancestor of the run
-//! branch, and nothing is driving the run - no `rigger step` holds the step lock, no in-flight
-//! spawn's liveness marker is younger than its wall-clock bound, and no registry heartbeat for
-//! the store is younger than the idle window (spec 101's liveness, the one both reset modes read).
+//! branch, no spawn of the run awaits its result (a relaunched driver resumes every such spawn,
+//! whatever its marker says), and nothing is driving the run - no `rigger step` holds the step
+//! lock, no in-flight spawn's liveness marker is younger than its wall-clock bound, and no
+//! registry heartbeat for the store is younger than the idle window (spec 101's liveness, the one
+//! both reset modes read).
 //!
 //! These drive the COMPILED binary against a real git repo and `.rigger/events.db`, because the
 //! observable contract is the log the operator's next `rigger status` folds.
@@ -41,8 +43,8 @@ const DEAD_RUN: &[(&str, &str)] = &[
 /// The spawn [`IN_FLIGHT_SPAWN`] requests.
 const SPAWN_ID: &str = "checkin/implementer#1";
 
-/// A spawn requested for `checkin` with a 300 s wall-clock bound and no result yet: live while
-/// its worker's liveness marker is younger than that bound, dead once it is older.
+/// A spawn requested for `checkin` with a 300 s wall-clock bound and no result yet: it awaits
+/// its result, so the run stays open whatever its worker's liveness marker says.
 const IN_FLIGHT_SPAWN: (&str, &str) = (
     "SpawnRequested",
     r#"{"id":"checkin/implementer#1","unit":"checkin","stage":"implement","prompt":"go","max_wall_clock":300}"#,
@@ -171,25 +173,6 @@ fn reset_runs_closes_a_dead_run_whose_checkin_is_landed_on_the_run_branch() {
     );
 }
 
-/// A driver that died mid-spawn leaves the spawn unanswered forever; once its worker's marker
-/// is older than the spawn's wall-clock bound nothing is driving the run, so the landed unit is
-/// closed exactly as if no spawn had been in flight.
-#[test]
-fn reset_runs_closes_a_dead_run_whose_in_flight_spawns_marker_outlived_its_bound() {
-    let dir = project(true, true);
-    let root = dir.path();
-    let events: Vec<(&str, &str)> = DEAD_RUN.iter().copied().chain([IN_FLIGHT_SPAWN]).collect();
-    let (before, after) = reset_runs_over(
-        root,
-        &events,
-        Around {
-            marker_secs_ago: Some(301),
-            ..QUIET
-        },
-    );
-    assert_checkin_closed(root, &before, &after);
-}
-
 /// A registry entry whose heartbeat is a minute past the idle window is what a dead driver's
 /// registration leaves behind: nothing is driving the run, so the landed unit is closed.
 #[test]
@@ -228,18 +211,22 @@ fn assert_left_open(
 }
 
 rigger::test_cases! {
-    /// A live driver (an in-flight spawn whose worker touched its marker just now) owns the
-    /// run: even a landed branch is not the operator's to close.
-    reset_runs_leaves_a_live_run_untouched_even_when_its_branch_is_landed: assert_left_open(
-        true,
-        true,
-        &[IN_FLIGHT_SPAWN],
-        Around {
-            marker_secs_ago: Some(0),
-            ..QUIET
-        },
-        "a live run",
-    );
+    /// A live driver (an in-flight spawn, answered only by the step's liveness fault, whose
+    /// resumed worker touched its marker just now) owns the run: even a landed branch is not the
+    /// operator's to close. The fault answers the spawn, so the marker alone keeps the run open.
+    reset_runs_leaves_a_live_run_untouched_even_when_its_branch_is_landed: {
+        let fault = liveness_fault_body(SPAWN_ID);
+        assert_left_open(
+            true,
+            true,
+            &[IN_FLIGHT_SPAWN, ("SpawnResult", &fault)],
+            Around {
+                marker_secs_ago: Some(0),
+                ..QUIET
+            },
+            "a live run",
+        );
+    };
     /// A `rigger step` holding the step lock is driving the run: a landed branch stays open.
     reset_runs_leaves_a_landed_run_open_while_a_step_holds_the_lock: assert_left_open(
         true,
@@ -280,6 +267,71 @@ rigger::test_cases! {
         &[],
         QUIET,
         "a workless branch",
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// A spawn that awaits its result keeps the run open, whatever its marker says
+// ---------------------------------------------------------------------------------------
+
+/// A driver that died mid-spawn leaves the spawn unanswered, and a relaunched driver resumes
+/// every unanswered spawn of the run, so closing its unit would hand that driver a spawn of an
+/// integrated unit. Whether its worker never touched a marker or the marker outlived the spawn's
+/// 300 s bound, the landed unit stays open until the spawn's result is recorded.
+#[test]
+fn reset_runs_leaves_a_landed_run_open_while_a_spawn_awaits_its_result() {
+    for (marker_secs_ago, why) in [
+        (None, "an unanswered spawn with no marker"),
+        (
+            Some(301),
+            "an unanswered spawn whose marker outlived its bound",
+        ),
+    ] {
+        assert_left_open(
+            true,
+            true,
+            &[IN_FLIGHT_SPAWN],
+            Around {
+                marker_secs_ago,
+                ..QUIET
+            },
+            why,
+        );
+    }
+}
+
+/// A spawn result the log cannot decode leaves unknown which spawns still await theirs, so
+/// `reset --runs` fails naming the undecodable result and records nothing, rather than reading
+/// it as no spawn awaiting and closing the landed unit.
+#[test]
+fn reset_runs_fails_on_a_malformed_spawn_result_and_closes_nothing() {
+    let dir = project(true, true);
+    let root = dir.path();
+    let events: Vec<(&str, &str)> = DEAD_RUN
+        .iter()
+        .copied()
+        .chain([("SpawnResult", "{}")])
+        .collect();
+    seed_run_events(root, &events);
+    let before = run_log(root);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["reset", "--runs"],
+        &[("RIGGER_TMPDIR", scratch.path().to_str().unwrap())],
+    );
+    assert!(
+        !ok,
+        "a malformed spawn result must fail reset --runs, never close the run; stdout: {out:?}"
+    );
+    assert!(
+        err.contains("missing field `id`"),
+        "the failure must name the undecodable result; stderr: {err:?}"
+    );
+    assert_eq!(
+        run_log(root),
+        before,
+        "a reset that cannot read which spawns await their result must record nothing"
     );
 }
 
@@ -344,18 +396,23 @@ fn closes_the_landed_checkin(extra: &[(&str, &str)], marker_secs_ago: u64) {
 // The scratch root is read fail-closed
 // ---------------------------------------------------------------------------------------
 
-/// Given a landed run whose in-flight spawn's worker touched its marker just now under the
-/// store's configured `defaults.workdir` - where a run stamps it - `reset --runs` reads it there
-/// and leaves the run open. When that `defaults` block turns unparsable (a `max_retries` that is
-/// not a number beside the same `workdir`), the scratch root is never degraded to the default
-/// root, where the marker would read as absent and the live worker's run would be closed out from
-/// under it: `reset --runs` exits non-zero naming the config, and the log is left exactly as it
-/// was.
+/// Given a landed run whose in-flight spawn - answered only by the step's liveness fault, so its
+/// marker alone keeps the run open - had its resumed worker touch that marker just now under the
+/// store's configured `defaults.workdir`, where a run stamps it, `reset --runs` reads it there and
+/// leaves the run open. When that `defaults` block turns unparsable (a `max_retries` that is not a
+/// number beside the same `workdir`), the scratch root is never degraded to the default root,
+/// where the marker would read as absent and the live worker's run would be closed out from under
+/// it: `reset --runs` exits non-zero naming the config, and the log is left exactly as it was.
 #[test]
 fn reset_runs_fails_closed_on_an_unparsable_defaults_block_and_closes_nothing() {
     let dir = project(true, true);
     let root = dir.path();
-    let events: Vec<(&str, &str)> = DEAD_RUN.iter().copied().chain([IN_FLIGHT_SPAWN]).collect();
+    let fault = liveness_fault_body(SPAWN_ID);
+    let events: Vec<(&str, &str)> = DEAD_RUN
+        .iter()
+        .copied()
+        .chain([IN_FLIGHT_SPAWN, ("SpawnResult", &fault)])
+        .collect();
     seed_run_events(root, &events);
     let (_workdir, scratch_root) = configure_workdir(root, "");
     plant_marker(
