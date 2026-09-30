@@ -3814,7 +3814,7 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/compaction_generations_periphery.rs:4872-4872` `Connection::open`
 - `tests/compaction_generations_periphery.rs:6009-6009` `Connection::open`
 - `tests/compaction_generations_periphery.rs:6354-6354` `Connection::open`
-- `tests/compaction_generations_periphery.rs:6651-6651` `Connection::open`
+- `tests/compaction_generations_periphery.rs:6670-6670` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:69-69` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:165-165` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:189-189` `Connection::open`

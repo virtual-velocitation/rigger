@@ -5529,8 +5529,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6651,
-        "end_line": 6651
+        "start_line": 6670,
+        "end_line": 6670
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
