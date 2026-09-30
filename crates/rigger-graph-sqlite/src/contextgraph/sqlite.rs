@@ -402,11 +402,11 @@ impl Projector {
                 .run_to_completion(i32::MAX, std::time::Duration::from_millis(50), None)
                 .map_err(be)?;
             drop(pruned);
-            remove_copy(&copy)?;
+            remove_if_present(&copy)?;
             // Paid: the swapped-in file holds every event the source held. Dropped before the
             // tail, so a fold lost while the tail runs marks the file owed again.
-            if let Some(mark) = mark.filter(|m| m.exists()) {
-                std::fs::remove_file(mark).map_err(be)?;
+            if let Some(mark) = mark {
+                remove_if_present(mark)?;
             }
             // The swap ends with its shadow: until it is gone a rerun resumes it, and from then on
             // only the tail is owed.
@@ -492,8 +492,8 @@ impl Projector {
     /// a fold lost from that file, so a file made in its place owes nothing it recorded. A mark
     /// whose file stands is kept.
     pub fn forget_orphaned_mark(path: &str) -> Result<(), Error> {
-        match owed_mark(path).filter(|m| m.exists() && !Path::new(path).exists()) {
-            Some(mark) => std::fs::remove_file(mark).map_err(be),
+        match owed_mark(path).filter(|_| !Path::new(path).exists()) {
+            Some(mark) => remove_if_present(mark),
             None => Ok(()),
         }
     }
@@ -512,7 +512,7 @@ impl Projector {
         }
         let shadow = shadow_of(path);
         if !Path::new(&shadow).exists() {
-            remove_copy(&copy)?;
+            remove_if_present(&copy)?;
             return Ok(true);
         }
         let conn =
@@ -525,7 +525,7 @@ impl Projector {
             }
             held => held.map_err(be)?,
         };
-        remove_copy(&copy)?;
+        remove_if_present(&copy)?;
         drop(held);
         Ok(true)
     }
@@ -1208,9 +1208,10 @@ fn shadow_of(path: &str) -> String {
     format!("{path}.rebuild")
 }
 
-/// Remove the pruned copy at `copy`, if there is one.
-fn remove_copy(copy: &str) -> Result<(), Error> {
-    match std::fs::remove_file(copy) {
+/// Remove the file at `path`, if there is one: a file already gone is what removing it asks for,
+/// and any other failure is reported as it stands.
+fn remove_if_present(path: impl AsRef<Path>) -> Result<(), Error> {
+    match std::fs::remove_file(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(be(e)),
         _ => Ok(()),
     }
@@ -1224,7 +1225,7 @@ fn remove_copy(copy: &str) -> Result<(), Error> {
 /// copy is opened without being created, so one removed under it is an error, never an empty
 /// graph.
 fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connection, Error> {
-    remove_copy(copy)?;
+    remove_if_present(copy)?;
     shadow.execute("VACUUM INTO ?1", [copy]).map_err(be)?;
     let mut pruned = Connection::open_with_flags(copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(be)?;
