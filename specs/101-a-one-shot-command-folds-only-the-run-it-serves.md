@@ -243,7 +243,8 @@ a fact, not only when it adds or moves one.
   a larger one: after folding the live selection into the shadow and before the swap, it applies
   the same run-closure prune `rigger reset --runs` applies, the keep/drop set spec 21 defines (every
   decision and finding node that is neither the active run's nor a lesson is dropped, an id the
-  active run reuses is kept), derived from the log's own run attribution exactly as the prune
+  active run reuses is kept, and a log with no run drops nothing), derived from the log's own run
+  attribution exactly as the prune
   derives it and gathered in the same ordered pass. The prune set is never recorded and never
   guessed, it is re-derived, so the rebuilt and the live graph agree by construction the way the
   rebuild and `rigger reset --derived` already do. A rebuild that skips the prune and leaves it to a
@@ -276,6 +277,25 @@ a fact, not only when it adds or moves one.
   that snapshot completing without refolding the batches already committed. Without this, every
   store folded before this spec keeps facts a pre-upgrade generation asserted, and a compacted such
   store disagrees with every future rebuild.
+- *The rebuild reports its prune, and a log without a run has nothing dead.* A prune the operator
+  cannot see removes knowledge without a trace, and a prune over a log that never started a run
+  deletes knowledge no run superseded. `Projector::rebuild` returns the `PruneStats` the one prune
+  body (`prune_in`) computes on the shadow, and `rigger setup` prints them after the rebuilt line
+  in the words `rigger reset --runs` prints (`pruned N dead-run node(s) and reclaimed M superseded
+  edge(s)`), spelled once and rendered by both; a rebuild that prunes silently is not an
+  implementation of this. The counts commit with the prune in the shadow's transaction, so a
+  rebuild resumed past its prune still reports the counts that prune made, never zero. The one
+  rule both apply (`run::superseded_graph_nodes`, `crates/rigger-domain/src/run.rs`) drops a
+  decision or finding only against an active run: a log with no `RunStarted` has no closed run,
+  so nothing in it is dead and the drop set is empty, exactly as `run::superseded_edge_boundary`
+  already treats a no-run store as legacy and reclaims no edge. A project that records decisions
+  with `rigger emit` before its first run keeps them through every rebuild and every `rigger reset
+  --runs` until that run starts. Criterion 4's unit owns both. Tests: on a store none of whose
+  closed runs was pruned, the dead-run node count `rigger setup` prints for its rebuild equals the
+  one `rigger reset --runs` prints on a copy of that store; a rebuild interrupted after its prune
+  and rerun prints the same counts; a log with no `RunStarted` rebuilt through `rigger setup`
+  reports zero pruned and keeps every decision and finding node and every edge its fold holds, and
+  `rigger reset --runs` on that log prunes nothing.
 - *A lost fold is a durable debt.* A `graph.db` owes its rebuild for a second reason: a fold into
   a current file that fails after the log append succeeded (a write lost past the busy timeout, or
   any apply error). Both causes share one vocabulary and one refusal text, spelled once in the
