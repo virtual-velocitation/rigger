@@ -109,8 +109,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5213,
-        "end_line": 5218
+        "start_line": 5221,
+        "end_line": 5226
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -2949,18 +2949,18 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4248,
-        "end_line": 4248
+        "start_line": 4256,
+        "end_line": 4256
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5128,
-        "end_line": 5128
+        "start_line": 5136,
+        "end_line": 5136
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5548,
-        "end_line": 5548
+        "start_line": 5556,
+        "end_line": 5556
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -5504,33 +5504,33 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4310,
-        "end_line": 4310
+        "start_line": 4318,
+        "end_line": 4318
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4603,
-        "end_line": 4603
+        "start_line": 4611,
+        "end_line": 4611
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4863,
-        "end_line": 4863
+        "start_line": 4871,
+        "end_line": 4871
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6000,
-        "end_line": 6000
+        "start_line": 6008,
+        "end_line": 6008
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6355,
-        "end_line": 6355
+        "start_line": 6364,
+        "end_line": 6364
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6469,
-        "end_line": 6469
+        "start_line": 6668,
+        "end_line": 6668
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
