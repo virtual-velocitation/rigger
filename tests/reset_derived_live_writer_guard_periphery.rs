@@ -11,9 +11,11 @@
 //!
 //! THE GUARD READS LIVENESS (spec 101): a run is live when a `rigger step` holds the step lock,
 //! when an in-flight spawn's liveness marker is younger than that spawn's wall-clock bound, or
-//! when a registry heartbeat for this store is younger than the idle window. Unit terminality is
-//! not a liveness signal: a run whose driver died leaves its units non-terminal forever, and that
-//! run - the one whose bloat most needs the compaction - must not need `--force-live` to get it.
+//! when a registry heartbeat for this store is younger than the idle window. A spawn is in flight
+//! until a real result is recorded for it: the step's own liveness fault does not end it. Unit
+//! terminality is not a liveness signal: a run whose driver died leaves its units non-terminal
+//! forever, and that run - the one whose bloat most needs the compaction - must not need
+//! `--force-live` to get it.
 //!
 //! These tests drive the COMPILED binary against a real `.rigger/events.db`, because the
 //! criterion is an operator-facing refusal whose observable effects are the command's exit
@@ -22,8 +24,9 @@
 //! What this file OWNS and what it deliberately does not:
 //!   - OWNS: the three live signals and the definition they make up, the dead-driver run that
 //!     proceeds, the quiet-machinery baseline, `--force-live`, each signal judged against its own
-//!     window and read where the run writes it, the operator's way past an unbounded spawn, and
-//!     the help and skills that state the definition.
+//!     window and read where the run writes it (the scratch root read fail-closed), a liveness
+//!     fault that does not end a spawn, the operator's way past an unbounded spawn, and the help
+//!     and skills that state the definition.
 //!   - NOT OWNED: the `--derived` prune's own selection/report/reclamation mechanics (spec 60,
 //!     criterion 5 - `tests/reset_derived_compaction*.rs`), the append-time assertion (spec 71,
 //!     criterion 1), and the validate advisory (spec 71, criterion 3).
@@ -187,10 +190,32 @@ struct Outcome {
     rows_after: i64,
 }
 
+impl Outcome {
+    /// The invocation's `(stdout, stderr, success)`, as [`assert_compacted`] reads it.
+    fn said(self) -> (String, String, bool) {
+        (self.out, self.err, self.ok)
+    }
+}
+
+/// Runs `rigger <args>` in `cwd` with `envs` over the seeded store at `root`, counting its event
+/// log's rows before and after.
+fn counted(root: &Path, cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Outcome {
+    let rows_before = row_count(root);
+    let (out, err, ok) = run_rigger_envs(cwd, args, envs);
+    Outcome {
+        out,
+        err,
+        ok,
+        rows_before,
+        rows_after: row_count(root),
+    }
+}
+
 /// Runs `rigger <args>` over [`DEAD_DRIVER_RUN`] with exactly the `fresh` signals live and every
 /// other one stale or free: the step lock free, `a`'s marker touched 301 s ago (just past its
 /// 300 s bound), the registry heartbeat a minute past the idle window. `b`'s marker is always
-/// touched just now - an answered spawn has ended whatever its marker says - and `c` has none.
+/// touched just now - a spawn with a real result has ended whatever its marker says - and `c` has
+/// none.
 fn reset_over_a_dead_drivers_run(fresh: &[Signal], args: &[&str]) -> Outcome {
     let dir = temp_store_project();
     let root = dir.path();
@@ -218,8 +243,8 @@ fn reset_over_a_dead_drivers_run(fresh: &[Signal], args: &[&str]) -> Outcome {
 
     let lock = fresh.contains(&STEP_LOCK).then(|| hold_step_lock(root));
 
-    let rows_before = row_count(root);
-    let (out, err, ok) = run_rigger_envs(
+    let outcome = counted(
+        root,
         root,
         args,
         &[
@@ -228,13 +253,7 @@ fn reset_over_a_dead_drivers_run(fresh: &[Signal], args: &[&str]) -> Outcome {
         ],
     );
     drop(lock);
-    Outcome {
-        out,
-        err,
-        ok,
-        rows_before,
-        rows_after: row_count(root),
-    }
+    outcome
 }
 
 /// `reset --derived` over the dead driver's run refuses while `live` alone is fresh, naming it
@@ -275,9 +294,8 @@ fn assert_refused_naming_only(live: Signal) {
 /// `reset --derived` compacts without `--force-live`.
 #[test]
 fn reset_derived_proceeds_over_a_dead_drivers_non_terminal_run_without_force_live() {
-    let o = reset_over_a_dead_drivers_run(&[], &["reset", "--derived"]);
     assert_compacted(
-        (o.out, o.err, o.ok),
+        reset_over_a_dead_drivers_run(&[], &["reset", "--derived"]).said(),
         "a run whose driver is dead must compact without --force-live",
     );
 }
@@ -299,8 +317,10 @@ rigger::test_cases! {
 /// prints the ordinary prune report.
 #[test]
 fn reset_derived_force_live_compacts_while_every_signal_is_live() {
-    let o = reset_over_a_dead_drivers_run(&ALL_SIGNALS, &["reset", "--derived", "--force-live"]);
-    assert_compacted((o.out, o.err, o.ok), "--force-live must skip the guard");
+    assert_compacted(
+        reset_over_a_dead_drivers_run(&ALL_SIGNALS, &["reset", "--derived", "--force-live"]).said(),
+        "--force-live must skip the guard",
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -345,7 +365,7 @@ fn reset_derived_around(
     events: &[(&str, String)],
     markers: &[(&str, u64)],
     heartbeat_ms_ago: Option<u64>,
-) -> (String, String, bool) {
+) -> Outcome {
     let dir = temp_store_project();
     let root = dir.path();
     seed_owned(root, events);
@@ -365,29 +385,61 @@ fn reset_derived_around(
     if let Some(home) = &seeded {
         envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
     }
-    run_rigger_envs(root, &["reset", "--derived"], &envs)
+    counted(root, root, &["reset", "--derived"], &envs)
 }
 
-/// The refusal's one reason for a live [`SPAWN`]: its marker's age (checked by prefix, since a
-/// second can tick while the binary starts) and `tail`, the bound that keeps it live.
-fn assert_refused_naming_the_spawn(said: (String, String, bool), age_prefix: &str, tail: &str) {
-    let (out, err, ok) = said;
+/// The age, in whole seconds, a refusal names for [`SPAWN`]'s liveness marker: the digits that
+/// follow `<SPAWN> (marker touched `.
+fn named_marker_age(err: &str) -> u64 {
+    let lead = format!("{SPAWN} (marker touched ");
+    let at = err
+        .find(&lead)
+        .unwrap_or_else(|| panic!("the refusal must name {SPAWN}'s marker age; stderr: {err:?}"))
+        + lead.len();
+    let digits: String = err[at..].chars().take_while(char::is_ascii_digit).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|e| panic!("{SPAWN}'s marker age {digits:?} must be whole seconds: {e}"))
+}
+
+/// The refusal's one reason for a live [`SPAWN`] - its marker's age, which must lie in `age` (a
+/// range, since seconds tick while the binary starts), followed by `tail`, the bound that keeps it
+/// live - naming nothing else, and the event log left exactly as it was.
+fn assert_refused_naming_the_spawn(
+    o: Outcome,
+    age: impl std::ops::RangeBounds<u64> + std::fmt::Debug,
+    tail: &str,
+) {
+    let err = &o.err;
     assert!(
-        !ok,
-        "a live spawn must refuse the compaction; stdout: {out:?}"
-    );
-    let reason = format!(
-        "1 in-flight spawn(s) in the current run touched their liveness marker within their \
-         wall-clock bound: {SPAWN} (marker touched {age_prefix}"
+        !o.ok,
+        "a live spawn must refuse the compaction; stdout: {:?}",
+        o.out
     );
     assert!(
-        err.contains(&reason) && err.contains(tail),
-        "the refusal must name {SPAWN} with its marker's age ({age_prefix}..) and {tail:?}; \
-         stderr: {err:?}"
+        err.contains(&format!(
+            "1 in-flight spawn(s) in the current run touched their liveness marker within their \
+             wall-clock bound: {SPAWN} (marker touched "
+        )),
+        "the refusal must name {SPAWN} as the one live spawn; stderr: {err:?}"
+    );
+    let named = named_marker_age(err);
+    assert!(
+        age.contains(&named),
+        "the refusal names {SPAWN}'s marker as touched {named}s ago, outside {age:?}; stderr: \
+         {err:?}"
+    );
+    assert!(
+        err.contains(&format!("{named}{tail}")),
+        "the marker's age must be followed by {tail:?}; stderr: {err:?}"
     );
     assert!(
         !err.contains("step.lock") && !err.contains("driver registration"),
         "only the spawn is live, so only the spawn may be named; stderr: {err:?}"
+    );
+    assert_eq!(
+        o.rows_after, o.rows_before,
+        "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
     );
 }
 
@@ -404,25 +456,76 @@ rigger::test_cases! {
         assert!(idle_window_secs() < 1800, "the case must sit past the idle window");
         assert_refused_naming_the_spawn(
             reset_derived_around(&one_unanswered_spawn("r1", Some(3600)), &[("r1", 1800)], None),
-            "180",
+            1800..3600,
             "s ago, bound 3600s)",
         );
     };
     /// A minute past that same 3600 s bound the marker is stale: nothing drives the run and it
     /// compacts without `--force-live`.
     reset_derived_proceeds_once_a_marker_outlives_its_own_bound: assert_compacted(
-        reset_derived_around(&one_unanswered_spawn("r1", Some(3600)), &[("r1", 3660)], None),
+        reset_derived_around(&one_unanswered_spawn("r1", Some(3600)), &[("r1", 3660)], None)
+            .said(),
         "a marker a minute past its spawn's own bound is not live",
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// A liveness fault is not the spawn's end; a real result is
+// ---------------------------------------------------------------------------------------
+
+/// The liveness fault `rigger step`'s sweep records on [`SPAWN`] once its marker went stale: a
+/// diagnosis of a silent worker, not its end - the replay driver re-parks the spawn, and a worker
+/// that resumes touches its marker again.
+const LIVENESS_FAULT: &str =
+    r#"{"id":"a/implementer#0","error":"hung","meta":{"liveness_class":"infra"}}"#;
+/// A real result on [`SPAWN`]: the worker's own (or the operator's) `rigger result`, which ends
+/// the spawn.
+const REAL_RESULT: &str = r#"{"id":"a/implementer#0","output":"done"}"#;
+
+/// [`one_unanswered_spawn`] in run `r1`, bounded at 300 s, then each of `results` recorded on
+/// [`SPAWN`] in order.
+fn one_spawn_answered_by(results: &[&str]) -> Vec<(&'static str, String)> {
+    let mut events = one_unanswered_spawn("r1", Some(300));
+    events.extend(results.iter().map(|r| ("SpawnResult", r.to_string())));
+    events
+}
+
+rigger::test_cases! {
+    /// The spawn's only result is the step's liveness fault, and a worker that resumed touched
+    /// its marker a minute ago, inside its 300 s bound: the spawn is still in flight, so the run
+    /// is live - the refusal names it with its marker's age and bound, and prunes nothing.
+    reset_derived_refuses_while_a_liveness_faulted_spawns_marker_is_inside_its_bound:
+        assert_refused_naming_the_spawn(
+            reset_derived_around(&one_spawn_answered_by(&[LIVENESS_FAULT]), &[("r1", 60)], None),
+            60..300,
+            "s ago, bound 300s)",
+        );
+    /// The same fault with the marker a second past its bound: the worker is gone, nothing
+    /// drives the run, and it compacts without `--force-live`.
+    reset_derived_proceeds_once_a_liveness_faulted_spawns_marker_outlives_its_bound:
+        assert_compacted(
+            reset_derived_around(&one_spawn_answered_by(&[LIVENESS_FAULT]), &[("r1", 301)], None)
+                .said(),
+            "a liveness-faulted spawn whose marker outlived its bound is not live",
+        );
+    /// The fault, then a real result, with the marker touched just now: the real result ended
+    /// the spawn whatever its marker says, so the run compacts.
+    reset_derived_proceeds_once_a_real_result_follows_the_liveness_fault_despite_a_fresh_marker:
+        assert_compacted(
+            reset_derived_around(
+                &one_spawn_answered_by(&[LIVENESS_FAULT, REAL_RESULT]),
+                &[("r1", 0)],
+                None,
+            )
+            .said(),
+            "a real result after the liveness fault ends the spawn, however fresh its marker",
+        );
 }
 
 /// A PRIOR run's marker is never read for the current run: run `r0` and run `r1` each left
 /// [`SPAWN`] unanswered, and only the marker filed under the CURRENT run's id decides whether it
 /// is live - a fresh `r0` marker beside a stale `r1` one compacts, and the mirror refuses.
-fn prior_and_current_run(
-    prior_marker_secs_ago: u64,
-    current_marker_secs_ago: u64,
-) -> (String, String, bool) {
+fn prior_and_current_run(prior_marker_secs_ago: u64, current_marker_secs_ago: u64) -> Outcome {
     let events: Vec<(&str, String)> = one_unanswered_spawn("r0", Some(300))
         .into_iter()
         .chain(one_unanswered_spawn("r1", Some(300)))
@@ -440,12 +543,12 @@ fn prior_and_current_run(
 rigger::test_cases! {
     /// A fresh marker a PRIOR run filed for the same spawn id never makes the current run live.
     reset_derived_ignores_a_prior_runs_fresh_marker_for_the_same_spawn_id: assert_compacted(
-        prior_and_current_run(0, 301),
+        prior_and_current_run(0, 301).said(),
         "only the current run's marker decides, and it is past its bound",
     );
     /// The current run's own fresh marker makes it live, whatever the prior run's says.
     reset_derived_reads_the_current_runs_marker_beside_a_prior_runs_stale_one:
-        assert_refused_naming_the_spawn(prior_and_current_run(301, 0), "", "s ago, bound 300s)");
+        assert_refused_naming_the_spawn(prior_and_current_run(301, 0), 0..300, "s ago, bound 300s)");
 }
 
 /// A registry heartbeat a minute INSIDE the idle window keeps the run live - the window, not
@@ -457,7 +560,8 @@ fn reset_derived_refuses_while_the_registry_heartbeat_is_a_minute_inside_the_idl
         &one_unanswered_spawn("r1", Some(300)),
         &[],
         Some(registry::DEFAULT_IDLE_MS - 60_000),
-    );
+    )
+    .said();
     assert!(
         !ok,
         "a heartbeat inside the idle window must refuse; stdout: {out:?}"
@@ -486,17 +590,13 @@ fn reset_derived_refuses_while_the_registry_heartbeat_is_a_minute_inside_the_idl
 /// the binary resolves the scratch root exactly as the run that stamped the marker did, over
 /// [`one_unanswered_spawn`] (bound 300 s) in `root`'s store, whose worker touched its marker just
 /// now under `scratch_root`.
-fn reset_from_with_a_fresh_marker_under(
-    root: &Path,
-    cwd: &Path,
-    scratch_root: &str,
-) -> (String, String, bool) {
+fn reset_from_with_a_fresh_marker_under(root: &Path, cwd: &Path, scratch_root: &str) -> Outcome {
     seed_owned(root, &one_unanswered_spawn("r1", Some(300)));
     plant_marker(
         &rigger::liveness::marker_path(scratch_root, "r1", SPAWN).unwrap(),
         0,
     );
-    run_rigger_envs(cwd, &["reset", "--derived"], &[("RIGGER_TMPDIR", "")])
+    counted(root, cwd, &["reset", "--derived"], &[("RIGGER_TMPDIR", "")])
 }
 
 /// With no `defaults.workdir` configured, a run stamps its markers under the store owner's
@@ -508,9 +608,29 @@ fn reset_derived_reads_a_marker_stamped_under_the_default_scratch_root() {
     let scratch_root = common::default_scratch_root(root);
     assert_refused_naming_the_spawn(
         reset_from_with_a_fresh_marker_under(root, root, scratch_root.to_str().unwrap()),
-        "",
+        0..300,
         "s ago, bound 300s)",
     );
+}
+
+/// Writes `defaults` as the store's `workflow.yml` defaults block with `workdir` set to a fresh
+/// directory, and returns that directory with the scratch root a run stamps its markers under
+/// there.
+fn configure_workdir(root: &Path, defaults: &str) -> (tempfile::TempDir, String) {
+    let relocated = tempfile::tempdir().expect("create the configured workdir");
+    let workdir = relocated.path().to_str().unwrap().to_string();
+    std::fs::write(
+        rigger_file(root, "workflow.yml"),
+        format!("defaults:\n  workdir: \"{workdir}\"\n{defaults}"),
+    )
+    .expect("configure defaults.workdir");
+    let scratch_root = rigger::worktree::scratch_root(root.to_str().unwrap(), &workdir, None);
+    assert_ne!(
+        Path::new(&scratch_root),
+        common::default_scratch_root(root),
+        "fixture bug: the configured workdir must move the scratch root off the default"
+    );
+    (relocated, scratch_root)
 }
 
 /// With `defaults.workdir` configured in the store's `workflow.yml`, a run stamps its markers
@@ -519,23 +639,37 @@ fn reset_derived_reads_a_marker_stamped_under_the_default_scratch_root() {
 fn reset_derived_reads_a_marker_stamped_under_a_configured_workdir() {
     let dir = temp_store_project();
     let root = dir.path();
-    let relocated = tempfile::tempdir().expect("create the configured workdir");
-    let workdir = relocated.path().to_str().unwrap();
-    std::fs::write(
-        rigger_file(root, "workflow.yml"),
-        format!("defaults:\n  workdir: \"{workdir}\"\n"),
-    )
-    .expect("configure defaults.workdir");
-    let scratch_root = rigger::worktree::scratch_root(root.to_str().unwrap(), workdir, None);
-    assert_ne!(
-        Path::new(&scratch_root),
-        common::default_scratch_root(root),
-        "fixture bug: the configured workdir must move the scratch root off the default"
-    );
+    let (_workdir, scratch_root) = configure_workdir(root, "");
     assert_refused_naming_the_spawn(
         reset_from_with_a_fresh_marker_under(root, root, &scratch_root),
-        "",
+        0..300,
         "s ago, bound 300s)",
+    );
+}
+
+/// The scratch root is read FAIL-CLOSED: a `defaults` block that cannot be parsed - `workdir`
+/// configured beside a `max_retries` that is not a number - never degrades to the default root,
+/// where the fresh marker under the configured workdir would read as absent. `reset --derived`
+/// exits non-zero naming the unparsable config and prunes nothing: the guard may only refuse.
+#[test]
+fn reset_derived_fails_closed_on_an_unparsable_defaults_block_beside_a_configured_workdir() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_workdir, scratch_root) = configure_workdir(root, "  max_retries: three\n");
+    let o = reset_from_with_a_fresh_marker_under(root, root, &scratch_root);
+    assert!(
+        !o.ok,
+        "an unparsable defaults block must fail the command, never compact; stdout: {:?}",
+        o.out
+    );
+    assert!(
+        o.err.contains("parse workflow") && o.err.contains("max_retries"),
+        "the failure must name the unparsable config; stderr: {:?}",
+        o.err
+    );
+    assert_eq!(
+        o.rows_after, o.rows_before,
+        "a command that cannot resolve the scratch root must prune NOTHING"
     );
 }
 
@@ -555,7 +689,7 @@ fn reset_derived_from_a_nested_worktree_reads_the_marker_under_the_owning_roots_
     );
     assert_refused_naming_the_spawn(
         reset_from_with_a_fresh_marker_under(root, &nested, scratch_root.to_str().unwrap()),
-        "",
+        0..300,
         "s ago, bound 300s)",
     );
 }
@@ -564,7 +698,9 @@ fn reset_derived_from_a_nested_worktree_reads_the_marker_under_the_owning_roots_
 // The operator's way past an unbounded spawn
 // ---------------------------------------------------------------------------------------
 
-/// Given a dead driver's run whose one in-flight spawn is UNBOUNDED, when the operator runs
+/// Given a host that keeps a liveness marker for an UNBOUNDED spawn (the blessed workflow driver
+/// frames no heartbeat for one, so under it such a spawn has no marker and never blocks), and a
+/// dead driver's run whose one in-flight spawn is that unbounded spawn: when the operator runs
 /// `reset --derived`, then it refuses naming the `rigger result` that ends the spawn; when the
 /// operator records that result as told, then the spawn no longer holds the run live and the one
 /// signal left is the registry heartbeat that `rigger result` courier itself just stamped for
@@ -588,11 +724,11 @@ fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result()
         ("RIGGER_TMPDIR", scratch_root),
         ("XDG_STATE_HOME", state_home.path().to_str().unwrap()),
     ];
-    let reset = || run_rigger_envs(root, &["reset", "--derived"], &envs);
+    let reset = || counted(root, root, &["reset", "--derived"], &envs);
 
     assert_refused_naming_the_spawn(
         reset(),
-        "864",
+        86_400..,
         "s ago; unbounded, so it stays live until its result is recorded - `rigger result \
          a/implementer#0 --error <why>` once its worker is gone)",
     );
@@ -607,7 +743,7 @@ fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result()
         "the operator records the spawn's result; stdout: {out} stderr: {err}"
     );
 
-    let (out, err, ok) = reset();
+    let (out, err, ok) = reset().said();
     assert!(
         !ok,
         "the result courier's own registry heartbeat is inside the idle window; stdout: {out:?}"
@@ -638,7 +774,7 @@ fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result()
         registry::write(&instances, &inst).expect("age the courier's heartbeat");
     }
     assert_compacted(
-        reset(),
+        reset().said(),
         "with the result recorded and the heartbeat past the idle window nothing is live",
     );
 }
@@ -702,18 +838,22 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     assert!(
         using.contains(
             "it refuses while the run is live - a `rigger step` holds its lock, an in-flight \
-             spawn's liveness marker is younger than its wall-clock bound, or a driver \
-             registration for this store has a heartbeat inside the idle window - naming what it \
-             found. A run whose driver died is not live: units it left non-terminal never block \
-             the compaction, and a spawn it left unanswered stops blocking once its marker \
-             outlives the spawn's bound (an unbounded spawn's never does, so record that spawn's \
-             result)."
+             spawn (one with no recorded result, or only the step's liveness fault) has a \
+             liveness marker younger than its wall-clock bound, or a driver registration for this \
+             store has a heartbeat inside the idle window - naming what it found. A run whose \
+             driver died is not live: units it left non-terminal never block the compaction, a \
+             spawn with no marker never does, and an in-flight spawn stops blocking once its \
+             marker outlives the spawn's bound or a real result is recorded for it. An unbounded \
+             spawn's marker never outlives its bound, so it blocks only under a host that keeps a \
+             marker for it - the blessed workflow driver frames no heartbeat for an unbounded \
+             spawn, so under that driver it has none - and recording its result ends it."
         ),
         "the using-rigger skill must state the liveness `--derived` refuses on; got {using:?}"
     );
     assert!(
-        !using.contains("not yet terminal"),
-        "unit terminality is not a live signal; got {using:?}"
+        !using.contains("not yet terminal") && !using.contains("an unbounded spawn's never does"),
+        "neither unit terminality nor an unbounded spawn under every host is a live signal; got \
+         {using:?}"
     );
 }
 

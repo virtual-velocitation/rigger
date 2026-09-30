@@ -2812,9 +2812,9 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/reset_derived_compaction_periphery.rs:2970-2970` `"create .rigger"`
 - `tests/reset_derived_compaction_periphery.rs:2985-2985` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:3020-3020` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:56-56` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:771-771` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:850-850` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:59-59` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:911-911` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:990-990` `".rigger"`
 - `tests/review_round_lenses_only_log_derived_resume_periphery.rs:144-144` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_no_adjudicator_residue_periphery.rs:93-93` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs:119-119` `"{repo_path}/.rigger-test-scratch"`
@@ -3834,7 +3834,7 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/reset_derived_compaction_periphery.rs:2742-2742` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:3530-3530` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:4170-4170` `Connection::open`
-- `tests/reset_derived_live_writer_guard_periphery.rs:56-56` `Connection::open`
+- `tests/reset_derived_live_writer_guard_periphery.rs:59-59` `Connection::open`
 - `tests/reset_menu.rs:60-60` `Connection::open`
 - `tests/reset_menu.rs:64-64` `Connection::open`
 - `tests/reset_menu_identity_migration_periphery.rs:98-98` `Connection::open`
@@ -4420,8 +4420,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:26722-26742` `init_scaffolds_the_instructions_readme_and_names_it`
 - `tests/reset_build_cache_periphery.rs:103-129` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
 - `tests/reset_build_cache_periphery.rs:167-177` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1046-1056` `reset_force_live_alone_is_refused_as_no_mode`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1062-1077` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1186-1196` `reset_force_live_alone_is_refused_as_no_mode`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1202-1217` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
 - `tests/reset_menu.rs:79-96` `bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable`
 - `tests/statusline_command_periphery.rs:90-100` `status_line_on_a_clean_run`
 - `tests/statusline_command_periphery.rs:137-147` `status_line_and_json_are_mutually_exclusive`
@@ -4948,7 +4948,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7662 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7668 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13813-13835` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17918-17971` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
