@@ -40,6 +40,20 @@ const DEAD_RUN: &[(&str, &str)] = &[
     ("UnitFailed", r#"{"id":"checkin","attempts":1}"#),
 ];
 
+/// A run abandoned before [`DEAD_RUN`] started: its unit `zombie`'s spawn was requested and never
+/// answered.
+const PRIOR_RUN: &[(&str, &str)] = &[
+    ("RunStarted", r#"{"run":"r0","criteria":["an older spec"]}"#),
+    (
+        "UnitStarted",
+        r#"{"id":"zombie","branch":"rigger/u/zombie"}"#,
+    ),
+    (
+        "SpawnRequested",
+        r#"{"id":"zombie/implementer#0","unit":"zombie","stage":"implement","prompt":"stale","max_wall_clock":300}"#,
+    ),
+];
+
 /// The spawn [`IN_FLIGHT_SPAWN`] requests.
 const SPAWN_ID: &str = "checkin/implementer#1";
 
@@ -300,11 +314,49 @@ fn reset_runs_leaves_a_landed_run_open_while_a_spawn_awaits_its_result() {
     }
 }
 
-/// A spawn result the log cannot decode leaves unknown which spawns still await theirs, so
-/// `reset --runs` fails naming the undecodable result and records nothing, rather than reading
-/// it as no spawn awaiting and closing the landed unit.
+/// Only a spawn of the CURRENT run awaits a result the close must wait for: a prior run's spawn,
+/// left unanswered when that run was abandoned, sits before this run's `RunStarted` and no
+/// relaunched driver of this run resumes it, so the dead run's landed unit is closed.
 #[test]
-fn reset_runs_fails_on_a_malformed_spawn_result_and_closes_nothing() {
+fn reset_runs_closes_a_dead_landed_run_whatever_a_prior_run_left_unanswered() {
+    let dir = project(true, true);
+    let root = dir.path();
+    let events: Vec<(&str, &str)> = PRIOR_RUN.iter().chain(DEAD_RUN).copied().collect();
+    let (before, after) = reset_runs_over(root, &events, QUIET);
+    assert_checkin_closed(root, &before, &after);
+}
+
+/// The close waits for EVERY spawn of the run, not only the landed unit's own: unit `b`, never
+/// landed, has a spawn awaiting its result with no marker and nothing else drives the run, yet a
+/// relaunched driver resumes that spawn - so the landed `checkin` is left open and the log is
+/// untouched.
+#[test]
+fn reset_runs_leaves_a_landed_unit_open_while_another_units_spawn_awaits_its_result() {
+    let dir = project(true, true);
+    let root = dir.path();
+    let events: Vec<(&str, &str)> = DEAD_RUN
+        .iter()
+        .copied()
+        .chain([
+            ("UnitStarted", r#"{"id":"b","branch":"rigger/u/b"}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"b/implementer#0","unit":"b","stage":"implement","prompt":"go","max_wall_clock":300}"#,
+            ),
+        ])
+        .collect();
+    let (before, after) = reset_runs_over(root, &events, QUIET);
+    assert_eq!(
+        after, before,
+        "another unit's spawn awaiting its result keeps the landed unit open: the log must be \
+         untouched"
+    );
+}
+
+/// Seeds [`DEAD_RUN`] then a spawn result the log cannot decode, runs `reset --runs` - with a
+/// `rigger step` holding the step lock throughout when `step_lock` - and asserts it fails naming
+/// the undecodable result and records nothing.
+fn assert_a_malformed_spawn_result_fails_the_close(step_lock: bool) {
     let dir = project(true, true);
     let root = dir.path();
     let events: Vec<(&str, &str)> = DEAD_RUN
@@ -315,11 +367,13 @@ fn reset_runs_fails_on_a_malformed_spawn_result_and_closes_nothing() {
     seed_run_events(root, &events);
     let before = run_log(root);
     let scratch = tempfile::tempdir().unwrap();
+    let lock = step_lock.then(|| hold_step_lock(root));
     let (out, err, ok) = run_rigger_envs(
         root,
         &["reset", "--runs"],
         &[("RIGGER_TMPDIR", scratch.path().to_str().unwrap())],
     );
+    drop(lock);
     assert!(
         !ok,
         "a malformed spawn result must fail reset --runs, never close the run; stdout: {out:?}"
@@ -333,6 +387,19 @@ fn reset_runs_fails_on_a_malformed_spawn_result_and_closes_nothing() {
         before,
         "a reset that cannot read which spawns await their result must record nothing"
     );
+}
+
+rigger::test_cases! {
+    /// A spawn result the log cannot decode leaves unknown which spawns still await theirs, so
+    /// `reset --runs` fails naming the undecodable result and records nothing, rather than reading
+    /// it as no spawn awaiting and closing the landed unit.
+    reset_runs_fails_on_a_malformed_spawn_result_and_closes_nothing:
+        assert_a_malformed_spawn_result_fails_the_close(false);
+    /// The close reads which spawns await their result before it asks whether the driver is dead,
+    /// so the same undecodable result fails `reset --runs` even while a `rigger step` holds the
+    /// step lock - never a success that skipped the read.
+    reset_runs_fails_on_a_malformed_spawn_result_even_while_a_step_holds_the_lock:
+        assert_a_malformed_spawn_result_fails_the_close(true);
 }
 
 // ---------------------------------------------------------------------------------------
