@@ -256,6 +256,28 @@ a fact, not only when it adds or moves one.
   sees the old file (rebuild still owed) or the complete rebuilt one, never a half-rebuilt file,
   and the live file is never held under a long write transaction. An interrupted rebuild leaves the
   live file untouched, and the next `rigger setup` resumes from the shadow's last committed batch.
+  The rebuild's exclusion is ONE OS advisory lock, taken with the standard library's file lock (no
+  new dependency) on a zero-byte `graph.db.lock` beside `graph.db`, a file no rebuild ever removes.
+  `rigger setup` tries to take it, never waiting, before it opens or creates the shadow, and holds
+  it from before the first shadow read through the fold, the swap and the tail until the tail is
+  folded and the cursor dropped. A second `rigger setup` that cannot take it refuses at once naming
+  the rebuild in progress, with one refusal text whatever phase the holder is in and whether or not
+  the holder has written yet, and leaves nothing at any path where it found nothing. Only the lock's
+  holder ever has a shadow open, so a shadow is removed only when no other connection holds it, and
+  no connection to a removed shadow exists while a newer shadow can take its name. The shadow's own
+  SQLite lock is not the exclusion and no command waits on it: SQLite pairs a database file with its
+  rollback journal by name and treats removing a database file another connection holds open as a
+  corruption cause, so an exclusion taken through the lock of a file the rebuild itself removes lets
+  a waiter replay and delete a newer shadow's journal. The exclusion is therefore a lock no waiter
+  reaches through a removed file, and one lock held across every phase makes the tail's exclusion
+  the same mechanism as the fold's. The OS releases the lock with the process, so an interrupted
+  rebuild leaves no stale lock and the next `rigger setup` takes it and resumes. `graph.db.lock`
+  exists whenever `graph.db` does, created by the first `rigger setup` that needs it and never
+  removed on its own; whatever removes `graph.db` removes it in the same step. Whatever else touches
+  a rebuild's files outside a rebuild takes the same lock first and never waits on it: `rigger
+  reset` removes a stale `<path>.pruned` only when it holds the lock, so a copy a live swap is using
+  is never removed under it, and a reset that cannot take the lock reports the rebuild in progress
+  and leaves the copy.
   `rigger setup` reports progress as it folds and installs nothing else until the rebuild has
   completed or been refused. `rigger emit`, and every command whose job is to append to the log,
   always appends and never opens `graph.db` first; while the rebuild is owed it skips the
@@ -271,7 +293,12 @@ a fact, not only when it adds or moves one.
   old version refuses naming `rigger setup` without writing; a read-only open racing the rebuild
   leaves the rebuilt file intact and a folding open during it refuses rather than failing locked;
   a cold rebuild of a log whose closed runs were pruned yields a graph with the same decision and
-  finding nodes as the live one, never the pruned ones.
+  finding nodes as the live one, never the pruned ones; a second `rigger setup` started while the
+  first folds, while it swaps and while it folds the tail is refused at once with the one refusal
+  text, never opens the shadow and leaves nothing behind; a rebuild whose process is gone leaves no
+  lock, and the next `rigger setup` takes it and resumes the shadow from its last committed batch;
+  a `rigger reset --runs` started during a live swap leaves the copy and names the rebuild in
+  progress; `graph.db.lock` exists beside `graph.db` and is removed only with it.
   The criterion 4 unit's evidence MUST include the rebuild completing through `rigger setup` on a
   snapshot of a real log with wall time and peak memory recorded, and an interrupt-then-rerun on
   that snapshot completing without refolding the batches already committed. Without this, every
