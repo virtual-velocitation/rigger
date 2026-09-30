@@ -5827,6 +5827,50 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
     );
 }
 
+/// Given a `graph.db` that owes its rebuild and a stale `graph.db.pruned` beside it with no shadow
+/// - the copy a swap cut short left, whose rebuild is gone - when the operator runs `rigger reset
+/// --runs`, then it removes the copy first and says so, and still refuses the prune naming `rigger
+/// setup`, leaving `graph.db` and the log exactly as they were and creating no shadow.
+#[test]
+fn reset_runs_on_a_graph_that_owes_its_rebuild_removes_a_stale_pruned_copy_before_it_refuses() {
+    let store = ReleaseEraStore::new();
+    let root = store.root();
+    let copy = rigger_file(root, "graph.db.pruned");
+    std::fs::write(&copy, b"left by a swap cut short").unwrap();
+    let (graph, log) = (store.graph_bytes(), store.log().len());
+    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert_eq!(
+        (
+            ok,
+            out.lines().collect::<Vec<_>>(),
+            err.lines().last(),
+            copy.exists(),
+            rigger_file(root, "graph.db.rebuild").exists(),
+            store.graph_bytes() == graph,
+            store.log().len(),
+        ),
+        (
+            false,
+            vec![
+                "reset --runs: removed graph.db.pruned, the pruned copy a rebuild's stopped swap \
+                 left beside graph.db"
+            ],
+            Some(
+                format!(
+                    "rigger: reset --runs: {}",
+                    rigger::contextgraph::REBUILD_OWED
+                )
+                .as_str()
+            ),
+            false,
+            false,
+            true,
+            log,
+        ),
+        "the stale copy is removed before the owed graph is refused; stdout: {out} stderr: {err}"
+    );
+}
+
 /// Given a project that recorded decisions, a finding and a lesson with `rigger emit` before it
 /// ever started a run, when its `graph.db` is lost and `rigger setup` rebuilds it, then setup
 /// reports it pruned nothing and the rebuilt graph is the live one, every node and edge; and
