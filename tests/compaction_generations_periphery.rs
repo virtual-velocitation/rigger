@@ -4191,16 +4191,7 @@ fn the_identity_migrations_decision_is_folded_into_the_graph_it_migrates() {
 
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-legacy");
-    assert!(
-        ok,
-        "the legacy emit creates the store and graph; stderr: {err}"
-    );
-    let legacy = run_stream_identity(root);
-    let (_, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init mints the identity; stderr: {err}");
-    let minted = run_stream_identity(root);
-    assert_ne!(minted, legacy, "init minted a distinct identity");
+    let (legacy, minted) = legacy_history_then_minted_identity(root);
 
     let (_, err, ok) = run_rigger(root, &["reset"]);
     let log = read_run_events(root);
@@ -4239,6 +4230,23 @@ fn the_identity_migrations_decision_is_folded_into_the_graph_it_migrates() {
         Some(migration.clone()),
         "the migration's decision resolves in the graph under the minted identity"
     );
+}
+
+/// Record a decision under the legacy basename namespace of the project at `root`, creating its
+/// store and graph, then mint its durable identity with `rigger init`, leaving that history for
+/// the one-time identity migration: the legacy and the minted identity.
+fn legacy_history_then_minted_identity(root: &Path) -> (String, String) {
+    let (_, err, ok) = emit_decision(root, "d-legacy");
+    assert!(
+        ok,
+        "the legacy emit creates the store and graph; stderr: {err}"
+    );
+    let legacy = run_stream_identity(root);
+    let (_, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init mints the identity; stderr: {err}");
+    let minted = run_stream_identity(root);
+    assert_ne!(minted, legacy, "init minted a distinct identity");
+    (legacy, minted)
 }
 
 /// The stderr line a bare `rigger reset` prints when it migrates one legacy stream `legacy` ->
@@ -6183,16 +6191,17 @@ enum RebuildPhase {
     FoldingTheTail,
 }
 
-/// Every `graph.db*` file under `.rigger/` of `root`, with its bytes, sorted by name.
-fn graph_files(root: &Path) -> Vec<(String, Vec<u8>)> {
-    let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(rigger_file(root, ""))
+/// Every `graph.db*` entry under `.rigger/` of `root`, with its bytes - `None` for a directory -
+/// sorted by name.
+fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut files: Vec<(String, Option<Vec<u8>>)> = std::fs::read_dir(rigger_file(root, ""))
         .unwrap()
         .map(|f| f.unwrap())
         .filter(|f| f.file_name().to_string_lossy().starts_with("graph.db"))
         .map(|f| {
             (
                 f.file_name().into_string().unwrap(),
-                std::fs::read(f.path()).unwrap(),
+                (!f.file_type().unwrap().is_dir()).then(|| std::fs::read(f.path()).unwrap()),
             )
         })
         .collect();
@@ -6451,6 +6460,196 @@ fn graph_db_lock_stands_beside_graph_db_after_setup_and_no_reset_verb_removes_it
         .map(|verb| (verb.to_string(), true, Some(0)))
         .to_vec(),
         "graph.db.lock stands, zero bytes, through every reset verb"
+    );
+}
+
+/// Given history recorded before the project minted its durable identity, and a rebuild in
+/// progress holding `graph.db.lock`, when `rigger setup` runs, then it is refused before its
+/// identity migration, in the operator's words naming the rebuild in progress: it renames no
+/// stream and records no migration decision, prints nothing about `graph.db`, and leaves every
+/// `graph.db` file as it found them; once the rebuild lets go, the next `rigger setup` migrates
+/// the history and records the migration's decision on the minted stream.
+#[test]
+fn a_setup_refused_by_a_rebuild_in_progress_migrates_nothing_and_names_it_in_its_own_words() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (legacy, minted) = legacy_history_then_minted_identity(root);
+    let streams = || (ids_under(root, &legacy), ids_under(root, &minted));
+    let migrated = |err: &str| {
+        err.lines()
+            .filter(|l| l.starts_with("rigger: migrated project identity"))
+            .count()
+    };
+
+    let holder = hold_the_rebuild(root);
+    let found = graph_files(root);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let refused = (
+        ok,
+        out.lines()
+            .filter(|l| l.contains("graph.db"))
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        migrated(&err),
+        err.lines().last().map(str::to_string),
+        streams(),
+        graph_files(root) == found,
+    );
+    drop(holder);
+    let (paid, paid_err, paid_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (refused, (paid_ok, migrated(&paid_err), streams())),
+        (
+            (
+                false,
+                Vec::<String>::new(),
+                0,
+                Some(
+                    "rigger: graph: a rebuild of graph.db is in progress (a `rigger setup` holds \
+                     graph.db.lock)"
+                        .to_string()
+                ),
+                (vec!["d-legacy".to_string()], Vec::<String>::new()),
+                true,
+            ),
+            (
+                true,
+                1,
+                (
+                    Vec::<String>::new(),
+                    vec![
+                        "d-legacy".to_string(),
+                        format!("identity-migration-{minted}")
+                    ]
+                )
+            ),
+        ),
+        "the refused setup migrates nothing and names the rebuild in progress, and the next setup \
+         migrates; refused stdout: {out} stderr: {err}; next stdout: {paid} stderr: {paid_err}"
+    );
+}
+
+/// The ids the run stream of `root` holds under the namespace `identity`, in log order.
+fn ids_under(root: &Path, identity: &str) -> Vec<String> {
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    Namespaced::new(&backend, identity)
+        .read_stream(
+            rigger::conductor::STREAM,
+            0,
+            rigger::eventstore::Direction::Forward,
+        )
+        .unwrap()
+        .iter()
+        .map(|e| {
+            serde_json::from_slice::<serde_json::Value>(&e.data).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Given a `graph.db.lock` that cannot be opened - a directory stands at its path - when `rigger
+/// setup` runs over the project's `graph.db`, then it fails naming `.rigger/graph.db.lock`, prints
+/// nothing about `graph.db` and leaves every `graph.db` file as it found them; when `rigger reset
+/// --runs` runs with no stale copy beside the graph, it never tries the lock and prunes as ever;
+/// and with a stale `graph.db.pruned` beside it, `rigger reset --runs` fails naming the lock and
+/// keeps the copy byte for byte. `rigger --help` says the copy is kept while a rebuild in progress
+/// holds `graph.db.lock`.
+#[test]
+fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_over_a_stale_copy() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    closed_run_store(root);
+    let lock = rigger_file(root, "graph.db.lock");
+    std::fs::create_dir(&lock).unwrap();
+    let copy = rigger_file(root, "graph.db.pruned");
+    let graph_db_lines = |out: &str| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("graph.db"))
+            .map(str::to_string)
+            .collect()
+    };
+
+    let found = graph_files(root);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let setup = (
+        ok,
+        graph_db_lines(&out),
+        err.lines().last().map(str::to_string),
+        graph_files(root) == found,
+    );
+    let (no_copy, no_copy_err, no_copy_ok) = run_rigger(root, &["reset", "--runs"]);
+    let no_copy = (
+        no_copy_ok,
+        graph_db_lines(&no_copy),
+        no_copy
+            .lines()
+            .find(|l| l.starts_with("reset --runs: pruned"))
+            .and_then(|l| l.split(", then").next())
+            .map(str::to_string),
+    );
+    std::fs::write(&copy, b"left by a swap that stopped").unwrap();
+    let (over_copy, over_copy_err, over_copy_ok) = run_rigger(root, &["reset", "--runs"]);
+    let over_copy = (
+        over_copy_ok,
+        graph_db_lines(&over_copy),
+        over_copy_err.lines().last().map(str::to_string),
+        std::fs::read(&copy).unwrap(),
+        lock.is_dir(),
+    );
+    // The usage goes to stderr.
+    let (_, help, help_ok) = run_rigger(root, &["--help"]);
+    let help = (
+        help_ok,
+        help.lines()
+            .skip_while(|l| !l.trim_start().starts_with("rigger reset --runs"))
+            .take_while(|l| !l.trim_start().starts_with("rigger reset --derived"))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .split_last()
+            .map(|(last, _)| last.to_string()),
+    );
+    let named = |lock: &Path| {
+        format!(
+            "rigger: graph: {}: Is a directory (os error 21)",
+            lock.display()
+        )
+    };
+    assert_eq!(
+        (setup, no_copy, over_copy, help),
+        (
+            (
+                false,
+                Vec::<String>::new(),
+                // Setup names the lock file relative to the project root it runs in.
+                Some(named(&rigger_file(Path::new(""), "graph.db.lock"))),
+                true
+            ),
+            (
+                true,
+                Vec::<String>::new(),
+                Some(
+                    "reset --runs: pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) \
+                     from the context graph"
+                        .to_string()
+                )
+            ),
+            (
+                false,
+                Vec::<String>::new(),
+                Some(named(&lock.canonicalize().unwrap())),
+                b"left by a swap that stopped".to_vec(),
+                true
+            ),
+            (
+                true,
+                Some("left, unless a rebuild in progress holds graph.db.lock".to_string())
+            ),
+        ),
+        "setup and reset --runs over a stale copy name the lock file they cannot open, and reset \
+         --runs with no copy never tries it; setup stdout: {out} stderr: {err}; no-copy stderr: \
+         {no_copy_err}; over-copy stderr: {over_copy_err}"
     );
 }
 
