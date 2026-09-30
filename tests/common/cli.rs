@@ -359,6 +359,7 @@ pub fn seed_registry(project: &str, root: &str, heartbeat_ms: u64) -> (tempfile:
             path: format!("{root}/{RIGGER_DIR}/events.db"),
         },
         heartbeat_ms,
+        writer: rigger::registry::Writer::Driver,
     };
     let entry = rigger::registry::write(&rigger::registry::instances_dir(state_home.path()), &inst)
         .expect("seed a registry entry");

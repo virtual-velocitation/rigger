@@ -82,7 +82,10 @@ impl Drop for RunRegistration {
 /// re-registration refreshes one entry in place. This is the SINGLE registration writer - every run
 /// entry point (`rigger step`, and the in-process `rigger run`/`serve`/`workflow` drivers) requests
 /// through it, so the machine-global registry sees every invocation that starts or advances a run,
-/// not just the stepwise loop path.
+/// not just the stepwise loop path. Every one of them DRIVES the run while it lives, so the entry
+/// and each heartbeat re-stamp are written as [`rigger::registry::Writer::Driver`]: the
+/// driver-liveness stamp, which a courier's discovery refresh ([`refresh_registry_entry`]) never
+/// is.
 ///
 /// Returns a [`RunRegistration`] the CALLER MUST HOLD for the life of the run (`let _reg = ...;`):
 /// the initial entry is written here, synchronously, and the returned guard's background thread
@@ -104,6 +107,7 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
         root: root.to_string_lossy().into_owned(),
         store: registry_store_identity(selection, &root),
         heartbeat_ms: rigger::registry::now_ms(),
+        writer: rigger::registry::Writer::Driver,
     };
     // The initial, synchronous registration. On failure, degrade to an inert guard rather than
     // spawn a heartbeat thread that could only fail the same way.

@@ -7,6 +7,11 @@
 //! identity, the project root, a CREDENTIAL-FREE store identity, and a heartbeat the live
 //! instance refreshes while it works.
 //!
+//! One entry holds TWO facts, because a process that DRIVES a run and a one-shot COURIER verb
+//! both write the same file: discovery (the project is active, so a dash lists it), which every
+//! writer refreshes, and driver liveness (a process that can dispatch a spawn or land a unit is
+//! alive), which only a driver stamps. [`Writer`] records which kind of process wrote an entry.
+//!
 //! The registry is NEVER a source of truth and NEVER holds a credential (spec 50 secrets
 //! discipline); its loss is harmless, because live instances repopulate it as they heartbeat. A
 //! dead instance's entry ages out and is eventually deleted - but pruning is reserved to the
@@ -46,6 +51,38 @@ pub enum StoreIdentity {
     Shared { endpoint: String },
 }
 
+/// Which kind of process last wrote an [`Instance`] entry. A driver and a courier of the same
+/// project write the SAME entry file (its [`id`](Instance::id) keys on the root and store
+/// alone), so the entry carries two facts that must never be read as one:
+///   - DISCOVERY: the project is active on this machine, so a dash lists it. Every writer
+///     refreshes it through [`Instance::heartbeat_ms`].
+///   - DRIVER LIVENESS: a process that drives the run - one that can dispatch a spawn or land a
+///     unit at any moment - is alive. Only a [`Writer::Driver`] stamps it.
+///
+/// A consumer asking whether a run may be advancing right now must read the driver fact: a
+/// courier that merely recorded an event would otherwise read as a live driver for the whole
+/// idle window after it exited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Writer {
+    /// A process that drives the run for as long as it lives - `rigger run`, `serve` and
+    /// `workflow`, and `rigger step` - re-stamping from a heartbeat thread while it holds the
+    /// run, so its `heartbeat_ms` is also its driver-liveness stamp. The DEFAULT, and what an
+    /// entry written before the role was recorded reads as: an unknown writer is taken for a
+    /// live driver, which can only delay a dead-driver judgment by the idle window, never
+    /// approve one.
+    #[default]
+    Driver,
+    /// A one-shot courier verb (`emit`, `result`, `progress`, `hook stop-failure`) re-stamping
+    /// discovery: it records that the project is active and drives nothing.
+    Courier {
+        /// The last heartbeat (unix-epoch ms) a DRIVER stamped this entry with, or `None` when
+        /// no driver ever did. [`write`] carries it forward from the entry already on disk, so a
+        /// courier's re-stamp never erases the record of a driver that is still heartbeating.
+        driver_heartbeat_ms: Option<u64>,
+    },
+}
+
 /// One registered rigger instance: a project reporting to a resolved store, with a heartbeat.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Instance {
@@ -57,11 +94,17 @@ pub struct Instance {
     pub root: String,
     /// The credential-free store this instance reports to.
     pub store: StoreIdentity,
-    /// Unix-epoch milliseconds of the last heartbeat. A live instance refreshes it every time it
-    /// starts or advances a run; an entry whose heartbeat is older than the idle window is stale
-    /// (see [`is_stale`]) - deleted only by the self-reap watcher's own [`read_live`] tick, and
-    /// merely filtered out (never deleted) by every other reader via [`read_live_no_prune`].
+    /// Unix-epoch milliseconds of the last DISCOVERY heartbeat, from whichever [`Writer`] wrote
+    /// last. A live instance refreshes it every time it starts or advances a run; an entry whose
+    /// heartbeat is older than the idle window is stale (see [`is_stale`]) - deleted only by the
+    /// self-reap watcher's own [`read_live`] tick, and merely filtered out (never deleted) by
+    /// every other reader via [`read_live_no_prune`]. It is not, on its own, a driver's liveness
+    /// stamp: see [`Writer`].
     pub heartbeat_ms: u64,
+    /// Which kind of process wrote this entry last. An entry written before the role was
+    /// recorded has no such field and reads as [`Writer::Driver`].
+    #[serde(default)]
+    pub writer: Writer,
 }
 
 impl Instance {
@@ -82,6 +125,17 @@ impl Instance {
             StoreIdentity::Shared { endpoint } => format!("shared:{endpoint}"),
         };
         format!("{}\0{}", self.root, store)
+    }
+
+    /// The last heartbeat a DRIVER stamped this entry with: its own `heartbeat_ms` when a driver
+    /// wrote it last, the carried stamp when a courier did, `None` when no driver ever did.
+    fn driver_heartbeat_ms(&self) -> Option<u64> {
+        match self.writer {
+            Writer::Driver => Some(self.heartbeat_ms),
+            Writer::Courier {
+                driver_heartbeat_ms,
+            } => driver_heartbeat_ms,
+        }
     }
 }
 
@@ -168,18 +222,46 @@ static TMP_NONCE: AtomicU64 = AtomicU64::new(0);
 /// write. A unique temp per writer removes the shared name they could race on; both renames target
 /// the same final path, which is itself an atomic last-writer-wins swap. A reader only ever reads
 /// `*.json`, so the `.tmp` files are invisible to it (and a crashed writer's leftover temp likewise).
+///
+/// A COURIER's write carries forward the driver heartbeat the entry on disk already holds
+/// ([`carry_driver_heartbeat`]), so couriers re-stamping discovery never erase the record of a
+/// driver that is still heartbeating. The read and the rename are not one atomic step: a
+/// courier that reads just before a driver's write and renames just after it carries that
+/// driver's previous stamp - at most one heartbeat interval old, still inside the idle window -
+/// or, against a driver's very first write, none, until that driver's next heartbeat.
 pub fn write(dir: &Path, inst: &Instance) -> io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let body = serde_json::to_vec_pretty(inst)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let id = inst.id();
     let path = dir.join(format!("{id}.json"));
+    let inst = carry_driver_heartbeat(inst, read_entry(&path).as_ref());
+    let body = serde_json::to_vec_pretty(&inst)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let pid = std::process::id();
     let nonce = TMP_NONCE.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!(".{id}.{pid}.{nonce}.tmp"));
     std::fs::write(&tmp, &body)?;
     std::fs::rename(&tmp, &path)?;
     Ok(path)
+}
+
+/// `inst` as [`write`] lands it over `on_disk`, the entry already at its id: a driver's entry as
+/// given, a courier's carrying the LATER of its own and `on_disk`'s driver heartbeat - so a
+/// courier's discovery re-stamp never erases the stamp of a driver that is, or recently was,
+/// alive.
+fn carry_driver_heartbeat(inst: &Instance, on_disk: Option<&Instance>) -> Instance {
+    let writer = match inst.writer {
+        Writer::Driver => Writer::Driver,
+        Writer::Courier {
+            driver_heartbeat_ms,
+        } => Writer::Courier {
+            driver_heartbeat_ms: driver_heartbeat_ms
+                .max(on_disk.and_then(Instance::driver_heartbeat_ms)),
+        },
+    };
+    Instance {
+        writer,
+        ..inst.clone()
+    }
 }
 
 /// Whether a heartbeat is stale relative to `now_ms` and an idle window `ttl_ms`: it has not been
@@ -194,6 +276,13 @@ pub fn is_stale(heartbeat_ms: u64, now_ms: u64, ttl_ms: u64) -> bool {
 struct ParsedEntry {
     path: PathBuf,
     inst: Instance,
+}
+
+/// The entry at `path`, or `None` when it is absent, unreadable or unparseable - the registry's
+/// loss is harmless, so a bad entry reads as no entry, never as an error.
+fn read_entry(path: &Path) -> Option<Instance> {
+    let body = std::fs::read(path).ok()?;
+    serde_json::from_slice(&body).ok()
 }
 
 /// Parse every `.json` entry currently under `dir`, applying NO staleness filter and pruning
@@ -211,10 +300,7 @@ fn parse_entries(dir: &Path) -> Vec<ParsedEntry> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(body) = std::fs::read(&path) else {
-            continue;
-        };
-        let Ok(inst) = serde_json::from_slice::<Instance>(&body) else {
+        let Some(inst) = read_entry(&path) else {
             continue;
         };
         parsed.push(ParsedEntry { path, inst });
@@ -292,6 +378,7 @@ mod tests {
                 path: path.to_string(),
             },
             heartbeat_ms: hb,
+            writer: Writer::Driver,
         }
     }
 
@@ -477,6 +564,7 @@ mod tests {
             root: "/home/dev/proj".to_string(),
             store: StoreIdentity::Shared { endpoint },
             heartbeat_ms: 1_000,
+            writer: Writer::Driver,
         };
         let path = write(&dir, &inst).unwrap();
         let on_disk = std::fs::read_to_string(&path).unwrap();
@@ -517,5 +605,127 @@ mod tests {
         );
         // Truly homeless => None, so the caller degrades to no registration.
         assert_eq!(state_home_from(None, None), None);
+    }
+
+    /// A courier's writer role with no driver heartbeat of its own to carry.
+    fn courier() -> Writer {
+        Writer::Courier {
+            driver_heartbeat_ms: None,
+        }
+    }
+
+    /// Both writer roles survive the registry verbatim, in the on-disk shape a reader of any
+    /// version parses: `{"kind":"driver"}` and `{"kind":"courier","driver_heartbeat_ms":..}`.
+    #[test]
+    fn both_writer_roles_round_trip_through_the_registry() {
+        let carrying = Writer::Courier {
+            driver_heartbeat_ms: Some(7),
+        };
+        for (writer, wire) in [
+            (Writer::Driver, serde_json::json!({"kind": "driver"})),
+            (
+                carrying,
+                serde_json::json!({"kind": "courier", "driver_heartbeat_ms": 7}),
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = instances_dir(tmp.path());
+            let inst = Instance {
+                writer,
+                ..local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 1_000)
+            };
+            let path = write(&dir, &inst).unwrap();
+            assert_eq!(read_all(&dir), vec![inst], "{writer:?} reads back verbatim");
+            let on_disk: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                on_disk["writer"], wire,
+                "{writer:?} lands in its wire shape"
+            );
+        }
+    }
+
+    /// COMPATIBILITY PIN: an entry written before the role was recorded has no `writer` field.
+    /// It must parse, and parse as a DRIVER - an unknown writer only delays a dead-driver
+    /// judgment by the idle window, never approves one.
+    #[test]
+    fn an_entry_without_a_writer_parses_as_a_driver() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("0000000000000001.json"),
+            r#"{"project":"proj","root":"/home/dev/proj","store":{"kind":"local","path":"/home/dev/proj/.rigger/events.db"},"heartbeat_ms":1000}"#,
+        )
+        .unwrap();
+        let entries = read_all(&dir);
+        assert_eq!(entries.len(), 1, "the writer-less entry still parses");
+        assert_eq!(entries[0].writer, Writer::Driver);
+    }
+
+    /// Writes `first` then `second` (the same project and store, so the same entry file) and
+    /// asserts the one entry left is re-stamped at the second write's heartbeat and carries
+    /// `writer` (`why`).
+    fn assert_second_write_lands(
+        first: (Writer, u64),
+        second: (Writer, u64),
+        writer: Writer,
+        why: &str,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path());
+        let entry = |(writer, hb): (Writer, u64)| Instance {
+            writer,
+            ..local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", hb)
+        };
+        write(&dir, &entry(first)).unwrap();
+        write(&dir, &entry(second)).unwrap();
+        let entries = read_all(&dir);
+        assert_eq!(entries.len(), 1, "{why}: one entry per project and store");
+        assert_eq!(
+            entries[0].heartbeat_ms, second.1,
+            "{why}: discovery is re-stamped"
+        );
+        assert_eq!(entries[0].writer, writer, "{why}");
+    }
+
+    crate::test_cases! {
+        /// A courier re-stamping a live driver's entry refreshes discovery and keeps the
+        /// driver's stamp.
+        a_courier_write_carries_a_live_drivers_heartbeat: assert_second_write_lands(
+            (Writer::Driver, 1_000),
+            (courier(), 2_000),
+            Writer::Courier { driver_heartbeat_ms: Some(1_000) },
+            "a courier over a live driver",
+        );
+        /// A courier over a courier keeps the driver stamp the first one carried.
+        a_courier_write_keeps_a_carried_driver_heartbeat: assert_second_write_lands(
+            (Writer::Courier { driver_heartbeat_ms: Some(1_000) }, 1_500),
+            (courier(), 2_000),
+            Writer::Courier { driver_heartbeat_ms: Some(1_000) },
+            "a courier over a courier that carried a driver stamp",
+        );
+        /// A courier whose entry no driver ever stamped records discovery only.
+        a_courier_only_entry_carries_no_driver_heartbeat: assert_second_write_lands(
+            (courier(), 1_000),
+            (courier(), 2_000),
+            courier(),
+            "couriers alone",
+        );
+        /// A driver dead past the idle window keeps its old stamp under a later courier's
+        /// re-stamp, never a fresh one.
+        a_courier_write_over_a_stale_driver_carries_its_stale_heartbeat: assert_second_write_lands(
+            (Writer::Driver, 0),
+            (courier(), DEFAULT_IDLE_MS + 1),
+            Writer::Courier { driver_heartbeat_ms: Some(0) },
+            "a courier over a stale driver",
+        );
+        /// A driver's write is its own fresh stamp whatever a courier wrote before it.
+        a_driver_write_restamps_a_courier_entry: assert_second_write_lands(
+            (courier(), 1_000),
+            (Writer::Driver, 2_000),
+            Writer::Driver,
+            "a driver over a courier",
+        );
     }
 }

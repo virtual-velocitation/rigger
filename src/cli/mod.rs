@@ -750,6 +750,11 @@ fn registry_store_identity(sel: &StoreSelection, root: &Path) -> rigger::registr
 /// starts OR advances a run now refreshes the heartbeat, not just the ones that hold a driver
 /// scope.
 ///
+/// The re-stamp is written as a [`rigger::registry::Writer::Courier`]: it refreshes DISCOVERY
+/// only and drives nothing. The registry's write carries forward the driver heartbeat the entry
+/// already holds, so a courier run by a live driver's own agent never erases that driver's
+/// stamp.
+///
 /// `loc` and `selection` are the SAME resolved [`StoreLocation`] / [`StoreSelection`] the caller
 /// already has in hand from [`require_store_dir`] - never re-resolved here, so a courier's
 /// registry entry is always keyed to the exact store its real work just wrote to. `loc.identity()`
@@ -797,6 +802,9 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
         root: root.to_string_lossy().into_owned(),
         store: registry_store_identity(selection, root),
         heartbeat_ms: rigger::registry::now_ms(),
+        writer: rigger::registry::Writer::Courier {
+            driver_heartbeat_ms: None,
+        },
     };
     if let Err(e) = rigger::registry::write(&dir, &inst) {
         eprintln!("rigger: instance registry refresh skipped ({e}); discovery is unaffected");

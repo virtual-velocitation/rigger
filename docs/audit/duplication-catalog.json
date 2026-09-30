@@ -1057,7 +1057,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4fcf8d8ee080",
+    "id": "dup-87fffb7dab8c",
     "classification": "semantic",
     "sites": [
       {
@@ -1329,6 +1329,21 @@
         "file": "crates/rigger-store-sqlite/src/registry.rs",
         "name": "\"/home/dev/proj/.rigger/events.db\"",
         "content_hash": "095a242a1ba6b733"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/registry.rs",
+        "name": "\"/home/dev/proj/.rigger/events.db\"",
+        "content_hash": "0e71803e60d0748e"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/registry.rs",
+        "name": "r#\"{\"project\":\"proj\",\"root\":\"/home/dev/proj\",\"store\":{\"kind\":\"local\",\"path\":\"/home/dev/proj/.rigger/events.db\"},\"heartbeat_ms\":1000}\"#",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/registry.rs",
+        "name": "\"/home/dev/proj/.rigger/events.db\"",
+        "content_hash": "f1299135730d845d"
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
@@ -3847,7 +3862,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 557 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 560 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

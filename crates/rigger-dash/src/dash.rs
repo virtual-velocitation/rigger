@@ -3875,6 +3875,7 @@ mod tests {
                 path: format!("{root}/.rigger/events.db"),
             },
             heartbeat_ms: hb,
+            writer: crate::registry::Writer::Driver,
         }
     }
 
@@ -3893,6 +3894,7 @@ mod tests {
                 endpoint: "kurrentdb://db.example:2113".to_string(),
             },
             heartbeat_ms: 4_000,
+            writer: crate::registry::Writer::Driver,
         };
         // Registry order is unspecified; hand them in reverse of the expected sort.
         let insts = vec![

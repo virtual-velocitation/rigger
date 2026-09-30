@@ -6661,7 +6661,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "202c514355b19cb1"
+    "content_hash": "029ca4561b6b19f5"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9805,7 +9805,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "98f565c0accdb4cb"
+    "content_hash": "e0d003ed63cfcfd9"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -9813,7 +9813,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2152275994d065f5"
+    "content_hash": "42717e3dcc653731"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
