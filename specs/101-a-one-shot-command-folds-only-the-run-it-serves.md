@@ -255,7 +255,8 @@ a fact, not only when it adds or moves one.
   projection version and renames the shadow into place in one step: a racing open of either kind
   sees the old file (rebuild still owed) or the complete rebuilt one, never a half-rebuilt file,
   and the live file is never held under a long write transaction. An interrupted rebuild leaves the
-  live file untouched, and the next `rigger setup` resumes from the shadow's last committed batch.
+  live file untouched, and the next `rigger setup` resumes from the shadow's last committed batch
+  while the shadow's prune has not committed; a pruned shadow is never resumed (next bullet).
   `rigger setup` reports progress as it folds and installs nothing else until the rebuild has
   completed or been refused. `rigger emit`, and every command whose job is to append to the log,
   always appends and never opens `graph.db` first; while the rebuild is owed it skips the
@@ -273,8 +274,9 @@ a fact, not only when it adds or moves one.
   a cold rebuild of a log whose closed runs were pruned yields a graph with the same decision and
   finding nodes as the live one, never the pruned ones.
   The criterion 4 unit's evidence MUST include the rebuild completing through `rigger setup` on a
-  snapshot of a real log with wall time and peak memory recorded, and an interrupt-then-rerun on
-  that snapshot completing without refolding the batches already committed. Without this, every
+  snapshot of a real log with wall time and peak memory recorded, and an interrupt during the fold
+  then a rerun on that snapshot completing without refolding the batches already committed.
+  Without this, every
   store folded before this spec keeps facts a pre-upgrade generation asserted, and a compacted such
   store disagrees with every future rebuild.
 - *The rebuild reports its prune, and a log without a run has nothing dead.* A prune the operator
@@ -283,8 +285,24 @@ a fact, not only when it adds or moves one.
   body (`prune_in`) computes on the shadow, and `rigger setup` prints them after the rebuilt line
   in the words `rigger reset --runs` prints (`pruned N dead-run node(s) and reclaimed M superseded
   edge(s)`), spelled once and rendered by both; a rebuild that prunes silently is not an
-  implementation of this. The counts commit with the prune in the shadow's transaction, so a
-  rebuild resumed past its prune still reports the counts that prune made, never zero. The one
+  implementation of this. The prune ENDS the shadow's resumability, because the drop set is not
+  monotone in the log: the rule subtracts the active run's keep set, so an id a closed run
+  recorded, dropped by a prune, moves to keep when the active run records it again, and a prune
+  cannot be undone, so a shadow resumed past its prune would hold the union of every pass's drop
+  set, the reused id back with only its new facts. The prune drops the gathered attribution and
+  commits its counts on the cursor row, both inside its own transaction, so a shadow whose prune
+  committed is a cursor without attribution: the rebuild discards it and folds the whole live
+  selection again from the start. Resumability is decided by the whole rebuild-state shape: a
+  shadow resumes only while it holds the cursor row with its position and prune-count columns
+  together with the gathered attribution table, and a swapped live file finishes its tail only
+  while it holds that cursor row; any other shape, including a shadow or a swapped live file a
+  previous build of this rebuild left, is discarded and folded from 0, never wedging `rigger
+  setup`. The swapped graph is therefore always the whole live selection folded once and pruned
+  once, equal to a cold rebuild and to `rigger reset --runs` over the same log however the rebuild
+  was interrupted. A rerun after an interruption between the prune and the swap's completion
+  refolds and reports the counts its own prune made, and a tail rerun reports the counts the
+  swapped cursor row carries, so the report is a function of the log too. The cost is one refold
+  after a rare failure between the prune and the swap's completion. The one
   rule both apply (`run::superseded_graph_nodes`, `crates/rigger-domain/src/run.rs`) drops a
   decision or finding only against an active run: a log with no `RunStarted` has no closed run,
   so nothing in it is dead and the drop set is empty, exactly as `run::superseded_edge_boundary`
@@ -293,7 +311,13 @@ a fact, not only when it adds or moves one.
   --runs` until that run starts. Criterion 4's unit owns both. Tests: on a store none of whose
   closed runs was pruned, the dead-run node count `rigger setup` prints for its rebuild equals the
   one `rigger reset --runs` prints on a copy of that store; a rebuild interrupted after its prune
-  and rerun prints the same counts; a log with no `RunStarted` rebuilt through `rigger setup`
+  whose window re-records an id the prune dropped (a closed run's decision governing `a.rs`, then
+  the active run recording the same id governing `c.rs`) is rerun and yields the same nodes and
+  edges as a cold rebuild and as `rigger reset --runs` over the whole log (that id governs `a.rs`
+  and `c.rs`), with the same report; a shadow of a previous build's shape (a cursor row without the
+  prune columns beside an empty attribution table) is discarded and two successive rebuilds
+  succeed; a cursor-without-attribution shadow is refolded from the start; a log with no
+  `RunStarted` rebuilt through `rigger setup`
   reports zero pruned and keeps every decision and finding node and every edge its fold holds, and
   `rigger reset --runs` on that log prunes nothing.
 - *A lost fold is a durable debt.* A `graph.db` owes its rebuild for a second reason: a fold into
