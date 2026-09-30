@@ -3,13 +3,24 @@
 
 #![allow(unused_imports)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub use super::fixtures::{
     commit_at_fixed_date, git_answer, git_commit_all, git_init_quiet, git_ok, git_ok_with_identity,
     git_out, init_repo, install_refusing_hook, run_git, temp_git_project_with_commit,
     trimmed_stdout,
 };
+
+/// A git-LINKED worktree `name` nested under `root` (which must hold a commit) at
+/// `root/.rigger/tmp/<name>` - the shape a run spawns its unit worktrees in. Its own
+/// `git rev-parse --show-toplevel` is the WORKTREE path, distinct from `root` - the divergence a
+/// cwd-based resolution mistakes for the owning root.
+pub fn nested_worktree(root: &Path, name: &str) -> PathBuf {
+    let nested = super::cli::rigger_file(root, "tmp").join(name);
+    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    git_ok(root, &["worktree", "add", "-q", nested.to_str().unwrap()]);
+    nested
+}
 
 /// A go-gitsemver fixture repository at `root`: `go-gitsemver.yml` matching this repo's own
 /// (`mode: Mainline`, `tag-prefix: v`), an initial commit tagged `v1.0.0`, then one more commit

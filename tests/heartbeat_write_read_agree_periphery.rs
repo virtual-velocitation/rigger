@@ -47,6 +47,7 @@ use common::cli::run_stream_identity;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::git::git_out;
+use common::git::nested_worktree;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 
@@ -81,18 +82,6 @@ fn main_repo_with_commit() -> tempfile::TempDir {
         ],
     );
     dir
-}
-
-/// A git-LINKED worktree nested under `root` - the deterministic scratch-root shape a run
-/// spawns its units into, and the exact shape `require_store_dir`'s own doc comment names
-/// ("most plausibly a unit worktree"). Its own `git rev-parse --show-toplevel` is the
-/// WORKTREE path, distinct from `root` - the divergence a cwd-based resolution mistakes for
-/// the owning root.
-fn nested_worktree(root: &Path, name: &str) -> PathBuf {
-    let nested = root.join(".rigger").join("tmp").join(name);
-    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
-    git(root, &["worktree", "add", "-q", nested.to_str().unwrap()]);
-    nested
 }
 
 /// Seed a run with exactly one in-flight spawn (`SPAWN_ID`, no recorded result) at `root`.

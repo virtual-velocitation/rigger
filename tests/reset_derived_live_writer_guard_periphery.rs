@@ -21,20 +21,29 @@
 //!
 //! What this file OWNS and what it deliberately does not:
 //!   - OWNS: the three live signals and the definition they make up, the dead-driver run that
-//!     proceeds, the quiet-machinery baseline, and `--force-live`.
+//!     proceeds, the quiet-machinery baseline, `--force-live`, each signal judged against its own
+//!     window and read where the run writes it, the operator's way past an unbounded spawn, and
+//!     the help and skills that state the definition.
 //!   - NOT OWNED: the `--derived` prune's own selection/report/reclamation mechanics (spec 60,
 //!     criterion 5 - `tests/reset_derived_compaction*.rs`), the append-time assertion (spec 71,
 //!     criterion 1), and the validate advisory (spec 71, criterion 3).
 
 mod common;
-use common::git::run_git;
 
+use common::cli::hold_step_lock;
 use common::cli::plant_marker;
+use common::cli::rigger_file;
+use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::seed_registry;
 use common::cli::seed_run_events;
+use common::cli::seed_store;
 use common::cli::temp_store_project;
 use common::git::git_out;
-use rigger::registry::{self, Instance, StoreIdentity};
+use common::git::nested_worktree;
+use common::git::temp_git_project_with_commit;
+use rigger::conductor::normalize_ws;
+use rigger::registry;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
@@ -49,31 +58,20 @@ fn row_count(root: &Path) -> i64 {
         .unwrap()
 }
 
-/// Open, exclusively lock (non-blocking), and return `.rigger/step.lock` under `root` - standing
-/// in for a `rigger step` holding it for its whole duration.
-fn hold_step_lock(root: &Path) -> std::fs::File {
-    use fs2::FileExt;
-    let lock_path = root.join(".rigger").join("step.lock");
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .unwrap();
-    lock_file
-        .try_lock_exclusive()
-        .expect("the test must be able to take the lock first");
-    lock_file
-}
-
 /// Runs `rigger <args>` in `root` with `envs` and asserts the derived compaction ran, `why`
 /// naming the case.
 fn assert_prunes(root: &Path, args: &[&str], envs: &[(&str, &str)], why: &str) {
-    let (out, err, ok) = run_rigger_envs(root, args, envs);
+    assert_compacted(run_rigger_envs(root, args, envs), why);
+}
+
+/// Asserts a `reset --derived` invocation's `(stdout, stderr, success)` is a compaction that ran
+/// and printed its usual prune report, `why` naming the case.
+fn assert_compacted(said: (String, String, bool), why: &str) {
+    let (out, err, ok) = said;
     assert!(ok, "{why}; stderr: {err}");
     assert!(
         out.contains("reset --derived: pruned"),
-        "must print the usual prune report; got {out:?}"
+        "{why}: must print the usual prune report; got {out:?}"
     );
 }
 
@@ -86,28 +84,6 @@ fn assert_seeded_reset_prunes(events: &[(&str, &str)], args: &[&str], why: &str)
         seed_run_events(root, events);
     }
     assert_prunes(root, args, &[], why);
-}
-
-/// A machine-global registry under a fresh `XDG_STATE_HOME` holding one entry for `project` at
-/// `root` (its local store under `root/.rigger/events.db`) last heard from at `heartbeat_ms`;
-/// returns the state home and the entry's file.
-fn seed_registry(
-    project: &str,
-    root: &str,
-    heartbeat_ms: u64,
-) -> (tempfile::TempDir, std::path::PathBuf) {
-    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
-    let instances_dir = registry::instances_dir(state_home.path());
-    let inst = Instance {
-        project: project.to_string(),
-        root: root.to_string(),
-        store: StoreIdentity::Local {
-            path: format!("{root}/.rigger/events.db"),
-        },
-        heartbeat_ms,
-    };
-    let entry = registry::write(&instances_dir, &inst).expect("seed a registry entry");
-    (state_home, entry)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -300,15 +276,9 @@ fn assert_refused_naming_only(live: Signal) {
 #[test]
 fn reset_derived_proceeds_over_a_dead_drivers_non_terminal_run_without_force_live() {
     let o = reset_over_a_dead_drivers_run(&[], &["reset", "--derived"]);
-    assert!(
-        o.ok,
-        "a run whose driver is dead must compact without --force-live; stderr: {}",
-        o.err
-    );
-    assert!(
-        o.out.contains("reset --derived: pruned"),
-        "must print the usual prune report; got {:?}",
-        o.out
+    assert_compacted(
+        (o.out, o.err, o.ok),
+        "a run whose driver is dead must compact without --force-live",
     );
 }
 
@@ -330,11 +300,420 @@ rigger::test_cases! {
 #[test]
 fn reset_derived_force_live_compacts_while_every_signal_is_live() {
     let o = reset_over_a_dead_drivers_run(&ALL_SIGNALS, &["reset", "--derived", "--force-live"]);
-    assert!(o.ok, "--force-live must skip the guard; stderr: {}", o.err);
+    assert_compacted((o.out, o.err, o.ok), "--force-live must skip the guard");
+}
+
+// ---------------------------------------------------------------------------------------
+// Each signal read where the run writes it, judged against its own window
+// ---------------------------------------------------------------------------------------
+
+/// The spawn every case below leaves unanswered.
+const SPAWN: &str = "a/implementer#0";
+
+/// Run `run`, whose one unit `a` is mid-spawn: [`SPAWN`] requested with the wall-clock bound
+/// `bound` (`None`: unbounded) and never answered - what a driver that died mid-spawn leaves
+/// behind.
+fn one_unanswered_spawn(run: &str, bound: Option<u64>) -> Vec<(&'static str, String)> {
+    let bound = bound.map_or(String::new(), |secs| format!(r#","max_wall_clock":{secs}"#));
+    vec![
+        (
+            "RunStarted",
+            format!(r#"{{"run":"{run}","criteria":["crit"]}}"#),
+        ),
+        (
+            "UnitStarted",
+            r#"{"id":"a","branch":"rigger/u/a"}"#.to_string(),
+        ),
+        (
+            "SpawnRequested",
+            format!(r#"{{"id":"{SPAWN}","unit":"a","stage":"implement","prompt":"go"{bound}}}"#),
+        ),
+    ]
+}
+
+/// Seeds `events` into `root`'s run stream, in order.
+fn seed_owned(root: &Path, events: &[(&str, String)]) {
+    let borrowed: Vec<(&str, &str)> = events.iter().map(|(t, b)| (*t, b.as_str())).collect();
+    seed_run_events(root, &borrowed);
+}
+
+/// Runs `rigger reset --derived` over `events` with the step lock free, [`SPAWN`]'s liveness
+/// marker for each `(run id, secs ago)` in `markers` planted under the `RIGGER_TMPDIR` scratch
+/// root, and this store's registry entry last heard from `heartbeat_ms_ago` ms back (`None`: no
+/// entry).
+fn reset_derived_around(
+    events: &[(&str, String)],
+    markers: &[(&str, u64)],
+    heartbeat_ms_ago: Option<u64>,
+) -> (String, String, bool) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_owned(root, events);
+    let scratch = tempfile::tempdir().expect("create the scratch root the markers live under");
+    let scratch_root = scratch.path().to_str().unwrap();
+    for (run, secs_ago) in markers {
+        plant_marker(
+            &rigger::liveness::marker_path(scratch_root, run, SPAWN).unwrap(),
+            *secs_ago,
+        );
+    }
+    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
+    let seeded =
+        heartbeat_ms_ago.map(|ago| seed_registry("proj", &toplevel, registry::now_ms() - ago).0);
+    let mut envs = vec![("RIGGER_TMPDIR", scratch_root)];
+    // With no entry to seed, the binary's own fresh state home holds no registration at all.
+    if let Some(home) = &seeded {
+        envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
+    }
+    run_rigger_envs(root, &["reset", "--derived"], &envs)
+}
+
+/// The refusal's one reason for a live [`SPAWN`]: its marker's age (checked by prefix, since a
+/// second can tick while the binary starts) and `tail`, the bound that keeps it live.
+fn assert_refused_naming_the_spawn(said: (String, String, bool), age_prefix: &str, tail: &str) {
+    let (out, err, ok) = said;
     assert!(
-        o.out.contains("reset --derived: pruned"),
-        "must print the usual prune report; got {:?}",
-        o.out
+        !ok,
+        "a live spawn must refuse the compaction; stdout: {out:?}"
+    );
+    let reason = format!(
+        "1 in-flight spawn(s) in the current run touched their liveness marker within their \
+         wall-clock bound: {SPAWN} (marker touched {age_prefix}"
+    );
+    assert!(
+        err.contains(&reason) && err.contains(tail),
+        "the refusal must name {SPAWN} with its marker's age ({age_prefix}..) and {tail:?}; \
+         stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("step.lock") && !err.contains("driver registration"),
+        "only the spawn is live, so only the spawn may be named; stderr: {err:?}"
+    );
+}
+
+/// The idle window, in whole seconds, as the refusal states it.
+fn idle_window_secs() -> u64 {
+    registry::DEFAULT_IDLE_MS / 1000
+}
+
+rigger::test_cases! {
+    /// A spawn is judged against its OWN recorded bound, not the registry's idle window: a marker
+    /// touched half an hour ago - well past the 900 s idle window - is still inside the spawn's
+    /// 3600 s bound, so the run is live and the refusal names that bound.
+    reset_derived_refuses_while_a_marker_is_inside_its_own_bound_though_past_the_idle_window: {
+        assert!(idle_window_secs() < 1800, "the case must sit past the idle window");
+        assert_refused_naming_the_spawn(
+            reset_derived_around(&one_unanswered_spawn("r1", Some(3600)), &[("r1", 1800)], None),
+            "180",
+            "s ago, bound 3600s)",
+        );
+    };
+    /// A minute past that same 3600 s bound the marker is stale: nothing drives the run and it
+    /// compacts without `--force-live`.
+    reset_derived_proceeds_once_a_marker_outlives_its_own_bound: assert_compacted(
+        reset_derived_around(&one_unanswered_spawn("r1", Some(3600)), &[("r1", 3660)], None),
+        "a marker a minute past its spawn's own bound is not live",
+    );
+}
+
+/// A PRIOR run's marker is never read for the current run: run `r0` and run `r1` each left
+/// [`SPAWN`] unanswered, and only the marker filed under the CURRENT run's id decides whether it
+/// is live - a fresh `r0` marker beside a stale `r1` one compacts, and the mirror refuses.
+fn prior_and_current_run(
+    prior_marker_secs_ago: u64,
+    current_marker_secs_ago: u64,
+) -> (String, String, bool) {
+    let events: Vec<(&str, String)> = one_unanswered_spawn("r0", Some(300))
+        .into_iter()
+        .chain(one_unanswered_spawn("r1", Some(300)))
+        .collect();
+    reset_derived_around(
+        &events,
+        &[
+            ("r0", prior_marker_secs_ago),
+            ("r1", current_marker_secs_ago),
+        ],
+        None,
+    )
+}
+
+rigger::test_cases! {
+    /// A fresh marker a PRIOR run filed for the same spawn id never makes the current run live.
+    reset_derived_ignores_a_prior_runs_fresh_marker_for_the_same_spawn_id: assert_compacted(
+        prior_and_current_run(0, 301),
+        "only the current run's marker decides, and it is past its bound",
+    );
+    /// The current run's own fresh marker makes it live, whatever the prior run's says.
+    reset_derived_reads_the_current_runs_marker_beside_a_prior_runs_stale_one:
+        assert_refused_naming_the_spawn(prior_and_current_run(301, 0), "", "s ago, bound 300s)");
+}
+
+/// A registry heartbeat a minute INSIDE the idle window keeps the run live - the window, not
+/// "just now", is what the guard judges it against - while the lock is free and no spawn marker is
+/// on disk; the refusal names the registration and the window, and nothing else.
+#[test]
+fn reset_derived_refuses_while_the_registry_heartbeat_is_a_minute_inside_the_idle_window() {
+    let (out, err, ok) = reset_derived_around(
+        &one_unanswered_spawn("r1", Some(300)),
+        &[],
+        Some(registry::DEFAULT_IDLE_MS - 60_000),
+    );
+    assert!(
+        !ok,
+        "a heartbeat inside the idle window must refuse; stdout: {out:?}"
+    );
+    let reason = format!(
+        "1 driver registration(s) for this project's store in the machine-global instance \
+         registry (spec 50) heartbeat within the last {}s",
+        idle_window_secs()
+    );
+    assert!(
+        err.contains(&reason),
+        "the refusal must name the registration and the idle window; stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("step.lock") && !err.contains("in-flight spawn(s)"),
+        "only the registration is live, so only it may be named; stderr: {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// The spawn signal is read where the writer stamps it, with no scratch override in play
+// ---------------------------------------------------------------------------------------
+
+/// `rigger reset --derived` run from `cwd` with NO scratch override - `RIGGER_TMPDIR` blank,
+/// which the scratch-root resolver reads as unset whatever the ambient environment carries - so
+/// the binary resolves the scratch root exactly as the run that stamped the marker did, over
+/// [`one_unanswered_spawn`] (bound 300 s) in `root`'s store, whose worker touched its marker just
+/// now under `scratch_root`.
+fn reset_from_with_a_fresh_marker_under(
+    root: &Path,
+    cwd: &Path,
+    scratch_root: &str,
+) -> (String, String, bool) {
+    seed_owned(root, &one_unanswered_spawn("r1", Some(300)));
+    plant_marker(
+        &rigger::liveness::marker_path(scratch_root, "r1", SPAWN).unwrap(),
+        0,
+    );
+    run_rigger_envs(cwd, &["reset", "--derived"], &[("RIGGER_TMPDIR", "")])
+}
+
+/// With no `defaults.workdir` configured, a run stamps its markers under the store owner's
+/// default cache scratch root, and the guard reads them there.
+#[test]
+fn reset_derived_reads_a_marker_stamped_under_the_default_scratch_root() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let scratch_root = common::default_scratch_root(root);
+    assert_refused_naming_the_spawn(
+        reset_from_with_a_fresh_marker_under(root, root, scratch_root.to_str().unwrap()),
+        "",
+        "s ago, bound 300s)",
+    );
+}
+
+/// With `defaults.workdir` configured in the store's `workflow.yml`, a run stamps its markers
+/// under that workdir - not the default cache root - and the guard reads them there.
+#[test]
+fn reset_derived_reads_a_marker_stamped_under_a_configured_workdir() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let relocated = tempfile::tempdir().expect("create the configured workdir");
+    let workdir = relocated.path().to_str().unwrap();
+    std::fs::write(
+        rigger_file(root, "workflow.yml"),
+        format!("defaults:\n  workdir: \"{workdir}\"\n"),
+    )
+    .expect("configure defaults.workdir");
+    let scratch_root = rigger::worktree::scratch_root(root.to_str().unwrap(), workdir, None);
+    assert_ne!(
+        Path::new(&scratch_root),
+        common::default_scratch_root(root),
+        "fixture bug: the configured workdir must move the scratch root off the default"
+    );
+    assert_refused_naming_the_spawn(
+        reset_from_with_a_fresh_marker_under(root, root, &scratch_root),
+        "",
+        "s ago, bound 300s)",
+    );
+}
+
+/// Run from a nested unit worktree, the guard still reads the marker the run stamped under the
+/// store OWNER's scratch root, never one derived from the process cwd.
+#[test]
+fn reset_derived_from_a_nested_worktree_reads_the_marker_under_the_owning_roots_scratch_root() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    seed_store(root);
+    let nested = nested_worktree(root, "wt");
+    let scratch_root = common::default_scratch_root(root);
+    assert_ne!(
+        common::default_scratch_root(&nested),
+        scratch_root,
+        "fixture bug: the cwd's own scratch root must differ from the owning root's"
+    );
+    assert_refused_naming_the_spawn(
+        reset_from_with_a_fresh_marker_under(root, &nested, scratch_root.to_str().unwrap()),
+        "",
+        "s ago, bound 300s)",
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// The operator's way past an unbounded spawn
+// ---------------------------------------------------------------------------------------
+
+/// Given a dead driver's run whose one in-flight spawn is UNBOUNDED, when the operator runs
+/// `reset --derived`, then it refuses naming the `rigger result` that ends the spawn; when the
+/// operator records that result as told, then the spawn no longer holds the run live and the one
+/// signal left is the registry heartbeat that `rigger result` courier itself just stamped for
+/// this store; and once that heartbeat is past the idle window the compaction runs - never
+/// needing `--force-live`.
+#[test]
+fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_owned(root, &one_unanswered_spawn("r1", None));
+    let scratch = tempfile::tempdir().expect("create the scratch root the markers live under");
+    let scratch_root = scratch.path().to_str().unwrap();
+    plant_marker(
+        &rigger::liveness::marker_path(scratch_root, "r1", SPAWN).unwrap(),
+        86_400,
+    );
+    // ONE state home across every invocation, as on the operator's machine: the registry the
+    // courier writes is the registry the guard reads.
+    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
+    let envs = [
+        ("RIGGER_TMPDIR", scratch_root),
+        ("XDG_STATE_HOME", state_home.path().to_str().unwrap()),
+    ];
+    let reset = || run_rigger_envs(root, &["reset", "--derived"], &envs);
+
+    assert_refused_naming_the_spawn(
+        reset(),
+        "864",
+        "s ago; unbounded, so it stays live until its result is recorded - `rigger result \
+         a/implementer#0 --error <why>` once its worker is gone)",
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", SPAWN, "--error", "its worker is gone"],
+        &envs,
+    );
+    assert!(
+        ok,
+        "the operator records the spawn's result; stdout: {out} stderr: {err}"
+    );
+
+    let (out, err, ok) = reset();
+    assert!(
+        !ok,
+        "the result courier's own registry heartbeat is inside the idle window; stdout: {out:?}"
+    );
+    assert!(
+        !err.contains(SPAWN),
+        "a spawn with a recorded result has ended and must not be named; stderr: {err:?}"
+    );
+    assert!(
+        err.contains(&format!(
+            "1 driver registration(s) for this project's store in the machine-global instance \
+             registry (spec 50) heartbeat within the last {}s",
+            idle_window_secs()
+        )),
+        "the one signal left is the heartbeat the courier stamped; stderr: {err:?}"
+    );
+
+    let instances = registry::instances_dir(state_home.path());
+    let stamped =
+        registry::read_live_no_prune(&instances, registry::now_ms(), registry::DEFAULT_IDLE_MS);
+    assert_eq!(
+        stamped.len(),
+        1,
+        "the courier stamped exactly one entry, this store's"
+    );
+    for mut inst in stamped {
+        inst.heartbeat_ms = registry::now_ms() - registry::DEFAULT_IDLE_MS - 60_000;
+        registry::write(&instances, &inst).expect("age the courier's heartbeat");
+    }
+    assert_compacted(
+        reset(),
+        "with the result recorded and the heartbeat past the idle window nothing is live",
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// The operator's documents state the definition
+// ---------------------------------------------------------------------------------------
+
+/// Given the operator reads the binary's help or rigger's rendered skills, then each states the
+/// liveness definition this criterion owns - a held step lock, an in-flight spawn's marker inside
+/// its wall-clock bound, a registry heartbeat inside the idle window - and that a dead driver's
+/// run is not live; none still reads unit terminality or a bare unanswered spawn as live.
+#[test]
+fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
+    let dir = temp_store_project();
+    let root = dir.path();
+
+    let (out, err, ok) = run_rigger(root, &["--help"]);
+    assert!(ok, "--help must succeed; stdout: {out}");
+    // Whitespace collapsed, so the wrapped help reads as prose.
+    let help = normalize_ws(&format!("{err}{out}"));
+    assert!(
+        help.contains(
+            "Refuses while the run is live (a held step lock, an in-flight spawn's marker inside \
+             its wall-clock bound, or a registry heartbeat inside the idle window), naming what is \
+             live (a dead driver's run is not)"
+        ),
+        "the --derived help must state the liveness definition; got {help:?}"
+    );
+    assert!(
+        !help.contains("a non-terminal unit"),
+        "the help must not name unit terminality as a live signal; got {help:?}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["docs"]);
+    assert!(
+        ok,
+        "rigger docs renders the skills; stdout: {out} stderr: {err}"
+    );
+    let skill = |name: &str| -> String {
+        std::fs::read_to_string(root.join("skills").join(name).join("SKILL.md"))
+            .unwrap_or_else(|e| panic!("rigger docs writes the {name} skill: {e}; {out}"))
+    };
+
+    let reset_store = skill("rigger-reset-store");
+    assert!(
+        reset_store.contains(
+            "When no driver is alive (no `rigger step` holds the lock, no in-flight spawn's \
+             liveness marker is younger than its wall-clock bound, no registration for the store \
+             has a heartbeat inside the idle window), it also closes the current run's units"
+        ),
+        "the reset-store skill must state the liveness `--runs` closes a dead run on; got \
+         {reset_store:?}"
+    );
+    assert!(
+        !reset_store.contains("no spawn awaits a result"),
+        "a bare unanswered spawn is not a live signal; got {reset_store:?}"
+    );
+
+    let using = skill("using-rigger");
+    assert!(
+        using.contains(
+            "it refuses while the run is live - a `rigger step` holds its lock, an in-flight \
+             spawn's liveness marker is younger than its wall-clock bound, or a driver \
+             registration for this store has a heartbeat inside the idle window - naming what it \
+             found. A run whose driver died is not live: units it left non-terminal never block \
+             the compaction, and a spawn it left unanswered stops blocking once its marker \
+             outlives the spawn's bound (an unbounded spawn's never does, so record that spawn's \
+             result)."
+        ),
+        "the using-rigger skill must state the liveness `--derived` refuses on; got {using:?}"
+    );
+    assert!(
+        !using.contains("not yet terminal"),
+        "unit terminality is not a live signal; got {using:?}"
     );
 }
 
@@ -384,23 +763,10 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
 #[test]
 fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_lock() {
     use fs2::FileExt;
-    let dir = temp_store_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
-    // `git worktree add` needs a real commit to detach onto - `temp_store_project` only `git init`s
-    // (an unborn HEAD), so seed one first.
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = run_git(root, args).status.success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    let nested = root.join("wt");
-    let ok = run_git(root, &["worktree", "add", "-q", "--detach", "wt"])
-        .status
-        .success();
-    assert!(ok, "git worktree add must succeed");
+    seed_store(root);
+    let nested = nested_worktree(root, "wt");
     assert!(
         !nested.join(".rigger").exists(),
         "the nested worktree must carry no store of its own"

@@ -293,6 +293,41 @@ pub fn plant_marker(marker: &Path, secs_ago: u64) {
         .unwrap();
 }
 
+/// Open, exclusively lock (non-blocking), and return `.rigger/step.lock` under `root` - standing
+/// in for a `rigger step` holding it for its whole duration. The lock lasts until the returned
+/// file is dropped.
+pub fn hold_step_lock(root: &Path) -> std::fs::File {
+    use fs2::FileExt;
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(rigger_file(root, "step.lock"))
+        .unwrap();
+    lock_file
+        .try_lock_exclusive()
+        .expect("the test must be able to take the lock first");
+    lock_file
+}
+
+/// A machine-global instance registry under a fresh `XDG_STATE_HOME` holding one entry for
+/// `project` at `root` (its local store under `root/.rigger/events.db`) last heard from at
+/// `heartbeat_ms`; returns the state home and the entry's file.
+pub fn seed_registry(project: &str, root: &str, heartbeat_ms: u64) -> (tempfile::TempDir, PathBuf) {
+    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
+    let inst = rigger::registry::Instance {
+        project: project.to_string(),
+        root: root.to_string(),
+        store: rigger::registry::StoreIdentity::Local {
+            path: format!("{root}/{RIGGER_DIR}/events.db"),
+        },
+        heartbeat_ms,
+    };
+    let entry = rigger::registry::write(&rigger::registry::instances_dir(state_home.path()), &inst)
+        .expect("seed a registry entry");
+    (state_home, entry)
+}
+
 /// The current time as nanoseconds since the Unix epoch.
 pub fn now_nanos() -> i64 {
     SystemTime::now()
