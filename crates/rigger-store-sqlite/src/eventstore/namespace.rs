@@ -155,6 +155,8 @@ impl EventStore for Namespaced<'_> {
         self.inner
             .read_stream_positions(&self.scoped(stream), batch, sink)
     }
+    /// Each batch is handed stripped of the namespace, as every other read of this wrapper hands
+    /// its events.
     fn read_stream_batched(
         &self,
         stream: &str,
@@ -163,7 +165,9 @@ impl EventStore for Namespaced<'_> {
         sink: &mut EventBatchSink,
     ) -> Result<(), Error> {
         self.inner
-            .read_stream_batched(&self.scoped(stream), from, batch, sink)
+            .read_stream_batched(&self.scoped(stream), from, batch, &mut |events, head| {
+                sink(&self.strip(events.to_vec()), head)
+            })
     }
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.inner.latest_in_group(&self.scoped(stream), group)
