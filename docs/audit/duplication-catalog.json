@@ -4249,7 +4249,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-478ddc23181e",
+    "id": "dup-905571fec389",
     "classification": "semantic",
     "sites": [
       {
@@ -4286,6 +4286,11 @@
         "file": "crates/rigger-dash/src/dash.rs",
         "name": "\"/proc\"",
         "content_hash": "f0618eb3e7c2b6b0"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"/proc/self/fd\"",
+        "content_hash": "76b81d47301fccfa"
       },
       {
         "file": "crates/rigger-process/src/holders.rs",
@@ -4509,7 +4514,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 51 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 52 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
